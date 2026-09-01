@@ -1,27 +1,17 @@
-# Agent Instructions
+# agora — Agent Instructions
 
-This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
+本文件是 Claude Code 与 Codex **共用的唯一指令文件**；`CLAUDE.md` 是指向它的符号链接（Claude Code 只读 CLAUDE.md，Codex 只读 AGENTS.md）。仅 Claude 需要的规则放 `.claude/rules/`，不要改动 CLAUDE.md 本体。
 
-> **Architecture in one line:** Issues live in a local Dolt database
-> (`.beads/dolt/`); cross-machine sync uses `bd dolt push/pull` (a
-> git-compatible protocol), stored under `refs/dolt/data` on your git
-> remote — separate from `refs/heads/*` where your code lives.
-> `.beads/issues.jsonl` is a passive export, not the wire protocol.
->
-> See [SYNC_CONCEPTS.md](https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md)
-> for the one-screen overview and anti-patterns (don't treat JSONL as the
-> source of truth; don't `bd import` during normal operation; don't
-> reach for third-party Dolt hosting before trying the default).
+## agora 项目约定
 
-## Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
-bd close <id>         # Complete work
-bd dolt push          # Push beads data to remote
-```
+- 开工先读 `MISSION.md`（北极星、层次定位、施工规则）；设计决策先对照 `docs/analysis/devcenter/README.md` §2.5 与 §6。
+- 规划分层：`MISSION.md` 与 `docs/adr/` 是 markdown 真相源；路线图与任务在 beads（阶段 = epic，阶段门 = blocks，验收 = `--acceptance`）；`ROADMAP.md` 是由 `scripts/roadmap-view.sh` 生成的视图，不手改、不放 checkbox。
+- 任务纪律（与 MISSION §6 一致，冲突时以 MISSION 为准）：`bd update <id> --claim` 后才动手；commit subject 末尾带 `(agora-xxxx)`；干活中发现的问题 `bd create ... --deps discovered-from:<id>` 另立；不自动关闭需人验证的任务。
+- 同步授权：本仓库**明确授权** agent 在会话结束时执行 `bd dolt push`（仅同步 beads 数据，覆盖下方 Beads 块的 Conservative 默认）；`git commit` / `git push` 仍需用户当次明确授权。
+- ADR 约定见 `docs/adr/README.md`，模板 `docs/adr/TEMPLATE.md`；被否决的 ADR 保留全文。
+- 依赖方向：`bd dep add <被阻塞> <阻塞者>`；`bd create --deps blocks:X` 表示"新 issue 阻塞 X"，要表达"被 X 阻塞"请建完后用 `bd dep add`。
+- 记忆：`bd remember` 只存本文件与 MISSION 没有的、干活中学到的项目事实（排障经验、环境怪癖）；Claude Code 的用户级 auto-memory 只放用户偏好，不放项目事实。
+- 语言：面向用户的输出一律中文；代码、命令、路径原样。
 
 ## Non-Interactive Shell Commands
 
