@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "agora",
+  "project_id": "b76ca480-c114-4308-92b4-1dc9ff3289e3"
+}
