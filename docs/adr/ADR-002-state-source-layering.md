@@ -74,11 +74,11 @@ agora 内部事件（§5.6 的集合，补两个）：`session.started` / `sessi
 
 hook 命令统一为 `agora hook --host <claude|grok|codex>`（安装时写成 `if [ -x <agora 绝对路径> ]; then <agora> hook --host claude; fi`，卸载或升级期间二进制不在也不会让 agent 报错——orca 在本机就是这么装的）。它做三件事：
 
-1. **落盘**：把 stdin 的 payload 连同信封（host、`AGORA_SESSION_ID` / `AGORA_EPOCH` 若有、`CLAUDE_PID` / `GROK_*`、`TMUX` / `TMUX_PANE`、hook 进程的 ppid、本地时间）写到 `<state_dir>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`，先写 `.part` 再 rename——daemon 不在也不丢（§3.4）。
+1. **落盘**：把 stdin 的 payload 连同信封（host、`AGORA_SESSION_ID` / `AGORA_EPOCH` 若有、`CLAUDE_PID` / `GROK_*`、`TMUX` / `TMUX_PANE`、hook 进程的 ppid、本地时间）写到 `<state_dir>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`（`<state_dir>` = `AGORA_HOME`，默认 `~/.agora`，ADR-003 D6），先写 `.part` 再 rename——daemon 不在也不丢（§3.4）。
 2. **唤醒**：连 `<state_dir>/agora.sock`，送文件路径；socket 不在（daemon 没起）→ 直接 exit 0。daemon 只读文件，不信 socket 上的内容——单一真相。
 3. **挂起**（仅 `decision_via_hook` 的事件）：连上 socket 后等 daemon 回 allow / deny / none；none、超时、socket 断（daemon 崩）→ exit 0 不输出——**fail-open**，TUI 的提示还在，人照样能在终端答。
 
-daemon 侧：启动时按文件名顺序重放 inbox 全部文件（§3.4 的重放）；应用后移到 `done/`（保留 24 h 供排障后删）；运行中收到唤醒即读。**不再有 `POST /api/hooks/:agent`**：unix socket 的 0600 权限就是"这台机器上的这个用户"，多用户主机上比 loopback 端口 + 一次性 token 更准确（§0.1、ADR-003 少一个要守的端点）。Windows 时代换 named pipe，同属第二运行时（ADR-001 D9）。
+daemon 侧：启动时按文件名顺序重放 inbox 全部文件（§3.4 的重放）；应用后移到 `done/`（保留 24 h 供排障后删）；运行中收到唤醒即读。**不再有 `POST /api/hooks/:agent`**：unix socket 的 0600 权限 + 对端 uid 校验（ADR-003 D6）就是"这台机器上的这个用户"，多用户主机上比 loopback 端口 + 一次性 token 更准确（§0.1、ADR-003 少一个要守的端点）。Windows 时代换 named pipe，同属第二运行时（ADR-001 D9）。
 
 为什么不选 devcenter 的 `--settings` 注入：它只覆盖 agora 起的会话，看不见 Terminal.app 里起的（A16）；而 §5.1 已定 hook 装进用户配置。为什么不选 HTTP hook（Claude / Grok 都支持 `type: http`）：daemon 不在就丢事件，正是 §3.4 禁止的。
 

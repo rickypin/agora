@@ -1,15 +1,17 @@
 # 配置与存储
 
-原则在 MISSION §9；本文是文件形态。`runtime` 段已按 ADR-001 定稿；`tls` 段等 ADR-003 定稿后重写。
+原则在 MISSION §9；本文是文件形态。`runtime` 段按 ADR-001、`server` / `tls` / `auth` 段按 ADR-003 定稿。配置文件在 `AGORA_HOME/config.yaml`（默认 `~/.agora`，目录 0700，ADR-003 D6）。
 
 ## 配置文件（每个节点一份）
 
 ```yaml
-server:
-  listen: "127.0.0.1:7680"    # 要被 peer 或手机访问时显式改为非 loopback，且必须已配置认证与 TLS（§8）
+server:                       # ADR-003 D5：两个监听器
+  listen: "127.0.0.1:7680"    # 明文监听器：只允许 loopback 地址，配置校验拒绝其它
+  tls_listen: null            # TLS 监听器：非 loopback、永远 TLS；被 peer 或手机访问时才开，例 "0.0.0.0:7681"（端口须不同于 listen）
+  public_url: null            # 远端配对链接与 QR 用的对外地址，例 "https://zuan.tail6f613.ts.net:7681"；不自动猜
 node:
   id: "mac"                   # §3.5：全局会话 id `<node>:<id>` 的前缀，安装时生成，改名需迁移
-peers: []                     # §3.5：默认空。每项 { name, url, token_file, cert_fingerprint }；
+peers: []                     # §3.5：默认空。每项 { name, url, token_file, cert_fingerprint: "sha256:<SPKI hex>" }（ADR-003 D3 / D4）；
                               #   本节点作为这些 peer 的 API 客户端并入其会话
 runtime:                      # ADR-001 D3 / D6 / D7
   kind: tmux                  # V1 唯一实现；Windows 的 native supervisor 另立 ADR（ADR-001 D9）
@@ -33,8 +35,18 @@ hooks:                        # ADR-002 D1 / D5 / D3
   inbox_retention: "24h"      # 已应用的事件文件在 done/ 保留时长
 notifications:
   enabled: true
-tls:                          # §8：非 loopback 必须 HTTPS
-  mode: "external"            # acme-dns | self-ca | external
+tls:                          # ADR-003 D4；agora 永远自己终止 TLS，不支持反向代理
+  mode: "self-signed"         # self-signed（默认：首次开 tls_listen 时生成 10 年自签证书到 tls/）| external；self-ca 未实现
+  external:
+    cert_file: null
+    key_file: null
+    renew_command: null       # 例 ["tailscale", "cert", "--cert-file", "…", "--key-file", "…", "zuan.tail6f613.ts.net"]
+    renew_before: "720h"      # 到期前多久调用 renew_command；证书文件变化即热加载，SPKI 变了则警告 peer 需更新指纹
+auth:                         # ADR-003 D2
+  pair_ttl: "5m"              # 配对链接有效期；单次使用
+  pair_pending_max: 4         # 同时未用的配对链接上限
+  session_idle: "30d"         # 距最近使用
+  session_max: "365d"         # 距配对
 project_roots:                # 扫描而非手写，按最近使用排序
   - "/Users/ricky/code"
 worktree_root: "../{repo}-wt" # §6.4：新建 worktree 的存放约定，{repo} = 仓库目录名，worktree 名接在其下
@@ -67,6 +79,23 @@ CREATE TABLE sessions (
     adopted BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE TABLE projects (path TEXT PRIMARY KEY, name TEXT NOT NULL, last_used_at DATETIME);  -- 扫描发现 + 最近使用
+CREATE TABLE devices (                             -- ADR-003 D2：已配对设备，人的 session；只存哈希
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,                            -- 由 User-Agent 生成，可改名
+    session_sha256 TEXT NOT NULL UNIQUE,
+    paired_via TEXT NOT NULL,                      -- socket | session
+    paired_from_addr TEXT,
+    created_at DATETIME NOT NULL,
+    last_seen_at DATETIME NOT NULL,                -- 每小时至多写一次
+    revoked_at DATETIME
+);
+CREATE TABLE peer_tokens (                         -- ADR-003 D3：按 peer 签发的机器 token；只存哈希
+    name TEXT PRIMARY KEY,
+    token_sha256 TEXT NOT NULL,
+    created_at DATETIME NOT NULL,
+    last_used_at DATETIME,
+    revoked_at DATETIME
+);
 CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 ```
 
@@ -75,5 +104,5 @@ MVP 不需要保存大量 operational telemetry。peer 的最后视图只在内�
 
 ## 机器 token 文件
 
-- 由被访问的节点签发：`agora peer token create <name>`，输出一行 token；该节点只存 SHA-256 哈希，可按 name 吊销。
+- 由被访问的节点签发：`agora peer token create <name>`（`--rotate` 换新并立即吊销旧的），明文只输出这一次；该节点只存 SHA-256 哈希，`agora peer token revoke <name>` 即时生效。签发没有前置条件（ADR-003 D3）；token 只在 TLS 监听器上被接受。
 - 持有方写入 `peers[].token_file`：明文、`0600`、不进 git、不进日志（MISSION §8）。

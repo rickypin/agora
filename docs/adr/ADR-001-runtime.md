@@ -73,7 +73,7 @@ RuntimeError   = NotFound | StillAlive | ServerUnavailable | VersionMismatch
 - **`Ref` 是不透明字符串**，形态 `tmux:agora:ag-a81c28`、`tmux:default:mywork`；`session.runtime_ref` 原样落库，解析只发生在 `runtime/tmux/`。`managed` = 是否在 agora 自己的 socket 上。
 - **子进程只经一个入口**：argv 直传（不经 shell，zsh 会把 `=name:` 当等号展开，实测 2026-09-02）；每次调用有超时（默认 5 s；attach 是长进程不计）；在 blocking 线程上跑；stdout / stderr 都排空、stderr 只保留尾部 4 KB 进错误（devcenter 两次管道死锁换来的规则）；错误按 `RuntimeError` 分类，不做字符串匹配（规则 10）。
 - **`exit` 是数据不是判断**：`Code(0)` / `Code(n)` / `Signal(name)` 原样交给 observer；FINISHED / FAILED 的映射、以及"agora 自己 terminate 的会话按信号退出算什么"归 ADR-002（已写入 `agora-90t.3` 注记）。
-- **`LaunchSpec.env` 是 ADR-002 把每会话身份（会话 id、hook 一次性 token）交给 agent 的通道**；tmux 路线下走 `new-session -e`，不写 shell、不改用户配置。
+- **`LaunchSpec.env` 是 ADR-002 把每会话身份交给 agent 的通道**（定稿后是 `AGORA_SESSION_ID` / `AGORA_EPOCH`；hook 投递走投递箱 + unix socket，没有一次性 token，ADR-002 D3）；tmux 路线下走 `new-session -e`，不写 shell、不改用户配置。
 
 tmux 映射（具体命令行是 spec 的事，这里只钉住形状与理由）：
 
@@ -96,7 +96,7 @@ agora 创建的会话全部在**专用 socket** `-L agora` 上；采纳（A22）
 - 代价：用户手动看 agora 的会话要 `tmux -L agora ls`；每 tick 多一次 list 调用。
 - 测试骨架直接受益：每个 fake 节点一个 socket（`agora-test-<pid>-<n>`），单进程多节点互不干扰——devcenter 的 `Tmux::with_socket` 做法。
 
-专用 server 由 daemon 启动时 `tmux -L agora -f <conf> start-server` 拉起，`<conf>` 由 agora 生成到状态目录：
+专用 server 由 daemon 启动时 `tmux -L agora -f <conf> start-server` 拉起，`<conf>` 由 agora 生成到 `AGORA_HOME`（默认 `~/.agora`，ADR-003 D6）：
 
 ```
 set -g history-limit 10000        # D6；必须在 server 级设：3.7 以前对已存在的 pane 不生效（实测，反例见附录 A）

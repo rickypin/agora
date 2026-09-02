@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.12（2026-09-02）；变更历史见 beads `agora-90t.1` 注记 |
+| 版本 | v0.13（2026-09-02）；变更历史见 beads `agora-90t.1` 注记 |
 | 项目类型 | Self-hosted Web Application |
 | 目标平台 | 节点：macOS / Ubuntu Linux / Windows 主机（Windows V1 延期）；客户端：macOS 笔记本、iOS、Android 设备上的现代浏览器（V1 只验收 macOS 笔记本） |
 | 主要用户 | 单用户 |
@@ -92,7 +92,7 @@ agora **不是 IDE**。不实现：
 - 只读 viewer 的 URL 抓取路径——出站抓取换不来价值，只带来 SSRF 面（渲染 session 指名文件的 Artifact Viewer 留 §11）
 - 原生客户端（iOS / Android / macOS / Windows）——只有一个 Web / PWA
 - 独立的 hub 组件、节点间隧道——汇聚是节点的一种配置（peers），不是一种组件（§3.5，ADR-004）
-- 网络连通方案——VPN / tailnet / 中继 / 反向代理交给部署环境。**TLS 与证书不在此列**：PWA 与推送强制 HTTPS，证书是 agora 必须自动化的事（§8）
+- 网络连通方案——VPN / tailnet / 中继交给部署环境。**TLS 与证书不在此列**：PWA 与推送强制 HTTPS，证书是 agora 必须自动化的事，且 agora 永远自己终止 TLS——反向代理只能做 TCP 透传，不做 HTTP 终止（§8）
 
 它只解决一个问题：**管理大量 Persistent CLI Agent Session。**
 
@@ -139,7 +139,7 @@ MVP 的完成定义不是"可以在浏览器里打开终端"，而是：
 | 8 | One broken node must not affect another node；peer 离线在视图里表现为 stale（保留最后视图与时间），绝不静默消失 |
 | 9 | 客户端零特权：一切功能经节点 API 完成，任何设备、任何客户端形态的功能集相同 |
 | 10 | 状态来源分层：hook / 结构化事件 > 进程状态 > 屏幕文本；每个状态值带来源与置信度（§5，ADR-002） |
-| 11 | 节点互不信任：每个节点独立认证 principal（人：TOTP；节点作为 peer 客户端：机器 token + 证书指纹）；网络可达（局域网 / tailnet / 公网）≠ 授权（§8，ADR-003） |
+| 11 | 节点互不信任：每个节点独立认证 principal（人：已配对设备的 session；节点作为 peer 客户端：机器 token + 证书指纹）；网络可达（局域网 / tailnet / 公网）≠ 授权（§8，ADR-003） |
 | 12 | 任务真相在仓库里（beads / git）：agora 只存 session ↔ 任务的关联，永不复制任务的内容、状态、依赖 |
 
 原则：**浏览器可以随时关闭，但 agent 必须继续运行。浏览器不是 agent 的 process owner。**
@@ -169,7 +169,7 @@ MVP 的完成定义不是"可以在浏览器里打开终端"，而是：
 
 ### 3.1 组件与 Ownership
 
-每个节点一个 daemon：**Session Manager + State Detector + Terminal Gateway**，其下是持久化运行时【ADR-001】与其中的 agent 进程，旁边是只存 metadata 的 SQLite。客户端是浏览器里的同一个 Web（Dashboard / Tabs / xterm.js / 通知），经 HTTPS / WebSocket 连接某一个节点。总体架构图见 `docs/spec/architecture.md`。
+每个节点一个 daemon：**Session Manager + State Detector + Terminal Gateway**，其下是持久化运行时【ADR-001】与其中的 agent 进程，旁边是只存 metadata 的 SQLite。客户端是浏览器里的同一个 Web（Dashboard / Tabs / xterm.js / 通知），经 HTTP（仅 loopback）或 HTTPS 与 WebSocket 连接某一个节点（§8 两个监听器）。总体架构图见 `docs/spec/architecture.md`。
 
 Ownership 边界（MVP 最重要的架构边界）：
 
@@ -210,7 +210,7 @@ discover 运行时中的 session → read SQLite metadata → reconcile → rebu
 - **只导出本机会话，一跳**：节点对外暴露的永远只有自己的会话，不转发从 peer 收来的；这同时防环。
 - **peer 断线保留最后视图并标记**（"上次见到 23:10"），绝不静默消失（不变量 8）；恢复后自动重连。最后视图 V1 只在内存里，持久化历史留 V2。
 - **浏览器一次只连一个节点**：把浏览器指向哪个节点，哪个节点就是汇聚点——由配置决定，不由架构决定。
-- **谁需要浏览器可信证书**：只有被浏览器直接打开的节点。V1 浏览器只打开 `127.0.0.1`（本身是安全上下文），因此 V1 不需要任何浏览器可信证书，也不需要 TOTP；peer 之间自签证书 + 指纹钉住即可（§8）。
+- **谁需要浏览器可信证书**：只有被浏览器直接打开的节点。V1 浏览器只打开 `127.0.0.1`（本身是安全上下文），因此 V1 不需要任何浏览器可信证书，也不需要远端设备配对；peer 之间自签证书 + 指纹钉住即可（§8）。
 - **peer 访问默认关闭**：节点上没有签发过任何机器 token 就没有 peer 能连进来；多节点是显式配置出来的状态，不是默认状态（§8）。
 - 写操作与终端流按会话所属节点路由：本机直达，peer 经一跳转发；对用户不可见（确认逻辑归 §8）。
 - peer 视图里的时间（上次见到、等待时长）由本节点的时钟打，不信 peer 报的时间。
@@ -466,7 +466,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 
 ### 6.8 Multi-device 与 Reconnection
 
-允许多个客户端同时登录；每个客户端一次只连一个节点（§3.5），看到的是该节点及其 peer 的会话。MVP 允许多个 client attach；V2 增加 Controller / Viewer 角色与 Take Control，避免两台设备同时向 CLI 输入。
+允许多台已配对设备同时连接；每个客户端一次只连一个节点（§3.5），看到的是该节点及其 peer 的会话。MVP 允许多个 client attach；V2 增加 Controller / Viewer 角色与 Take Control，避免两台设备同时向 CLI 输入。
 
 网络切换（WiFi → 5G）时 agent 不受影响：WebSocket 断开只关闭 PTY attachment，运行时中的 agent 继续；恢复后 new WebSocket → new PTY → attach。
 
@@ -492,7 +492,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 
 ### 7.3 Backend API（原则）
 
-- **每个节点同一套 API，两种调用方**：浏览器（人的登录 cookie；loopback 免登录）与 peer 节点（`Authorization: Bearer <机器 token>`，§8）。没有 peer 专用端点。
+- **每个节点同一套 API，两种调用方**：浏览器（已配对设备的 session cookie，loopback 也不例外）与 peer 节点（`Authorization: Bearer <机器 token>`，只在 TLS 监听器上被接受，§8）。没有 peer 专用端点。
 - **会话 id 一律 `<node>:<id>`**；本机会话与并入的 peer 会话同列，每条带 `node`；对 peer 会话的写操作与终端流由本节点经一跳转发（§3.5）。
 - **respond 有两种语义**：结构化决定（权限 / 选择——经挂起的 hook 返回，有 hook 的 agent 走这条）与原始文本（经 PTY——自由问答、下一条指令、无 hook 的 agent）。
 - **DELETE metadata 与 kill process 是两个端点、两个语义**；不能因为删除 metadata 而误杀运行时会话。
@@ -515,21 +515,21 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 
 该应用本质上拥有 **Remote Shell Access**，安全等级等价于 SSH。
 
-- 默认 `listen = 127.0.0.1:7680`；**禁止默认 `0.0.0.0` 并暴露至公网**。要让另一台设备访问，必须显式配置监听地址并启用认证。
-- **非 loopback 监听而未配置认证 → 拒绝启动**："认证"指任一 principal 的凭据已配置（TOTP 或机器 token）。"改了 listen 忘了配凭据"不能是一个可运行的状态（理由见 ADR-003）。此项有守卫测试。
-- **TLS 是 agora 的事，不是部署的事**：PWA、service worker、Web Push 只在安全上下文工作。V1 只需 peer 链路的自签证书 + 指纹钉住（§3.5）；被浏览器直接打开的非 loopback 节点（手机阶段）必须能以浏览器可信的 HTTPS 提供服务，至少一条路径自动化——三条候选与默认选择在 ADR-003。
+- 两个监听器（ADR-003 D5）：`listen` 明文、**只允许 loopback 地址**（默认 `127.0.0.1:7680`，配置校验拒绝其它）；`tls_listen` 非 loopback、**永远 TLS**，默认关，被 peer 或手机访问时才开。**禁止默认 `0.0.0.0` 并暴露至公网**。
+- **没有任何路由能在无 principal 时被服务**（ADR-003 D1，有守卫测试）。因此开了 `tls_listen` 而没有任何机器 token 与已配对设备只是"没人能连进来"，agora 给启动警告而不是拒绝启动。
+- **TLS 是 agora 的事，不是部署的事**：PWA、service worker、Web Push 只在安全上下文工作。V1 只需 peer 链路的自签证书 + 指纹钉住（§3.5）；被浏览器直接打开的非 loopback 节点（手机阶段）必须能以浏览器可信的 HTTPS 提供服务，至少一条路径自动化——默认 `external`（证书文件从外部来，agora 负责到期前调续期命令与热加载；当前实例即 `tailscale cert`），`self-signed` 只给 peer 链路，`self-ca` 未实现、按需评估（ADR-003 D4）。**agora 永远自己终止 TLS**，不支持反向代理。
 - 所有命令不得通过 shell string interpolation 拼接未经验证的用户输入。
 
-### 人的凭据：TOTP【ADR-003】
+### 人的凭据：设备配对【ADR-003】
 
-- 只绑 loopback 时可不配置（loopback 即安全边界）；一旦要让**人**从非 loopback 访问，必须先完成 TOTP 注册。V1 没有这种访问（浏览器只开 loopback，zuan 只接受机器 token），TOTP 随手机阶段落地。**多用户主机上 loopback 不是安全边界**（§0.1）——loopback 也认证或改 0600 unix socket，由 ADR-003 定。
-- 注册后，**人的**请求（含 loopback 的浏览器与 WS 握手）必须携带登录 cookie；hook 投递不经 HTTP（§7.3）。
-- 算法参数、cookie 属性、登录限流阶梯、可信代理、响应头、WS 跨站防护：ADR-003。原则一句：**一旦不只绑 loopback，认证就是唯一控制点，登录限流的强度直接等于整个系统的强度。**
+- **loopback 不是安全边界**（§0.1 多用户主机）：本机浏览器也要认证，代码里没有 loopback 例外。人的凭据只有一种：**配对**——一次性链接（256 位、单次、5 分钟）换取按设备的 session（距最近使用 30 天滑动、距配对 365 天上限、可按设备吊销）。本机 `agora open` 经 unix socket（0600 + 对端 uid 校验，即 OS 身份）铸造链接并打开浏览器；远端 `agora pair` 打印 QR，或在已认证的 Dashboard 里"配对新设备"（V2-1）。
+- 没有 TOTP、没有登录限流、没有可信代理：可猜的凭据不存在，为它付的账也不存在（ADR-003 备选项）。代价：所有已配对设备都失效时只能回节点本机或 ssh 上 `agora pair`。
+- **人的**请求（含 loopback 的浏览器与 WS 握手）必须携带 session cookie；hook 投递不经 HTTP（§7.3）。cookie 属性、响应头、WS 与 CSRF 的同源校验：ADR-003 D2 / D7。
 
 ### 多节点信任边界
 
-- **两种 principal**：人用 TOTP 登录；节点作为 peer 客户端用**机器 token**——在被访问的节点上按 peer 单独签发、可吊销、只存哈希——并**钉住对方证书指纹**。peer 之间不依赖浏览器信任链，自签证书即可。
-- **peer 访问默认关闭**：没有签发过机器 token 的节点不接受任何 Bearer 调用；签发 token 时该节点必须已在非 loopback 监听且已配置 TLS，否则拒绝（与"非 loopback 无认证拒绝启动"同一条守卫，有测试）。
+- **两种 principal**：人用已配对设备的 session；节点作为 peer 客户端用**机器 token**——在被访问的节点上按 peer 单独签发、可吊销、只存哈希——并**钉住对方证书指纹**。peer 之间不依赖浏览器信任链，自签证书即可。
+- **peer 访问默认关闭**：没有签发过机器 token 的节点不接受任何 Bearer 调用；**Bearer 只在 TLS 监听器上被接受**，明文监听器一律拒绝（有守卫测试）。签发没有前置条件——token 在节点对外监听之前签出来用不了，也就没有危害（ADR-003 D3）。
 - 网络可达（局域网 / tailnet / 公网）≠ 授权（不变量 11）。
 - **危险操作的确认逻辑在会话所在节点执行**：转发节点只转发请求，不代替判断，也不能绕过。
 - 持有方的 `token_file` 是明文：`0600`、不进 git、不进日志。签发与轮换、被攻破的代价与止损：ADR-003。
@@ -549,6 +549,7 @@ Close Browser Tab 只代表 detach UI，绝不代表 kill process。
 - 每个节点一份；`node.id` 是全局会话 id 的前缀（安装时生成，改名需迁移）；`peers` 默认空——多节点是显式配置出来的状态（§3.5）。
 - 项目列表不靠手写：`project_roots` 扫描 git 仓库并按最近使用排序；`worktree_root` 是新建 worktree 的存放约定，默认 `../<repo>-wt/<name>`（§6.4）。
 - 机器 token 由被访问的节点签发，本节点只存哈希；持有方存明文 `token_file`（§8）。浏览器只记住最近打开的节点地址（不变量 6）。
+- 一切本机状态在 `AGORA_HOME`（默认 `~/.agora`，0700）：配置、SQLite、unix socket、TLS 材料、hook 投递箱、tmux 配置（ADR-003 D6）。
 
 ### 9.2 存储
 
@@ -581,7 +582,7 @@ YAML 与 schema 见 `docs/spec/config.md`。
 
 ### 10.3 Health Check
 
-`GET /api/health` 报告：runtime / database 可用性、TLS 模式、推送端点可达性、每个 peer 的在线状态与 last_seen（JSON 见 `docs/spec/api.md`）。Header 对本机与每个 peer 显示状态（在线 / 异常原因 / 上次见到）；推送端点不可达时显示原因。
+`GET /api/health` 未认证只返回 `{ "status": "ok" }`（ADR-003 D1）；已认证时报告：runtime / database 可用性、TLS 模式、推送端点可达性、每个 peer 的在线状态与 last_seen（JSON 见 `docs/spec/api.md`）。Header 对本机与每个 peer 显示状态（在线 / 异常原因 / 上次见到）；推送端点不可达时显示原因。
 
 ---
 
@@ -605,7 +606,7 @@ RBAC                         Teams                        Cloud service
 
 **Windows 节点**：在范围边界内（§0.1），V1 延期；ADR-001 的运行时抽象必须为它留位，安装脚本与 PTY 层的 Windows 实现在此兑现。它实质上是**第二个运行时实现**；容器 / 云沙箱 / SDK 运行时同归此处。
 
-**手机客户端（iOS / Android，V2 首批）**：PWA 安装、Web Push（推送端点不可达时降级 + health 显示，§6.6）、TOTP 人机认证、承载 PWA 的节点的浏览器可信证书（§8）、窄屏布局（§6.9）。验收（编号全局唯一，自 §12 移入）：
+**手机客户端（iOS / Android，V2 首批）**：PWA 安装、Web Push（推送端点不可达时降级 + health 显示，§6.6）、远端设备配对（`agora pair` QR、设备列表与吊销）、承载 PWA 的节点的浏览器可信证书（§8）、窄屏布局（§6.9）。验收（编号全局唯一，自 §12 移入）：
 
 - [ ] **A13** 可以从 Mac detach，在手机上 reconnect（反之亦然）
 - [ ] **A19** iPhone PWA 收到推送；Android 在节点可达 FCM 时收到推送、不可达时 health 显示原因
@@ -650,10 +651,10 @@ MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终�
 - [ ] **A27** zuan 上一条命令装好节点并为 Mac 签发机器 token；Mac 配 zuan 为 peer 后，打开 `127.0.0.1` 看到两台节点的会话并标明节点；Mac 自身仍只听 loopback
 - [ ] **A29** peer 离线时其会话显示 stale（含上次见到时间）而非消失，本机会话不受影响；恢复后自动重连
 - [ ] **A30** 每个节点独立认证；一台能连通节点但未授权的设备、一个未持有机器 token 的节点，都被拒绝
-- [ ] **A31** 未签发机器 token 的节点拒绝一切 Bearer 调用；签发 token 的前置条件不满足时拒绝签发，且有守卫测试
+- [ ] **A31** 未签发机器 token 的节点拒绝一切 Bearer 调用；Bearer 只在 TLS 监听器上被接受，且有守卫测试
 - [ ] **A32** Restart 用 agent 自报的对话 id resume，不用 `--continue`；在 pane 里 `/clear` 后 Restart 恢复的是新对话
 - [ ] **A33** 浏览器或 peer 客户端遇到 API 版本不一致时提示或降级，不静默错读
-- [ ] **A34** 节点在非 loopback 监听且未配置认证时拒绝启动，且有守卫测试
+- [ ] **A34** 明文监听器拒绝绑定非 loopback 地址、TLS 监听器永不降级明文；没有任何路由能在无 principal 时被服务；均有守卫测试
 - [ ] **A36** 不变量 1–5、7、8、10、11 各有 fake-agent 集成测试；逐条关掉守卫，对应测试变红
 - [ ] **A38** Mac 打开 `127.0.0.1`，经 peer 一跳回答 zuan 上的 WAITING、attach 到 zuan 上的会话终端并交互
 - [ ] **A39** 一条命令升级节点，升级期间 agent 不死、会话与 metadata 完整——不变量 3 与规则 10 最真实的测试

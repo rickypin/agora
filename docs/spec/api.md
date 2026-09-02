@@ -1,6 +1,6 @@
 # API 与 WebSocket
 
-原则在 MISSION §7.3；本文是端点与消息形态，ADR-002 / ADR-003 定稿后重写。
+原则在 MISSION §7.3；本文是端点与消息形态，hook 投递按 ADR-002、认证按 ADR-003 定稿。
 
 ## REST
 
@@ -15,8 +15,21 @@ POST   /api/sessions/:id/kill
 DELETE /api/sessions/:id
 GET    /api/nodes                  # 本机 + 已配置 peer 的状态：online / last_seen
 GET    /api/system                 # 含 api_version
-GET    /api/health
+GET    /api/health                 # 未认证只返回 { "status": "ok" }
+POST   /api/auth/pair              # { token } → Set-Cookie agora_session；唯一的未认证写端点
+POST   /api/auth/pair/new          # 已认证：铸造一条配对链接（Dashboard "配对新设备"，V2-1）
+POST   /api/auth/logout            # 删当前设备的 session
+GET    /api/auth/devices           # 已配对设备列表（V2-1）
+DELETE /api/auth/devices/:id       # 吊销一台设备（V2-1）
 ```
+
+## 认证（ADR-003）
+
+- 每个请求先解析出一个 principal：`Human { device }`（cookie `agora_session`）或 `Peer { name }`（`Authorization: Bearer apt_<name>_…`）；两者互斥，Bearer 优先解析。未认证白名单只有 SPA 静态资源、`GET /api/health` 的公开子集、`POST /api/auth/pair`；其余一律 401 `unauthenticated`。**没有 loopback 例外**。
+- 配对链接 `<origin>/#pair=<token>` 由 `agora open` / `agora url` / `agora pair`（经 unix socket）或已认证的 `POST /api/auth/pair/new` 铸造；256 位、单次、5 分钟。前端读 fragment 后 `POST /api/auth/pair`，再清掉 fragment。
+- Bearer 只在 TLS 监听器上被接受，明文监听器回 401 `bearer_requires_tls`。
+- cookie 认证的非 GET 请求必须带同源 `Origin`（或 `Sec-Fetch-Site: same-origin`）；WS 升级校验 `Origin` 与 `Host` 同源；Bearer 跳过。
+- Kill / Restart 带 `confirmed`；所属节点判断需要确认而未确认 → 错误类型 `NeedsConfirmation`；转发节点原样转发 `confirmed`。
 
 会话 id 一律 `<node>:<id>`；`GET /api/sessions` 同列本机与 peer 会话，每条带 `node` 字段，对 peer 会话的写操作与终端流经一跳转发（原则与调用方、API 版本、DELETE ≠ kill 见 MISSION §7.3）。
 
@@ -46,10 +59,12 @@ MVP 用 JSON / Text WebSocket 足够；binary terminal frames 放到 V2。
 
 ## hook 投递（ADR-002 D3）
 
-- **没有 HTTP 端点**。agent 的 hook 命令是 `agora hook --host <agent>`：payload 落到 `<state_dir>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`（先 `.part` 再 rename），再经 `<state_dir>/agora.sock`（unix socket，0600）唤醒 daemon；daemon 不在时文件留着，启动时按文件名顺序重放（MISSION §3.4）。
+- **没有 HTTP 端点**。agent 的 hook 命令是 `agora hook --host <agent>`：payload 落到 `<AGORA_HOME>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`（先 `.part` 再 rename），再经 `<AGORA_HOME>/agora.sock`（unix socket，0600 + 对端 uid 校验，ADR-003 D6）唤醒 daemon；daemon 不在时文件留着，启动时按文件名顺序重放（MISSION §3.4）。
 - 需要答复的事件（Claude Code `PermissionRequest`）由 hook 进程在 socket 上挂起等 daemon 回 allow / deny / none；none、超时、socket 断都是 fail-open（exit 0 不输出，TUI 的提示仍在）。挂起上限每会话 8、节点 256，超时 55 min。
 - `/api/events` 新增 `decision.resolved`（挂起被终端答复、进程退出或超时解除）。
 ## Health（MISSION §10.3）
+
+未认证只返回 `{ "status": "ok" }`；下面的完整形态需要 principal。
 
 ```
 GET /api/health
