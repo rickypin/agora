@@ -14,5 +14,6 @@
 | [ADR-001](ADR-001-runtime.md) | 持久化运行时选择 | Proposed（待写） | `agora-90t.2` |
 | [ADR-002](ADR-002-state-source-layering.md) | Agent 状态来源分层 | Proposed（待写） | `agora-90t.3` |
 | [ADR-003](ADR-003-node-authentication.md) | 节点认证模型 | Proposed（待写） | `agora-90t.4` |
+| [ADR-004](ADR-004-node-topology.md) | 节点拓扑：互为 peer、一跳转发 | Accepted | —（实现验收在 M2 `agora-7ku`） |
 
 模板：[TEMPLATE.md](TEMPLATE.md)

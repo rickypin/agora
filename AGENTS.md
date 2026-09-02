@@ -5,8 +5,8 @@
 ## agora 项目约定
 
 - 开工先读 `MISSION.md`（北极星、层次定位、施工规则）；设计决策先对照 `docs/analysis/devcenter/README.md` §2.5 与 §6。
-- 规划分层：`MISSION.md` 与 `docs/adr/` 是 markdown 真相源；路线图与任务在 beads（阶段 = epic，阶段门 = blocks，验收 = `--acceptance`）；`ROADMAP.md` 是由 `scripts/roadmap-view.sh` 生成的视图，不手改、不放 checkbox。
-- 任务纪律（与 MISSION §6 一致，冲突时以 MISSION 为准）：`bd update <id> --claim` 后才动手；commit subject 末尾带 `(agora-xxxx)`；干活中发现的问题 `bd create ... --deps discovered-from:<id>` 另立；不自动关闭需人验证的任务。
+- 规划分层的地图见 MISSION 文首"文档分层"（唯一出处）。操作规则：`ROADMAP.md` 由 `scripts/roadmap-view.sh` 生成，不手改、不放 checkbox；`docs/spec/` 随代码改，与代码冲突时以代码为准并回写 spec；beads 里阶段 = epic、阶段门 = blocks、验收 = `--acceptance`。
+- 任务纪律（本文件是唯一出处；"一个 issue 做完"的定义见 MISSION §1.5）：`bd update <id> --claim` 后才动手；commit subject 末尾带 `(agora-xxxx)`；干活中发现的问题 `bd create ... --deps discovered-from:<id>` 另立；不自动关闭需人验证的任务；commit message 用叙事句说"为什么"而不只是"改了什么"；非显然的决定（绕坑、反直觉写法）在注释里带实测日期与反例，防后来者好心改回去。
 - 同步授权：本仓库**明确授权** agent 在会话结束时执行 `bd dolt push`（仅同步 beads 数据，覆盖下方 Beads 块的 Conservative 默认）；`git commit` / `git push` 仍需用户当次明确授权。
 - ADR 约定见 `docs/adr/README.md`，模板 `docs/adr/TEMPLATE.md`；被否决的 ADR 保留全文。
 - 依赖方向：`bd dep add <被阻塞> <阻塞者>`；`bd create --deps blocks:X` 表示"新 issue 阻塞 X"，要表达"被 X 阻塞"请建完后用 `bd dep add`。
