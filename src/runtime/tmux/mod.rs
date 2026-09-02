@@ -16,8 +16,10 @@ use super::{
 };
 
 const KIND: &str = "tmux";
-/// 字段分隔符：`\x1f`，pane_title 里不会出现。
-const SEP: char = '\u{1f}';
+/// 字段分隔符。必须是可打印字符：tmux 3.2a 会把格式输出里的控制字符（`\x1f`、`\t`）
+/// 替换成 `_`，整行就切不开了（ubuntu-22.04 CI 实测 2026-09-03；3.7c 不替换，所以本机没发现）。
+/// 自由文本字段（cwd、title）放在最后用 `splitn` 切，title 里出现它也无妨。
+const SEP: &str = "|#|";
 /// `new-session -e` / `window-size latest` / `respawn-pane -e` / `pane_dead_signal` 的下限。
 pub const MIN_VERSION: (u32, u32) = (3, 2);
 
@@ -207,13 +209,13 @@ impl TmuxRuntime {
             "#{pane_dead_status}",
             "#{pane_dead_signal}",
             "#{pane_dead_time}",
-            "#{pane_title}",
-            "#{pane_current_path}",
             "#{session_attached}",
             "#{pane_width}",
             "#{pane_height}",
+            "#{pane_current_path}",
+            "#{pane_title}",
         ]
-        .join(&SEP.to_string());
+        .join(SEP);
         let out = self.run(Some(socket), &["list-panes", "-a", "-F", &format])?;
         if !out.status.success() {
             if !self.server_running(socket) {
@@ -489,13 +491,16 @@ pub fn parse_version(text: &str) -> Option<(u32, u32)> {
 }
 
 fn parse_pane_line(line: &str, socket: &str, managed: bool) -> Option<RuntimeSession> {
-    let f: Vec<&str> = line.split(SEP).collect();
+    // 11 段：最后一段 title 吞掉剩余全部，分隔符出现在 title 里也不会错位。
+    let f: Vec<&str> = line.splitn(11, SEP).collect();
     if f.len() < 11 {
         return None;
     }
     let name = f[0];
     let pid = f[1].parse::<u32>().ok();
     let dead = f[2] == "1";
+    // pane_dead=1 到退出状态被 tmux 收集之间有窗口（3.4 实测），此时 exit 为 None：
+    // "已死、退出码未到"是数据，交给上层等下一 tick。
     let exit = if dead {
         match (f[3].parse::<i32>().ok(), f[4]) {
             (_, sig) if !sig.is_empty() && sig != "0" => Some(Exit::Signal(sig.to_owned())),
@@ -517,13 +522,13 @@ fn parse_pane_line(line: &str, socket: &str, managed: bool) -> Option<RuntimeSes
         alive: !dead,
         exit,
         exited_at,
-        title: f[6].to_owned(),
-        cwd: PathBuf::from(f[7]),
-        attached: f[8] != "0",
+        attached: f[6] != "0",
         size: Size {
-            cols: f[9].parse().unwrap_or(0),
-            rows: f[10].parse().unwrap_or(0),
+            cols: f[7].parse().unwrap_or(0),
+            rows: f[8].parse().unwrap_or(0),
         },
+        cwd: PathBuf::from(f[9]),
+        title: f[10].to_owned(),
         managed,
     })
 }
@@ -561,13 +566,13 @@ mod unit {
             "7",
             "",
             "1700000000",
-            "t",
-            "/x",
             "0",
             "160",
             "48",
+            "/x",
+            "t",
         ]
-        .join(&SEP.to_string());
+        .join(SEP);
         let s = parse_pane_line(&line, "agora", true).unwrap();
         assert!(!s.alive);
         assert_eq!(s.exit, Some(Exit::Code(7)));
@@ -576,12 +581,15 @@ mod unit {
 
     #[test]
     fn pane_line_dead_by_signal() {
-        let line =
-            ["s", "1", "1", "0", "TERM", "0", "", "/", "1", "80", "24"].join(&SEP.to_string());
+        let line = [
+            "s", "1", "1", "0", "TERM", "0", "1", "80", "24", "/", "a|#|b",
+        ]
+        .join(SEP);
         let s = parse_pane_line(&line, "default", false).unwrap();
         assert_eq!(s.exit, Some(Exit::Signal("TERM".into())));
         assert!(s.attached);
         assert!(!s.managed);
+        assert_eq!(s.title, "a|#|b");
     }
 
     fn rt() -> TmuxRuntime {

@@ -104,7 +104,8 @@ fn quick_exit_keeps_exit_code() {
     // A11/A12 的发现层：秒退 exit 7 的会话保住退出码（一次调用含 remain-on-exit）。
     let f = Fixture::new();
     let r = f.rt.create(&f.spec("ag-quick", "exit 7")).unwrap();
-    f.wait_until(&r, |s| !s.alive);
+    // pane_dead 先于退出码被收集（3.4 实测），所以等的是 exit 而不是 alive。
+    f.wait_until(&r, |s| s.exit.is_some());
     let s = f.rt.inspect(&r).unwrap();
     assert_eq!(s.exit, Some(Exit::Code(7)));
     assert!(s.managed);
@@ -162,6 +163,7 @@ fn terminate_leaves_no_orphans() {
     f.wait_until(&r, |s| s.alive);
     let pid = f.rt.inspect(&r).unwrap().pid.unwrap();
     f.rt.terminate(&r, Duration::from_secs(2)).unwrap();
+    f.wait_until(&r, |s| s.exit.is_some());
     let s = f.rt.inspect(&r).unwrap();
     assert!(!s.alive);
     assert!(matches!(s.exit, Some(Exit::Signal(_))), "{:?}", s.exit);
