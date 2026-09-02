@@ -12,11 +12,11 @@
 | `docs/adr/` | 架构决策记录（"为什么"）；约定与索引见 `docs/adr/README.md` |
 | `docs/spec/` | 实现形状：端点、配置、schema、线框、实测清单；随代码改 |
 | `.beads/` | 路线图（epic）与任务；`bd ready` 看现在能做什么 |
-| `ROADMAP.md` | 由 `scripts/roadmap-view.sh` 从 beads 生成的阶段视图，不手改 |
+| `ROADMAP.md` | 由 `scripts/roadmap-view.sh` 从 beads 生成的阶段视图（阶段门、验收要点、各 epic 的演示剧本），不手改 |
 | `AGENTS.md` | Claude Code / Codex 共用的 agent 指令与任务纪律；`CLAUDE.md` 是它的符号链接 |
 | `docs/analysis/devcenter/` | 同类项目 devcenter 的深度评审与借鉴范围判断（参考） |
 | `docs/analysis/beads/` | 采用 beads 作为开发方法的评估：可行性、替代品横评、落地形态（参考） |
 
 ## 开发方法
 
-任务跟踪用 [beads](https://github.com/gastownhall/beads)（`brew install beads`）。新克隆：`bd bootstrap`；日常：`bd ready` → `bd update <id> --claim` → 干活 → `bd close <id> --reason="..."` → `bd dolt push`。规则见 `AGENTS.md`。
+任务跟踪用 [beads](https://github.com/gastownhall/beads)（`brew install beads`）。新克隆：`bd bootstrap`；日常：`bd ready` → `bd update <id> --claim` → 干活 → 验收完全机械的任务 `bd close <id> --reason="..."`（含人眼条款的由人按演示剧本关）→ `bd dolt push`。规则见 `AGENTS.md`，"做完"的定义见 `MISSION.md` §1.5。

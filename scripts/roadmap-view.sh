@@ -23,21 +23,26 @@ def blockers(eid):
         return [l.split(":")[0].strip() for l in out.splitlines() if "via blocks" in l]
 epics.sort(key=lambda e: e["title"])
 rows = []
+scripts = []
 for e in epics:
     title = e["title"]; phase, _, goal = title.partition(":")
     gate = ", ".join(f"`{b}`" for b in blockers(e["id"]) if b) or "—"
     acc = (e.get("acceptance_criteria") or "—").replace("\n", " ")
     rows.append(f"| {phase.strip()} | `{e['id']}` | {goal.strip() or title} | {gate} | {acc} | {e['status']} {progress.get(e['id'], '')} |")
+    if (e.get("design") or "").strip():
+        scripts.append(f"### {phase.strip()} `{e['id']}`\n\n{e['design'].strip()}\n")
 today = datetime.date.today().isoformat()
 doc = f"""# agora — ROADMAP（视图）
 
-> **由 `scripts/roadmap-view.sh` 生成，不要手改。** 真相源是 beads：阶段 = epic，阶段门 = epic 之间的 `blocks` 依赖，验收标准 = epic 的 `--acceptance`。
+> **由 `scripts/roadmap-view.sh` 生成，不要手改。** 真相源是 beads：阶段 = epic，阶段门 = epic 之间的 `blocks` 依赖，验收标准 = epic 的 `--acceptance`，演示剧本 = epic 的 `--design`（下方"演示剧本"一节）。
 > 本文件不放任务 checkbox（避免 devcenter 式双轨，见 `docs/analysis/beads/README.md` §6.3 / §8.2）。任务级细节：`bd ready`、`bd dep tree <epic>`。
 > 生成时间：{today}
 
 | 阶段 | epic | 目标 | 阶段门（被谁阻塞） | 验收要点 | 状态 / 进度 |
 |---|---|---|---|---|---|
 """ + "\n".join(rows) + "\n"
+if scripts:
+    doc += "\n## 演示剧本（epic 的 design 字段；人按此关闭 epic，MISSION §1.5）\n\n" + "\n".join(scripts)
 open("ROADMAP.md", "w", encoding="utf-8").write(doc)
 print(f"ROADMAP.md regenerated: {len(rows)} epic(s)")
 PY

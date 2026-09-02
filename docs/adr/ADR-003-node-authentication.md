@@ -114,7 +114,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 - MISSION v0.8 的"非 loopback 监听且未配置认证 → 拒绝启动"**降为启动警告**："TLS 监听器已开但没有任何机器 token 与已配对设备，没有人能连进来；`agora peer token create <name>` 或 `agora pair`"。理由是事实 5：devcenter 需要拒绝启动，是因为它未注册 OTP 时中间件直通；agora 的 D1 没有直通，零凭据状态下监听在公网上什么也做不了。
 - `public_url`：远端配对链接与 QR 用的对外地址（例 `https://zuan.tail6f613.ts.net:7681`），不自动猜。
 
-### D6 本机通道与目录：`AGORA_HOME = ~/.agora` 0700，socket 0600 + 对端 uid 校验（事实 2）
+### D6 本机通道与目录：`AGORA_HOME = ~/.agora` 0700，socket 仅属主可访问 + 对端 uid 校验（事实 2）
 
 - `AGORA_HOME` 默认 `~/.agora`（与 `~/.claude` / `~/.codex` / `~/.grok` 同一习惯，两平台一致，路径短、无空格——unix socket 路径上限 104 字节），环境变量可改。内含 `config.yaml`、`agora.db`、`agora.sock`、`tls/`、`hooks/{inbox,done}/`、`tmux.conf`、`bin/agora`（指向当前二进制的稳定路径，安装与升级维护；hook 命令与 Codex 的内容哈希信任依赖它，ADR-002 D4）。ADR-001 / ADR-002 写的 `<state_dir>` 即此目录。
 - 权限：目录 0700、文件 0600；启动**自检**：目录不属于当前 uid、或 group / other 有任何位 → 拒绝启动并打印 `chmod` 命令（与 ssh 对 `~/.ssh` 相同）。

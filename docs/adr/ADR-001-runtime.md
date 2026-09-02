@@ -151,7 +151,7 @@ Terminal Gateway 的一端是 daemon 自己 open 的 PTY，里面跑 `tmux attac
 
 选 Rust 的理由：参考实现同栈——devcenter 的 tmux 封装、gateway 的 VEOF 与 `Utf8Stream`、隔离 socket 测试都是实测过的坑，可以逐条对照（借鉴设计不复制代码，报告 §6.5）；本机与用户仓库已有 Rust 工具链（cargo 1.90，5 个 Rust 仓库；本机无 Go）；portable-pty 同时覆盖 unix PTY 与 Windows ConPTY，是 D9 第二运行时现成的地基；devcenter 实测 idle 9 MB。
 
-否决 Go 的理由**不是能力**（stdlib 的 TLS / autocert / embed / `exec` 超时更顺手，交叉编译更省事），而是：参考实现要整体重译、本机零工具链、Windows PTY 生态弱于 portable-pty。判据：如果 M1a 里出现第二种并发模型（例如为了子进程或 PTY 绕开 tokio），说明 async 成本失控，**在 M1a 结束前**重议；之后是重写，不再讨论。
+否决 Go 的理由**不是能力**（stdlib 的 TLS / autocert / embed / `exec` 超时更顺手，交叉编译更省事），而是：参考实现要整体重译、本机零工具链、Windows PTY 生态弱于 portable-pty。判据：如果 M1a 里出现第二种并发模型（例如为了子进程或 PTY 绕开 tokio），说明 async 成本失控，**在 M1a 结束前**重议；之后是重写，不再讨论。评估点钉在 Terminal Gateway 打通时（`agora-xqa.10` 的验收条款：是否出现第二种并发模型、PTY blocking 线程与 tokio 的边界是否干净，结论写该 issue 注记；2026-09-03）——那是 M1a 里 PTY 与 async 第一次正面相遇的地方。
 
 为避开 devcenter 在 Rust 上踩的坑，施工约束四条：只有一种并发模型（tokio）；子进程只经 `runtime::exec` 一个入口（超时 + blocking + stderr 有界）；PTY 读写在 blocking 线程 + 有界 channel；模块边界用错误枚举，不用 `anyhow`，锁不 `expect("poisoned")`。
 
@@ -173,6 +173,7 @@ Terminal Gateway 的一端是 daemon 自己 open 的 PTY，里面跑 `tmux attac
 - **tmux 泄漏到 `runtime/` 之外**（session 模型或 API 里出现 socket 名、`tmux` 字面量、pane 概念）→ 第二运行时无处安放。守卫：源码边界检查，`tmux` 标识符只允许出现在 `runtime/tmux/`、`scripts/`、测试 → `tests/arch_boundary.rs`。
 - **有人调 `kill-server`，或对默认 socket 写选项** → 用户全部会话陪葬 / 用户 tmux 行为被改。守卫：`TmuxRuntime` 没有这两个方法；`managed=false` 的 ref 上 `create` / `respawn` / `remove` / 任何 `set-option` 都返回错误；测试用命令录制器断言默认 socket 只收到 list / attach / capture → `tests/runtime_tmux.rs::foreign_socket_is_read_only`；源码扫描 `kill-server` 为零 → `tests/arch_boundary.rs`。
 - **子进程无超时或 stderr 未排空** → 一个 hang 住的 tmux 拖住所有会话（不变量 5）、daemon 死锁。守卫：唯一入口 `runtime::exec`；测试用会挂起的假 `tmux` 与狂写 stderr 的假 `tmux` → `tests/runtime_exec.rs::hung_child_times_out_in_5s`、`::stderr_flood_does_not_deadlock`。
+- **list 退化为每会话一次子进程** → 50 会话时每 tick 上百个 tmux 进程（§10.1；devcenter 每 tick 每会话两个进程的反例）。守卫：`list()` 每 tick 每 socket 恰好一次 `list-panes -a`；测试用命令录制器断言调用数不随会话数增长 → `tests/runtime_tmux.rs::one_list_call_per_socket_per_tick`。
 - **经 shell 拼接调用 tmux** → 名字含空格 / `;` / `=` 时命令被改写。守卫：入口只收 argv；测试用含 `; =x:` 的会话名断言 tmux 收到字面量 → `tests/runtime_exec.rs::argv_is_never_shell_interpolated`。
 - **`remove` 杀到活着的进程** → "清理"变成没有确认的 Kill（规则 6）。守卫：`remove` 先 `inspect`，`alive` 即拒绝 → `tests/runtime_tmux.rs::remove_refuses_alive_pane`。
 - **SQLite 长出活性字段** → 不变量 7 失守，重启后库与运行时打架。守卫：schema 测试断言 `sessions` 表无 `status` / `alive` / `exit_code` 列，`list()` 每次 join 运行时 → `tests/schema.rs::no_liveness_columns`。

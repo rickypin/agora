@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.14（2026-09-02）；变更历史见 beads `agora-90t.1` 注记 |
+| 版本 | v0.15（2026-09-03）；变更历史见 beads `agora-90t.1` 注记 |
 | 项目类型 | Self-hosted Web Application |
 | 目标平台 | 节点：macOS / Ubuntu Linux / Windows 主机（Windows V1 延期）；客户端：macOS 笔记本、iOS、Android 设备上的现代浏览器（V1 只验收 macOS 笔记本） |
 | 主要用户 | 单用户 |
@@ -110,8 +110,8 @@ MVP 的完成定义不是"可以在浏览器里打开终端"，而是：
 
 1. 已合入主干，CI 绿，commit 引用 issue id
 2. 若改变了决策，MISSION / ADR 已回写——过期的真相源不是真相源
-3. 能在所属 epic 的演示路径里跑给人看
-4. 由人关闭
+3. 能在所属 epic 的演示剧本里跑给人看（剧本在 epic 的 design 字段，ROADMAP 视图同步展示）
+4. 关闭分两种：验收**完全机械**的任务（CI 绿 + 验收里点名的守卫测试通过）由实施 agent 关闭，`bd close --reason` 写明证据（测试名、commit）；epic 与验收含人眼条款的 issue（如 A6、A16）由人按演示剧本关闭。人的注意力只花在只有人能验的地方（§0.2）
 
 ---
 
@@ -152,7 +152,7 @@ MVP 的完成定义不是"可以在浏览器里打开终端"，而是：
 |---|---|
 | 1 | 不要擅自替换持久化运行时架构（ADR-001 选定后锁死） |
 | 2 | 不要引入 §2.1 避免清单里的东西，除非存在经过 ADR 记录的必要原因 |
-| 3 | 每个 epic 完成后必须能独立运行（演示路径，§1.5） |
+| 3 | 每个 epic 完成后必须能独立运行（按 epic 的演示剧本，§1.5） |
 | 4 | 不能为了 mock 简化而破坏真实 PTY / 运行时集成 |
 | 5 | 任何 agent-specific behavior 必须通过 Adapter 实现 |
 | 6 | 所有 destructive action 必须是 explicit API / action |
@@ -624,7 +624,7 @@ RBAC                         Teams                        Cloud service
 
 ## 12. MVP Acceptance Criteria
 
-MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终端底座 → M1b Agent 感知 → M2 peer 与安装运维**；**M3 产出与起会话增强** 在 M1b 之后、与 M2 并行；手机是 V2 首批（§11）。阶段门用 blocks 表达，每个 epic 的 `--acceptance` **引用下列编号**而不复制文本。
+MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终端底座 → M1b Agent 感知 → M2 peer 与安装运维**；**M3 产出与起会话增强** 在 M1b 之后、与 M2 并行；手机是 V2 首批（§11）。阶段门用 blocks 表达，每个 epic 的 `--acceptance` **引用下列编号**而不复制文本；每个 epic 的演示剧本写在 design 字段（§1.5），在把该 epic 拆成任务时一并写好——拆分是前一阶段的收尾任务（M0 的 `agora-90t.5` 拆 M1a / M1b，M1b 收尾拆 M2 / M3）。
 
 - [ ] **A1** 可以通过浏览器查看所有运行时中的 agent session
 - [ ] **A2** 可以创建 Claude Code session
