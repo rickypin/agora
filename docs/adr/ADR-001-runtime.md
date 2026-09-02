@@ -144,7 +144,7 @@ Terminal Gateway 的一端是 daemon 自己 open 的 PTY，里面跑 `tmux attac
 
 - **pane 进程继承 tmux server 的环境，不是客户端的**（devcenter `which.rs` 结论，本机复现：launchd 式最小环境下 pane 的 PATH 是 `/usr/bin:/bin`，`claude` 不可见；`$SHELL -l -c` 也不够，本机 `~/.local/bin` 是 `.zshrc` 加的）。因此 daemon 启动时**探测一次用户 shell 的 PATH**：`$SHELL -l -i -c 'printf "\n__AGORA_PATH__%s\n" "$PATH"'`，stdin `/dev/null`、`TERM=xterm-256color`（`TERM=dumb` 会让 `.zshrc` 提前退出，实测）、5 s 超时、取哨兵行；成功则用它作为 daemon 自身与专用 tmux server 的 PATH，失败则退回 daemon 自己的 PATH 并在 health 里标明 `path_source`。**存储的命令保持可移植**（`claude`），不改写成绝对路径；机器相关的东西（PATH、resume 参数、hook 环境）每次启动现算（`agora-90t.2` 注记 ⑪）。
 - **locale**：daemon 环境缺 UTF-8 的 `LANG` / `LC_ALL` 时，create 与 respawn 注入 `-e LANG=C.UTF-8`（devcenter 的 CJK 乱码教训）；安装脚本同时在 launchd / systemd 单元里写 `LANG`（A26）。
-- **tmux ≥ 3.2**：`new-session -e`（3.2）、`window-size latest`（3.1）、`respawn-pane -e`（3.0）、`pane_dead_signal`。覆盖 Ubuntu 22.04（3.2a）、24.04（3.4，zuan 实机）、brew（3.7c）。daemon 启动时读 `tmux -V`（文档化接口）；低于下限或 server 协议不匹配（`brew upgrade tmux` 之后新 client 连不上旧 server）→ health 报 `runtime: degraded` 并给出原因，已有会话显示 UNKNOWN，**不杀 server、不退出 daemon**。安装脚本负责装 tmux；agora 的升级命令（A39）不碰 tmux。
+- **tmux ≥ 3.2**：`new-session -e`（3.2）、`window-size latest`（3.1）、`respawn-pane -e`（3.0）。`pane_dead_signal` / `pane_dead_time` 是 3.3 才有的（ubuntu-22.04 CI 的 3.2a 实测两者皆空，2026-09-03）：3.2a 上被信号杀死的 pane 报 `Exit::Signal("unknown")`，`exited_at` 取运行时首次观测到死亡的时刻；不因此抬高下限。覆盖 Ubuntu 22.04（3.2a）、24.04（3.4，zuan 实机）、brew（3.7c）。daemon 启动时读 `tmux -V`（文档化接口）；低于下限或 server 协议不匹配（`brew upgrade tmux` 之后新 client 连不上旧 server）→ health 报 `runtime: degraded` 并给出原因，已有会话显示 UNKNOWN，**不杀 server、不退出 daemon**。安装脚本负责装 tmux；agora 的升级命令（A39）不碰 tmux。
 
 ### D8 语言与技术栈
 

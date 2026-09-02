@@ -5,8 +5,9 @@
 //! - 没有"杀整个 server"的方法；remove 只碰 `pane_dead=1` 的会话。
 //! - terminate 不经 tmux：`kill(-pane_pid)` 整组杀（pgid == pane_pid，实测 2026-09-02）。
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::exec::{exec, ExecOptions, Output};
@@ -20,8 +21,11 @@ const KIND: &str = "tmux";
 /// 替换成 `_`，整行就切不开了（ubuntu-22.04 CI 实测 2026-09-03；3.7c 不替换，所以本机没发现）。
 /// 自由文本字段（cwd、title）放在最后用 `splitn` 切，title 里出现它也无妨。
 const SEP: &str = "|#|";
-/// `new-session -e` / `window-size latest` / `respawn-pane -e` / `pane_dead_signal` 的下限。
+/// `new-session -e`（3.2）/ `window-size latest`（3.1）/ `respawn-pane -e`（3.0）的下限。
 pub const MIN_VERSION: (u32, u32) = (3, 2);
+/// `pane_dead_signal` / `pane_dead_time` 从 3.3 起才有（ubuntu-22.04 的 3.2a 实测两者皆无，
+/// 2026-09-03）。低于它：信号退出报 `Signal("unknown")`，`exited_at` 取首次观测到死亡的时间。
+pub const DEAD_DETAIL_VERSION: (u32, u32) = (3, 3);
 
 #[derive(Debug, Clone)]
 pub struct TmuxConfig {
@@ -56,6 +60,9 @@ impl Default for TmuxConfig {
 pub struct TmuxRuntime {
     cfg: TmuxConfig,
     recorded: Mutex<Vec<Vec<String>>>,
+    version: OnceLock<Option<(u32, u32)>>,
+    /// 老 tmux 没有 pane_dead_time：记下每个会话第一次被看到已死的时刻，保持各 tick 稳定。
+    first_dead_seen: Mutex<HashMap<String, SystemTime>>,
 }
 
 /// 解析后的 ref；只在本模块存在。
@@ -81,6 +88,8 @@ impl TmuxRuntime {
         Ok(TmuxRuntime {
             cfg,
             recorded: Mutex::new(Vec::new()),
+            version: OnceLock::new(),
+            first_dead_seen: Mutex::new(HashMap::new()),
         })
     }
 
@@ -93,13 +102,27 @@ impl TmuxRuntime {
         std::mem::take(&mut *lock(&self.recorded))
     }
 
-    /// `tmux -V`（唯一解析的文档化输出）→ (major, minor)。
+    /// `tmux -V`（唯一解析的文档化输出）→ (major, minor)。结果缓存：版本在 daemon
+    /// 生命周期内不变，list 的解析分支也要用它而不能每 tick 多起一个进程。
     pub fn version(&self) -> Result<(u32, u32), RuntimeError> {
+        if let Some(v) = self.version.get() {
+            return v.ok_or_else(|| RuntimeError::VersionMismatch {
+                reason: "无法解析 `tmux -V` 输出".into(),
+            });
+        }
         let out = self.run(None, &["-V"])?;
         let text = String::from_utf8_lossy(&out.stdout);
-        parse_version(&text).ok_or_else(|| RuntimeError::VersionMismatch {
+        let parsed = parse_version(&text);
+        let _ = self.version.set(parsed);
+        parsed.ok_or_else(|| RuntimeError::VersionMismatch {
             reason: format!("无法解析 `tmux -V` 输出: {}", text.trim()),
         })
+    }
+
+    fn dead_detail_supported(&self) -> bool {
+        self.version()
+            .map(|v| v >= DEAD_DETAIL_VERSION)
+            .unwrap_or(false)
     }
 
     /// 低于 [`MIN_VERSION`] 报 VersionMismatch；health 的呈现归 agora-xqa.4。
@@ -231,17 +254,40 @@ impl TmuxRuntime {
         let managed = self.is_managed(socket);
         let text = String::from_utf8_lossy(&out.stdout);
         let mut sessions: Vec<RuntimeSession> = Vec::new();
+        let mut detail = None;
         for line in text.lines() {
-            let Some(s) = parse_pane_line(line, socket, managed) else {
+            let Some(mut s) = parse_pane_line(line, socket, managed) else {
                 continue;
             };
             // 一个会话可能有多个 pane（采纳的用户会话）：只取第一个。
             if sessions.iter().any(|x| x.name == s.name) {
                 continue;
             }
+            if !s.alive {
+                // 只在真有死 pane 时才问版本，避免无谓的子进程。
+                let detail = *detail.get_or_insert_with(|| self.dead_detail_supported());
+                self.fill_dead_fallbacks(&mut s, detail);
+            } else {
+                lock(&self.first_dead_seen).remove(&s.r#ref.0);
+            }
             sessions.push(s);
         }
         Ok(sessions)
+    }
+
+    /// 3.3 以前没有 pane_dead_signal / pane_dead_time：信号退出只能报 unknown，
+    /// 退出时刻用首次观测替代。3.3+ 上"死了但两字段皆空"是退出码尚未收集，保持 None。
+    fn fill_dead_fallbacks(&self, s: &mut RuntimeSession, detail_supported: bool) {
+        if s.exit.is_none() && !detail_supported {
+            s.exit = Some(Exit::Signal("unknown".into()));
+        }
+        if s.exited_at.is_none() {
+            let mut seen = lock(&self.first_dead_seen);
+            let t = *seen
+                .entry(s.r#ref.0.clone())
+                .or_insert_with(SystemTime::now);
+            s.exited_at = Some(t);
+        }
     }
 
     fn require_managed(&self, r: &RuntimeRef) -> Result<String, RuntimeError> {
@@ -424,6 +470,7 @@ impl Runtime for TmuxRuntime {
         }
         let target = format!("={session}:");
         self.run_ok(Some(&self.cfg.socket), &["kill-session", "-t", &target])?;
+        lock(&self.first_dead_seen).remove(&r.0);
         Ok(())
     }
 }
