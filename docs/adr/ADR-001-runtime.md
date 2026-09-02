@@ -117,7 +117,7 @@ set -g exit-unattached off        # 两条都是默认值，写出来是为了�
 | **Restart** | `respawn`；命令由 Adapter 按 `agent_session_id` 重算 resume 参数（§5.6） | 同一会话、同名、同 cwd，scrollback 保留；活着才需确认（§8） |
 | 清理 | `remove`（只对 dead pane） | 触发：用户在 Dashboard 确认 / Delete Metadata / Restart 复用。**V1 不做定时 GC**：看没看过只有人知道 |
 | Delete Metadata | 删行；会话活着 → 留在 socket 上变成"未注册"（可再采纳）；已死 → 顺手 `remove` | 两个端点、两个语义（§7.3） |
-| daemon 重启 | `list()` ⨝ SQLite | 已知 ref 活着 → 重建；已知 ref 已死 → 按 `exit` 报 FINISHED / FAILED；已知 ref 不在 → `ended_at` 补今天、状态 UNKNOWN（reason: runtime session missing），可 Delete 或 Restart（此时 Restart 退化为同名 `create`，无 scrollback）；未知 ref 在 agora socket → 未注册（多半是库丢了）；未知 ref 在默认 socket → external，可采纳 |
+| daemon 重启 | `list()` ⨝ SQLite | 已知 ref 活着 → 重建；已知 ref 已死 → 按 `exit` 报 FINISHED / FAILED；已知 ref 不在 → `ended_at` 补今天、状态 UNKNOWN（reason: runtime session missing），可 Delete 或 Restart（此时 Restart 退化为同名 `create`，无 scrollback）；未知 ref 在 agora socket → 未注册（多半是库丢了）；未知 ref 在默认 socket → 可采纳的未注册会话（采纳后 `origin = adopted`，§5.5） |
 
 **Kill 为什么不销毁会话**：MISSION 已经规定 FINISHED / FAILED 的会话"用户看过之后"才清理（§4.6）。Kill 只是让 agent 退出的另一种方式，让它走同一条清理路径有三个好处：scrollback 还在（杀掉失控 agent 后正好要看它干了什么）、Restart 仍是同一会话、Kill / Delete / 清理三个动词的边界不再互相踩。代价是 Kill 之后行不会自己消失，要人确认一次。MISSION §4.6 已据此回写（v0.11，2026-09-02）：Kill = "杀掉 agent 进程（显式确认）；运行时会话连同其输出保留，按清理策略回收"。
 
@@ -176,7 +176,7 @@ Terminal Gateway 的一端是 daemon 自己 open 的 PTY，里面跑 `tmux attac
 - **经 shell 拼接调用 tmux** → 名字含空格 / `;` / `=` 时命令被改写。守卫：入口只收 argv；测试用含 `; =x:` 的会话名断言 tmux 收到字面量 → `tests/runtime_exec.rs::argv_is_never_shell_interpolated`。
 - **`remove` 杀到活着的进程** → "清理"变成没有确认的 Kill（规则 6）。守卫：`remove` 先 `inspect`，`alive` 即拒绝 → `tests/runtime_tmux.rs::remove_refuses_alive_pane`。
 - **SQLite 长出活性字段** → 不变量 7 失守，重启后库与运行时打架。守卫：schema 测试断言 `sessions` 表无 `status` / `alive` / `exit_code` 列，`list()` 每次 join 运行时 → `tests/schema.rs::no_liveness_columns`。
-- **不变量 1–3 被某次重构悄悄破坏** → 守卫：真实 tmux、隔离 socket 上的 fake-agent 集成测试：杀 attach PTY、断 WS、销毁并重建节点对象，agent 仍活且退出码可读 → `tests/invariants.rs`（`agora-3la` 的验收）。
+- **不变量 1–3 被某次重构悄悄破坏** → 守卫：真实 tmux、隔离 socket 上的 fake-agent 集成测试：杀 attach PTY、断 WS、销毁并重建节点对象，agent 仍活且退出码可读 → `tests/invariants.rs`（`agora-xqa.13`，建立在 `agora-3la` 的骨架上）。
 - **`history-limit` 只在 create 后 set** → 3.7 以前的 tmux 上首 pane 拿到默认 2000 行。守卫：测试断言新建 pane 的 `#{history_limit}` 等于配置，CI 矩阵含 Ubuntu 22.04（3.2a）→ `tests/runtime_tmux.rs::history_limit_applies_to_first_pane`。
 - **PATH 探测失败被静默吞掉** → agent "命令不存在"却报成 agent 崩溃。守卫：`SHELL=/bin/false` 时 health 的 `runtime.path_source = daemon` 且带原因 → `tests/env_probe.rs`。
 - **attach 进程未死就释放 PTY** → `^D` 打进 pane 杀 agent。守卫：gateway 测试用一个忽略 SIGHUP 的假 attach，断言 PTY 泄漏而非写 `^D` → `tests/gateway.rs::never_writes_eof_to_live_attach`。

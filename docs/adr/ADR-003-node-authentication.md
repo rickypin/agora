@@ -105,7 +105,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 | `self-ca` | agora 自建根 CA、签发各节点证书、一条命令导出根证书装到手机 | **未实现**；只在 `external` 不可用（无域名、无 tailscale 的私网）时评估（`agora-thc.2`） |
 
 - **浏览器可信证书的默认路径是 `external`**。浏览器的信任库是外部约束：零安装的唯一办法是公共 CA 的证书，公共 CA 需要公共名字。当前实例的名字来自 tailnet，`tailscale cert <node>.tail6f613.ts.net` 一条命令给出 Let's Encrypt 证书（本机 `tailscale cert --help` 核对，2026-09-02），手机侧零安装；zuan 出网可达 Let's Encrypt（instance.md）。这是实例事实，不是架构偏好——换一个没有公共名字的部署，就是 `self-ca` 的评估结果说了算。
-- **agora 永远自己终止 TLS**：MISSION §8"TLS 是 agora 的事"指的是这一点；`external` 只是证书文件从哪来。**不支持反向代理**，因此没有 `trusted_proxies`、不采信任何转发头。
+- **agora 永远自己终止 TLS**：MISSION §8"TLS 是 agora 的事"指的是这一点；`external` 只是证书文件从哪来。**不支持 HTTP 终止型反向代理**（TCP 透传对 agora 不可见，无需支持），因此没有 `trusted_proxies`、不采信任何转发头。
 - **不内置 ACME**：任何 challenge 类型都是 `external` 的特例（lego / certbot 出文件再交给 `external`）。
 
 ### D5 监听模型：明文只在 loopback，非 loopback 永远 TLS；零凭据只警告（事实 4、5）
@@ -116,9 +116,9 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 
 ### D6 本机通道与目录：`AGORA_HOME = ~/.agora` 0700，socket 0600 + 对端 uid 校验（事实 2）
 
-- `AGORA_HOME` 默认 `~/.agora`（与 `~/.claude` / `~/.codex` / `~/.grok` 同一习惯，两平台一致，路径短、无空格——unix socket 路径上限 104 字节），环境变量可改。内含 `config.yaml`、`agora.db`、`agora.sock`、`tls/`、`hooks/{inbox,done}/`、`tmux.conf`。ADR-001 / ADR-002 写的 `<state_dir>` 即此目录。
+- `AGORA_HOME` 默认 `~/.agora`（与 `~/.claude` / `~/.codex` / `~/.grok` 同一习惯，两平台一致，路径短、无空格——unix socket 路径上限 104 字节），环境变量可改。内含 `config.yaml`、`agora.db`、`agora.sock`、`tls/`、`hooks/{inbox,done}/`、`tmux.conf`、`bin/agora`（指向当前二进制的稳定路径，安装与升级维护；hook 命令与 Codex 的内容哈希信任依赖它，ADR-002 D4）。ADR-001 / ADR-002 写的 `<state_dir>` 即此目录。
 - 权限：目录 0700、文件 0600；启动**自检**：目录不属于当前 uid、或 group / other 有任何位 → 拒绝启动并打印 `chmod` 命令（与 ssh 对 `~/.ssh` 相同）。
-- `agora.sock` 以 umask 077 创建；此外每个连接取对端凭据（tokio `UnixStream::peer_cred()`：Linux `SO_PEERCRED`、macOS `getpeereid`，两平台都在 tokio 1.53 的支持列表里，2026-09-02 本机核对），uid ≠ 自己 → 立即关闭。文件权限挡正常情况，peer_cred 挡权限被改错的情况。
+- `agora.sock` 以 umask 077 创建（仅属主可访问）；此外每个连接取对端凭据（tokio `UnixStream::peer_cred()`：Linux `SO_PEERCRED`、macOS `getpeereid`，两平台都在 tokio 1.53 的支持列表里，2026-09-02 本机核对），uid ≠ 自己 → 立即关闭。文件权限挡正常情况，peer_cred 挡权限被改错的情况。
 - socket 上跑的：hook 的唤醒 / 挂起（ADR-002 D3）、配对链接铸造（D2）、CLI 查询。改配置、签 token、吊销设备的 CLI 直接操作 `config.yaml` / SQLite，不需要 daemon 在跑。
 - 同一主机多个 OS 用户各跑各的实例：各自的 `AGORA_HOME`、socket、端口；端口被占报错退出，不自动换端口（否则 `agora open` 不知指向谁）。
 
@@ -150,7 +150,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 | 笔记本 / 手机被偷（带 session） | 从任何其它已配对设备或节点 CLI 吊销该设备 | 吊销前的窗口；滑动 30 天 |
 | 拿到 `token_file` | 吊销 + `--rotate` | 同上 |
 | 拿到 `AGORA_HOME` 备份 | 里面没有可远程使用的人的凭据（session 只存哈希）；`token_file` 是别的节点的 | peer token 明文在持有方 |
-| 所有已配对设备失效 | 节点本机或 ssh 上 `agora pair` | 无远程自助恢复——这是放弃 TOTP 付的唯一代价 |
+| 所有已配对设备失效 | 节点本机或 ssh 上 `agora pair` | 无远程自助恢复——这是放弃 TOTP 付的唯一代价；zuan 当前未开 sshd（instance.md），安装脚本须开 sshd 或接受只能物理登录（`agora-7ku.1`） |
 
 ## Non-Goals
 

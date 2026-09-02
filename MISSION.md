@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.13（2026-09-02）；变更历史见 beads `agora-90t.1` 注记 |
+| 版本 | v0.14（2026-09-02）；变更历史见 beads `agora-90t.1` 注记 |
 | 项目类型 | Self-hosted Web Application |
 | 目标平台 | 节点：macOS / Ubuntu Linux / Windows 主机（Windows V1 延期）；客户端：macOS 笔记本、iOS、Android 设备上的现代浏览器（V1 只验收 macOS 笔记本） |
 | 主要用户 | 单用户 |
@@ -66,7 +66,7 @@ agora 是一个 **Browser-native、极轻量、Persistent、Agent-aware 的远�
 launch → observe → switch → respond → resume
 ```
 
-**respond 必须可以不经终端完成**：终端是传输层，不是唯一交互层。权限与选择经 hook 返回决定（不注入键击——该敲 `y` 还是 `1` 是 agent 私有的 TUI 行为），自由问答与下一条指令经 PTY 送文本；在 Dashboard 上都是一次点触（§6.3、§7.3）。**respond 含看结果**：TURN_DONE / FINISHED 时先看产出（§6.3）再给下一条——这不是新动词，五个动作不扩。
+**respond 必须可以不经终端完成**：终端是传输层，不是唯一交互层。权限与选择经 hook 返回决定（不注入键击——该敲 `y` 还是 `1` 是 agent 私有的 TUI 行为；agent 的 hook 承载不了的决定，如 V1 的 AskUserQuestion 选项，Dashboard 只提供"打开终端"，ADR-002 D5），自由问答与下一条指令经 PTY 送文本；在 Dashboard 上都是一次点触（§6.3、§7.3）。**respond 含看结果**：TURN_DONE / FINISHED 时先看产出（§6.3）再给下一条——这不是新动词，五个动作不扩。
 
 ### 1.3 "管理"是哪一层
 
@@ -238,9 +238,11 @@ Session {
     worktree           # git worktree 路径；可空
     task_ref           # beads issue id 或首条 prompt 摘要；可空
     command
-    runtime_ref        # 运行时句柄【ADR-001】
+    runtime_ref        # 运行时句柄【ADR-001】；origin = external 时为空
     agent_session_id   # agent 自报的当前对话 id（§5.6）；Restart 的 resume 依据
-    adopted            # 是否为采纳的外部会话（§5.5）
+    epoch              # 进程代次：创建为 1，每次 Restart +1；旧代次的 hook 事件丢弃（ADR-002 D1）
+    transcript_path    # agent 自报的 transcript 路径；V1 只存不读（ADR-002 D8）
+    origin             # agora | adopted | external（§5.5）：agora 创建的 / 运行时里采纳的 / 只有 hook 看得见的
     created_at
     ended_at           # 进程退出时刻；等待时长与 attention 用
 }
@@ -256,12 +258,12 @@ Session {
 |---|---|---|
 | STARTING | | process created，尚无有效活动 |
 | RUNNING | ● | 持续产生 output |
-| WAITING | ⚠ | agent 在**一轮之中**停下来等人：提问、权限确认（hook：Notification / PreToolUse；兜底：文本匹配） |
+| WAITING | ⚠ | agent 在**一轮之中**停下来等人：提问、权限确认（hook：权限请求与提问类工具的事件，各 agent 的映射见 ADR-002 D2；兜底：文本匹配） |
 | TURN_DONE | ◆ | agent **一轮做完**、等下一条指令（hook：Stop；进程仍在）。人的动作是看结果 / 给下一步，与 WAITING 的"回答问题"不同 |
 | IDLE | ○ | 长时间无 output 但 process 仍存在，且没有 hook 信息说明原因——只出现在兜底路径（状态从"人要做什么"定义，不从"观察者看见什么"定义） |
 | FINISHED | ✓ | process exit 且 exit code = 0 |
 | FAILED | ✕ | process exit 且 exit code ≠ 0 |
-| UNKNOWN | ? | 外部 session / detector failure / 不支持的 agent / 进程信息不一致 |
+| UNKNOWN | ? | 无 hook 且无运行时的外部 session / hook 沉默（ADR-002 D1）/ detector failure / 不支持的 agent / 进程信息不一致 |
 
 ### 4.4 状态机
 
@@ -380,7 +382,7 @@ UI MVP 不一定显示 confidence，但必须保留该字段便于 debug。Detec
 
 agora 不应只能管理自己创建的 session。启动后扫描运行时中现存 session；未注册的显示为 Unknown Agent，允许 **Adopt**：配置 Display Name / Project / Agent Type。
 
-有 hook 的 agent 在**任何地方**起的会话（Terminal.app、IDE 终端、别的 tmux）都会经 session.started 事件出现在列表里，标为 `external`：在运行时里的才提供终端与 respond；其余只读（状态、两行、通知）。这是手动起的 agent 被管起来的唯一途径。
+有 hook 的 agent 在**任何地方**起的会话（Terminal.app、IDE 终端、别的 tmux）都会经 session.started 事件出现在列表里。会话来源只有三种（`origin`，§4.2）：`agora`——agora 创建的；`adopted`——在可采纳的运行时里、由用户采纳的，有终端与全部 respond；`external`——不在任何运行时里、只有 hook 看得见的，没有终端与文本输入，但状态、两行、通知照常，经挂起 hook 的 allow / deny 也照常（挂起不依赖终端，ADR-002 D3）。这是手动起的 agent 被管起来的唯一途径。
 
 ### 5.6 Hook 事件的最小集合
 
@@ -390,7 +392,7 @@ agora 不应只能管理自己创建的 session。启动后扫描运行时中现
 |---|---|
 | session.started / ended | STARTING / 配合进程状态判定退出 |
 | turn.ended | TURN_DONE |
-| input.needed（提问 / 权限） | WAITING |
+| input.needed（提问） | WAITING；agent 的 hook 承载不了答复时（AskUserQuestion 类选项），Dashboard 只显示问题与"打开终端"（ADR-002 D5） |
 | decision.needed（权限 / 选择） | WAITING；答复经挂起的 hook 同步返回 allow / deny，不注入键击（§7.3）；agent 的 hook 不能替用户批准时（Grok），Dashboard 只提供"打开终端"；挂起上限与超时见 ADR-002 D5 |
 | activity（可选） | RUNNING 行的"正在做什么" |
 | prompt.submitted | 首条 prompt → 无 bd 时的 `task_ref` 摘要 |
@@ -427,7 +429,7 @@ FAILED 100   WAITING 90   TURN_DONE 85   FINISHED 80   UNKNOWN 40   IDLE 30   ST
 
 原则：**凡是卡在人身上的（FAILED / WAITING / TURN_DONE / FINISHED）都高于不需要人的（RUNNING / STARTING）**——跑着的 agent 什么都不需要，做完的 agent 正在等你；UNKNOWN 排中间（看不清，值得瞟一眼）。同分先按任务优先级（bd 的 P0–P4；无 bd 视为 P2），再按等待时长、状态变化与未读通知微调。用户打开页面最先看到**需要自己处理的 agent**，而不是最近创建的。
 
-每一行的第一列是**任务**而不是进程名：issue id + 标题 > 首条 prompt 摘要 > display name。行下面再带两行，回答"它现在到哪了"：`❯` 是用户最后输入的那一条；`↳` 是 agent 正在做什么或它最后说了什么，两者互为兜底。这两行读自 **agent 自己写在磁盘上的 transcript**，不是 pane；读不出来的 agent 保持一行 pane preview。所有客户端形态用同一条规则渲染同样的两行。
+每一行的第一列是**任务**而不是进程名：issue id + 标题 > 首条 prompt 摘要 > display name。行下面再带两行，回答"它现在到哪了"：`❯` 是用户最后输入的那一条；`↳` 是 agent 正在做什么或它最后说了什么，两者互为兜底。这两行读自 **agent 的 hook 事件**（`prompt.submitted`、`turn.ended` 的最后一条回复、`activity` 的当前工具，ADR-002 D8），不读 pane，也不解析 transcript（V1 只存路径）；没有 hook 的会话保持一行 pane preview。所有客户端形态用同一条规则渲染同样的两行。
 
 **看结果**：TURN_DONE / FINISHED 的行展开后，除了两行，还显示该 worktree 的改动文件列表（`git status --short`），旁边是任务的验收标准（读自 beads，不复制）供对照；"看 diff"在会话所在 worktree 开一个只读终端跑 `git --no-pager diff`——复用现有终端，不做 diff 组件（§11）。git 写操作是 Git GUI（唯一例外见 §1.4）。
 
@@ -494,10 +496,10 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 
 - **每个节点同一套 API，两种调用方**：浏览器（已配对设备的 session cookie，loopback 也不例外）与 peer 节点（`Authorization: Bearer <机器 token>`，只在 TLS 监听器上被接受，§8）。没有 peer 专用端点。
 - **会话 id 一律 `<node>:<id>`**；本机会话与并入的 peer 会话同列，每条带 `node`；对 peer 会话的写操作与终端流由本节点经一跳转发（§3.5）。
-- **respond 有两种语义**：结构化决定（权限 / 选择——经挂起的 hook 返回，有 hook 的 agent 走这条）与原始文本（经 PTY——自由问答、下一条指令、无 hook 的 agent）。
+- **respond 有两种语义**：结构化决定（权限——经挂起的 hook 返回，有 hook 且 hook 能承载决定的 agent 走这条；选择题 V1 只能在终端答，ADR-002 D5）与原始文本（经 PTY——自由问答、下一条指令、无 hook 的 agent）。
 - **DELETE metadata 与 kill process 是两个端点、两个语义**；不能因为删除 metadata 而误杀运行时会话。
 - **API 版本**：`GET /api/system` 返回 `api_version`；调用方版本不一致时必须识别并降级或提示，不得静默错读。
-- **hook 投递不经 HTTP**：agent 的 hook 命令把事件写进投递箱文件、经 unix socket（0600）唤醒 daemon；没有 hook 端点，也就没有要守的凭据（ADR-002 D3）。
+- **hook 投递不经 HTTP**：agent 的 hook 命令把事件写进投递箱文件、经 unix socket（仅属主可访问 + 对端 uid 校验）唤醒 daemon；没有 hook 端点，也就没有要守的凭据（ADR-002 D3）。
 
 端点与消息清单见 `docs/spec/api.md`。
 
@@ -517,12 +519,12 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 
 - 两个监听器（ADR-003 D5）：`listen` 明文、**只允许 loopback 地址**（默认 `127.0.0.1:7680`，配置校验拒绝其它）；`tls_listen` 非 loopback、**永远 TLS**，默认关，被 peer 或手机访问时才开。**禁止默认 `0.0.0.0` 并暴露至公网**。
 - **没有任何路由能在无 principal 时被服务**（ADR-003 D1，有守卫测试）。因此开了 `tls_listen` 而没有任何机器 token 与已配对设备只是"没人能连进来"，agora 给启动警告而不是拒绝启动。
-- **TLS 是 agora 的事，不是部署的事**：PWA、service worker、Web Push 只在安全上下文工作。V1 只需 peer 链路的自签证书 + 指纹钉住（§3.5）；被浏览器直接打开的非 loopback 节点（手机阶段）必须能以浏览器可信的 HTTPS 提供服务，至少一条路径自动化——默认 `external`（证书文件从外部来，agora 负责到期前调续期命令与热加载；当前实例即 `tailscale cert`），`self-signed` 只给 peer 链路，`self-ca` 未实现、按需评估（ADR-003 D4）。**agora 永远自己终止 TLS**，不支持反向代理。
+- **TLS 是 agora 的事，不是部署的事**：PWA、service worker、Web Push 只在安全上下文工作。V1 只需 peer 链路的自签证书 + 指纹钉住（§3.5）；被浏览器直接打开的非 loopback 节点（手机阶段）必须能以浏览器可信的 HTTPS 提供服务，至少一条路径自动化——默认 `external`（证书文件从外部来，agora 负责到期前调续期命令与热加载；当前实例即 `tailscale cert`），`self-signed` 只给 peer 链路，`self-ca` 未实现、按需评估（ADR-003 D4）。**agora 永远自己终止 TLS**，不支持 HTTP 终止型反向代理（§1.4：反代只能 TCP 透传）。
 - 所有命令不得通过 shell string interpolation 拼接未经验证的用户输入。
 
 ### 人的凭据：设备配对【ADR-003】
 
-- **loopback 不是安全边界**（§0.1 多用户主机）：本机浏览器也要认证，代码里没有 loopback 例外。人的凭据只有一种：**配对**——一次性链接（256 位、单次、5 分钟）换取按设备的 session（距最近使用 30 天滑动、距配对 365 天上限、可按设备吊销）。本机 `agora open` 经 unix socket（0600 + 对端 uid 校验，即 OS 身份）铸造链接并打开浏览器；远端 `agora pair` 打印 QR，或在已认证的 Dashboard 里"配对新设备"（V2-1）。
+- **loopback 不是安全边界**（§0.1 多用户主机）：本机浏览器也要认证，代码里没有 loopback 例外。人的凭据只有一种：**配对**——一次性链接（256 位、单次、5 分钟）换取按设备的 session（距最近使用 30 天滑动、距配对 365 天上限、可按设备吊销）。本机 `agora open` 经 unix socket（仅属主可访问 + 对端 uid 校验，即 OS 身份）铸造链接并打开浏览器；远端 `agora pair` 打印 QR，或在已认证的 Dashboard 里"配对新设备"（V2-1）。
 - 没有 TOTP、没有登录限流、没有可信代理：可猜的凭据不存在，为它付的账也不存在（ADR-003 备选项）。代价：所有已配对设备都失效时只能回节点本机或 ssh 上 `agora pair`。
 - **人的**请求（含 loopback 的浏览器与 WS 握手）必须携带 session cookie；hook 投递不经 HTTP（§7.3）。cookie 属性、响应头、WS 与 CSRF 的同源校验：ADR-003 D2 / D7。
 
@@ -549,7 +551,7 @@ Close Browser Tab 只代表 detach UI，绝不代表 kill process。
 - 每个节点一份；`node.id` 是全局会话 id 的前缀（安装时生成，改名需迁移）；`peers` 默认空——多节点是显式配置出来的状态（§3.5）。
 - 项目列表不靠手写：`project_roots` 扫描 git 仓库并按最近使用排序；`worktree_root` 是新建 worktree 的存放约定，默认 `../<repo>-wt/<name>`（§6.4）。
 - 机器 token 由被访问的节点签发，本节点只存哈希；持有方存明文 `token_file`（§8）。浏览器只记住最近打开的节点地址（不变量 6）。
-- 一切本机状态在 `AGORA_HOME`（默认 `~/.agora`，0700）：配置、SQLite、unix socket、TLS 材料、hook 投递箱、tmux 配置（ADR-003 D6）。
+- 一切本机状态在 `AGORA_HOME`（默认 `~/.agora`，0700）：配置、SQLite、unix socket、TLS 材料、hook 投递箱、tmux 配置、指向当前二进制的稳定路径 `bin/agora`（ADR-003 D6）。
 
 ### 9.2 存储
 
@@ -655,7 +657,7 @@ MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终�
 - [ ] **A32** Restart 用 agent 自报的对话 id resume，不用 `--continue`；在 pane 里 `/clear` 后 Restart 恢复的是新对话
 - [ ] **A33** 浏览器或 peer 客户端遇到 API 版本不一致时提示或降级，不静默错读
 - [ ] **A34** 明文监听器拒绝绑定非 loopback 地址、TLS 监听器永不降级明文；没有任何路由能在无 principal 时被服务；均有守卫测试
-- [ ] **A36** 不变量 1–5、7、8、10、11 各有 fake-agent 集成测试；逐条关掉守卫，对应测试变红
+- [ ] **A36** 不变量 1–5、7、8、10、11 各有 fake-agent 集成测试；逐条关掉守卫，对应测试变红。不变量 12 由 A43 的零写入守卫覆盖；6 由不变量 1–4 的测试涵盖；9 由 `tests/arch_boundary.rs` 钉死（前端只经 `/api` 与 WS 和节点通信，没有客户端专用后门）
 - [ ] **A38** Mac 打开 `127.0.0.1`，经 peer 一跳回答 zuan 上的 WAITING、attach 到 zuan 上的会话终端并交互
 - [ ] **A39** 一条命令升级节点，升级期间 agent 不死、会话与 metadata 完整——不变量 3 与规则 10 最真实的测试
 - [ ] **A40** 会话行展开显示任务的验收标准（读自 beads，agora 不复制）

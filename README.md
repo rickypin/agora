@@ -1,6 +1,6 @@
 # agora
 
-多 Agent 管理工具（设计阶段：MISSION 与首批三篇 ADR 已定稿，下一步拆 M1a 任务）。一句话定义与层次定位见 `MISSION.md`。
+多 Agent 管理工具（M0 设计阶段完成：MISSION 与四篇 ADR 定稿、M1a / M1b 已拆成任务；正在进入 M1a 终端底座施工）。一句话定义与层次定位见 `MISSION.md`。
 
 ## 从哪里读起
 

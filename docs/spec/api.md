@@ -12,7 +12,12 @@ PATCH  /api/sessions/:id
 POST   /api/sessions/:id/input     # 不经终端的 respond：文本 / 选项；WAITING 与 TURN_DONE 的主路径
 POST   /api/sessions/:id/restart
 POST   /api/sessions/:id/kill
-DELETE /api/sessions/:id
+POST   /api/sessions/:id/cleanup   # 回收已退出会话保留的运行时会话与输出（ADR-001 D4 清理）；进程还活着 → 错误类型 StillAlive
+DELETE /api/sessions/:id           # 只删 metadata；已退出的顺手清理
+POST   /api/sessions/adopt         # { runtime_ref, display_name?, project?, agent_type? }：采纳可采纳运行时里的未注册会话（§5.5）
+GET    /api/projects               # project_roots 扫描结果，按最近使用排序（§6.4）
+GET    /api/projects/worktrees     # ?path=<repo>：该仓库现有 worktree（§6.4；新建 worktree 归 M3 A44）
+GET    /api/tasks/ready            # ?path=<repo>：有 bd 的仓库的 bd ready，只读（M3 A43）
 GET    /api/nodes                  # 本机 + 已配置 peer 的状态：online / last_seen
 GET    /api/system                 # 含 api_version
 GET    /api/health                 # 未认证只返回 { "status": "ok" }
@@ -33,19 +38,16 @@ DELETE /api/auth/devices/:id       # 吊销一台设备（V2-1）
 
 会话 id 一律 `<node>:<id>`；`GET /api/sessions` 同列本机与 peer 会话，每条带 `node` 字段，对 peer 会话的写操作与终端流经一跳转发（原则与调用方、API 版本、DELETE ≠ kill 见 MISSION §7.3）。
 
-WebSocket：
+## WebSocket
 
 ```
 WS /api/sessions/:id/terminal    # 终端流
 WS /api/events                   # 全局事件：status change / session created / session removed / notification
 ```
 
-
-## WebSocket
-
 Client → Server：`{ "type": "input", "data" }`、`{ "type": "resize", "cols", "rows" }`、`{ "type": "ping" }`
 
-Server → Client：`{ "type": "output", "data" }`、`{ "type": "status", "status" }`、`{ "type": "exit", "exit_code" }`
+Server → Client：`{ "type": "output", "data" }`、`{ "type": "status", "status" }`、`{ "type": "exit", "exit": { "code": n } | { "signal": "term" } }`（ADR-001 的 `Exit` 形态）
 
 MVP 用 JSON / Text WebSocket 足够；binary terminal frames 放到 V2。
 
@@ -53,22 +55,25 @@ MVP 用 JSON / Text WebSocket 足够；binary terminal frames 放到 V2。
 
 ## respond 的两种语义（MISSION §7.3）
 
-- `POST /api/sessions/:id/input` 接受 `{ "kind": "decision", "decision": "allow" | "deny" | <option> }` 或 `{ "kind": "text", "data": "..." }`。
+- `POST /api/sessions/:id/input` 接受 `{ "kind": "decision", "decision": "allow" | "deny", "message"? }` 或 `{ "kind": "text", "data": "..." }`。选择题（AskUserQuestion 类）V1 不经 API：Dashboard 只显示问题与"打开终端"（ADR-002 D5）。
 - `decision` 只对有挂起 hook 决定的会话有效（否则错误类型 `NoPendingDecision`）：agora 的 PermissionRequest hook 挂起等待，答复经 hook 返回给 agent，不注入键击；`decision_via_hook = false` 的 agent（Grok）只提供"打开终端"。挂起上限与超时见下文（ADR-002 D5）。
 - `text` 经 PTY 写入；无 hook 的 agent 与自由问答走这条。
 
 ## hook 投递（ADR-002 D3）
 
-- **没有 HTTP 端点**。agent 的 hook 命令是 `agora hook --host <agent>`：payload 落到 `<AGORA_HOME>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`（先 `.part` 再 rename），再经 `<AGORA_HOME>/agora.sock`（unix socket，0600 + 对端 uid 校验，ADR-003 D6）唤醒 daemon；daemon 不在时文件留着，启动时按文件名顺序重放（MISSION §3.4）。
+- **没有 HTTP 端点**。agent 的 hook 命令是 `agora hook --host <agent>`：payload 落到 `<AGORA_HOME>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`（先 `.part` 再 rename），再经 `<AGORA_HOME>/agora.sock`（unix socket，仅属主可访问 + 对端 uid 校验，ADR-003 D6）唤醒 daemon；daemon 不在时文件留着，启动时按文件名顺序重放（MISSION §3.4）。
 - 需要答复的事件（Claude Code `PermissionRequest`）由 hook 进程在 socket 上挂起等 daemon 回 allow / deny / none；none、超时、socket 断都是 fail-open（exit 0 不输出，TUI 的提示仍在）。挂起上限每会话 8、节点 256，超时 55 min。
 - `/api/events` 新增 `decision.resolved`（挂起被终端答复、进程退出或超时解除）。
+
 ## Health（MISSION §10.3）
 
 未认证只返回 `{ "status": "ok" }`；下面的完整形态需要 principal。
 
 ```
 GET /api/health
-→ { "status": "ok", "runtime": true, "database": true,
+→ { "status": "ok",
+    "runtime": { "status": "ok" | "degraded", "reason": null, "path_source": "shell" | "daemon" },   // ADR-001 D7
+    "database": true,
     "tls": "external", "push": { "apple": true, "fcm": false },
     "peers": { "mac": { "online": false, "last_seen": "2026-09-02T23:10:00Z" } } }
 ```

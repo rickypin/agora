@@ -90,10 +90,10 @@ Command:  [ claude ]
   Unknown Agent
 ```
 
-Kill 确认框（MISSION §8：确认跟着"杀"走）：
+Kill 确认框（MISSION §8：确认跟着"杀"走；Kill 只杀进程，运行时会话与输出保留到清理，§4.6）：
 
 ```
 Kill sglog / Codex @ zuan?
-The running process and its session will be terminated.
+The running agent process will be killed. Its output stays until you clean it up.
 [Cancel] [Kill]
 ```

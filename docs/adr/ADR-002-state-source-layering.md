@@ -72,23 +72,24 @@ agora 内部事件（§5.6 的集合，补两个）：`session.started` / `sessi
 
 ### D3 投递：投递箱文件 + unix socket 唤醒；hook 命令是 agora 自己
 
-hook 命令统一为 `agora hook --host <claude|grok|codex>`（安装时写成 `if [ -x <agora 绝对路径> ]; then <agora> hook --host claude; fi`，卸载或升级期间二进制不在也不会让 agent 报错——orca 在本机就是这么装的）。它做三件事：
+hook 命令统一为 `agora hook --host <claude|grok|codex>`（安装时写成 `if [ -x <稳定路径> ]; then <稳定路径> hook --host claude --home <AGORA_HOME>; fi`，形态见 D4；卸载或升级期间二进制不在也不会让 agent 报错——orca 在本机就是这么装的）。它做三件事：
 
-1. **落盘**：把 stdin 的 payload 连同信封（host、`AGORA_SESSION_ID` / `AGORA_EPOCH` 若有、`CLAUDE_PID` / `GROK_*`、`TMUX` / `TMUX_PANE`、hook 进程的 ppid、本地时间）写到 `<state_dir>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`（`<state_dir>` = `AGORA_HOME`，默认 `~/.agora`，ADR-003 D6），先写 `.part` 再 rename——daemon 不在也不丢（§3.4）。
+1. **落盘**：把 stdin 的 payload 连同信封（host、`AGORA_SESSION_ID` / `AGORA_EPOCH` 若有、`CLAUDE_PID` / `GROK_*`、`TMUX` / `TMUX_PANE`、hook 进程的 ppid、本地时间）写到 `<state_dir>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`（`<state_dir>` = `AGORA_HOME`，默认 `~/.agora`，ADR-003 D6；hook 进程不依赖环境里有 `AGORA_HOME`——Terminal.app 里起的外部会话没有它——安装写入的命令显式带 `--home`，D4），先写 `.part` 再 rename——daemon 不在也不丢（§3.4）。
 2. **唤醒**：连 `<state_dir>/agora.sock`，送文件路径；socket 不在（daemon 没起）→ 直接 exit 0。daemon 只读文件，不信 socket 上的内容——单一真相。
 3. **挂起**（仅 `decision_via_hook` 的事件）：连上 socket 后等 daemon 回 allow / deny / none；none、超时、socket 断（daemon 崩）→ exit 0 不输出——**fail-open**，TUI 的提示还在，人照样能在终端答。
 
-daemon 侧：启动时按文件名顺序重放 inbox 全部文件（§3.4 的重放）；应用后移到 `done/`（保留 24 h 供排障后删）；运行中收到唤醒即读。**不再有 `POST /api/hooks/:agent`**：unix socket 的 0600 权限 + 对端 uid 校验（ADR-003 D6）就是"这台机器上的这个用户"，多用户主机上比 loopback 端口 + 一次性 token 更准确（§0.1、ADR-003 少一个要守的端点）。Windows 时代换 named pipe，同属第二运行时（ADR-001 D9）。
+daemon 侧：启动时按文件名顺序重放 inbox 全部文件（§3.4 的重放）；应用后移到 `done/`（保留 24 h 供排障后删）；运行中收到唤醒即读。**不再有 `POST /api/hooks/:agent`**：unix socket 仅属主可访问 + 对端 uid 校验（ADR-003 D6）就是"这台机器上的这个用户"，多用户主机上比 loopback 端口 + 一次性 token 更准确（§0.1、ADR-003 少一个要守的端点）。Windows 时代换 named pipe，同属第二运行时（ADR-001 D9）。
 
 为什么不选 devcenter 的 `--settings` 注入：它只覆盖 agora 起的会话，看不见 Terminal.app 里起的（A16）；而 §5.1 已定 hook 装进用户配置。为什么不选 HTTP hook（Claude / Grok 都支持 `type: http`）：daemon 不在就丢事件，正是 §3.4 禁止的。
 
 ### D4 安装：装进用户配置，幂等、可卸载、装前 diff、宿主自认
 
 - `agora hooks install <agent>`：Claude Code 写 `~/.claude/settings.json`（user 作用域）的 `hooks`，Grok 写 `~/.grok/hooks/agora.json`，Codex 写 `~/.codex/hooks.json`（**Codex 的非托管 hook 必须由用户在 TUI 里 `/hooks` 审阅、按内容哈希信任，改动即失效**——所以 command 里的 agora 路径必须是升级不变的稳定路径，否则每次升级都要重新信任；agora 不用 `--dangerously-bypass-hook-trust`）；装前显示 diff，只增不删别人的条目（hooks 是拼接不是替换，文档确认）；条目里 command 含 agora 二进制路径，是识别自己条目的标记——重复安装不重复，卸载只删自己的。Claude Code 与 Grok 都热加载配置文件（文档：file watcher / Hooks tab reload），装完不用重启 agent。
+- **命令形态**：`if [ -x <AGORA_HOME>/bin/agora ]; then <AGORA_HOME>/bin/agora hook --host <agent> --home <AGORA_HOME>; fi`。二进制走 `<AGORA_HOME>/bin/agora` 这个稳定路径（安装与升级维护的符号链接，A26 / A39，ADR-003 D6），Codex 的内容哈希信任才不会随升级失效；对 Claude / Grok 则是升级不静默断 hook——二进制位置一变，`if [ -x … ]` 守卫会静默跳过，会话只会经 hook 沉默规则退成 UNKNOWN 而没人知道原因。`--home` 显式给出，因为外部会话的环境里没有 `AGORA_HOME`。三家命令形态一致，宿主自认（下文）与"识别自己的条目"只需一种写法。
 - 每个事件的 `timeout` 显式写死：PermissionRequest 3600 s（挂起上限，D5）；SessionEnd 1 s（Claude 给全部 SessionEnd hook 共 1.5 s 预算，所以 SessionEnd 只落盘不唤醒等待）；其余 20 s。不依赖各家默认值（Claude 600 s、Grok 5 s、UserPromptSubmit 30 s，三处都不一样）。
 - **agora 起的会话不再重复注入**（§5.1）：身份靠 `LaunchSpec.env` 的 `AGORA_SESSION_ID` / `AGORA_EPOCH`，hook 进程继承环境后带回（实测 hook 能看到 agent 进程的全部环境）。
 - **Grok 兼容加载的串扰**：Grok 默认也执行 `~/.claude/settings.json` 里的 hooks，agora 装给 Claude 的条目会被 Grok 以 `--host claude` 跑一遍。对策：`agora hook` 发现 `GROK_SESSION_ID` 存在而 `--host` 不是 grok → exit 0；反之亦然。不靠 payload 键名风格猜宿主。
-- 外部会话（没有 `AGORA_*` 环境）：信封里的 `TMUX` / `TMUX_PANE` 直接指向 pane → 若该 socket 在 ADR-001 的 `adopt_sockets` 里，会话可采纳且有终端（A16 与 A22 合流）；没有 tmux 的（Terminal.app 裸跑）→ external 只读，存活靠 `CLAUDE_PID` / hook ppid 的 `kill(pid, 0)`，没有退出码。
+- 外部会话（没有 `AGORA_*` 环境）：信封里的 `TMUX` / `TMUX_PANE` 直接指向 pane → 若该 socket 在 ADR-001 的 `adopt_sockets` 里，会话可采纳且有终端（A16 与 A22 合流）；没有 tmux 的（Terminal.app 裸跑）→ `origin = external`：没有终端与文本输入，状态、两行、通知照常，D5 的挂起与 allow / deny 也照常（挂起不依赖终端）；存活靠 `CLAUDE_PID` / hook ppid 的 `kill(pid, 0)`，没有退出码。
 
 ### D5 respond：挂起、上限、超时、与终端并存
 
@@ -174,7 +175,7 @@ AgentFallback {                      # 所有 agent 都有默认实现
 
 **负面 / 接受的代价**：每个一等 agent 一张版本表要维护；Grok 的权限决定只能在终端答（agent 的限制，不是 agora 的）；AskUserQuestion 类问题 V1 只能在终端答；投递箱目录要清理；用户的 `~/.claude/settings.json` 多了几行（可卸载、装前有 diff）。
 
-**回写**（2026-09-02 已做）：MISSION v0.12——§3.3 投递方式、§5.1 hook 沉默规则、§5.6 Grok 只提供"打开终端"、§7.3 / §8 删 hook 端点与凭据；`docs/spec/api.md` 删 `POST /api/hooks/:agent`、补 `decision.resolved` 与 `NoPendingDecision`；`docs/spec/config.md` 加 `hooks:` 段；ADR-003 预填稿两处 hook 端点表述；`docs/spec/instance.md` 三个 agent 版本更新。
+**回写**（2026-09-02 已做）：MISSION v0.12——§3.3 投递方式、§5.1 hook 沉默规则、§5.6 Grok 只提供"打开终端"、§7.3 / §8 删 hook 端点与凭据；`docs/spec/api.md` 删 `POST /api/hooks/:agent`、补 `decision.resolved` 与 `NoPendingDecision`；`docs/spec/config.md` 加 `hooks:` 段；ADR-003 预填稿两处 hook 端点表述；`docs/spec/instance.md` 三个 agent 版本更新。MISSION v0.14（同日，文档交叉验证）：§6.3 两行来源改为 hook 事件（原文误写 transcript）、§4.3 WAITING 来源措辞、§4.2 / §5.5 三种 `origin` 与 `epoch`、§5.6 input.needed 只留提问、§1.2 / §7.3 选择题的限定。
 
 **跟进 issue**（均 discovered-from `agora-90t.3`）：`agora-dvh.1` `agora hooks install` 的 diff / 卸载 / 宿主自认 / 热加载验证（M1b）；`agora-3la.1` fixture 录制工具与回放器；`agora-3la.2` 真实 agent hook 冒烟测试接入 CI；`agora-dvh.2` Codex adapter 实测——交互式 TUI 触发、PermissionRequest 挂起与并存、`/hooks` 信任流程、`CODEX_*` 环境变量（M1b）。
 

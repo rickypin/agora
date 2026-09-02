@@ -1,6 +1,6 @@
 # 配置与存储
 
-原则在 MISSION §9；本文是文件形态。`runtime` 段按 ADR-001、`server` / `tls` / `auth` 段按 ADR-003 定稿。配置文件在 `AGORA_HOME/config.yaml`（默认 `~/.agora`，目录 0700，ADR-003 D6）。
+原则在 MISSION §9；本文是文件形态。`runtime` 段按 ADR-001、`hooks` 段按 ADR-002、`server` / `tls` / `auth` 段按 ADR-003 定稿。配置文件在 `AGORA_HOME/config.yaml`（默认 `~/.agora`，目录 0700，ADR-003 D6）。
 
 ## 配置文件（每个节点一份）
 
@@ -35,7 +35,7 @@ hooks:                        # ADR-002 D1 / D5 / D3
   inbox_retention: "24h"      # 已应用的事件文件在 done/ 保留时长
 notifications:
   enabled: true
-tls:                          # ADR-003 D4；agora 永远自己终止 TLS，不支持反向代理
+tls:                          # ADR-003 D4；agora 永远自己终止 TLS，不支持 HTTP 终止型反向代理
   mode: "self-signed"         # self-signed（默认：首次开 tls_listen 时生成 10 年自签证书到 tls/）| external；self-ca 未实现
   external:
     cert_file: null
@@ -50,7 +50,7 @@ auth:                         # ADR-003 D2
 project_roots:                # 扫描而非手写，按最近使用排序
   - "/Users/ricky/code"
 worktree_root: "../{repo}-wt" # §6.4：新建 worktree 的存放约定，{repo} = 仓库目录名，worktree 名接在其下
-agents:                       # 
+agents:                       # Adapter 默认命令的覆盖（§5.2）；存可移植形式，不写绝对路径（ADR-001 D7）
   claude: { command: "claude" }
   codex:  { command: "codex" }
   grok:   { command: "grok" }
@@ -64,19 +64,21 @@ agents:                       #
 ```sql
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,
-    runtime_ref TEXT NOT NULL UNIQUE,
+    runtime_ref TEXT UNIQUE,                       -- origin = external 时为 NULL（§5.5）
     display_name TEXT NOT NULL,
     name_locked BOOLEAN NOT NULL DEFAULT FALSE,
     agent_type TEXT NOT NULL,
     working_directory TEXT,
-    worktree TEXT,                                 -- 
+    worktree TEXT,                                 -- git worktree 路径；可空（§4.2）
     task_ref TEXT,                                 -- issue id 或摘要
     command TEXT,
     agent_session_id TEXT,                         -- agent 自报的当前对话 id（§5.6），Restart resume 依据
+    epoch INTEGER NOT NULL DEFAULT 1,              -- 进程代次：create 为 1，每次 respawn +1；旧代次的 hook 事件丢弃（ADR-002 D1）
+    transcript_path TEXT,                          -- agent 自报的 transcript 路径；V1 只存不读（ADR-002 D8）
     created_at DATETIME NOT NULL,
     ended_at DATETIME,                             -- 进程退出时刻（§4.2）；等待时长与 attention 用，A42
     updated_at DATETIME NOT NULL,
-    adopted BOOLEAN NOT NULL DEFAULT FALSE
+    origin TEXT NOT NULL DEFAULT 'agora'           -- agora | adopted | external（§5.5）
 );
 CREATE TABLE projects (path TEXT PRIMARY KEY, name TEXT NOT NULL, last_used_at DATETIME);  -- 扫描发现 + 最近使用
 CREATE TABLE devices (                             -- ADR-003 D2：已配对设备，人的 session；只存哈希
