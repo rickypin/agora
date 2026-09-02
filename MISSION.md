@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.10（2026-09-02）；变更历史见 beads `agora-90t.1` 注记 |
+| 版本 | v0.11（2026-09-02）；变更历史见 beads `agora-90t.1` 注记 |
 | 项目类型 | Self-hosted Web Application |
 | 目标平台 | 节点：macOS / Ubuntu Linux / Windows 主机（Windows V1 延期）；客户端：macOS 笔记本、iOS、Android 设备上的现代浏览器（V1 只验收 macOS 笔记本） |
 | 主要用户 | 单用户 |
@@ -318,11 +318,11 @@ Display name 可任意修改，运行时身份不变。一行显示的名字有�
 | **Detach** | 停止浏览，agent 继续运行 |
 | **Close Tab** | 与 Detach 等价 |
 | **Archive** | 从默认 Dashboard 隐藏，保留运行时会话（可放 V2） |
-| **Kill** | 杀掉运行时会话和 agent，**必须显式确认** |
+| **Kill** | 杀掉 agent 进程，**必须显式确认**；运行时会话连同其输出保留，按下面的清理策略回收（ADR-001 D4：scrollback 还在、Restart 仍是同一会话） |
 | **Delete Metadata** | 移除 agora metadata，但不杀运行时会话 |
 | **Restart** | kill 现有进程 + 在**同一个运行时会话**内重建，并 resume 原对话——依据是 agent 自报的当前对话 id（§5.6），**绝不用 `--continue` / `--last`**（那会静默恢复成另一段对话）。只在真的会杀掉正在运行的 agent 时才必须显式确认（§8） |
 
-**已退出会话的清理**：FINISHED / FAILED 的运行时会话在用户看过之后清理（Dashboard 里确认或 Delete Metadata 时一并清掉保留的输出）。这不是 kill——进程已经不在——所以不需要确认，但不得在用户看到结果之前发生。策略细节是 ADR-001 的输入。
+**已退出会话的清理**：FINISHED / FAILED / 被 Kill 的运行时会话在用户看过之后清理（Dashboard 里确认或 Delete Metadata 时一并清掉保留的输出）。这不是 kill——进程已经不在——所以不需要确认，但不得在用户看到结果之前发生；V1 不做定时回收。策略细节见 ADR-001 D4。
 
 浏览器 Tab 表示当前浏览器打开的 agent，而不是 agent 生命周期。切换 / 关闭 Tab 不允许：restart session、recreate 运行时会话、丢失 agent 状态、终止 PTY 拥有的进程。
 

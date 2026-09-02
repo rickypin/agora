@@ -1,6 +1,6 @@
 # 配置与存储
 
-原则在 MISSION §9；本文是文件形态，ADR-001 / ADR-003 定稿后重写。
+原则在 MISSION §9；本文是文件形态。`runtime` 段已按 ADR-001 定稿；`tls` 段等 ADR-003 定稿后重写。
 
 ## 配置文件（每个节点一份）
 
@@ -11,12 +11,17 @@ node:
   id: "mac"                   # §3.5：全局会话 id `<node>:<id>` 的前缀，安装时生成，改名需迁移
 peers: []                     # §3.5：默认空。每项 { name, url, token_file, cert_fingerprint }；
                               #   本节点作为这些 peer 的 API 客户端并入其会话
-runtime:                      # 【ADR-001】
-  kind: tmux
-  prefix: "ag-"
-  history_limit: 100000
+runtime:                      # ADR-001 D3 / D6 / D7
+  kind: tmux                  # V1 唯一实现；Windows 的 native supervisor 另立 ADR（ADR-001 D9）
+  tmux:
+    socket: "agora"           # 专用 socket（-L）：agora 创建的会话都在这里，用户 kill-server 杀不到
+    adopt_sockets: ["default"]  # 只读扫描、可采纳；绝不对其写任何选项
+    prefix: "ag-"
+    history_limit: 10000      # 服务器级（-f）设置：3.7 以前的 tmux 对已存在的 pane 不生效（实测 2026-09-02）
+    exec_timeout: "5s"        # 每次 tmux 子进程调用的超时（不变量 5）
+    min_version: "3.2"        # new-session -e / window-size latest / respawn-pane -e / pane_dead_signal
 terminal:
-  scrollback: 10000
+  scrollback: 10000           # xterm.js，与运行时 history_limit 对齐
 status:
   idle_after: "60s"
   detector_interval: "2s"
