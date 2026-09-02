@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.11（2026-09-02）；变更历史见 beads `agora-90t.1` 注记 |
+| 版本 | v0.12（2026-09-02）；变更历史见 beads `agora-90t.1` 注记 |
 | 项目类型 | Self-hosted Web Application |
 | 目标平台 | 节点：macOS / Ubuntu Linux / Windows 主机（Windows V1 延期）；客户端：macOS 笔记本、iOS、Android 设备上的现代浏览器（V1 只验收 macOS 笔记本） |
 | 主要用户 | 单用户 |
@@ -190,7 +190,7 @@ Resize：xterm.js FitAddon 产生 cols / rows，经 WebSocket 通知后端，后
 
 ### 3.3 State Observer 独立于 Browser Connection
 
-**不要通过 WebSocket client output 来判断 agent 状态**，否则没有浏览器连着时无法检测 agent。Observer 有两个输入，都不依赖浏览器连接：① **agent 的 hook 事件**——有 hook 的 agent 的主来源（§5.1），投递形式由 ADR-002 定；② **运行时轮询**——进程树 + 屏幕文本，用于无 hook 的 agent、退出码与兜底，参数是 ADR-001 的默认值。
+**不要通过 WebSocket client output 来判断 agent 状态**，否则没有浏览器连着时无法检测 agent。Observer 有两个输入，都不依赖浏览器连接：① **agent 的 hook 事件**——有 hook 的 agent 的主来源（§5.1），经投递箱文件 + unix socket 送达，没有 HTTP 端点（ADR-002 D3）；② **运行时轮询**——进程树 + 屏幕文本，用于无 hook 的 agent、退出码与兜底，参数是 ADR-001 的默认值。
 
 ### 3.4 Server Restart 语义
 
@@ -347,7 +347,7 @@ Agent State Source（高 → 低）
 规则：
 
 - 有 hook 的 agent：WAITING 与 TURN_DONE **只**来自 hook；文本匹配不得把它们抬到 WAITING（误报的代价见 §5.3）。
-- 无 hook 的 agent（generic shell、采纳的未知会话）：文本启发式 → WAITING（模式清单见 ADR-002）；持续 output → RUNNING；长时间无 output 但进程在 → IDLE。
+- 无 hook 的 agent（generic shell、采纳的未知会话）：文本启发式 → WAITING（模式清单见 ADR-002 D6）；有 hook 的 agent 长时间无事件而屏幕像在等人 → UNKNOWN，不猜 WAITING（ADR-002 D1）；持续 output → RUNNING；长时间无 output 但进程在 → IDLE。
 - 所有 agent：process exit 且 exit code = 0 / ≠ 0 → FINISHED / FAILED。
 - 状态机带驻留时间，避免 hook 与轮询交错造成抖动。
 - 每个状态值带 `source`（hook / process / text / heuristic）与 `confidence`（§5.3）。
@@ -391,7 +391,7 @@ agora 不应只能管理自己创建的 session。启动后扫描运行时中现
 | session.started / ended | STARTING / 配合进程状态判定退出 |
 | turn.ended | TURN_DONE |
 | input.needed（提问 / 权限） | WAITING |
-| decision.needed（权限 / 选择） | WAITING；答复经挂起的 hook 同步返回 allow / deny，不注入键击（§7.3）；挂起上限由 ADR-002 定 |
+| decision.needed（权限 / 选择） | WAITING；答复经挂起的 hook 同步返回 allow / deny，不注入键击（§7.3）；agent 的 hook 不能替用户批准时（Grok），Dashboard 只提供"打开终端"；挂起上限与超时见 ADR-002 D5 |
 | activity（可选） | RUNNING 行的"正在做什么" |
 | prompt.submitted | 首条 prompt → 无 bd 时的 `task_ref` 摘要 |
 | session.id（agent 自报当前对话 id） | 落 `agent_session_id`（§4.2），**每次命中都覆盖**；Restart 的 resume 依据。识别按新鲜度排序：agent 自报 > 启动时钉死的 id > 用户从候选里挑，绝不按 mtime 猜 |
@@ -497,7 +497,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 - **respond 有两种语义**：结构化决定（权限 / 选择——经挂起的 hook 返回，有 hook 的 agent 走这条）与原始文本（经 PTY——自由问答、下一条指令、无 hook 的 agent）。
 - **DELETE metadata 与 kill process 是两个端点、两个语义**；不能因为删除 metadata 而误杀运行时会话。
 - **API 版本**：`GET /api/system` 返回 `api_version`；调用方版本不一致时必须识别并降级或提示，不得静默错读。
-- **hook 投递端点只收 loopback，不适用登录 cookie**：凭据是每会话一次性 token，或改用投递箱文件（ADR-002）。
+- **hook 投递不经 HTTP**：agent 的 hook 命令把事件写进投递箱文件、经 unix socket（0600）唤醒 daemon；没有 hook 端点，也就没有要守的凭据（ADR-002 D3）。
 
 端点与消息清单见 `docs/spec/api.md`。
 
@@ -523,7 +523,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 ### 人的凭据：TOTP【ADR-003】
 
 - 只绑 loopback 时可不配置（loopback 即安全边界）；一旦要让**人**从非 loopback 访问，必须先完成 TOTP 注册。V1 没有这种访问（浏览器只开 loopback，zuan 只接受机器 token），TOTP 随手机阶段落地。**多用户主机上 loopback 不是安全边界**（§0.1）——loopback 也认证或改 0600 unix socket，由 ADR-003 定。
-- 注册后，**人的**请求（含 loopback 的浏览器与 WS 握手）必须携带登录 cookie；hook 投递端点不适用 cookie（§7.3）。
+- 注册后，**人的**请求（含 loopback 的浏览器与 WS 握手）必须携带登录 cookie；hook 投递不经 HTTP（§7.3）。
 - 算法参数、cookie 属性、登录限流阶梯、可信代理、响应头、WS 跨站防护：ADR-003。原则一句：**一旦不只绑 loopback，认证就是唯一控制点，登录限流的强度直接等于整个系统的强度。**
 
 ### 多节点信任边界

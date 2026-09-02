@@ -37,7 +37,7 @@ devcenter 的 hub↔node 联邦走 `ssh -N -L` 隧道，**节点侧零认证**�
 
 ### 人的凭据：TOTP（原 §8）
 
-- 只绑 loopback 时可不配置（loopback 即安全边界）；一旦要让**人**从非 loopback 访问，必须先 `agora otp setup`。V1 没有这种访问（浏览器只开 loopback，zuan 只接受机器 token），TOTP 随手机阶段落地。注册后**人的**请求（含 loopback 的浏览器与 WS 握手）必须携带登录 cookie；`/api/hooks/:agent` 不适用（MISSION §7.3）。
+- 只绑 loopback 时可不配置（loopback 即安全边界）；一旦要让**人**从非 loopback 访问，必须先 `agora otp setup`。V1 没有这种访问（浏览器只开 loopback，zuan 只接受机器 token），TOTP 随手机阶段落地。注册后**人的**请求（含 loopback 的浏览器与 WS 握手）必须携带登录 cookie；hook 投递不经 HTTP（ADR-002 D3：投递箱文件 + unix socket，无 `/api/hooks` 端点）。
 - RFC 6238（HMAC-SHA1 / 30 s / 6 位 / ±1 窗口）；重放规则 `counter > last_used`；session token 只存 SHA-256 哈希，30 天过期。
 
 ### 面向非 loopback 时的加固（原 §8）
@@ -56,7 +56,7 @@ devcenter 的 hub↔node 联邦走 `ssh -N -L` 隧道，**节点侧零认证**�
 - 两种 principal：人（TOTP）与节点（机器 token，Bearer）。token 按 peer 签发 `agora peer token create <name>`、可吊销、被访问方只存哈希；持有方 `token_file` 明文 `0600`。
 - 证书指纹钉住：peer 之间自签证书即可；只有被浏览器直接打开的节点需要浏览器可信证书（V1 没有；手机阶段的 zuan 需要）。TLS 三路径（ACME DNS-01 / 私有 CA / 外部证书）默认选哪条。
 - peer 访问默认关闭：未签发 token 即拒绝一切 Bearer；签发前置条件（非 loopback 监听 + TLS）不满足拒绝签发，守卫测试（A31）。非 loopback 无任一 principal 凭据 → 拒绝启动（A34）。
-- hook 端点不适用 cookie（§7.3）。
+- ~~hook 端点不适用 cookie~~ → 已无 hook 端点（ADR-002 D3，2026-09-02）；本 ADR 只需定 unix socket 与投递箱目录的权限（0700 / 0600 = 这台机器上的这个 OS 用户），它同时回答 §0.1 多用户主机的 loopback 问题。
 - 危险操作确认逻辑在会话所在节点执行，转发节点不代替判断。
 - 见 beads `agora-90t.4` 注记的输入清单。
 

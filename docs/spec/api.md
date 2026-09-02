@@ -13,7 +13,6 @@ POST   /api/sessions/:id/input     # 不经终端的 respond：文本 / 选项�
 POST   /api/sessions/:id/restart
 POST   /api/sessions/:id/kill
 DELETE /api/sessions/:id
-POST   /api/hooks/:agent           # 仅 loopback：agent 的 hook 命令投递事件（或 drop-box 文件，ADR-002）
 GET    /api/nodes                  # 本机 + 已配置 peer 的状态：online / last_seen
 GET    /api/system                 # 含 api_version
 GET    /api/health
@@ -42,13 +41,14 @@ MVP 用 JSON / Text WebSocket 足够；binary terminal frames 放到 V2。
 ## respond 的两种语义（MISSION §7.3）
 
 - `POST /api/sessions/:id/input` 接受 `{ "kind": "decision", "decision": "allow" | "deny" | <option> }` 或 `{ "kind": "text", "data": "..." }`。
-- `decision` 只对有挂起 hook 决定的会话有效：agora 的 PreToolUse hook 挂起等待，答复经 hook 返回给 agent，不注入键击。挂起上限、超时后的行为由 ADR-002 实测后定。
+- `decision` 只对有挂起 hook 决定的会话有效（否则错误类型 `NoPendingDecision`）：agora 的 PermissionRequest hook 挂起等待，答复经 hook 返回给 agent，不注入键击；`decision_via_hook = false` 的 agent（Grok）只提供"打开终端"。挂起上限与超时见下文（ADR-002 D5）。
 - `text` 经 PTY 写入；无 hook 的 agent 与自由问答走这条。
 
-## hook 投递
+## hook 投递（ADR-002 D3）
 
-- `POST /api/hooks/:agent` 只收 loopback，不适用登录 cookie；凭据是每会话一次性 token（启动时烧进 hook 命令行）——或改用投递箱文件（`<state_dir>/reports/<session_id>.json`，`cat` + `mv` 原子写）。ADR-002 二选一；无论哪种，**daemon 不在时事件不得丢失**（MISSION §3.4）。
-
+- **没有 HTTP 端点**。agent 的 hook 命令是 `agora hook --host <agent>`：payload 落到 `<state_dir>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`（先 `.part` 再 rename），再经 `<state_dir>/agora.sock`（unix socket，0600）唤醒 daemon；daemon 不在时文件留着，启动时按文件名顺序重放（MISSION §3.4）。
+- 需要答复的事件（Claude Code `PermissionRequest`）由 hook 进程在 socket 上挂起等 daemon 回 allow / deny / none；none、超时、socket 断都是 fail-open（exit 0 不输出，TUI 的提示仍在）。挂起上限每会话 8、节点 256，超时 55 min。
+- `/api/events` 新增 `decision.resolved`（挂起被终端答复、进程退出或超时解除）。
 ## Health（MISSION §10.3）
 
 ```
