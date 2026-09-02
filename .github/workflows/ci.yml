@@ -18,6 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # tests/runtime_tmux.rs 跑在真实 tmux 的隔离 socket 上；22.04 给 3.2a 正好是下限。
+      - name: install tmux (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux && tmux -V
+      - name: install tmux (macos)
+        if: runner.os == 'macOS'
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install tmux && tmux -V
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24

@@ -23,10 +23,13 @@ serde_json = "1.0"
 thiserror = "2.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+# 只用来给进程组发信号（terminate 不经 tmux，ADR-001 D2）。
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["full"] }
 http-body-util = "0.1"
+tempfile = "3"
 
 [profile.release]
 strip = true
