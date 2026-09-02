@@ -65,7 +65,7 @@ tmux new-session -d -s ag-a81c28 "cd ~/code/agora && claude" \; \
     Browser PTY    State Observer
 ```
 
-State Observer 有两个输入：① **agent 的 hook 事件**——Claude Code / Codex 的 hook 命令把事件投递给本机 daemon（drop-box 文件或 `POST 127.0.0.1:7680/api/hooks/<agent>`，形式由 ADR-002 定）；② **运行时轮询**——tmux 路线下周期性 `tmux capture-pane -p -t <session> -S -200` + 进程树，用于没有 hook 的 agent（Grok）、退出码与兜底。两者都不依赖浏览器连接。轮询的优势仍然成立：非侵入、不改 agent 命令、实现简单；性能不足时再升级为 `pipe-pane`。
+State Observer 有两个输入：① **agent 的 hook 事件**——Claude Code / Codex 的 hook 命令把事件投递给本机 daemon（drop-box 文件或 `POST 127.0.0.1:7680/api/hooks/<agent>`，形式由 ADR-002 定）；② **运行时轮询**——tmux 路线下周期性 `tmux capture-pane -p -t <session> -S -200` + 进程树，用于没有 hook 的 agent（generic shell；Grok 实测有 hooks，2026-09-02）、退出码与兜底。两者都不依赖浏览器连接。轮询的优势仍然成立：非侵入、不改 agent 命令、实现简单；性能不足时再升级为 `pipe-pane`。
 
 ### Scrollback 与 tail buffer（原 §5.7）
 

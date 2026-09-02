@@ -58,11 +58,11 @@ AgentAdapter {
 - hook 安装位置：装进用户自己的 agent 配置（幂等、可卸载、装前显示 diff），agora 起的会话不再重复注入。
 - 结构化 respond：PreToolUse 同步返回 allow / deny，agora 的 hook 挂起等 Dashboard 答复；挂起上限与超时行为实测。
 - 对话身份识别顺序：agent 自报（SessionStart，`/resume` `/clear` 再触发）> 启动时钉死 id > 用户从候选挑；绝不按 mtime 猜；每次命中覆盖 `agent_session_id`。
-- Codex 覆盖度实测（hook 定义不可注入；`notify` agent-turn-complete）；Grok 无 hook 走文本兜底。
+- Codex 覆盖度实测（hook 定义不可注入；`notify` agent-turn-complete）；Grok 走 hook 路线（2026-09-02 实测证实：grok 1.0.13 事件全触发、payload 双写 camel/snake、GROK_SESSION_ID ≡ `--resume` 的会话 id、fail-open；实测记录见 `agora-90t.3` 注记）。
 - 见 beads `agora-90t.3` 注记的输入清单。
 
 ### MISSION v0.8 迁入的论证与兜底细节（2026-09-02）
 
-- **hook-first 是 V1 架构而非 V2 愿望的理由**：devcenter 把结构化事件放 V2 的前提（"MVP 不依赖非稳定 private API"）已失效——Claude Code 的 SessionStart / UserPromptSubmit / PreToolUse / Notification / Stop / SessionEnd 与 Codex 的 hooks / notify 都是文档化的稳定接口；本仓库自己就在用 SessionStart hook 注入 `bd prime`。三个一等 agent 里两个有 hook，只有 Grok 需要文本兜底。
+- **hook-first 是 V1 架构而非 V2 愿望的理由**：devcenter 把结构化事件放 V2 的前提（"MVP 不依赖非稳定 private API"）已失效——Claude Code 的 SessionStart / UserPromptSubmit / PreToolUse / Notification / Stop / SessionEnd 与 Codex 的 hooks / notify 都是文档化的稳定接口；本仓库自己就在用 SessionStart hook 注入 `bd prime`。三个一等 agent 全有 hook（Grok 1.0.13 实测证实，2026-09-02，自带完整 hooks 文档且兼容 Claude hook 配置格式）；文本兜底只服务 generic shell 与采纳的未知会话。
 - **文本兜底的模式清单**（沿用 devcenter v1 的启发式）：检测到 `"Would you like..."` / `"Approve..."` / `"Allow..."` / `"Continue?"` / `"Do you want to proceed?"` 等 → WAITING。
 - **轮询兜底的优势**（保留它的理由）：非侵入、不改 agent 命令、实现简单。

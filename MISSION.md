@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.9（2026-09-02）；变更历史见 beads `agora-90t.1` 注记 |
+| 版本 | v0.10（2026-09-02）；变更历史见 beads `agora-90t.1` 注记 |
 | 项目类型 | Self-hosted Web Application |
 | 目标平台 | 节点：macOS / Ubuntu Linux / Windows 主机（Windows V1 延期）；客户端：macOS 笔记本、iOS、Android 设备上的现代浏览器（V1 只验收 macOS 笔记本） |
 | 主要用户 | 单用户 |
@@ -334,7 +334,7 @@ Display name 可任意修改，运行时身份不变。一行显示的名字有�
 
 ### 5.1 分层 State Source（V1）
 
-三个一等 agent 里，Claude Code 与 Codex 的 hook / notify 是文档化的稳定接口，只有 Grok 需要文本兜底；因此分层来源是 V1 的架构，不是 V2 的愿望（论证见 ADR-002）：
+三个一等 agent（Claude Code、Codex、Grok Build）的 hook / notify 都是文档化的稳定接口（Grok 2026-09-02 实测证实，细节见 ADR-002）；文本兜底只服务 generic shell 与采纳的未知会话。因此分层来源是 V1 的架构，不是 V2 的愿望（论证见 ADR-002）：
 
 ```
 Agent State Source（高 → 低）
@@ -347,7 +347,7 @@ Agent State Source（高 → 低）
 规则：
 
 - 有 hook 的 agent：WAITING 与 TURN_DONE **只**来自 hook；文本匹配不得把它们抬到 WAITING（误报的代价见 §5.3）。
-- 无 hook 的 agent（Grok、generic shell）：文本启发式 → WAITING（模式清单见 ADR-002）；持续 output → RUNNING；长时间无 output 但进程在 → IDLE。
+- 无 hook 的 agent（generic shell、采纳的未知会话）：文本启发式 → WAITING（模式清单见 ADR-002）；持续 output → RUNNING；长时间无 output 但进程在 → IDLE。
 - 所有 agent：process exit 且 exit code = 0 / ≠ 0 → FINISHED / FAILED。
 - 状态机带驻留时间，避免 hook 与轮询交错造成抖动。
 - 每个状态值带 `source`（hook / process / text / heuristic）与 `confidence`（§5.3）。
