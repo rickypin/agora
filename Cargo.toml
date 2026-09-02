@@ -1,0 +1,33 @@
+[package]
+name = "agora"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "agora — 多 Agent 管理工具的单 binary daemon"
+license = "UNLICENSED"
+publish = false
+
+[workspace]
+members = ["."]
+
+[dependencies]
+# 唯一的并发模型（ADR-001 D8 施工约束 1）。子进程、PTY 都在它的 blocking 线程里跑。
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+axum = { version = "0.8", features = ["ws"] }
+tower = { version = "0.5", features = ["util"] }
+rust-embed = { version = "8.12", features = ["include-exclude"] }
+mime_guess = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# 模块边界用错误枚举（ADR-001 D8 施工约束 4）；万能错误 crate 被 tests/arch_boundary.rs 禁止。
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+[dev-dependencies]
+tokio = { version = "1.53", features = ["full"] }
+http-body-util = "0.1"
+
+[profile.release]
+strip = true
+lto = "thin"

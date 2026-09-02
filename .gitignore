@@ -33,3 +33,10 @@ Thumbs.db
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Rust
+target/
+
+# 前端产物由 rust-embed 在 cargo build 时内嵌；本地先 `npm --prefix web run build`
+web/dist/*
+!web/dist/.gitkeep
