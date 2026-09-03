@@ -69,10 +69,11 @@ fn assert_absent(sub: &str, needle: &str, why: &str) {
 #[test]
 fn tmux_identifiers_only_in_runtime_tmux() {
     // ADR-001 D2：tmux 泄漏到 runtime/ 之外，第二运行时无处安放。
+    // main.rs 是组装根：选哪个运行时只能在那里发生，session/ status/ api/ 仍看不见 tmux。
     assert_only_under(
         "src",
         "tmux",
-        &["src/runtime/tmux/", "src/runtime/mod.rs"],
+        &["src/runtime/tmux/", "src/runtime/mod.rs", "src/main.rs"],
         "ADR-001 D2",
     );
 }
