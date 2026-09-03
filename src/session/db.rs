@@ -51,6 +51,13 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE TABLE projects (path TEXT PRIMARY KEY, name TEXT NOT NULL, last_used_at DATETIME);
     CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    // v2：两个"事件时刻"，不是活性（agora-xqa.15 / .16，2026-09-03）。
+    // spawned_at：本代进程（epoch）起始时刻，STARTING 窗口只看它——updated_at 被 rename /
+    // kill / cleanup 刷新，改名后两秒内会误报 STARTING。旧行留 NULL：没有起始时刻就不算 STARTING。
+    // killed_at：用户执行过 Kill 的事实，与 ended_at 同类；daemon 重启后据它把按信号退出的
+    // 会话报 FINISHED（killed by user）而不是 FAILED。Restart 时清空。
+    "ALTER TABLE sessions ADD COLUMN spawned_at DATETIME;
+    ALTER TABLE sessions ADD COLUMN killed_at DATETIME;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

@@ -31,6 +31,8 @@ fn no_liveness_columns() {
         "origin",
         "ended_at",
         "transcript_path",
+        "spawned_at",
+        "killed_at",
     ] {
         assert!(cols.contains(&required.to_string()), "缺列 {required}");
     }
@@ -48,6 +50,43 @@ fn migration_sets_user_version_and_is_idempotent() {
     assert_eq!(db.user_version().unwrap(), SCHEMA_VERSION);
     assert!(columns(&db, "projects").contains(&"path".to_string()));
     assert!(columns(&db, "preferences").contains(&"key".to_string()));
+}
+
+#[test]
+fn v1_database_upgrades_in_place_and_old_rows_read_back() {
+    // 旧行 spawned_at / killed_at 为 NULL：不算 STARTING、不算用户杀的；不能因为加列丢数据。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agora.db");
+    {
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        raw.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, runtime_ref TEXT UNIQUE, display_name TEXT NOT NULL,
+                name_locked BOOLEAN NOT NULL DEFAULT FALSE, agent_type TEXT NOT NULL,
+                working_directory TEXT, worktree TEXT, task_ref TEXT, command TEXT,
+                agent_session_id TEXT, epoch INTEGER NOT NULL DEFAULT 1, transcript_path TEXT,
+                created_at DATETIME NOT NULL, ended_at DATETIME, updated_at DATETIME NOT NULL,
+                origin TEXT NOT NULL DEFAULT 'agora');
+             CREATE TABLE projects (path TEXT PRIMARY KEY, name TEXT NOT NULL, last_used_at DATETIME);
+             CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO sessions (id, runtime_ref, display_name, agent_type, created_at, updated_at)
+                VALUES ('old001', 'tmux:agora:ag-old001', 'old', 'shell',
+                        '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z');
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+    }
+    let db = Db::open(&path).unwrap();
+    assert_eq!(db.user_version().unwrap(), SCHEMA_VERSION);
+    let (spawned, killed): (Option<String>, Option<String>) = db
+        .conn()
+        .query_row(
+            "SELECT spawned_at, killed_at FROM sessions WHERE id = 'old001'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((spawned, killed), (None, None));
 }
 
 #[test]

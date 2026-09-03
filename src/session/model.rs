@@ -48,7 +48,11 @@ pub struct SessionRecord {
     pub epoch: i64,
     pub transcript_path: Option<String>,
     pub created_at: String,
+    /// 本代进程（`epoch`）的起始时刻；create / respawn 时写。v1 库里的旧行为 None。
+    pub spawned_at: Option<String>,
     pub ended_at: Option<String>,
+    /// 用户执行过 Kill 的时刻；Restart 清空。事件而非活性（不变量 7 允许）。
+    pub killed_at: Option<String>,
     pub updated_at: String,
     pub origin: Origin,
 }

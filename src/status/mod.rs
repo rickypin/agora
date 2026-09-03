@@ -38,14 +38,15 @@ pub struct Assessment {
     pub reason: Option<String>,
 }
 
-/// 进程创建后多少秒内、还没有任何活动信息时算 STARTING。
+/// 本代进程起始后多少秒内、还没有任何活动信息时算 STARTING。
 pub const STARTING_WINDOW_SECS: u64 = 2;
 
-/// 进程状态层：只看运行时事实。`killed_by_user` 是 daemon 内存里的事实
-/// （agora 自己 terminate 过它），重启后丢失——那时按信号退出就是 FAILED。
+/// 进程状态层：只看运行时事实加两个落库的事件时刻。
+/// `spawn_age_secs` 是本代进程起始（`sessions.spawned_at`）距今的秒数，None = 不知道起始时刻，
+/// 不算 STARTING；`killed_by_user` 来自 `sessions.killed_at`，daemon 重启后仍在。
 pub fn process_layer(
     runtime: Option<&RuntimeSession>,
-    age_secs: Option<u64>,
+    spawn_age_secs: Option<u64>,
     killed_by_user: bool,
 ) -> Assessment {
     let Some(rt) = runtime else {
@@ -56,7 +57,7 @@ pub fn process_layer(
         };
     };
     if rt.alive {
-        let starting = age_secs.is_some_and(|a| a < STARTING_WINDOW_SECS);
+        let starting = spawn_age_secs.is_some_and(|a| a < STARTING_WINDOW_SECS);
         return Assessment {
             status: if starting {
                 Status::Starting

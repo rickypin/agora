@@ -152,6 +152,84 @@ fn create_writes_metadata_after_runtime_and_reports_starting_then_running() {
     assert_eq!(v.assessment.status, Status::Starting);
 }
 
+/// 把本代进程的起始时刻拨回过去，越过 2 s 的 STARTING 窗口而不真等。
+fn backdate_spawn(db: &Db, id: &str) {
+    db.conn()
+        .execute(
+            "UPDATE sessions SET spawned_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+}
+
+#[test]
+fn starting_window_follows_spawned_at_not_updated_at() {
+    // agora-xqa.15：STARTING 只看本代进程起始时刻；rename 刷新 updated_at 不得让它回到 STARTING。
+    let (m, _rt, db) = mgr();
+    let v = m.create(&new_session("s")).unwrap();
+    assert!(v.record.spawned_at.is_some());
+    assert_eq!(v.assessment.status, Status::Starting);
+    backdate_spawn(&db, &v.record.id);
+    assert_eq!(
+        m.get(&v.record.id).unwrap().assessment.status,
+        Status::Running
+    );
+    let renamed = m.rename(&v.record.id, "renamed").unwrap();
+    assert_ne!(renamed.record.updated_at, "2020-01-01T00:00:00Z");
+    assert_eq!(renamed.assessment.status, Status::Running, "改名不是新进程");
+}
+
+#[test]
+fn restart_opens_a_fresh_starting_window() {
+    let (m, _rt, db) = mgr();
+    let v = m.create(&new_session("s")).unwrap();
+    backdate_spawn(&db, &v.record.id);
+    m.kill(&v.record.id).unwrap();
+    let r = m.restart(&v.record.id, &[]).unwrap();
+    assert_eq!(
+        r.assessment.status,
+        Status::Starting,
+        "respawn 是新一代进程"
+    );
+}
+
+#[test]
+fn killed_by_user_survives_daemon_restart() {
+    // agora-xqa.16：killed_at 落库，新 manager（模拟 daemon 重启）仍报 FINISHED（killed by user）。
+    let (m, rt, db) = mgr();
+    let v = m.create(&new_session("k")).unwrap();
+    let killed = m.kill(&v.record.id).unwrap();
+    assert!(killed.record.killed_at.is_some());
+    drop(m);
+
+    let m2 = SessionManager::new(Arc::clone(&db), rt.clone() as Arc<dyn Runtime>);
+    let report = m2.reconcile().unwrap();
+    assert_eq!(report.known_dead, vec![v.record.id.clone()]);
+    let after = m2.get(&v.record.id).unwrap();
+    assert_eq!(after.assessment.status, Status::Finished);
+    assert!(after
+        .assessment
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("killed by user"));
+
+    let restarted = m2.restart(&v.record.id, &[]).unwrap();
+    assert!(
+        restarted.record.killed_at.is_none(),
+        "Restart 清掉 killed_at"
+    );
+    // 新一代被别人用信号杀掉 → FAILED，不再沾上一代的 Kill。
+    rt.set_dead(
+        restarted.record.runtime_ref.as_deref().unwrap(),
+        Exit::Signal("KILL".into()),
+    );
+    assert_eq!(
+        m2.get(&v.record.id).unwrap().assessment.status,
+        Status::Failed
+    );
+}
+
 #[test]
 fn db_failure_rolls_back_runtime_session() {
     let (m, rt, db) = mgr();

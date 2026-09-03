@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, OptionalExtension, Row};
@@ -86,21 +86,16 @@ pub struct ReconcileReport {
     pub external: Vec<String>,
 }
 
+/// 没有任何内存状态：会话 = metadata 行 ⨝ 运行时会话，daemon 重启后视图与重启前一致。
+/// "用户 Kill 过"曾是内存集合，重启后被 Kill 的会话变 FAILED（agora-xqa.16），现落 `killed_at`。
 pub struct SessionManager {
     db: Arc<Db>,
     runtime: Arc<dyn Runtime>,
-    /// agora 自己 terminate 过的 ref：按信号退出算 FINISHED（killed by user）。
-    /// 内存事实，重启后丢失。
-    killed: Mutex<HashSet<String>>,
 }
 
 impl SessionManager {
     pub fn new(db: Arc<Db>, runtime: Arc<dyn Runtime>) -> Self {
-        SessionManager {
-            db,
-            runtime,
-            killed: Mutex::new(HashSet::new()),
-        }
+        SessionManager { db, runtime }
     }
 
     pub fn db(&self) -> &Db {
@@ -127,9 +122,11 @@ impl SessionManager {
 
         let inserted = self.db.conn().execute(
             "INSERT INTO sessions (id, runtime_ref, display_name, name_locked, agent_type,
-                working_directory, worktree, task_ref, command, epoch, created_at, updated_at, origin)
+                working_directory, worktree, task_ref, command, epoch, created_at, spawned_at,
+                updated_at, origin)
              VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
-                strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'agora')",
+                strftime('%Y-%m-%dT%H:%M:%SZ','now'), strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+                'agora')",
             params![
                 id,
                 r#ref.0,
@@ -206,18 +203,17 @@ impl SessionManager {
             .runtime_ref
             .as_deref()
             .and_then(|r| live.iter().find(|s| s.r#ref.0 == r));
-        let killed = rec
-            .runtime_ref
-            .as_deref()
-            .is_some_and(|r| lock(&self.killed).contains(r));
-        let age = age_secs(&rec.updated_at);
+        let killed = rec.killed_at.is_some();
+        // STARTING 只看本代进程的起始时刻。updated_at 不行：rename / kill / cleanup 都刷新它，
+        // 改名后两秒内会把跑了一天的会话报成 STARTING（agora-xqa.15，2026-09-03）。
+        let spawn_age = rec.spawned_at.as_deref().and_then(age_secs);
         let assessment = match (rec.origin, rt) {
             (Origin::External, None) => Assessment {
                 status: Status::Unknown,
                 source: status::Source::None,
                 reason: Some("external session: no runtime, hook only".into()),
             },
-            _ => status::process_layer(rt, age, killed),
+            _ => status::process_layer(rt, spawn_age, killed),
         };
         let name = match rt {
             Some(s) if !rec.name_locked && !s.title.trim().is_empty() => s.title.clone(),
@@ -255,8 +251,13 @@ impl SessionManager {
     pub fn kill(&self, id: &str) -> Result<SessionView, SessionError> {
         let rec = self.record(id)?;
         let r#ref = self.require_ref(&rec)?;
-        lock(&self.killed).insert(r#ref.0.clone());
-        self.runtime.terminate(&r#ref, KILL_GRACE)?;
+        // 先记事实再动手：terminate 成功即进程已死，若先杀后写，中间那一瞬 get 会报 FAILED。
+        // terminate 失败则撤回，免得日后被别人用信号杀掉时冒充"用户杀的"。
+        self.set_killed_at(id, true)?;
+        if let Err(e) = self.runtime.terminate(&r#ref, KILL_GRACE) {
+            self.set_killed_at(id, false)?;
+            return Err(e.into());
+        }
         self.mark_ended(id)?;
         self.get(id)
     }
@@ -286,9 +287,9 @@ impl SessionManager {
             }
             Err(e) => return Err(e.into()),
         }
-        lock(&self.killed).remove(&r#ref.0);
         self.db.conn().execute(
-            "UPDATE sessions SET epoch = ?2, ended_at = NULL,
+            "UPDATE sessions SET epoch = ?2, ended_at = NULL, killed_at = NULL,
+                spawned_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
                 updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?1",
             params![id, epoch],
         )?;
@@ -312,7 +313,6 @@ impl SessionManager {
                 Err(RuntimeError::NotFound(_)) => {}
                 Err(e) => return Err(e.into()),
             }
-            lock(&self.killed).remove(r);
         }
         self.db
             .conn()
@@ -330,7 +330,6 @@ impl SessionManager {
             Err(RuntimeError::NotFound(_)) => {}
             Err(e) => return Err(e.into()),
         }
-        lock(&self.killed).remove(&r#ref.0);
         self.mark_ended(id)?;
         Ok(())
     }
@@ -402,6 +401,17 @@ impl SessionManager {
         self.mark_ended_at(id, None)
     }
 
+    fn set_killed_at(&self, id: &str, set: bool) -> Result<(), SessionError> {
+        self.db.conn().execute(
+            "UPDATE sessions SET
+                killed_at = CASE WHEN ?2 THEN strftime('%Y-%m-%dT%H:%M:%SZ','now') ELSE NULL END,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+             WHERE id = ?1",
+            params![id, set],
+        )?;
+        Ok(())
+    }
+
     fn mark_ended_at(&self, id: &str, at: Option<SystemTime>) -> Result<(), SessionError> {
         let secs = at
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
@@ -437,7 +447,7 @@ impl SessionManager {
 const SELECT: &str =
     "SELECT id, runtime_ref, display_name, name_locked, agent_type, working_directory,
     worktree, task_ref, command, agent_session_id, epoch, transcript_path, created_at, ended_at,
-    updated_at, origin FROM sessions";
+    updated_at, origin, spawned_at, killed_at FROM sessions";
 
 fn row_to_record(row: &Row<'_>) -> rusqlite::Result<SessionRecord> {
     let origin: String = row.get(15)?;
@@ -458,6 +468,8 @@ fn row_to_record(row: &Row<'_>) -> rusqlite::Result<SessionRecord> {
         ended_at: row.get(13)?,
         updated_at: row.get(14)?,
         origin: Origin::parse(&origin).unwrap_or(Origin::Agora),
+        spawned_at: row.get(16)?,
+        killed_at: row.get(17)?,
     })
 }
 
@@ -508,10 +520,6 @@ fn fnv(x: u128) -> u64 {
         h = h.wrapping_mul(0x0100_0000_01b3);
     }
     h
-}
-
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 #[cfg(test)]

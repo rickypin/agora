@@ -78,7 +78,9 @@ CREATE TABLE sessions (
     created_at DATETIME NOT NULL,
     ended_at DATETIME,                             -- 进程退出时刻（§4.2）；等待时长与 attention 用，A42
     updated_at DATETIME NOT NULL,
-    origin TEXT NOT NULL DEFAULT 'agora'           -- agora | adopted | external（§5.5）
+    origin TEXT NOT NULL DEFAULT 'agora',          -- agora | adopted | external（§5.5）
+    spawned_at DATETIME,                           -- 本代进程（epoch）起始时刻：create / respawn 写；STARTING 窗口只看它（v2）
+    killed_at DATETIME                             -- 用户执行过 Kill 的时刻，Restart 清空；事件不是活性，重启后仍报 killed by user（v2，ADR-001 D4）
 );
 CREATE TABLE projects (path TEXT PRIMARY KEY, name TEXT NOT NULL, last_used_at DATETIME);  -- 扫描发现 + 最近使用
 CREATE TABLE devices (                             -- ADR-003 D2：已配对设备，人的 session；只存哈希
