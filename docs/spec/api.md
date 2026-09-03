@@ -36,6 +36,7 @@ DELETE /api/auth/devices/:id       # 吊销一台设备 → 204；即时生效
 
 - 每个请求先解析出一个 principal：`Human { device }`（cookie `agora_session`）或 `Peer { name }`（`Authorization: Bearer apt_<name>_…`）；两者互斥，Bearer 优先解析。未认证白名单只有 SPA 静态资源、`GET /api/health` 的公开子集、`POST /api/auth/pair`；其余一律 401 `unauthenticated`。**没有 loopback 例外**。
 - 配对链接 `<origin>/#pair=<token>` 由 `agora open` / `agora url` / `agora pair`（经 unix socket）或已认证的 `POST /api/auth/pair/new` 铸造；256 位、单次、5 分钟。前端读 fragment 后 `POST /api/auth/pair`，再清掉 fragment。
+- cookie `agora_session` 带 `Max-Age`，取值是 `auth.session_idle`（缺省 30 天）；服务端每次刷新 `last_seen_at`（每小时至多一次）时随响应重发一遍该 cookie，让浏览器侧的窗口跟着服务端一起滑动（ADR-003 D2）。
 - Bearer 只在 TLS 监听器上被接受，明文监听器回 401 `bearer_requires_tls`。
 - cookie 认证的非 GET 请求必须带同源 `Origin`（或 `Sec-Fetch-Site: same-origin`），两者都没有 → 403 `cross_origin`（curl 调写端点要自己带 Origin）；WS 升级校验 `Origin` 与 `Host` 同源；Bearer 跳过。
 - Kill / Restart 带 `confirmed`；所属节点判断需要确认而未确认 → 错误类型 `NeedsConfirmation`；转发节点原样转发 `confirmed`。

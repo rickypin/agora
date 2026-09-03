@@ -8,7 +8,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use super::{ApiError, AppState, ClientAddr};
-use crate::auth::{Auth, AuthError, Device, PairedVia, Principal, COOKIE_NAME};
+use crate::auth::{Auth, AuthConfig, AuthError, Device, PairedVia, Principal, COOKIE_NAME};
 
 /// 每个 handler 的签名都要它；缺了就是免认证端点（守卫：tests/auth.rs）。
 impl FromRequestParts<AppState> for Principal {
@@ -21,7 +21,15 @@ impl FromRequestParts<AppState> for Principal {
         }
         let token = cookie_value(&parts.headers, COOKIE_NAME).ok_or(AuthError::Unauthenticated)?;
         // 一次索引命中的 SQLite 查询，微秒级；不值得为它 spawn_blocking。
-        let principal = state.auth.authenticate_session(&token)?;
+        let auth = state.auth.authenticate_session(&token)?;
+        let principal = auth.principal;
+        // 服务端刚把 last_seen_at 往后推了，就把浏览器那边的 Max-Age 也推一下，
+        // 两个 30 天窗口才是同一个窗口（RenewSlot 的注释里有为什么不能只在配对时发）。
+        if auth.renewed {
+            if let Some(slot) = parts.extensions.get::<RenewSlot>() {
+                slot.set(session_cookie(&token, state.auth.config()));
+            }
+        }
         // 请求日志那一行的 principal 栏（api::log_request 开的 span）。
         tracing::Span::current().record("principal", tracing::field::display(principal.log_id()));
         // CSRF（ADR-003 D7）：cookie 认证的非安全方法必须同源。
@@ -49,6 +57,27 @@ impl OptionalFromRequestParts<AppState> for Principal {
             Err(e) if e.kind == "unauthenticated" => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+/// 滑动续期的回传格子。提取器认证成功、且这次刷新了 `last_seen_at` 时把要重发的
+/// cookie 放进来，`api::renew_session_cookie` 层在响应上补一个 `Set-Cookie`。
+///
+/// 为什么绕这一道：axum 的提取器只能读请求、动不了响应，而中间件手里没有提取器
+/// 认证时查出来的结果。另一条路是让中间件自己再认一次，那就是每个请求两次 SQLite
+/// 查询、两份过期判定逻辑，将来改一处忘一处。共享格子只多一个 Arc。
+#[derive(Clone, Default)]
+pub(super) struct RenewSlot(std::sync::Arc<std::sync::Mutex<Option<HeaderValue>>>);
+
+impl RenewSlot {
+    fn set(&self, cookie: HeaderValue) {
+        if let Ok(mut g) = self.0.lock() {
+            *g = Some(cookie);
+        }
+    }
+
+    pub(super) fn take(&self) -> Option<HeaderValue> {
+        self.0.lock().ok().and_then(|mut g| g.take())
     }
 }
 
@@ -108,7 +137,7 @@ pub async fn pair(
         .and_then(|v| v.to_str().ok());
     let from = addr.map(|a| a.to_string());
     let (device, session) = state.auth.redeem(&body.token, ua, from.as_deref())?;
-    let cookie = session_cookie(&session, state.auth.config().cookie_secure);
+    let cookie = session_cookie(&session, state.auth.config());
     Ok(([(header::SET_COOKIE, cookie)], Json(PairReply { device })).into_response())
 }
 
@@ -167,9 +196,18 @@ pub async fn revoke_device(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn session_cookie(session: &str, secure: bool) -> HeaderValue {
-    let mut s = format!("{COOKIE_NAME}={session}; HttpOnly; SameSite=Lax; Path=/");
-    if secure {
+/// `Max-Age` 必须发：不发就是 session cookie，浏览器一关就丢（RFC 6265 5.3），
+/// ADR-003 承诺的"配对一次后 30 天免登录"在浏览器侧根本不成立——服务端的
+/// `session_idle` 判定再对也没用，因为凭据已经不在了（agora-z8b，2026-09-03 实测：
+/// 配对应答只有 `HttpOnly; SameSite=Lax; Path=/`）。取值跟着 `auth.session_idle` 走，
+/// 不写死 30 天：两个窗口一旦对不上，要么服务端先拒（用户看到莫名其妙的 401），
+/// 要么浏览器先丢（用户看到莫名其妙的重新配对）。
+fn session_cookie(session: &str, cfg: &AuthConfig) -> HeaderValue {
+    let mut s = format!(
+        "{COOKIE_NAME}={session}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
+        cfg.session_idle.as_secs()
+    );
+    if cfg.cookie_secure {
         s.push_str("; Secure");
     }
     HeaderValue::from_str(&s).unwrap_or_else(|_| HeaderValue::from_static(""))

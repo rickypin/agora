@@ -41,6 +41,17 @@ impl Default for AuthConfig {
     }
 }
 
+/// `authenticate_session` 的结果：认出来的 principal，外加"这次把服务端的滑动窗口往后推了没有"。
+/// 后者不是给调用方看热闹的：服务端的 30 天是 `last_seen_at` 的滑动窗口，浏览器那边的 30 天
+/// 是 cookie 的 `Max-Age`，两个窗口必须一起走。只在配对时发一次 `Max-Age` 的话，天天在用的人
+/// 第 31 天照样被浏览器丢掉 cookie，而服务端还认——这正是 ADR-003 说"滑动"要防的情况。
+/// `renewed` 跟着 `last_seen_at` 的每小时至多一次写走，所以重发 cookie 也是每小时至多一次。
+#[derive(Debug, Clone)]
+pub struct SessionAuth {
+    pub principal: Principal,
+    pub renewed: bool,
+}
+
 /// 每个请求先解析出它；V1 单人，Human 不带用户名（多用户只加字段，ADR-003 D9）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -203,7 +214,7 @@ impl Auth {
     // ---------- session ----------
 
     /// cookie 里的明文 → Principal。吊销即时、距最近使用 30 天、距配对 365 天。
-    pub fn authenticate_session(&self, token: &str) -> Result<Principal, AuthError> {
+    pub fn authenticate_session(&self, token: &str) -> Result<SessionAuth, AuthError> {
         let hash = sha256_hex(token);
         let row: Option<(String, String, String, Option<String>)> = self
             .db
@@ -228,13 +239,17 @@ impl Auth {
             tracing::info!(component = "auth", device = %id, idle, age, "session 已过期");
             return Err(AuthError::Unauthenticated);
         }
-        if idle >= TOUCH_INTERVAL_SECS {
+        let touched = idle >= TOUCH_INTERVAL_SECS;
+        if touched {
             self.db.conn().execute(
                 "UPDATE devices SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?1",
                 [&id],
             )?;
         }
-        Ok(Principal::Human { device: id })
+        Ok(SessionAuth {
+            principal: Principal::Human { device: id },
+            renewed: touched,
+        })
     }
 
     // ---------- 设备管理 ----------

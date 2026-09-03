@@ -52,6 +52,13 @@ impl Fx {
             "{set}"
         );
         assert!(!set.contains("Secure"), "明文监听器不加 Secure");
+        assert!(
+            set.contains(&format!(
+                "Max-Age={}",
+                self.auth.config().session_idle.as_secs()
+            )),
+            "配对 cookie 必须带 Max-Age，否则浏览器一关就丢：{set}"
+        );
         set.split(';').next().unwrap().to_owned()
     }
 
@@ -73,6 +80,10 @@ impl Fx {
     }
 
     async fn get_devices(&self, cookie: &str) -> StatusCode {
+        self.get_devices_resp(cookie).await.status()
+    }
+
+    async fn get_devices_resp(&self, cookie: &str) -> axum::response::Response {
         self.app()
             .oneshot(
                 Request::get("/api/auth/devices")
@@ -83,7 +94,20 @@ impl Fx {
             )
             .await
             .unwrap()
-            .status()
+    }
+
+    /// 把 last_seen_at 往前拨，模拟"上次用是多久以前"。
+    fn set_idle(&self, secs: u64) {
+        self.db
+            .conn()
+            .execute(
+                &format!(
+                    "UPDATE devices SET last_seen_at =
+                     strftime('%Y-%m-%dT%H:%M:%SZ','now','-{secs} seconds')"
+                ),
+                [],
+            )
+            .unwrap();
     }
 }
 
@@ -412,4 +436,78 @@ async fn database_stores_only_hashes() {
     assert_ne!(stored, plain);
     assert_eq!(stored.len(), 64);
     assert_eq!(stored, agora::auth::sha256_hex(plain));
+}
+
+/// ADR-003 D2 的"配对一次后 30 天免登录"是**两个**窗口：服务端 `last_seen_at` 的滑动
+/// 判定，和浏览器 cookie 的 `Max-Age`。原来只做了前者，cookie 不带 `Max-Age` 就是
+/// session cookie，浏览器一关就丢，用户第二天打开还是要重新配对（agora-z8b）。
+/// 老守卫 `session_idle_and_absolute_expiry` 抓不到它：那个测试全程拿 fixture 手里的
+/// cookie 串发请求，相当于模拟了一个永远不丢 cookie 的浏览器，从没看过 `Set-Cookie`。
+#[tokio::test]
+async fn session_cookie_max_age_tracks_config_and_slides_with_use() {
+    // 故意不用默认的 30 天：写死 30 天的实现会在这里变红。
+    let idle = Duration::from_secs(7 * 86_400);
+    let fx = Fx::with(AuthConfig {
+        session_idle: idle,
+        ..AuthConfig::default()
+    });
+    let cookie = fx.pair().await; // pair() 内部断言了 Max-Age=idle
+
+    // 刚用过（idle 不到一小时）：不该每个响应都塞一个 Set-Cookie。
+    let resp = fx.get_devices_resp(&cookie).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        resp.headers().get(header::SET_COOKIE).is_none(),
+        "服务端没刷新 last_seen_at 时不必重发 cookie"
+    );
+
+    // 隔了两小时再用：服务端把 last_seen_at 往后推，浏览器那边的 Max-Age 也要跟着推，
+    // 否则天天在用的人到第 8 天照样被浏览器丢掉 cookie。
+    fx.set_idle(2 * 3600);
+    let resp = fx.get_devices_resp(&cookie).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let set = resp
+        .headers()
+        .get(header::SET_COOKIE)
+        .expect("刷新 last_seen_at 的那次请求要重发 cookie")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        set.starts_with(&cookie),
+        "重发的是同一条 session，不换 token"
+    );
+    assert!(
+        set.contains(&format!("Max-Age={}", idle.as_secs())),
+        "续期的 Max-Age 也取配置值：{set}"
+    );
+    assert!(
+        set.contains("HttpOnly") && set.contains("SameSite=Lax"),
+        "{set}"
+    );
+
+    // 紧接着再请求一次：last_seen_at 刚被推到现在，不该再发。
+    let resp = fx.get_devices_resp(&cookie).await;
+    assert!(resp.headers().get(header::SET_COOKIE).is_none());
+}
+
+/// TLS 监听器上发的 cookie 要同时带 `Secure` 与 `Max-Age`——加 `Secure` 时别把
+/// `Max-Age` 挤掉（两者是拼在同一个字符串里的）。
+#[tokio::test]
+async fn secure_cookie_still_carries_max_age() {
+    let fx = Fx::with(AuthConfig {
+        cookie_secure: true,
+        ..AuthConfig::default()
+    });
+    let token = fx.auth.mint_pair_token(PairedVia::Socket).unwrap();
+    let resp = fx.pair_with(&token).await;
+    let set = resp.headers()[header::SET_COOKIE].to_str().unwrap();
+    assert!(set.contains("Secure"), "{set}");
+    assert!(
+        set.contains(&format!(
+            "Max-Age={}",
+            AuthConfig::default().session_idle.as_secs()
+        )),
+        "{set}"
+    );
 }

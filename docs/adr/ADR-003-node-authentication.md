@@ -73,7 +73,8 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 
 - 配对成功 → 发放 32 字节随机 session token；SQLite 存 `devices (id, name, session_sha256, paired_via: socket|session, paired_from_addr, created_at, last_seen_at, revoked_at)`；`name` 从 User-Agent 生成、可改名。
 - 过期：**距最近使用 30 天**（滑动）且**距配对不超过 365 天**（绝对上限）。`last_seen_at` 每小时至多写一次。
-- cookie `agora_session`：`HttpOnly; SameSite=Lax; Path=/`；经 TLS 监听器发放时加 `Secure`（`127.0.0.1` 与远端主机名是不同 origin，cookie 罐互不干扰）。WS 握手是同站 GET，cookie 自动携带。
+- cookie `agora_session`：`HttpOnly; SameSite=Lax; Path=/; Max-Age=<session_idle 秒数>`；经 TLS 监听器发放时加 `Secure`（`127.0.0.1` 与远端主机名是不同 origin，cookie 罐互不干扰）。WS 握手是同站 GET，cookie 自动携带。
+- **`Max-Age` 不可省，且要跟着上一条的滑动窗口一起推。** 上面那句"距最近使用 30 天"是**两个**窗口：服务端按 `last_seen_at` 判过期，浏览器按 cookie 的 `Max-Age` 决定还留不留这条 cookie。不发 `Max-Age` 就是 session cookie，浏览器一关就丢，服务端的 30 天判得再对也没有凭据可判（agora-z8b：本 ADR 早先版本就漏写了这一段，实现照着写，于是文档与代码一致地错）。只在配对时发一次也不行：那是"距配对 30 天"，天天在用的人第 31 天照样被浏览器丢掉。因此每次刷新 `last_seen_at`（每小时至多一次）时随响应重发一遍 cookie。
 - 吊销：`agora auth devices` / `agora auth revoke <device-id | --all>`；`POST /api/auth/logout` 只删当前设备。Dashboard 设备列表随 V2-1。
 - 接受的代价：所有已配对设备都失效时（全部过期、或手机丢了而笔记本又不在身边），只能回到节点本机或 ssh 上去 `agora pair`。滑动 30 天让这种情况在正常使用下不出现。
 
@@ -171,6 +172,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 - **TOFU 或指纹不匹配时降级为"离线"** → 中间人静默成功。守卫：`tests/peer_tls.rs::fingerprint_mismatch_is_refused_not_stale`、`::no_pin_no_connect`。
 - **socket / 目录权限过宽仍照常运行** → 守卫：`tests/local_channel.rs::socket_rejects_other_uid`、`::home_perms_too_open_refuses_start`。
 - **cookie 认证的跨站请求被接受** → 守卫：`tests/auth.rs::cross_origin_cookie_request_rejected`（含 WS 升级）。
+- **session cookie 不带 `Max-Age`，或带了但不随使用续期** → "配对一次后 30 天免登录"在浏览器侧不成立，用户被迫反复回到节点本机 `agora pair`，而这正是本 ADR 用配对换掉 TOTP 时承诺不会发生的事。守卫：`tests/auth.rs::session_cookie_max_age_tracks_config_and_slides_with_use`、`::secure_cookie_still_carries_max_age`。注意 `::session_idle_and_absolute_expiry` **不**覆盖这一条：它全程复用同一个 cookie 串，等于假设浏览器永远不丢 cookie，只验了服务端那一半。
 - **转发节点替客户端置 `confirmed`** → 守卫：`tests/forward.rs::kill_confirmation_enforced_at_owner`。
 - **有人好心把限流加回来** → 它会重新引入"锁住主人"这一类攻击，而配对链接不需要它。守卫是本文与 D7 的注释；若将来引入可猜的凭据，先改本 ADR。
 - 不变量 11 的 fake-agent 集成测试（A36）由以上守卫合并覆盖；逐条关掉守卫，对应测试变红。

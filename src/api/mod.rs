@@ -20,7 +20,7 @@ use std::time::Instant;
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{FromRef, FromRequestParts, Request};
 use axum::http::request::Parts;
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -156,7 +156,25 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/devices/{id}", delete(auth::revoke_device))
         .fallback(get(spa::serve))
         .layer(middleware::from_fn(log_request))
+        .layer(middleware::from_fn(renew_session_cookie))
         .with_state(state)
+}
+
+/// 滑动续期：`Principal` 提取器认证成功且刚把 `last_seen_at` 往后推时，会把要重发的
+/// cookie 放进请求扩展里的 `RenewSlot`，这里在响应上补 `Set-Cookie`（ADR-003 D2）。
+///
+/// 服务端的 30 天与浏览器 cookie 的 30 天必须是同一个滑动窗口。只在配对时发一次
+/// `Max-Age` 的话，天天在用的人第 31 天被浏览器丢掉 cookie，服务端却还认——用户看到的
+/// 是"明明一直在用，却要求重新配对"（agora-z8b）。频率跟着 `last_seen_at` 的每小时至多
+/// 一次写走，所以正常使用下每小时至多多出一个响应头。
+async fn renew_session_cookie(mut req: Request, next: Next) -> Response {
+    let slot = auth::RenewSlot::default();
+    req.extensions_mut().insert(slot.clone());
+    let mut resp = next.run(req).await;
+    if let Some(cookie) = slot.take() {
+        resp.headers_mut().append(header::SET_COOKIE, cookie);
+    }
+    resp
 }
 
 /// 每条 API 请求一行日志：方法、路径、状态、耗时、principal（MISSION §10.2）。
