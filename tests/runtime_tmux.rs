@@ -8,6 +8,11 @@ use std::time::{Duration, Instant};
 use agora::runtime::tmux::{socket_path, TmuxConfig, TmuxRuntime};
 use agora::runtime::{Exit, LaunchSpec, Runtime, RuntimeError, Size};
 
+// 轮询 tmux 不能太密：每次 inspect/capture 都要新起一个 tmux client 进程，密集轮询会和
+// server 收集子进程退出状态抢 SIGCHLD，pane 会死得"没有退出码"（agora-tc4；实测 2026-09-03
+// 3.2a 上密集轮询丢 5/6、200 ms 轮询丢 1/6）。生产的 status.detector_interval 是 2 s。
+const POLL: Duration = Duration::from_millis(200);
+
 static N: AtomicU32 = AtomicU32::new(0);
 
 struct Fixture {
@@ -83,7 +88,7 @@ impl Fixture {
                 }
             }
             assert!(Instant::now() < deadline, "timeout waiting on {r}");
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(POLL);
         }
     }
 }
@@ -134,22 +139,47 @@ fn history_limit_applies_to_first_pane() {
 
 #[test]
 fn respawn_keeps_previous_scrollback() {
+    // agora-6bo：前一轮的输出——包括还在可见屏上、没滚进 history 的那些——Restart 后仍在。
+    // 48 行的窗口里 32 行全在可见屏；respawn-pane 的 screen_reinit 会清掉它们，
+    // 靠 respawn 前后的缩放窗口把它们先推进 history 再拉回来（TmuxRuntime::respawn）。
     let f = Fixture::new();
     let r =
-        f.rt.create(&f.spec("ag-resp", "echo FIRST_ROUND; exit 0"))
-            .unwrap();
+        f.rt.create(&f.spec(
+            "ag-resp",
+            "echo FIRST_ROUND; seq 1 30; echo LAST_VISIBLE; exit 0",
+        ))
+        .unwrap();
     f.wait_until(&r, |s| !s.alive);
+    // 死了立刻 respawn：3.2a 上此时退出码可能还没收集、"Pane is dead" 行还没打印，最容易丢
+    // （ubuntu-22.04 实测 2026-09-03）。
     f.rt.respawn(&r, &f.spec("ag-resp", "echo SECOND_ROUND; sleep 300"))
         .unwrap();
     f.wait_until(&r, |s| s.alive);
+    wait_capture(&f, &r, &["FIRST_ROUND", "LAST_VISIBLE", "SECOND_ROUND"]);
+
+    // 活着时 Restart：先杀再重生，前两轮同样都在。
+    f.rt.respawn(&r, &f.spec("ag-resp", "echo THIRD_ROUND; sleep 300"))
+        .unwrap();
+    f.wait_until(&r, |s| s.alive);
+    wait_capture(
+        &f,
+        &r,
+        &["FIRST_ROUND", "LAST_VISIBLE", "SECOND_ROUND", "THIRD_ROUND"],
+    );
+}
+
+fn wait_capture(f: &Fixture, r: &agora::runtime::RuntimeRef, needles: &[&str]) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let text = String::from_utf8_lossy(&f.rt.capture_tail(&r, 200).unwrap()).into_owned();
-        if text.contains("FIRST_ROUND") && text.contains("SECOND_ROUND") {
+        let text = String::from_utf8_lossy(&f.rt.capture_tail(r, 200).unwrap()).into_owned();
+        if needles.iter().all(|n| text.contains(n)) {
             break;
         }
-        assert!(Instant::now() < deadline, "capture = {text:?}");
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            Instant::now() < deadline,
+            "期待 {needles:?} 都在，capture = {text:?}"
+        );
+        std::thread::sleep(POLL);
     }
 }
 
@@ -179,7 +209,7 @@ fn terminate_leaves_no_orphans() {
             Instant::now() < deadline,
             "process group {pid} still has members"
         );
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(POLL);
     }
 }
 

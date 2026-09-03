@@ -85,7 +85,7 @@ tmux 映射（具体命令行是 spec 的事，这里只钉住形状与理由）
 | attach | daemon 自己的 PTY 内 `tmux -u -L <socket> attach-session -t =<name>`，**不带 `-d`** | MVP 允许多客户端同看（§6.8）；`-u` 强制 UTF-8（launchd 起的 daemon 没有 locale）；`=` 精确匹配防前缀误伤 |
 | capture_tail | `capture-pane -p -J -S -<n> -t =<name>:` | `-J` 拼回折行；只在需要文本兜底或预览时调用 |
 | terminate | `kill(-pane_pid, SIGTERM)` → 5 s → `SIGKILL`，不经 tmux | tmux 给每个 pane 起新进程组，pgid == pane_pid（实测），整组杀不留孤儿；`kill-session` 只发 SIGHUP，忽略 SIGHUP 的子孙会残留 |
-| respawn | `respawn-pane -k -t =<name>: -c <cwd> -e … <command>` | 同一会话、同一名字；**保留前一轮 scrollback**（实测）；活着时 `-k` 先杀，死了直接重生 |
+| respawn | 活着先 `terminate`（进程组 SIGTERM → SIGKILL）；`display-message -p '#{window_height}'` → `resize-window -y 1`（可见屏推进 history）→ `respawn-pane -k -t =<name>: -c <cwd> -e … <command>` → `resize-window -y <原高度>` + `set-option -w -u window-size`（放大时 tmux 把那些行拉回可见屏） | 同一会话、同一名字；**保留前一轮 scrollback 与最后一屏**（光标以下的行除外）。`respawn-pane` 的 screen_reinit 只留 history；tmux 打印 "Pane is dead" 前的那次换行只救顶行，3.2a 信号退出连这一行都不打（agora-6bo；3.2a / 3.4 / 3.7c 实测 2026-09-03） |
 | remove | 先 `inspect` 确认 `pane_dead=1`，再 `kill-session -t =<name>:` | 清理永远只碰已退出的会话；活着的一律拒绝 |
 
 ### D3 socket：专用 socket 承载、默认 socket 只读
@@ -115,7 +115,7 @@ set -g exit-unattached off        # 两条都是默认值，写出来是为了�
 | 创建 | `create` → 写 metadata；写库失败 → `remove` 回滚 | 先外部资源后 metadata，不留孤儿记录（不变量 7 同构） |
 | Detach / Close Tab | 关掉那条 `attach` 流 | 运行时不知道浏览器存在 |
 | **Kill** | `terminate`（TERM → KILL）；**会话保留为 dead pane**；写 `killed_at` | 与 MISSION §4.6 "杀掉运行时会话"字面不同，见下。`killed_at` 是"用户做过这件事"的事件时刻，与 `ended_at` 同类而非活性（不变量 7 不禁）：按信号退出 + `killed_at` 非空 → FINISHED（killed by user），否则 FAILED；daemon 重启后照旧（2026-09-03 之前只在内存里记，重启后被 Kill 的会话变 FAILED，agora-xqa.16） |
-| **Restart** | `respawn`；命令由 Adapter 按 `agent_session_id` 重算 resume 参数（§5.6）；`epoch + 1`、写 `spawned_at`、清 `killed_at` | 同一会话、同名、同 cwd，scrollback 保留；活着才需确认（§8）。`spawned_at` 是本代进程的起始时刻，进程状态层的 2 s STARTING 窗口只看它——不看 `updated_at`，那个被 rename / kill / 清理刷新（agora-xqa.15） |
+| **Restart** | `respawn`；命令由 Adapter 按 `agent_session_id` 重算 resume 参数（§5.6）；`epoch + 1`、写 `spawned_at`、清 `killed_at` | 同一会话、同名、同 cwd，scrollback 与最后一屏保留（D2 respawn 行的缩放窗口手法，agora-6bo）；活着才需确认（§8）。`spawned_at` 是本代进程的起始时刻，进程状态层的 2 s STARTING 窗口只看它——不看 `updated_at`，那个被 rename / kill / 清理刷新（agora-xqa.15） |
 | 清理 | `remove`（只对 dead pane） | 触发：用户在 Dashboard 确认 / Delete Metadata / Restart 复用。**V1 不做定时 GC**：看没看过只有人知道 |
 | Delete Metadata | 删行；会话活着 → 留在 socket 上变成"未注册"（可再采纳）；已死 → 顺手 `remove` | 两个端点、两个语义（§7.3） |
 | daemon 重启 | `list()` ⨝ SQLite | 已知 ref 活着 → 重建；已知 ref 已死 → 按 `exit` 报 FINISHED / FAILED；已知 ref 不在 → `ended_at` 补今天、状态 UNKNOWN（reason: runtime session missing），可 Delete 或 Restart（此时 Restart 退化为同名 `create`，无 scrollback）；未知 ref 在 agora socket → 未注册（多半是库丢了）；未知 ref 在默认 socket → 可采纳的未注册会话（采纳后 `origin = adopted`，§5.5） |
@@ -144,7 +144,7 @@ Terminal Gateway 的一端是 daemon 自己 open 的 PTY，里面跑 `tmux attac
 
 - **pane 进程继承 tmux server 的环境，不是客户端的**（devcenter `which.rs` 结论，本机复现：launchd 式最小环境下 pane 的 PATH 是 `/usr/bin:/bin`，`claude` 不可见；`$SHELL -l -c` 也不够，本机 `~/.local/bin` 是 `.zshrc` 加的）。因此 daemon 启动时**探测一次用户 shell 的 PATH**：`$SHELL -l -i -c 'printf "\n__AGORA_PATH__%s\n" "$PATH"'`，stdin `/dev/null`、`TERM=xterm-256color`（`TERM=dumb` 会让 `.zshrc` 提前退出，实测）、5 s 超时、取哨兵行；成功则用它作为 daemon 自身与专用 tmux server 的 PATH，失败则退回 daemon 自己的 PATH 并在 health 里标明 `path_source`。**存储的命令保持可移植**（`claude`），不改写成绝对路径；机器相关的东西（PATH、resume 参数、hook 环境）每次启动现算（`agora-90t.2` 注记 ⑪）。
 - **locale**：daemon 环境缺 UTF-8 的 `LANG` / `LC_ALL` 时，create 与 respawn 注入 `-e LANG=C.UTF-8`（devcenter 的 CJK 乱码教训）；安装脚本同时在 launchd / systemd 单元里写 `LANG`（A26）。
-- **tmux ≥ 3.2**：`new-session -e`（3.2）、`window-size latest`（3.1）、`respawn-pane -e`（3.0）。`pane_dead_signal` / `pane_dead_time` 是 3.3 才有的（ubuntu-22.04 CI 的 3.2a 实测两者皆空，2026-09-03）：3.2a 上被信号杀死的 pane 报 `Exit::Signal("unknown")`，`exited_at` 取运行时首次观测到死亡的时刻；不因此抬高下限。覆盖 Ubuntu 22.04（3.2a）、24.04（3.4，zuan 实机）、brew（3.7c）。daemon 启动时读 `tmux -V`（文档化接口）；低于下限或 server 协议不匹配（`brew upgrade tmux` 之后新 client 连不上旧 server）→ health 报 `runtime: degraded` 并给出原因，已有会话显示 UNKNOWN，**不杀 server、不退出 daemon**。安装脚本负责装 tmux；agora 的升级命令（A39）不碰 tmux。
+- **tmux ≥ 3.2**：`new-session -e`（3.2）、`window-size latest`（3.1）、`respawn-pane -e`（3.0）。`pane_dead_signal` / `pane_dead_time` 是 3.3 才有的（ubuntu-22.04 CI 的 3.2a 实测两者皆空，2026-09-03）：3.2a 上被信号杀死的 pane 报 `Exit::Signal("unknown")`，`exited_at` 取运行时首次观测到死亡的时刻；pane 死后 `pane_dead_status` 为空既可能是退出码尚未收集（pty EOF 先于 waitpid）也可能是信号退出，运行时按首次观测到死亡后 2 s 的宽限区分：宽限内 `exit = None`（UNKNOWN，退出码尚未收集，与 3.3+ 同一形态），之后才报 `Signal("unknown")`，否则正常 `exit 7` 会先闪一次 FAILED（agora-5nu；ubuntu-22.04 容器紧密轮询 30 次撞上 2 次，2026-09-03）；另有一条不分版本的限制：进程**经 PTY 交互输入之后**退出时，tmux 有时根本不收集退出状态——pane 死了但 `pane_dead_status` 与 `pane_dead_signal` 都为空，而且不会再补上（不是"尚未收集"的短暂窗口）。实测 2026-09-03（`read` 后 `exit 3`，send-keys 喂一行）：3.2a 密集轮询 5/6 丢、200 ms 轮询 1/6 丢，3.4 1/6 丢，3.7c 0/6。后果是这类会话在 3.2a 上退化为 `Signal("unknown")` → FAILED，在 3.3+ 上 `exit` 一直是 `None` → **UNKNOWN**，A12 的「退出码可读」对交互过的会话不成立。`tests/invariants.rs` 因此只断言「已死且结论自洽」；不经交互的秒退退出码仍是硬要求（`quick_exit_keeps_exit_code`）。定性与去留见 agora-tc4；暂不因此抬高下限。覆盖 Ubuntu 22.04（3.2a）、24.04（3.4，zuan 实机）、brew（3.7c）。daemon 启动时读 `tmux -V`（文档化接口）；低于下限或 server 协议不匹配（`brew upgrade tmux` 之后新 client 连不上旧 server）→ health 报 `runtime: degraded` 并给出原因，已有会话显示 UNKNOWN，**不杀 server、不退出 daemon**。安装脚本负责装 tmux；agora 的升级命令（A39）不碰 tmux。
 
 ### D8 语言与技术栈
 
@@ -215,7 +215,7 @@ Terminal Gateway 的一端是 daemon 自己 open 的 PTY，里面跑 `tmux attac
 | 3 | 专用 socket + `-f conf`（history-limit / remain-on-exit / status / window-size latest） | server 启动即全部生效；`-c /tmp -e AGORA_TEST=1` 在 pane 内可见 | D3 conf、D2 `-c` / `-e` |
 | 4 | pane 进程的 pgid | `pgid == pane_pid`（tmux 为每个 pane 新建进程组） | D2 terminate 整组杀 |
 | 5 | `kill -TERM -- -<pane_pid>` / `-KILL` | `pane_dead=1`、`pane_dead_status` 为空、`pane_dead_signal=term` / `kill`、`pane_dead_time` 有值 | `Exit::Signal` 形态；list 字段含 signal |
-| 6 | `respawn-pane -k -c <dir> -e K=V <cmd>` 对活 pane；再对 dead pane 不带 `-k` | 都成功；新 cwd / env 生效；`exit 3` 后 `pane_dead_status=3`；**前一轮输出仍在 scrollback** | D2 respawn = Restart |
+| 6 | `respawn-pane -k -c <dir> -e K=V <cmd>` 对活 pane；再对 dead pane 不带 `-k` | 都成功；新 cwd / env 生效；`exit 3` 后 `pane_dead_status=3`；**前一轮输出仍在 scrollback**（补记 2026-09-03：只有已滚入 history 的行在，可见屏被 screen_reinit 清掉；这里能过是 pane 死时 "Pane is dead" 前的换行把那一行推进了 history，3.2a 信号退出没有这一行。现行做法见 D2 respawn 行，agora-6bo） | D2 respawn = Restart |
 | 7 | 最小环境（launchd 式 PATH）起 tmux server，pane 内 `command -v claude` | PATH = `/usr/bin:/bin`，找不到 claude；`$SHELL -l -c` 包一层仍找不到（`~/.local/bin` 在 `.zshrc`）；`$SHELL -l -i -c` + `TERM=xterm-256color` + 哨兵行 → 完整 PATH（含 `~/.local/bin`、cargo、grok）；`TERM=dumb` 时 `.zshrc` 提前退出、探测失败 | D7 PATH 探测方案与 TERM 反例 |
 | 8 | zsh 下 `-t =name:` 不加引号 | zsh 把 `=name` 展开为命令路径查找 | D2 argv 直传、不经 shell |
 | 9 | devcenter 470 测试（`agora-90t.6`） | 全绿；不变量 1–3 的 tmux 机制亲手验证 | D1 |

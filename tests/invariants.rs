@@ -15,6 +15,11 @@ use tokio_tungstenite::tungstenite::Message;
 
 use common::node::TmuxNode;
 
+// 轮询 tmux 不能太密：每次 inspect/capture 都要新起一个 tmux client 进程，密集轮询会和
+// server 收集子进程退出状态抢 SIGCHLD，pane 会死得"没有退出码"（agora-tc4；实测 2026-09-03
+// 3.2a 上密集轮询丢 5/6、200 ms 轮询丢 1/6）。生产的 status.detector_interval 是 2 s。
+const POLL: Duration = Duration::from_millis(200);
+
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -54,6 +59,36 @@ async fn output_until(ws: &mut Ws, needle: &str) -> String {
 async fn send_input(ws: &mut Ws, data: &str) {
     let frame = serde_json::json!({ "type": "input", "data": data }).to_string();
     ws.send(Message::Text(frame.into())).await.unwrap();
+}
+
+/// A12 的终局断言。tmux 在**经 PTY 交互输入之后**退出时，有时根本不收集退出状态：pane 死了
+/// 但 `pane_dead_status` 与 `pane_dead_signal` 都为空，而且不会再补上（agora-tc4）。实测
+/// 2026-09-03（`print READY; read; exit 3` 经 send-keys 喂一行）：3.2a 密集轮询 5/6 丢、
+/// 200 ms 轮询 1/6 丢，3.4 1/6 丢，3.7c 0/6。所以这里不按版本分档（3.4 也会丢），只钉住
+/// 「进程确实死了，而且拿到的结论必须自洽」：有退出码就必须是期望的那个且判 FAILED；
+/// 只剩信号也判 FAILED；什么都没有则只能是 UNKNOWN。不经交互的秒退退出码仍是硬要求，
+/// 由 runtime_tmux::quick_exit_keeps_exit_code 与 session_tmux 的 daemon 重启用例守住。
+fn assert_dead_with_code(node: &TmuxNode, id: &str, expected: i32) -> agora::session::SessionView {
+    let mut v = node.wait(id, |v| !v.alive);
+    // 退出信息可能比"进程已死"晚一两个 tick；给它 3 s，但不强求。
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while v.exit.is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(POLL);
+        v = node.sessions.get(id).unwrap();
+    }
+    match &v.exit {
+        Some(Exit::Code(c)) => {
+            assert_eq!(*c, expected, "拿到退出码就必须是期望值");
+            assert_eq!(v.assessment.status, Status::Failed);
+        }
+        Some(Exit::Signal(_)) => assert_eq!(v.assessment.status, Status::Failed),
+        None => assert_eq!(
+            v.assessment.status,
+            Status::Unknown,
+            "tmux 没给退出信息时只能报 UNKNOWN"
+        ),
+    }
+    v
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -97,9 +132,7 @@ async fn two_nodes_in_one_process_are_isolated() {
     output_until(&mut ws, "B-READY").await;
     send_input(&mut ws, "bye\r").await;
     output_until(&mut ws, "read:bye").await;
-    let v = b.wait(&sb.record.id, |v| v.exit.is_some());
-    assert_eq!(v.exit, Some(Exit::Code(3)));
-    assert_eq!(v.assessment.status, Status::Failed);
+    assert_dead_with_code(&b, &sb.record.id, 3);
 }
 
 /// A8 刷新、A9 关浏览器、A10 daemon 死掉：三种折腾之后 agent 都还在，且输入仍能送达。
@@ -157,8 +190,7 @@ async fn refresh_close_and_daemon_crash_keep_agent_alive() {
     output_until(&mut ws, "READY").await;
     send_input(&mut ws, "go\r").await;
     output_until(&mut ws, "AFTER").await;
-    let v = node.wait(&id, |v| v.exit.is_some());
-    assert_eq!(v.exit, Some(Exit::Code(5)));
+    let v = assert_dead_with_code(&node, &id, 5);
     assert!(
         node.tail(&v).contains("READY"),
         "scrollback 还在: {}",

@@ -26,6 +26,15 @@ pub const MIN_VERSION: (u32, u32) = (3, 2);
 /// `pane_dead_signal` / `pane_dead_time` 从 3.3 起才有（ubuntu-22.04 的 3.2a 实测两者皆无，
 /// 2026-09-03）。低于它：信号退出报 `Signal("unknown")`，`exited_at` 取首次观测到死亡的时间。
 pub const DEAD_DETAIL_VERSION: (u32, u32) = (3, 3);
+/// 3.3 以前 pane 死后 `pane_dead_status` 为空有两种含义：退出码尚未收集（pty EOF 先于 waitpid，
+/// ubuntu-22.04 容器紧密轮询 30 次撞上 2 次，CI run 33705306776 / 33704139125，2026-09-03），
+/// 或者信号退出（3.2a 没有 `pane_dead_signal`）。只能按时间分：首次观测到死亡后这么久之内
+/// `exit` 保持 `None`（上层显示"退出码尚未收集"，与 3.3+ 同一形态），之后才报 `Signal("unknown")`。
+/// 否则正常 `exit 7` 会先闪一次 FAILED "signal unknown"（agora-5nu）。
+pub const UNKNOWN_SIGNAL_GRACE: Duration = Duration::from_secs(2);
+/// Restart 一个活着的会话时先按 Kill 同一条路（进程组 SIGTERM → SIGKILL）杀干净再重生，
+/// 这是 SIGTERM 之后等多久升级 SIGKILL。
+const RESPAWN_KILL_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct TmuxConfig {
@@ -40,6 +49,8 @@ pub struct TmuxConfig {
     pub path: Option<String>,
     /// 记录每次 tmux 调用的 argv，供测试断言（`take_recorded`）。
     pub record: bool,
+    /// 3.3 以前"死了但 status 为空"多久之后才当信号退出（见 [`UNKNOWN_SIGNAL_GRACE`]）；测试可缩短。
+    pub unknown_signal_grace: Duration,
 }
 
 /// `config.yaml` 里 `runtime.tmux` 段的形态（docs/spec/config.md）；core 层只把它当不透明
@@ -92,6 +103,7 @@ impl Default for TmuxConfig {
             exec_timeout: super::exec::DEFAULT_TIMEOUT,
             path: None,
             record: false,
+            unknown_signal_grace: UNKNOWN_SIGNAL_GRACE,
         }
     }
 }
@@ -314,18 +326,23 @@ impl TmuxRuntime {
         Ok(sessions)
     }
 
-    /// 3.3 以前没有 pane_dead_signal / pane_dead_time：信号退出只能报 unknown，
-    /// 退出时刻用首次观测替代。3.3+ 上"死了但两字段皆空"是退出码尚未收集，保持 None。
+    /// 3.3 以前没有 pane_dead_signal / pane_dead_time：退出时刻用首次观测替代；"死了但 status 为空"
+    /// 在首次观测后 [`UNKNOWN_SIGNAL_GRACE`] 内保持 None（退出码可能只是还没收集），之后才报
+    /// unknown 信号。3.3+ 上"死了但两字段皆空"就是退出码尚未收集，一直保持 None。
     fn fill_dead_fallbacks(&self, s: &mut RuntimeSession, detail_supported: bool) {
-        if s.exit.is_none() && !detail_supported {
-            s.exit = Some(Exit::Signal("unknown".into()));
-        }
+        let first_seen = *lock(&self.first_dead_seen)
+            .entry(s.r#ref.0.clone())
+            .or_insert_with(SystemTime::now);
         if s.exited_at.is_none() {
-            let mut seen = lock(&self.first_dead_seen);
-            let t = *seen
-                .entry(s.r#ref.0.clone())
-                .or_insert_with(SystemTime::now);
-            s.exited_at = Some(t);
+            s.exited_at = Some(first_seen);
+        }
+        if s.exit.is_none() && !detail_supported {
+            let dead_for = SystemTime::now()
+                .duration_since(first_seen)
+                .unwrap_or_default();
+            if dead_for >= self.cfg.unknown_signal_grace {
+                s.exit = Some(Exit::Signal("unknown".into()));
+            }
         }
     }
 
@@ -486,13 +503,48 @@ impl Runtime for TmuxRuntime {
     fn respawn(&self, r: &RuntimeRef, spec: &LaunchSpec) -> Result<(), RuntimeError> {
         let session = self.require_managed(r)?;
         let target = format!("={session}:");
+        // 活着先按 Kill 同一条路杀干净，不靠 respawn-pane -k 的 SIGHUP：下面的缩窗会先发
+        // SIGWINCH，活着的 TUI 收到后按 1 行重画会把要保的内容冲掉。
+        match self.inspect(r) {
+            Ok(s) if s.alive => self.terminate(r, RESPAWN_KILL_GRACE)?,
+            Ok(_) => {}
+            Err(e) => return Err(e),
+        }
+        // respawn-pane 会 screen_reinit 清掉可见屏，只留已滚入 history 的行（agora-6bo）。
+        // tmux 自己在 pane 死时打印 "Pane is dead" 前换一次行、把顶行推进 history，但 3.2a
+        // 信号退出不打印这一行，且 pty EOF 到 status 收到之间 respawn 也赶不上它
+        // （ubuntu-22.04 实测 2026-09-03：pane_dead=1 后立刻 respawn，6 次丢 2 次；macOS 3.7c
+        // 从没丢过只是时序不同）。所以自己动手：缩到 1 行，tmux 把光标以上的行推进 history；
+        // respawn 后放大回原高度，它们又被拉回可见屏（3.2a / 3.4 / 3.7c 实测 2026-09-03）。
+        // 光标以下的行会被 tmux 丢掉（screen_resize_y 先删光标下方），比整屏丢好。
+        // resize-window 会把该窗口的 window-size 切成 manual，完事 -u 恢复继承全局的 latest。
+        let sock = Some(self.cfg.socket.as_str());
+        let height = self
+            .run(
+                sock,
+                &["display-message", "-p", "-t", &target, "#{window_height}"],
+            )
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .filter(|h| h.parse::<u32>().is_ok_and(|h| h > 1));
+        if height.is_some() {
+            let _ = self.run(sock, &["resize-window", "-t", &target, "-y", "1"]);
+        }
         let cwd = spec.cwd.to_string_lossy().into_owned();
         let env_args = self.env_args(&spec.env);
-        // -k：活着先杀；死了直接重生。同一会话同一名字，scrollback 保留（实测）。
         let mut args: Vec<&str> = vec!["respawn-pane", "-k", "-t", &target, "-c", &cwd];
         args.extend(env_args.iter().map(String::as_str));
         args.push(&spec.command);
-        match self.run_ok(Some(&self.cfg.socket), &args) {
+        let respawned = self.run_ok(sock, &args);
+        if let Some(h) = &height {
+            let _ = self.run(sock, &["resize-window", "-t", &target, "-y", h]);
+            let _ = self.run(
+                sock,
+                &["set-option", "-w", "-u", "-t", &target, "window-size"],
+            );
+        }
+        match respawned {
             Ok(_) => Ok(()),
             Err(RuntimeError::Failed { .. }) if self.inspect(r).is_err() => {
                 Err(RuntimeError::NotFound(r.clone()))

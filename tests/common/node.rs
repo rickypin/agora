@@ -16,6 +16,11 @@ use agora::runtime::tmux::{TmuxConfig, TmuxRuntime};
 use agora::runtime::{Runtime, Size};
 use agora::session::{Db, NewSession, SessionManager, SessionView};
 
+// 轮询 tmux 不能太密：每次 inspect/capture 都要新起一个 tmux client 进程，密集轮询会和
+// server 收集子进程退出状态抢 SIGCHLD，pane 会死得"没有退出码"（agora-tc4；实测 2026-09-03
+// 3.2a 上密集轮询丢 5/6、200 ms 轮询丢 1/6）。生产的 status.detector_interval 是 2 s。
+const POLL: Duration = Duration::from_millis(200);
+
 static N: AtomicU32 = AtomicU32::new(0);
 
 /// 测试二进制旁边的 agora，本身就是 fake-agent（`agora fake-agent ...`）。
@@ -151,7 +156,7 @@ impl TmuxNode {
                 return v;
             }
             assert!(Instant::now() < deadline, "timeout: {v:?}");
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(POLL);
         }
     }
 
