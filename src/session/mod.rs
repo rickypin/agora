@@ -9,5 +9,7 @@ pub mod manager;
 pub mod model;
 
 pub use db::{Db, DbError};
-pub use manager::{NewSession, ReconcileReport, SessionError, SessionManager, SessionView};
+pub use manager::{
+    AdoptSession, NewSession, ReconcileReport, SessionError, SessionManager, SessionView,
+};
 pub use model::{Origin, SessionRecord};

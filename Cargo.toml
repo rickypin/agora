@@ -31,11 +31,17 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 getrandom = "0.4"
 sha2 = "0.11"
 base64 = "0.23"
+# config.yaml 的解析器（serde_yaml 已停更，这是维护中的分叉；agora-xqa.9）。
+serde_yaml_ng = "0.10"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["full"] }
 http-body-util = "0.1"
 tempfile = "3"
+# 只给 tests/events.rs 当 WS 客户端；版本跟 axum 的 tungstenite 对齐。
+tokio-tungstenite = "0.29"
+# tests/events.rs 收发 WS 帧用。
+futures-util = "0.3"
 
 [profile.release]
 strip = true

@@ -42,6 +42,45 @@ pub struct TmuxConfig {
     pub record: bool,
 }
 
+/// `config.yaml` 里 `runtime.tmux` 段的形态（docs/spec/config.md）；core 层只把它当不透明
+/// 子段传进来（ADR-001 D2），在这里才知道键名。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TmuxSection {
+    pub socket: String,
+    pub adopt_sockets: Vec<String>,
+    pub prefix: String,
+    pub history_limit: u32,
+    pub exec_timeout: String,
+    pub min_version: String,
+}
+
+impl Default for TmuxSection {
+    fn default() -> Self {
+        TmuxSection {
+            socket: "agora".into(),
+            adopt_sockets: vec!["default".into()],
+            prefix: "ag-".into(),
+            history_limit: 10_000,
+            exec_timeout: "5s".into(),
+            min_version: format!("{}.{}", MIN_VERSION.0, MIN_VERSION.1),
+        }
+    }
+}
+
+impl TmuxConfig {
+    /// 用配置段覆盖默认值；`exec_timeout` 的时长语法由 config 层统一解析后传进来。
+    pub fn from_section(section: &TmuxSection, exec_timeout: Duration) -> Self {
+        TmuxConfig {
+            socket: section.socket.clone(),
+            adopt_sockets: section.adopt_sockets.clone(),
+            history_limit: section.history_limit,
+            exec_timeout,
+            ..Default::default()
+        }
+    }
+}
+
 impl Default for TmuxConfig {
     fn default() -> Self {
         TmuxConfig {

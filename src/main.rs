@@ -8,22 +8,23 @@
 //! agora auth revoke <id>|--all  吊销设备，即时生效
 //! ```
 //!
-//! 配置文件归 agora-xqa.9；现在监听地址取 `AGORA_LISTEN`（默认 127.0.0.1:7680），
-//! 且只接受 loopback（ADR-003 D5）。
+//! 配置来自 `AGORA_HOME/config.yaml`（docs/spec/config.md），缺文件全走默认；明文监听器
+//! 只接受 loopback（ADR-003 D5）。这里是组装根：选运行时、把它的配置子段交给它解析。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agora::api::{self, AppState};
-use agora::auth::{Auth, AuthConfig, PairedVia};
+use agora::api::{self, AppState, RuntimeHealth};
+use agora::auth::{Auth, PairedVia};
+use agora::config::{self, Config, Settings};
 use agora::local::{self, Request, Response, SOCKET_FILE};
 use agora::runtime::exec::{exec, ExecOptions};
-use agora::runtime::tmux::{TmuxConfig, TmuxRuntime};
+use agora::runtime::tmux::{TmuxConfig, TmuxRuntime, TmuxSection};
 use agora::runtime::{env_probe, Runtime};
 use agora::session::{Db, SessionManager};
 
-/// 配置文件落地前的默认监听地址（docs/spec/config.md：只允许 loopback）。
-const DEFAULT_LISTEN: &str = "127.0.0.1:7680";
+/// V1 唯一的运行时；配置里 `runtime.kind` 缺省就是它。
+const RUNTIME_KIND: &str = "tmux";
 
 const USAGE: &str = "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all]";
 
@@ -55,6 +56,17 @@ fn home_or_exit() -> PathBuf {
     home
 }
 
+/// 配置文件不合法 → 打印原因退出；CLI 子命令也用它拿 auth 段。
+fn settings_or_exit(home: &Path) -> Settings {
+    match Config::load(home, RUNTIME_KIND) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("配置被拒绝: {err}");
+            std::process::exit(2);
+        }
+    }
+}
+
 fn open_db(home: &Path) -> Arc<Db> {
     match Db::open(&home.join("agora.db")) {
         Ok(db) => Arc::new(db),
@@ -73,23 +85,49 @@ async fn serve() -> i32 {
     // SAFETY: umask 没有前置条件；在起任何线程之前调用。
     unsafe { libc::umask(0o077) };
 
-    let listen = std::env::var("AGORA_LISTEN").unwrap_or_else(|_| DEFAULT_LISTEN.to_owned());
-    let addr = match api::plaintext_listen(&listen) {
-        Ok(addr) => addr,
+    let home = home_or_exit();
+    let settings = match Config::load(&home, RUNTIME_KIND) {
+        Ok(s) => s,
         Err(err) => {
-            tracing::error!(component = "main", %err, "listen 配置被拒绝");
+            tracing::error!(component = "main", %err, "配置被拒绝");
             return 2;
         }
     };
-    let home = home_or_exit();
+    let addr = settings.listen;
+    if settings.raw.runtime.kind != RUNTIME_KIND {
+        tracing::error!(component = "main", kind = %settings.raw.runtime.kind, "未知的 runtime.kind（V1 只有 tmux）");
+        return 2;
+    }
+    // 运行时子段只有这里解析：core 层对它不透明（ADR-001 D2）。
+    let section: TmuxSection =
+        match serde_yaml_ng::from_value(settings.raw.runtime.section(RUNTIME_KIND)) {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::error!(component = "main", %err, "runtime.tmux 段不合法");
+                return 2;
+            }
+        };
+    let exec_timeout =
+        match config::parse_duration("runtime.tmux.exec_timeout", &section.exec_timeout) {
+            Ok(d) => d,
+            Err(err) => {
+                tracing::error!(component = "main", %err, "配置被拒绝");
+                return 2;
+            }
+        };
 
     let probe = env_probe::probe_path(None, std::time::Duration::from_secs(5));
     tracing::info!(component = "main", source = ?probe.source, reason = ?probe.reason, "PATH 探测");
+    let path_source = if probe.source == env_probe::PathSource::Shell {
+        "shell"
+    } else {
+        "daemon"
+    };
 
     let runtime = match TmuxRuntime::new(TmuxConfig {
         conf_path: home.join("tmux.conf"),
         path: (probe.source == env_probe::PathSource::Shell).then(|| probe.path.clone()),
-        ..Default::default()
+        ..TmuxConfig::from_section(&section, exec_timeout)
     }) {
         Ok(rt) => Arc::new(rt),
         Err(err) => {
@@ -97,15 +135,28 @@ async fn serve() -> i32 {
             return 1;
         }
     };
-    if let Err(err) = runtime.check_version() {
-        // 只降级不退出（ADR-001 D7）；health 呈现归 agora-xqa.4。
-        tracing::warn!(component = "main", %err, "运行时降级");
-    }
+    // 只降级不退出（ADR-001 D7）；实时探测与恢复归 agora-xqa.4，现在是启动时一次结论。
+    let runtime_health = match runtime.check_version() {
+        Ok(_) => RuntimeHealth {
+            status: "ok",
+            reason: None,
+            path_source,
+        },
+        Err(err) => {
+            tracing::warn!(component = "main", %err, "运行时降级");
+            RuntimeHealth {
+                status: "degraded",
+                reason: Some(err.to_string()),
+                path_source,
+            }
+        }
+    };
 
     let db = open_db(&home);
-    let sessions = Arc::new(SessionManager::new(
+    let sessions = Arc::new(SessionManager::with_prefix(
         db.clone(),
         runtime.clone() as Arc<dyn Runtime>,
+        &section.prefix,
     ));
     // reconcile 会起子进程：放 blocking 线程，不占 tokio worker。
     let sessions_for_reconcile = sessions.clone();
@@ -115,7 +166,7 @@ async fn serve() -> i32 {
         Err(err) => tracing::warn!(component = "main", %err, "reconcile 任务异常"),
     }
 
-    let auth = Arc::new(Auth::new(db, AuthConfig::default()));
+    let auth = Arc::new(Auth::new(db, settings.auth.clone()));
     if auth.list_devices().map(|d| d.is_empty()).unwrap_or(true) {
         tracing::info!(
             component = "main",
@@ -140,7 +191,18 @@ async fn serve() -> i32 {
     });
     let socket_task = tokio::spawn(async move { local::serve(&socket_path, handler).await });
 
-    let state = AppState { auth };
+    let mut state = AppState::new(auth, sessions.clone(), &settings.node_id);
+    state.agents = Arc::new(settings.raw.agents.clone());
+    state.runtime_health = Arc::new(runtime_health);
+    // 状态变化没有人来通知：轮询求差发 /api/events。
+    tokio::spawn(agora::events::watch(
+        sessions,
+        state.events.clone(),
+        state.node.clone(),
+        settings.detector_interval,
+    ));
+    tracing::info!(component = "main", node = %settings.node_id, "daemon 就绪");
+
     let served = tokio::select! {
         r = api::serve(addr, state) => r.map_err(|e| e.to_string()),
         r = socket_task => match r {
@@ -197,7 +259,7 @@ async fn pair_link(open: bool) -> i32 {
 
 fn auth_devices() -> i32 {
     let home = home_or_exit();
-    let auth = Auth::new(open_db(&home), AuthConfig::default());
+    let auth = Auth::new(open_db(&home), settings_or_exit(&home).auth);
     match auth.list_devices() {
         Ok(devices) if devices.is_empty() => {
             println!("没有已配对设备；运行 `agora open` 配对本机浏览器");
@@ -234,7 +296,7 @@ fn auth_devices() -> i32 {
 
 fn auth_revoke(target: &str) -> i32 {
     let home = home_or_exit();
-    let auth = Auth::new(open_db(&home), AuthConfig::default());
+    let auth = Auth::new(open_db(&home), settings_or_exit(&home).auth);
     let result = if target == "--all" {
         auth.revoke_all().map(|n| println!("已吊销 {n} 台设备"))
     } else {

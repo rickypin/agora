@@ -32,6 +32,9 @@ pub enum SessionError {
     /// external 会话没有运行时句柄，不能 kill / restart / cleanup。
     #[error("会话没有运行时会话: {0}")]
     NoRuntime(String),
+    /// adopt 一个已经登记过的运行时会话。
+    #[error("运行时会话已登记: {0}")]
+    AlreadyRegistered(String),
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
     #[error(transparent)]
@@ -56,6 +59,14 @@ pub struct NewSession {
     pub size: Size,
 }
 
+#[derive(Debug, Clone)]
+pub struct AdoptSession {
+    pub runtime_ref: String,
+    pub display_name: Option<String>,
+    pub agent_type: Option<String>,
+    pub working_directory: Option<PathBuf>,
+}
+
 /// 对外的一条会话：metadata + 运行时实时事实 + 状态判定。
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionView {
@@ -69,6 +80,17 @@ pub struct SessionView {
     pub managed: bool,
     #[serde(flatten)]
     pub assessment: Assessment,
+}
+
+impl SessionView {
+    /// Kill / Restart 会不会真的杀掉一个正在干活的 agent（MISSION §8 "确认跟着杀走"）。
+    /// 依据是 agent 状态而非运行时会话是否 alive：FINISHED / FAILED 的会话进程已经不在，
+    /// 运行时会话（dead pane）还在也不算；运行时会话不在了更不算。其余（含 UNKNOWN）都算——
+    /// 不知道它在不在干活时宁可多问一次。
+    pub fn would_kill(&self) -> bool {
+        self.assessment.source != status::Source::None
+            && !matches!(self.assessment.status, Status::Finished | Status::Failed)
+    }
 }
 
 /// daemon 重启时 `list()` ⨝ SQLite 的六种情况（ADR-001 D4）。
@@ -93,11 +115,21 @@ pub struct ReconcileReport {
 pub struct SessionManager {
     db: Arc<Db>,
     runtime: Arc<dyn Runtime>,
+    prefix: String,
 }
 
 impl SessionManager {
     pub fn new(db: Arc<Db>, runtime: Arc<dyn Runtime>) -> Self {
-        SessionManager { db, runtime }
+        Self::with_prefix(db, runtime, RUNTIME_NAME_PREFIX)
+    }
+
+    /// 运行时名前缀来自配置（`runtime.<kind>.prefix`）。
+    pub fn with_prefix(db: Arc<Db>, runtime: Arc<dyn Runtime>, prefix: &str) -> Self {
+        SessionManager {
+            db,
+            runtime,
+            prefix: prefix.to_owned(),
+        }
     }
 
     pub fn db(&self) -> &Db {
@@ -109,7 +141,7 @@ impl SessionManager {
     /// 先外部资源后 metadata（不变量 7 同构）：写库失败 → remove 运行时会话回滚。
     pub fn create(&self, new: &NewSession) -> Result<SessionView, SessionError> {
         let id = self.fresh_id()?;
-        let runtime_name = format!("{RUNTIME_NAME_PREFIX}{id}");
+        let runtime_name = format!("{}{id}", self.prefix);
         let mut env = new.env.clone();
         env.push(("AGORA_SESSION_ID".into(), id.clone()));
         env.push(("AGORA_EPOCH".into(), "1".into()));
@@ -174,6 +206,68 @@ impl SessionManager {
         Err(SessionError::Db(DbError::Sql(
             rusqlite::Error::QueryReturnedNoRows,
         )))
+    }
+
+    // ---------- 采纳（MISSION §5.5） ----------
+
+    /// 把运行时里一个未注册的会话登记进 metadata：`origin = adopted`，cwd 取运行时的现状，
+    /// `spawned_at` 留空（不知道它什么时候起的，不算 STARTING）。已登记的 ref 直接报重复。
+    pub fn adopt(&self, adopt: &AdoptSession) -> Result<SessionView, SessionError> {
+        let r#ref = RuntimeRef(adopt.runtime_ref.clone());
+        let live = self.runtime.inspect(&r#ref)?;
+        let exists: bool = self.db.conn().query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE runtime_ref = ?1)",
+            [&adopt.runtime_ref],
+            |r| r.get(0),
+        )?;
+        if exists {
+            return Err(SessionError::AlreadyRegistered(adopt.runtime_ref.clone()));
+        }
+        let id = self.fresh_id()?;
+        let display_name = adopt
+            .display_name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| live.name.clone());
+        let agent_type = adopt
+            .agent_type
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| "unknown".into());
+        let cwd = adopt
+            .working_directory
+            .clone()
+            .unwrap_or_else(|| live.cwd.clone());
+        self.db.conn().execute(
+            "INSERT INTO sessions (id, runtime_ref, display_name, name_locked, agent_type,
+                working_directory, epoch, created_at, updated_at, origin)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'adopted')",
+            params![
+                id,
+                adopt.runtime_ref,
+                display_name,
+                adopt.display_name.is_some(),
+                agent_type,
+                cwd.to_string_lossy(),
+            ],
+        )?;
+        self.get(&id)
+    }
+
+    /// 运行时里有、metadata 里没有的会话（Unknown Agent，可采纳；A1 列表含全部运行时会话）。
+    pub fn unregistered(&self) -> Result<Vec<RuntimeSession>, SessionError> {
+        let known: HashSet<String> = self
+            .all_records()?
+            .into_iter()
+            .filter_map(|r| r.runtime_ref)
+            .collect();
+        Ok(self
+            .runtime
+            .list()?
+            .into_iter()
+            .filter(|s| !known.contains(&s.r#ref.0))
+            .collect())
     }
 
     // ---------- 读 ----------

@@ -1,119 +1,15 @@
 //! Session Manager 的生命周期映射与 reconcile 六种情况（ADR-001 D4），用内存里的假运行时。
 
+mod common;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
-use agora::runtime::{
-    AttachSpec, Exit, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, Size,
-};
+use agora::runtime::{Exit, Runtime, RuntimeRef, Size};
 use agora::session::{Db, NewSession, Origin, SessionError, SessionManager};
 use agora::status::Status;
-
-#[derive(Default)]
-struct FakeRuntime {
-    sessions: Mutex<HashMap<String, RuntimeSession>>,
-    removed: Mutex<Vec<String>>,
-}
-
-impl FakeRuntime {
-    fn socket_of(r: &str) -> &str {
-        r.split(':').nth(1).unwrap_or("")
-    }
-
-    fn insert(&self, r#ref: &str, alive: bool, exit: Option<Exit>, managed: bool) {
-        let name = r#ref.rsplit(':').next().unwrap().to_owned();
-        self.sessions.lock().unwrap().insert(
-            r#ref.to_owned(),
-            RuntimeSession {
-                r#ref: RuntimeRef(r#ref.to_owned()),
-                name,
-                pid: Some(4242),
-                alive,
-                exit,
-                exited_at: None,
-                title: String::new(),
-                cwd: PathBuf::from("/"),
-                attached: false,
-                size: Size::default(),
-                managed,
-            },
-        );
-    }
-
-    fn set_dead(&self, r#ref: &str, exit: Exit) {
-        let mut m = self.sessions.lock().unwrap();
-        let s = m.get_mut(r#ref).unwrap();
-        s.alive = false;
-        s.exit = Some(exit);
-    }
-
-    fn set_title(&self, r#ref: &str, title: &str) {
-        self.sessions.lock().unwrap().get_mut(r#ref).unwrap().title = title.into();
-    }
-
-    fn forget(&self, r#ref: &str) {
-        self.sessions.lock().unwrap().remove(r#ref);
-    }
-}
-
-impl Runtime for FakeRuntime {
-    fn kind(&self) -> &'static str {
-        "fake"
-    }
-    fn create(&self, spec: &LaunchSpec) -> Result<RuntimeRef, RuntimeError> {
-        let r = format!("fake:agora:{}", spec.name);
-        self.insert(&r, true, None, true);
-        Ok(RuntimeRef(r))
-    }
-    fn list(&self) -> Result<Vec<RuntimeSession>, RuntimeError> {
-        Ok(self.sessions.lock().unwrap().values().cloned().collect())
-    }
-    fn inspect(&self, r: &RuntimeRef) -> Result<RuntimeSession, RuntimeError> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .get(&r.0)
-            .cloned()
-            .ok_or_else(|| RuntimeError::NotFound(r.clone()))
-    }
-    fn attach(&self, _r: &RuntimeRef, _s: Size) -> Result<AttachSpec, RuntimeError> {
-        Ok(AttachSpec {
-            argv: vec![],
-            env: vec![],
-        })
-    }
-    fn capture_tail(&self, _r: &RuntimeRef, _n: u32) -> Result<Vec<u8>, RuntimeError> {
-        Ok(Vec::new())
-    }
-    fn terminate(&self, r: &RuntimeRef, _g: Duration) -> Result<(), RuntimeError> {
-        if Self::socket_of(&r.0) != "agora" {
-            return Err(RuntimeError::ReadOnly(r.clone()));
-        }
-        self.inspect(r)?;
-        self.set_dead(&r.0, Exit::Signal("TERM".into()));
-        Ok(())
-    }
-    fn respawn(&self, r: &RuntimeRef, _spec: &LaunchSpec) -> Result<(), RuntimeError> {
-        let mut m = self.sessions.lock().unwrap();
-        let s = m
-            .get_mut(&r.0)
-            .ok_or_else(|| RuntimeError::NotFound(r.clone()))?;
-        s.alive = true;
-        s.exit = None;
-        Ok(())
-    }
-    fn remove(&self, r: &RuntimeRef) -> Result<(), RuntimeError> {
-        let s = self.inspect(r)?;
-        if s.alive {
-            return Err(RuntimeError::StillAlive(r.clone()));
-        }
-        self.forget(&r.0);
-        self.removed.lock().unwrap().push(r.0.clone());
-        Ok(())
-    }
-}
+use common::FakeRuntime;
 
 fn mgr() -> (SessionManager, Arc<FakeRuntime>, Arc<Db>) {
     let db = Arc::new(Db::open_in_memory().unwrap());

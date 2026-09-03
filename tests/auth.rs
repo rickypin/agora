@@ -1,12 +1,15 @@
 //! ADR-003 "什么会让它变危险"里点名的守卫：设备配对 + session（agora-xqa.5）。
 
+mod common;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use agora::api::{self, AppState, PUBLIC_ROUTES, ROUTES};
 use agora::auth::{Auth, AuthConfig, PairedVia};
-use agora::session::Db;
+use agora::runtime::Runtime;
+use agora::session::{Db, SessionManager};
 use axum::body::Body;
 use axum::extract::connect_info::ConnectInfo;
 use axum::http::{header, Request, StatusCode};
@@ -33,9 +36,9 @@ impl Fx {
     }
 
     fn app(&self) -> Router {
-        api::router(AppState {
-            auth: self.auth.clone(),
-        })
+        let rt = Arc::new(common::FakeRuntime::default());
+        let sessions = Arc::new(SessionManager::new(self.db.clone(), rt as Arc<dyn Runtime>));
+        api::router(AppState::new(self.auth.clone(), sessions, common::NODE))
     }
 
     /// 经"socket"铸造再兑换，返回 cookie 值。
@@ -133,6 +136,8 @@ async fn every_route_requires_principal_except_allowlist() {
             assert_eq!(json(resp).await["error"], "unauthenticated");
         }
     }
+    // WS 升级端点：无凭据同样 401（Principal 先于 WebSocketUpgrade 提取）。
+    assert!(ROUTES.contains(&("GET", "/api/events")));
     assert_eq!(
         PUBLIC_ROUTES.len(),
         2,
@@ -286,13 +291,21 @@ async fn revoked_device_rejected_immediately() {
     let fx = Fx::new();
     let a = fx.pair().await;
     let b = fx.pair().await;
-    let devices = fx.auth.list_devices().unwrap();
-    assert_eq!(devices.len(), 2);
-    // 用 b 吊销 a。
+    assert_eq!(fx.auth.list_devices().unwrap().len(), 2);
+    // 用 b 吊销 a。列表按 id 排、id 随机，不能拿 devices[0] 当 a（2026-09-03 偶发过）：按哈希找。
+    let a_id: String = fx
+        .db
+        .conn()
+        .query_row(
+            "SELECT id FROM devices WHERE session_sha256 = ?1",
+            [agora::auth::sha256_hex(a.split_once('=').unwrap().1)],
+            |r| r.get(0),
+        )
+        .unwrap();
     let resp = fx
         .app()
         .oneshot(
-            Request::delete(format!("/api/auth/devices/{}", devices[0].id))
+            Request::delete(format!("/api/auth/devices/{a_id}"))
                 .header(header::HOST, HOST)
                 .header(header::ORIGIN, format!("http://{HOST}"))
                 .header(header::COOKIE, &b)

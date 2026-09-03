@@ -6,22 +6,33 @@
 //! 否则守卫 `every_route_requires_principal_except_allowlist` 不会去敲它。
 
 mod auth;
+mod events;
 mod health;
+mod sessions;
 mod spa;
 
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::connect_info::ConnectInfo;
-use axum::extract::{FromRef, FromRequestParts};
+use axum::extract::{FromRef, FromRequestParts, Request};
 use axum::http::request::Parts;
 use axum::http::StatusCode;
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Serialize;
+use tracing::Instrument;
 
 use crate::auth::{Auth, AuthError};
+use crate::config::AgentOverride;
+use crate::events::EventBus;
+use crate::session::SessionManager;
+
+pub use health::{RuntimeHealth, API_VERSION};
 
 /// 服务器层的错误枚举（ADR-001 D8 施工约束 4：模块边界用枚举，不用万能错误类型）。
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +76,26 @@ pub fn plaintext_listen(addr: &str) -> Result<SocketAddr, ListenError> {
 #[derive(Clone)]
 pub struct AppState {
     pub auth: Arc<Auth>,
+    pub sessions: Arc<SessionManager>,
+    pub events: EventBus,
+    /// 节点 id：对外会话 id `<node>:<id>` 的前缀（MISSION §3.5）。
+    pub node: Arc<str>,
+    /// `agents.<name>.command` 覆盖；创建会话时缺省命令从这里取。
+    pub agents: Arc<BTreeMap<String, AgentOverride>>,
+    pub runtime_health: Arc<RuntimeHealth>,
+}
+
+impl AppState {
+    pub fn new(auth: Arc<Auth>, sessions: Arc<SessionManager>, node: &str) -> Self {
+        AppState {
+            auth,
+            sessions,
+            events: EventBus::default(),
+            node: Arc::from(node),
+            agents: Arc::new(BTreeMap::new()),
+            runtime_health: Arc::new(RuntimeHealth::default()),
+        }
+    }
 }
 
 impl FromRef<AppState> for Arc<Auth> {
@@ -76,6 +107,17 @@ impl FromRef<AppState> for Arc<Auth> {
 /// 全部 API 路由（method, path）。
 pub const ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/health"),
+    ("GET", "/api/system"),
+    ("GET", "/api/sessions"),
+    ("POST", "/api/sessions"),
+    ("POST", "/api/sessions/adopt"),
+    ("GET", "/api/sessions/{id}"),
+    ("PATCH", "/api/sessions/{id}"),
+    ("DELETE", "/api/sessions/{id}"),
+    ("POST", "/api/sessions/{id}/kill"),
+    ("POST", "/api/sessions/{id}/restart"),
+    ("POST", "/api/sessions/{id}/cleanup"),
+    ("GET", "/api/events"),
     ("POST", "/api/auth/pair"),
     ("POST", "/api/auth/pair/new"),
     ("POST", "/api/auth/logout"),
@@ -89,14 +131,55 @@ pub const PUBLIC_ROUTES: &[(&str, &str)] = &[("GET", "/api/health"), ("POST", "/
 /// 组装路由；测试直接拿 Router 走 `tower::ServiceExt::oneshot`，不占端口。
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/api/health", get(health::public))
+        .route("/api/health", get(health::health))
+        .route("/api/system", get(health::system))
+        .route("/api/sessions", get(sessions::list).post(sessions::create))
+        // 静态段先于 `{id}`：axum 的匹配按具体度排，`adopt` 不会被当成 id。
+        .route("/api/sessions/adopt", post(sessions::adopt))
+        .route(
+            "/api/sessions/{id}",
+            get(sessions::get)
+                .patch(sessions::patch)
+                .delete(sessions::delete),
+        )
+        .route("/api/sessions/{id}/kill", post(sessions::kill))
+        .route("/api/sessions/{id}/restart", post(sessions::restart))
+        .route("/api/sessions/{id}/cleanup", post(sessions::cleanup))
+        .route("/api/events", get(events::upgrade))
         .route("/api/auth/pair", post(auth::pair))
         .route("/api/auth/pair/new", post(auth::pair_new))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/devices", get(auth::devices))
         .route("/api/auth/devices/{id}", delete(auth::revoke_device))
         .fallback(get(spa::serve))
+        .layer(middleware::from_fn(log_request))
         .with_state(state)
+}
+
+/// 每条 API 请求一行日志：方法、路径、状态、耗时、principal（MISSION §10.2）。
+/// principal 由 `Principal` 提取器在 span 上补记；未认证的请求这一栏是空。
+/// 只记 `/api/`：SPA 静态资源的日志没有价值。
+async fn log_request(req: Request, next: Next) -> Response {
+    let path = req.uri().path().to_owned();
+    if !path.starts_with("/api/") {
+        return next.run(req).await;
+    }
+    let span = tracing::info_span!(
+        "request",
+        method = %req.method(),
+        path = %path,
+        principal = tracing::field::Empty,
+    );
+    let started = Instant::now();
+    let resp = next.run(req).instrument(span.clone()).await;
+    let _enter = span.enter();
+    tracing::info!(
+        component = "api",
+        status = resp.status().as_u16(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "request"
+    );
+    resp
 }
 
 /// 在 `addr` 上跑到 SIGINT / SIGTERM 为止。

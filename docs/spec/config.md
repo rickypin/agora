@@ -1,6 +1,6 @@
 # 配置与存储
 
-原则在 MISSION §9；本文是文件形态。`runtime` 段按 ADR-001、`hooks` 段按 ADR-002、`server` / `tls` / `auth` 段按 ADR-003 定稿。配置文件在 `AGORA_HOME/config.yaml`（默认 `~/.agora`，目录 0700，ADR-003 D6）。
+原则在 MISSION §9；本文是文件形态。`runtime` 段按 ADR-001、`hooks` 段按 ADR-002、`server` / `tls` / `auth` 段按 ADR-003 定稿。配置文件在 `AGORA_HOME/config.yaml`（默认 `~/.agora`，目录 0700，ADR-003 D6）。文件可以不存在（全部默认）；存在时**未知键即启动失败**——默默忽略一个拼错的 `server.listen` 比启动失败危险。时长一律 `<整数><s|m|h|d>`。core 层只认 `runtime.kind`，`runtime.<kind>` 子段原样交给选中的运行时实现解析（ADR-001 D2）。
 
 ## 配置文件（每个节点一份）
 
@@ -10,7 +10,7 @@ server:                       # ADR-003 D5：两个监听器
   tls_listen: null            # TLS 监听器：非 loopback、永远 TLS；被 peer 或手机访问时才开，例 "0.0.0.0:7681"（端口须不同于 listen）
   public_url: null            # 远端配对链接与 QR 用的对外地址，例 "https://zuan.tail6f613.ts.net:7681"；不自动猜
 node:
-  id: "mac"                   # §3.5：全局会话 id `<node>:<id>` 的前缀，安装时生成，改名需迁移
+  id: "mac"                   # §3.5：全局会话 id `<node>:<id>` 的前缀，安装时生成，改名需迁移；安装脚本落地前默认 "local"
 peers: []                     # §3.5：默认空。每项 { name, url, token_file, cert_fingerprint: "sha256:<SPKI hex>" }（ADR-003 D3 / D4）；
                               #   本节点作为这些 peer 的 API 客户端并入其会话
 runtime:                      # ADR-001 D3 / D6 / D7

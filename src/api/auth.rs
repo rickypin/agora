@@ -1,6 +1,6 @@
 //! `/api/auth/*` 与 Principal 提取器（ADR-003 D1 / D2 / D7）。
 
-use axum::extract::{FromRequestParts, Path, State};
+use axum::extract::{FromRequestParts, OptionalFromRequestParts, Path, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -22,6 +22,8 @@ impl FromRequestParts<AppState> for Principal {
         let token = cookie_value(&parts.headers, COOKIE_NAME).ok_or(AuthError::Unauthenticated)?;
         // 一次索引命中的 SQLite 查询，微秒级；不值得为它 spawn_blocking。
         let principal = state.auth.authenticate_session(&token)?;
+        // 请求日志那一行的 principal 栏（api::log_request 开的 span）。
+        tracing::Span::current().record("principal", tracing::field::display(principal.log_id()));
         // CSRF（ADR-003 D7）：cookie 认证的非安全方法必须同源。
         if !matches!(parts.method, Method::GET | Method::HEAD | Method::OPTIONS)
             && !same_origin(&parts.headers)
@@ -30,6 +32,23 @@ impl FromRequestParts<AppState> for Principal {
             return Err(AuthError::CrossOrigin.into());
         }
         Ok(principal)
+    }
+}
+
+/// 白名单端点（health）用它区分公开子集与完整形态：没凭据 → None；凭据形式上就
+/// 不该出现（明文监听器上的 Bearer）→ 照样报错，不能靠"降级成公开子集"绕过。
+impl OptionalFromRequestParts<AppState> for Principal {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Option<Self>, ApiError> {
+        match <Principal as FromRequestParts<AppState>>::from_request_parts(parts, state).await {
+            Ok(p) => Ok(Some(p)),
+            Err(e) if e.kind == "unauthenticated" => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -47,7 +66,7 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 /// `Sec-Fetch-Site: same-origin`，或 `Origin` 的 authority 与 `Host` 相同。两者都没有 → 不同源。
-fn same_origin(headers: &HeaderMap) -> bool {
+pub(super) fn same_origin(headers: &HeaderMap) -> bool {
     if headers
         .get("sec-fetch-site")
         .and_then(|v| v.to_str().ok())
