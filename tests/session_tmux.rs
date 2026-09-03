@@ -11,9 +11,9 @@ use agora::runtime::{Runtime, Size};
 use agora::session::{Db, NewSession, SessionError, SessionManager};
 use agora::status::Status;
 
-// 轮询 tmux 不能太密：每次 inspect/capture 都要新起一个 tmux client 进程，密集轮询会和
-// server 收集子进程退出状态抢 SIGCHLD，pane 会死得"没有退出码"（agora-tc4；实测 2026-09-03
-// 3.2a 上密集轮询丢 5/6、200 ms 轮询丢 1/6）。生产的 status.detector_interval 是 2 s。
+// 轮询 tmux 不能太密：每次 inspect/capture 都要新起一个 tmux client 进程。生产的
+// status.detector_interval 是 2 s。（曾以为密集轮询会和 server 抢 SIGCHLD 导致 pane"没有
+// 退出码"——真因是 tmux < 3.6 链 libutempter 时 SIGCHLD 被吞，运行时现在会补发，见 agora-tc4。）
 const POLL: Duration = Duration::from_millis(200);
 
 static N: AtomicU32 = AtomicU32::new(0);
@@ -179,4 +179,31 @@ fn working_directory_and_command_are_portable() {
     let s = m.create(&n).unwrap();
     assert_eq!(s.record.working_directory.as_deref(), Some("/"));
     assert_eq!(s.record.command.as_deref(), Some("pwd; sleep 300"));
+}
+
+#[test]
+fn default_pane_title_does_not_shadow_display_name() {
+    // agora-gky（MISSION §4.5）：没改过名时 agent 自设的 title 赢，但 tmux 的 pane title
+    // 缺省是**主机名**而不是空串——shell 和任何不发 OSC 2 的 agent 都停在那个值上。
+    // 放过去侧栏就显示主机名，Session Settings 里还是用户填的名字，同一个会话两个名字。
+    let f = Fixture::new();
+    let m = f.manager();
+
+    let quiet = m.create(&spec("剧本-shell", "sleep 300")).unwrap();
+    let v = f.wait(&m, &quiet.record.id, |v| v.alive);
+    assert_eq!(
+        v.name, "剧本-shell",
+        "不发 OSC 2 的会话必须显示 display_name，不是主机名"
+    );
+    assert!(!v.record.name_locked);
+
+    // 主动设过标题的才算数（OSC 2 = ESC ] 2 ; <text> BEL）。
+    let loud = m
+        .create(&spec(
+            "另一个",
+            "printf '\\033]2;agent-set-title\\007'; sleep 300",
+        ))
+        .unwrap();
+    let v = f.wait(&m, &loud.record.id, |v| v.name == "agent-set-title");
+    assert!(!v.record.name_locked, "title 赢不等于落锁");
 }

@@ -309,7 +309,7 @@ Display Name:  sglog parser refactor
 runtime:       ag-a81c28
 ```
 
-Display name 可任意修改，运行时身份不变。一行显示的名字有两个来源：用户存的 `display_name`，和 agent 自己设的 pane title（OSC 2）。**没改过名时 title 赢**——它更新鲜；**改过名之后 `display_name` 永远赢**，这就是 `name_locked`。因此"改名"是两件事：存一个名字，*并且*把 agent 的 title 挡在外面；**包括改成和原来一模一样的字符串**也要落锁。客户端不得因"名字没变"而跳过请求。
+Display name 可任意修改，运行时身份不变。一行显示的名字有两个来源：用户存的 `display_name`，和 agent 自己设的 pane title（OSC 2）。**没改过名时 title 赢**——它更新鲜；**改过名之后 `display_name` 永远赢**，这就是 `name_locked`。因此"改名"是两件事：存一个名字，*并且*把 agent 的 title 挡在外面；**包括改成和原来一模一样的字符串**也要落锁。客户端不得因"名字没变"而跳过请求。**"缺省 title"不算 agent 设过标题**：tmux 的 pane title 缺省填的是主机名而不是空串，shell 与任何不发 OSC 2 的 agent 都停在那个值上；运行时把它归一成"没有 title"（等于 `#{host}` / 其首段、等于运行时名 `ag-…`、或空白三种），这时显示 `display_name`。判定拿真实主机名比对，不用"含点号就算主机名"这类启发式——agent 完全可能把 `a.py` 设成标题（agora-gky）。
 
 ### 4.6 生命周期语义
 

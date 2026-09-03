@@ -313,6 +313,8 @@ impl TmuxRuntime {
             "#{session_attached}",
             "#{pane_width}",
             "#{pane_height}",
+            // 主机名向 tmux 自己要（见 `effective_title`），不猜格式、也不多起一个进程。
+            "#{host}",
             "#{pane_current_path}",
             "#{pane_title}",
         ]
@@ -703,10 +705,33 @@ pub fn parse_version(text: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
+/// tmux 的 pane title 缺省**不是空串而是主机名**（macOS 上实测是
+/// `rickys-macbook-air.tail5fb9b.ts.net` 这样的全名，2026-09-03）：shell 以及任何不发 OSC 2 的
+/// agent 都停在这个缺省值上。MISSION §4.5 的"没改过名时 title 赢"前提是 title 由 agent 主动
+/// 设置，主机名不满足这个前提——放过去侧栏就用主机名盖掉用户填的 display_name，而 Session
+/// Settings 里还是原名，同一个会话两个名字（agora-gky）。所以这里把"缺省 title"归一成空串，
+/// 上层"标题为空就用 display_name"的规则不必知道 tmux。
+///
+/// 判定拿 tmux 自己给的 `#{host}` 比对（连同它的首段，即 `#{host_short}`），以及运行时名本身。
+/// **不要**改成"含点号就算主机名"这类启发式：agent 完全可能把 `a.py` 设成标题。
+fn effective_title(title: &str, host: &str, session: &str) -> String {
+    let t = title.trim();
+    let host_short = host.split('.').next().unwrap_or(host);
+    let default_ish = t.is_empty()
+        || t.eq_ignore_ascii_case(host)
+        || t.eq_ignore_ascii_case(host_short)
+        || t == session;
+    if default_ish {
+        String::new()
+    } else {
+        t.to_owned()
+    }
+}
+
 fn parse_pane_line(line: &str, socket: &str, managed: bool) -> Option<RuntimeSession> {
-    // 11 段：最后一段 title 吞掉剩余全部，分隔符出现在 title 里也不会错位。
-    let f: Vec<&str> = line.splitn(11, SEP).collect();
-    if f.len() < 11 {
+    // 12 段：最后一段 title 吞掉剩余全部，分隔符出现在 title 里也不会错位。
+    let f: Vec<&str> = line.splitn(12, SEP).collect();
+    if f.len() < 12 {
         return None;
     }
     let name = f[0];
@@ -740,8 +765,8 @@ fn parse_pane_line(line: &str, socket: &str, managed: bool) -> Option<RuntimeSes
             cols: f[7].parse().unwrap_or(0),
             rows: f[8].parse().unwrap_or(0),
         },
-        cwd: PathBuf::from(f[9]),
-        title: f[10].to_owned(),
+        cwd: PathBuf::from(f[10]),
+        title: effective_title(f[11], f[9], name),
         managed,
     })
 }
@@ -782,6 +807,7 @@ mod unit {
             "0",
             "160",
             "48",
+            "myhost.local",
             "/x",
             "t",
         ]
@@ -795,7 +821,18 @@ mod unit {
     #[test]
     fn pane_line_dead_by_signal() {
         let line = [
-            "s", "1", "1", "0", "TERM", "0", "1", "80", "24", "/", "a|#|b",
+            "s",
+            "1",
+            "1",
+            "0",
+            "TERM",
+            "0",
+            "1",
+            "80",
+            "24",
+            "myhost.local",
+            "/",
+            "a|#|b",
         ]
         .join(SEP);
         let s = parse_pane_line(&line, "default", false).unwrap();
@@ -803,6 +840,36 @@ mod unit {
         assert!(s.attached);
         assert!(!s.managed);
         assert_eq!(s.title, "a|#|b");
+    }
+
+    #[test]
+    fn default_pane_title_is_reported_as_no_title() {
+        // agora-gky：tmux 缺省填的主机名不算 agent 设过标题。
+        let line = |title: &str| {
+            [
+                "ag-1",
+                "123",
+                "0",
+                "",
+                "",
+                "",
+                "0",
+                "160",
+                "48",
+                "rickys-macbook-air.tail5fb9b.ts.net",
+                "/x",
+                title,
+            ]
+            .join(SEP)
+        };
+        let title = |t: &str| parse_pane_line(&line(t), "agora", true).unwrap().title;
+        assert_eq!(title("rickys-macbook-air.tail5fb9b.ts.net"), "");
+        assert_eq!(title("rickys-macbook-air"), "", "host_short 也算缺省");
+        assert_eq!(title("  "), "");
+        assert_eq!(title("ag-1"), "", "运行时名自己也不算标题");
+        // 点号不是启发式依据：agent 完全可能把 a.py 设成标题。
+        assert_eq!(title("a.py"), "a.py");
+        assert_eq!(title("剧本-shell"), "剧本-shell");
     }
 
     fn rt() -> TmuxRuntime {
