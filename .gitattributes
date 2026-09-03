@@ -1,0 +1,2 @@
+# bd 审计日志：每行独立记录、只追加。并行分支合并时保留两边的追加行，不出冲突标记（2026-09-03 为 worktree 并行预备）。
+.beads/interactions.jsonl merge=union
