@@ -42,6 +42,11 @@ pub struct TmuxNode {
 
 impl TmuxNode {
     pub fn new() -> Self {
+        Self::with_runtime("tmux", Duration::from_secs(5))
+    }
+
+    /// 换掉运行时二进制与超时：不变量 5 用一个"永远不返回"的假 tmux 造坏节点。
+    pub fn with_runtime(bin: &str, exec_timeout: Duration) -> Self {
         let n = N.fetch_add(1, Ordering::SeqCst);
         let pid = std::process::id();
         let name = format!("n{n}");
@@ -51,14 +56,18 @@ impl TmuxNode {
         let socket = format!("agora-t-{pid}-{n}");
         let rt = Arc::new(
             TmuxRuntime::new(TmuxConfig {
+                bin: bin.to_owned(),
                 socket: socket.clone(),
                 adopt_sockets: vec![],
                 conf_path: home.join("tmux.conf"),
+                exec_timeout,
                 ..Default::default()
             })
             .unwrap(),
         );
-        rt.check_version().unwrap();
+        if bin == "tmux" {
+            rt.check_version().unwrap();
+        }
         let db = Arc::new(Db::open(&home.join("agora.db")).unwrap());
         let sessions = Arc::new(SessionManager::new(
             db.clone(),
@@ -111,6 +120,16 @@ impl TmuxNode {
     /// 同一 AGORA_HOME 与 socket 上重建对象（daemon 重启）：新 Session Manager + reconcile。
     pub fn rebuild(&self) -> SessionManager {
         let m = SessionManager::new(self.db.clone(), self.rt.clone() as Arc<dyn Runtime>);
+        m.reconcile().unwrap();
+        m
+    }
+
+    /// 库整个丢掉（磁盘坏、用户删了 AGORA_HOME/agora.db）之后的 daemon 重启：新库是空的，
+    /// 会话只能从运行时重新发现（不变量 7）。
+    pub fn rebuild_after_db_loss(&self) -> SessionManager {
+        std::fs::remove_file(self.home.join("agora.db")).unwrap();
+        let db = Arc::new(Db::open(&self.home.join("agora.db")).unwrap());
+        let m = SessionManager::new(db, self.rt.clone() as Arc<dyn Runtime>);
         m.reconcile().unwrap();
         m
     }
