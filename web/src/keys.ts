@@ -1,0 +1,139 @@
+/**
+ * 键位层（MISSION §6.5；键位表 docs/spec/ux.md）。
+ *
+ * 一层两面，所以放在同一个文件里：
+ * - agora-xqa.3：把**终端要的**键从浏览器手里抢回来（Shift+Enter、Cmd+←/→）；
+ * - agora-xqa.14：全局快捷键**不许吞掉**终端要的 Ctrl 组合。
+ *
+ * 与 DOM 无关：只看事件的形状（`KeyLike`），所以能在 node 环境里直接测；接线在
+ * TerminalView.tsx（终端侧）与 Workspace.tsx（全局侧）。
+ */
+
+/** 只用得上的那几个字段——测试里直接造对象，不必伪造整个 KeyboardEvent。 */
+export interface KeyLike {
+  key: string;
+  /** 物理键位。macOS 上 Option+1 的 `key` 是 `¡`，只有 `code` 还认得出 Digit1。 */
+  code?: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  type?: string;
+}
+
+/**
+ * 终端聚焦时必须原样到达 pane 的 Ctrl 组合（MISSION §6.5 硬约束）。
+ * 全局快捷键永远不碰这几个键——真要加新快捷键，先在这里撞一下。
+ */
+export const TERMINAL_CTRL_KEYS = ["a", "c", "d", "e", "r", "z"] as const;
+
+export type ShortcutAction =
+  | { action: "palette" }
+  | { action: "filter" }
+  | { action: "new" }
+  | { action: "next" }
+  | { action: "prev" }
+  /** 侧栏第 index+1 条（按当前过滤后的显示顺序）。 */
+  | { action: "jump"; index: number };
+
+/**
+ * 全局快捷键（Cmd/Ctrl+K/F/N、Cmd/Ctrl+Shift+]/[、Alt/Option+1…9）。
+ *
+ * 数字跳转用 Alt/Option 而不是 Cmd/Ctrl+数字：后者被浏览器保留给标签页切换，抢不过来
+ * （docs/spec/ux.md）。返回 null = 这个键与 agora 无关，让它去它本来该去的地方。
+ */
+export function matchShortcut(ev: KeyLike): ShortcutAction | null {
+  if (ev.type && ev.type !== "keydown") return null;
+  const mod = ev.metaKey || ev.ctrlKey;
+
+  // Alt/Option + 1…9：不带 Cmd/Ctrl，靠 code 认（见 KeyLike.code）。
+  if (ev.altKey && !mod) {
+    const d = digit(ev);
+    if (d !== null) return { action: "jump", index: d - 1 };
+    return null;
+  }
+  if (!mod || ev.altKey) return null;
+
+  // 硬约束：Ctrl+C/D/Z/R/A/E 这些是终端的键，全局层一律不认（哪怕将来手滑给它们绑了动作）。
+  if (ev.ctrlKey && !ev.metaKey && (TERMINAL_CTRL_KEYS as readonly string[]).includes(ev.key.toLowerCase())) {
+    return null;
+  }
+
+  const code = ev.code ?? "";
+  if (ev.shiftKey) {
+    if (ev.key === "]" || code === "BracketRight") return { action: "next" };
+    if (ev.key === "[" || code === "BracketLeft") return { action: "prev" };
+    return null;
+  }
+  switch (ev.key.toLowerCase()) {
+    case "k":
+      return { action: "palette" };
+    case "f":
+      return { action: "filter" };
+    case "n":
+      return { action: "new" };
+    default:
+      return null;
+  }
+}
+
+function digit(ev: KeyLike): number | null {
+  const m = /^Digit([1-9])$/.exec(ev.code ?? "");
+  if (m) return Number(m[1]);
+  return /^[1-9]$/.test(ev.key) ? Number(ev.key) : null;
+}
+
+/**
+ * 终端里要替浏览器代劳的键（agora-xqa.3）。返回要发给 pane 的字节，null = 交回 xterm。
+ *
+ * Shift+Enter 发 `ESC CR`（= Option/Alt+Enter）而不是裸 CR：xterm.js 默认把 Shift+Enter
+ * 也发成 CR，TUI 分不出"换行"和"发送"，于是一按就提交（2026-09-02 Chrome + Claude Code 实测）。
+ * 选 `ESC CR` 而不是 kitty/CSI-u 的 `ESC[13;2u`：后者要 TUI 先打开 kitty keyboard protocol，
+ * 没打开就会被当成乱码打进输入框；`ESC CR` 是 Claude Code / Codex 今天就认的"换行不发送"，
+ * 也正是各家 terminal-setup 给 iTerm2 装的那条约定。
+ *
+ * Cmd+←/→ 映射成 Home/End：浏览器把它们留给了历史前进后退，不拦就会真的退出页面、
+ * 顺手丢掉整个终端视图；xterm.js 又不转发它们，所以只能这里代发。
+ */
+export function terminalKey(ev: KeyLike): string | null {
+  if (ev.type && ev.type !== "keydown") return null;
+  if (ev.key === "Enter" && ev.shiftKey && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+    return "\x1b\r";
+  }
+  if (ev.metaKey && !ev.ctrlKey && !ev.altKey && !ev.shiftKey) {
+    if (ev.key === "ArrowLeft") return "\x1b[H";
+    if (ev.key === "ArrowRight") return "\x1b[F";
+  }
+  return null;
+}
+
+/** `attachCustomKeyEventHandler` 的形状：false = 这个键我处理了，xterm 别再管。 */
+export interface Preventable extends KeyLike {
+  preventDefault(): void;
+  stopPropagation?(): void;
+}
+
+/**
+ * 终端的自定义 key handler：认识的键自己发字节并 `preventDefault`（否则 Cmd+← 照样让
+ * 浏览器后退），其余一律返回 true 交回 xterm——Ctrl+C/D/Z/R/A/E、Option+←/→ 按词跳、
+ * 粘贴都走 xterm 原路，这一层不碰。
+ */
+export function handleTerminalKey(ev: Preventable, send: (data: string) => void): boolean {
+  const bytes = terminalKey(ev);
+  if (bytes === null) return true;
+  ev.preventDefault();
+  send(bytes);
+  return false;
+}
+
+/** 桌面断点（index.css 的侧栏宽度也是照这个来的）。 */
+export const DESKTOP_MIN_WIDTH = 700;
+
+/**
+ * 桌面断点才装全局快捷键与命令面板（MISSION §6.5：手机端没有键盘）。V1 只做桌面断点。
+ * 看 innerWidth 而不是 matchMedia：jsdom 的 matchMedia 恒为 false，用它测不出"装上了"。
+ */
+export function isDesktop(): boolean {
+  if (typeof window === "undefined") return true;
+  return window.innerWidth >= DESKTOP_MIN_WIDTH;
+}

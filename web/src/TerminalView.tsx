@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { handleTerminalKey } from "./keys";
 import { TerminalClient, type ExitInfo } from "./terminal";
 
 /** scrollback 与运行时的 history-limit 对齐（ADR-001 D6）。 */
@@ -49,6 +50,9 @@ export function TerminalView({ sessionId }: { sessionId: string }) {
     });
     client.connect(sessionId, term.cols, term.rows);
     const input = term.onData((d) => client.sendInput(d));
+    // 浏览器抢走的那几个键由这一层代发（agora-xqa.3）；其余一律交回 xterm，
+    // 终端里的 Ctrl+C/D/Z/R/A/E 不经过任何 agora 的判断（MISSION §6.5）。
+    term.attachCustomKeyEventHandler((ev) => handleTerminalKey(ev, (d) => client.sendInput(d)));
     const resize = term.onResize(({ cols, rows }) => client.sendResize(cols, rows));
     const ro = new ResizeObserver(() => fit.fit());
     ro.observe(el);

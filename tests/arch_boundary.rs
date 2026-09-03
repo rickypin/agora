@@ -218,6 +218,20 @@ fn subprocesses_only_through_runtime_exec() {
     }
 }
 
+#[test]
+fn the_terminal_installs_the_key_handler() {
+    // agora-xqa.3：键位判断在 keys.ts 里测得再全，没装到 xterm 上也是白的——Shift+Enter
+    // 照样发裸 CR、Cmd+← 照样让浏览器后退。xterm 在 jsdom 里开不起来（canvas），
+    // 前端测不到这一行，所以在这里扫（剥掉注释，写在注释里不算）。
+    let body =
+        fs::read_to_string(root().join("web/src/TerminalView.tsx")).expect("TerminalView 存在");
+    let code = strip_js_comments(&body);
+    assert!(
+        code.contains("attachCustomKeyEventHandler") && code.contains("handleTerminalKey("),
+        "TerminalView 必须把 keys.ts 的 handleTerminalKey 装成 xterm 的 custom key handler"
+    );
+}
+
 /// 唯一允许出现 `fetch(` 的前端文件。
 const NET_EXIT: &str = "web/src/net.ts";
 

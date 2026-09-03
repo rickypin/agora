@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
+import { CommandPalette } from "./CommandPalette";
+import { fuzzyFilter } from "./fuzzy";
+import { isDesktop, matchShortcut } from "./keys";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { SessionSettings } from "./SessionSettings";
-import { Sidebar, rowName } from "./Sidebar";
+import { rowHaystack, rowName, Sidebar } from "./Sidebar";
 import { SessionStore, useSessions } from "./store";
 import { Tabs } from "./Tabs";
 import { TerminalView } from "./TerminalView";
@@ -25,6 +28,9 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   const [tabs, dispatch] = useReducer(tabsReducer, emptyTabs);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newAgentOpen, setNewAgentOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [filter, setFilter] = useState("");
+  const filterInput = useRef<HTMLInputElement>(null);
   // 刚创建的会话：等它随事件流进列表再开 Tab。POST 的响应先于 `session_created` 到达，
   // 这时开 Tab 会被 prune（列表里还没有这一行）立刻关掉。
   const [pendingOpen, setPendingOpen] = useState<string | null>(null);
@@ -48,15 +54,67 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   const active = tabs.active ? byId.get(tabs.active) : undefined;
   // 回调必须稳定：侧栏行是 memo 的，每次渲染换一个闭包会让所有行跟着重渲染。
   const openTab = useCallback((id: string) => dispatch({ type: "open", id }), []);
+  const openNewAgent = useCallback(() => setNewAgentOpen(true), []);
+
+  // 侧栏显示顺序 = 过滤后的顺序，Alt/Option+N 跳的就是它（agora-xqa.14 验收）。
+  const visible = useMemo(() => fuzzyFilter(rows, filter, rowHaystack), [rows, filter]);
+
+  useEffect(() => {
+    // 手机端没有键盘：全局快捷键与命令面板只在桌面装（MISSION §6.5）。
+    if (!isDesktop()) return;
+    const onKey = (ev: KeyboardEvent) => {
+      // 对话框开着的时候方向键、Enter 归它自己；全局层让位。
+      if (paletteOpen || newAgentOpen) return;
+      const hit = matchShortcut(ev);
+      if (!hit) return; // 终端的 Ctrl+C/D/Z/R/A/E 走这条路原样落到 pane
+      ev.preventDefault();
+      switch (hit.action) {
+        case "palette":
+          setPaletteOpen(true);
+          break;
+        case "filter":
+          filterInput.current?.focus();
+          filterInput.current?.select();
+          break;
+        case "new":
+          setNewAgentOpen(true);
+          break;
+        case "next":
+        case "prev": {
+          if (visible.length === 0) break;
+          const at = visible.findIndex((r) => r.id === tabs.active);
+          const step = hit.action === "next" ? 1 : -1;
+          const next = visible[(at + step + visible.length) % visible.length];
+          if (next) openTab(next.id);
+          break;
+        }
+        case "jump": {
+          const target = visible[hit.index];
+          if (target) openTab(target.id);
+          break;
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [paletteOpen, newAgentOpen, visible, tabs.active, openTab]);
 
   return (
     <div className="workspace">
       <Sidebar
-        rows={rows}
+        rows={visible}
+        total={rows.length}
         active={tabs.active}
         onOpen={openTab}
-        onNewAgent={() => setNewAgentOpen(true)}
+        onNewAgent={openNewAgent}
         onRowRender={onRowRender}
+        filter={filter}
+        onFilter={setFilter}
+        filterRef={filterInput}
+        onFilterEnter={() => {
+          const first = visible[0];
+          if (first) openTab(first.id);
+        }}
       />
       <section className="main">
         <Tabs
@@ -92,6 +150,17 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           catalog={catalog}
           onClose={() => setNewAgentOpen(false)}
           onCreated={(id) => setPendingOpen(id)}
+        />
+      )}
+      {paletteOpen && (
+        <CommandPalette
+          rows={rows}
+          api={api}
+          catalog={catalog}
+          onOpen={openTab}
+          onNewAgent={openNewAgent}
+          onCreated={(id) => setPendingOpen(id)}
+          onClose={() => setPaletteOpen(false)}
         />
       )}
     </div>
