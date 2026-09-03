@@ -196,6 +196,10 @@ async fn serve() -> i32 {
 
     let mut state = AppState::new(auth, sessions.clone(), &settings.node_id);
     state.agents = Arc::new(settings.raw.agents.clone());
+    state.projects = Arc::new(agora::project::Projects::new(
+        sessions.db_handle(),
+        settings.raw.project_roots.clone(),
+    ));
     state.runtime_health = Arc::new(runtime_health);
     // 状态变化没有人来通知：轮询求差发 /api/events。
     tokio::spawn(agora::events::watch(

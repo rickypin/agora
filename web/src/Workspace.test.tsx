@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sessionApi, type FetchLike } from "./api";
+import { catalogApi, sessionApi, type FetchLike } from "./api";
 import type { SessionRow, SocketLike } from "./events";
 import { KILL_BODY } from "./SessionSettings";
 import { SessionStore } from "./store";
@@ -50,12 +50,23 @@ function setup(rows: SessionRow[]) {
   const requests: { url: string; method: string; body: string | undefined }[] = [];
   let killResponse: () => { status: number; body: unknown } = () => ({ status: 200, body: {} });
   const f: FetchLike = async (url, init) => {
-    requests.push({ url, method: init.method ?? "GET", body: init.body as string | undefined });
+    const method = init.method ?? "GET";
+    requests.push({ url, method, body: init.body as string | undefined });
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    // New Agent 对话框的数据源；killResponse 只管会话的写端点。
+    if (url.startsWith("/api/projects/worktrees")) return json({ worktrees: [] });
+    if (url.startsWith("/api/projects")) return json({ projects: [{ path: "/p", name: "p", last_used_at: null }] });
+    if (url.startsWith("/api/agents")) return json({ agents: [{ name: "a1", command: "a1" }] });
+    if (url.startsWith("/api/system")) return json({ node: "n" });
+    if (url === "/api/sessions" && method === "POST") return json({ id: "n:new" }, 201);
     const r = killResponse();
-    return new Response(JSON.stringify(r.body), { status: r.status, headers: { "content-type": "application/json" } });
+    return json(r.body, r.status);
   };
   const renders: string[] = [];
-  const ui = render(<Workspace store={store} api={sessionApi(f)} onRowRender={(id) => renders.push(id)} />);
+  const ui = render(
+    <Workspace store={store} api={sessionApi(f)} catalog={catalogApi(f)} onRowRender={(id) => renders.push(id)} />,
+  );
   return { ui, store, sock, requests, renders, setKill: (fn: typeof killResponse) => (killResponse = fn) };
 }
 
@@ -132,6 +143,26 @@ describe("Workspace", () => {
       ["POST", "/api/sessions/n%3Aa/kill", JSON.stringify({ confirmed: true })],
     ]);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("New Agent opens the created session as a tab only once it is in the list", async () => {
+    // POST 的 201 先于 `session_created` 到达：那时开 Tab 会被 prune 立刻关掉
+    // （列表里还没有这一行），用户看到的是"创建了但没打开"。
+    const t = setup([]);
+    await online(t);
+    fireEvent.click(screen.getByText("+ New Agent"));
+    await flush();
+    fireEvent.click(screen.getByTestId("create"));
+    await flush();
+    expect(t.requests.some((r) => r.method === "POST" && r.url === "/api/sessions")).toBe(true);
+    expect(screen.queryByTestId("tab-n:new")).toBeNull();
+
+    await act(async () => {
+      t.sock.send([{ type: "session_created", id: "n:new", session: row("n:new") }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(screen.getByTestId("tab-n:new")).toBeTruthy();
+    expect(mounted).toEqual(["n:new"]);
   });
 
   it("Rename sends PATCH even with the same name; Delete metadata is a DELETE, not a kill", async () => {

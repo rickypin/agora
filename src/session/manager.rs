@@ -138,6 +138,11 @@ impl SessionManager {
         &self.db
     }
 
+    /// 同一个库的另一个持有者（`project::Projects`）：projects 表与 sessions 表同库。
+    pub fn db_handle(&self) -> Arc<Db> {
+        self.db.clone()
+    }
+
     // ---------- 创建 ----------
 
     /// 先外部资源后 metadata（不变量 7 同构）：写库失败 → remove 运行时会话回滚。

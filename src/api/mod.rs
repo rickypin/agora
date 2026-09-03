@@ -5,9 +5,11 @@
 //! `ROUTES` / `PUBLIC_ROUTES` 两张表是 tests/auth.rs 遍历的对象——加路由必须同时登记，
 //! 否则守卫 `every_route_requires_principal_except_allowlist` 不会去敲它。
 
+mod agents;
 mod auth;
 mod events;
 mod health;
+mod projects;
 mod sessions;
 mod spa;
 mod terminal;
@@ -31,6 +33,7 @@ use tracing::Instrument;
 use crate::auth::{Auth, AuthError};
 use crate::config::AgentOverride;
 use crate::events::EventBus;
+use crate::project::Projects;
 use crate::session::SessionManager;
 
 pub use health::{RuntimeHealth, API_VERSION};
@@ -83,6 +86,8 @@ pub struct AppState {
     pub node: Arc<str>,
     /// `agents.<name>.command` 覆盖；创建会话时缺省命令从这里取。
     pub agents: Arc<BTreeMap<String, AgentOverride>>,
+    /// New Agent 对话框的项目与 worktree 数据源；`project_roots` 由 `main.rs` 注入。
+    pub projects: Arc<Projects>,
     pub runtime_health: Arc<RuntimeHealth>,
 }
 
@@ -90,10 +95,11 @@ impl AppState {
     pub fn new(auth: Arc<Auth>, sessions: Arc<SessionManager>, node: &str) -> Self {
         AppState {
             auth,
-            sessions,
+            sessions: sessions.clone(),
             events: EventBus::default(),
             node: Arc::from(node),
             agents: Arc::new(BTreeMap::new()),
+            projects: Arc::new(Projects::new(sessions.db_handle(), Vec::new())),
             runtime_health: Arc::new(RuntimeHealth::default()),
         }
     }
@@ -119,6 +125,9 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/sessions/{id}/restart"),
     ("POST", "/api/sessions/{id}/cleanup"),
     ("GET", "/api/sessions/{id}/terminal"),
+    ("GET", "/api/projects"),
+    ("GET", "/api/projects/worktrees"),
+    ("GET", "/api/agents"),
     ("GET", "/api/events"),
     ("POST", "/api/auth/pair"),
     ("POST", "/api/auth/pair/new"),
@@ -148,6 +157,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/{id}/restart", post(sessions::restart))
         .route("/api/sessions/{id}/cleanup", post(sessions::cleanup))
         .route("/api/sessions/{id}/terminal", get(terminal::upgrade))
+        // 静态段先于 `{id}`：`worktrees` 不会被当成项目路径。
+        .route("/api/projects/worktrees", get(projects::worktrees))
+        .route("/api/projects", get(projects::list))
+        .route("/api/agents", get(agents::list))
         .route("/api/events", get(events::upgrade))
         .route("/api/auth/pair", post(auth::pair))
         .route("/api/auth/pair/new", post(auth::pair_new))

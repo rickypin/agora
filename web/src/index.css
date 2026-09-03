@@ -20,7 +20,8 @@ h2 { font-size: 13px; margin: 0; }
 button { font: inherit; color: var(--fg); background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
 button:disabled { opacity: 0.5; cursor: default; }
 button.danger { border-color: #6e2a2a; color: var(--bad); }
-input { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
+input, select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
+select:disabled { opacity: 0.5; }
 .gate { padding: 2rem; }
 .muted { color: var(--muted); }
 .error { color: var(--bad); }
@@ -76,3 +77,10 @@ input { font: inherit; color: var(--fg); background: var(--bg); border: 1px soli
 .dialog h2 { margin-bottom: 8px; }
 .dialog p { margin: 0 0 14px; color: var(--muted); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.dialog.wide { width: 480px; }
+/* New Agent：标签一列、控件一列，标签宽度固定，控件占满剩下的（docs/spec/ux.md 线框）。 */
+.form { display: grid; grid-template-columns: 84px 1fr; gap: 8px; align-items: center; }
+.form label { color: var(--muted); }
+.form input, .form select { min-width: 0; }
+.form .span { grid-column: 1 / -1; margin-top: 6px; }
+.new-agent { display: block; width: calc(100% - 20px); margin: 0 10px 8px; text-align: left; }

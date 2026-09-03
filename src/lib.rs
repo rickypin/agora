@@ -13,6 +13,7 @@
 //! - `fake_agent`：`agora fake-agent` 子命令，集成测试里扮演 agent（agora-3la）。
 //! - `events/`：全局事件总线与轮询求差；`/api/events` 只是它的 WS 出口。
 //! - `local/`：`AGORA_HOME` 与本机 unix socket 通道（ADR-003 D6）。
+//! - `project/`：`project_roots` 扫描与 worktree 列举，New Agent 对话框的数据源（MISSION §6.4）。
 
 pub mod adapter;
 pub mod api;
@@ -24,6 +25,7 @@ pub mod fake_agent;
 pub mod gateway;
 pub mod hook;
 pub mod local;
+pub mod project;
 pub mod runtime;
 pub mod session;
 pub mod status;

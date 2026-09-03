@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
-import { sessionApi, type SessionApi } from "./api";
+import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
+import { NewAgentDialog } from "./NewAgentDialog";
 import { SessionSettings } from "./SessionSettings";
 import { Sidebar, rowName } from "./Sidebar";
 import { SessionStore, useSessions } from "./store";
@@ -10,17 +11,23 @@ import { emptyTabs, tabsReducer } from "./tabstate";
 interface Props {
   store?: SessionStore;
   api?: SessionApi;
+  catalog?: CatalogApi;
   /** 测试注入：侧栏行渲染计数。 */
   onRowRender?: (id: string) => void;
 }
 
 /** Screen B：侧栏 + Tabs + 终端 + Session Settings。 */
-export function Workspace({ store: given, api: givenApi, onRowRender }: Props) {
+export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender }: Props) {
   const store = useMemo(() => given ?? new SessionStore(), [given]);
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
+  const catalog = useMemo(() => givenCatalog ?? catalogApi(), [givenCatalog]);
   const rows = useSessions(store);
   const [tabs, dispatch] = useReducer(tabsReducer, emptyTabs);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [newAgentOpen, setNewAgentOpen] = useState(false);
+  // 刚创建的会话：等它随事件流进列表再开 Tab。POST 的响应先于 `session_created` 到达，
+  // 这时开 Tab 会被 prune（列表里还没有这一行）立刻关掉。
+  const [pendingOpen, setPendingOpen] = useState<string | null>(null);
 
   useEffect(() => {
     store.start();
@@ -31,6 +38,12 @@ export function Workspace({ store: given, api: givenApi, onRowRender }: Props) {
   useEffect(() => {
     dispatch({ type: "prune", existing: new Set(byId.keys()) });
   }, [byId]);
+  useEffect(() => {
+    if (pendingOpen && byId.has(pendingOpen)) {
+      dispatch({ type: "open", id: pendingOpen });
+      setPendingOpen(null);
+    }
+  }, [byId, pendingOpen]);
 
   const active = tabs.active ? byId.get(tabs.active) : undefined;
   // 回调必须稳定：侧栏行是 memo 的，每次渲染换一个闭包会让所有行跟着重渲染。
@@ -38,7 +51,13 @@ export function Workspace({ store: given, api: givenApi, onRowRender }: Props) {
 
   return (
     <div className="workspace">
-      <Sidebar rows={rows} active={tabs.active} onOpen={openTab} onRowRender={onRowRender} />
+      <Sidebar
+        rows={rows}
+        active={tabs.active}
+        onOpen={openTab}
+        onNewAgent={() => setNewAgentOpen(true)}
+        onRowRender={onRowRender}
+      />
       <section className="main">
         <Tabs
           open={tabs.open}
@@ -67,6 +86,14 @@ export function Workspace({ store: given, api: givenApi, onRowRender }: Props) {
           <p className="muted empty">{rows.length ? "从左侧选一个 agent。" : "还没有会话。"}</p>
         )}
       </section>
+      {newAgentOpen && (
+        <NewAgentDialog
+          api={api}
+          catalog={catalog}
+          onClose={() => setNewAgentOpen(false)}
+          onCreated={(id) => setPendingOpen(id)}
+        />
+      )}
     </div>
   );
 }

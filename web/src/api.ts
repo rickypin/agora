@@ -18,6 +18,37 @@ export type WriteResult<T = unknown> =
 
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
+/** `GET /api/projects` 的一项（MISSION §6.4：扫描发现 + 最近使用）。 */
+export interface ProjectInfo {
+  path: string;
+  name: string;
+  last_used_at: string | null;
+}
+
+/** `GET /api/projects/worktrees` 的一项；detached HEAD 没有 branch。 */
+export interface WorktreeInfo {
+  path: string;
+  branch: string | null;
+  head: string | null;
+  main: boolean;
+  locked: boolean;
+}
+
+/** `GET /api/agents` 的一项：名字与默认命令都来自 Adapter，前端不写死（ADR-002 D2）。 */
+export interface AgentInfo {
+  name: string;
+  command: string;
+}
+
+export interface CreateSessionBody {
+  display_name: string;
+  agent_type: string;
+  working_directory: string;
+  worktree?: string | null;
+  task_ref?: string | null;
+  command?: string;
+}
+
 async function call<T>(
   fetchImpl: FetchLike,
   method: string,
@@ -58,7 +89,30 @@ export function sessionApi(fetchImpl: FetchLike = (u, i) => fetch(u, i) /* /api/
       call(fetchImpl, "POST", `${enc(id)}/restart`, confirmed ? { confirmed: true } : {}),
     /** 只删 metadata，不 kill（DELETE ≠ kill，MISSION §7.3）。 */
     deleteMetadata: (id: string) => call(fetchImpl, "DELETE", enc(id)),
+    /** New Agent 对话框的创建（§6.4）；201 的响应体就是新会话那一行。 */
+    create: (body: CreateSessionBody) =>
+      call<{ id: string }>(fetchImpl, "POST", "/api/sessions", body),
   };
 }
 
 export type SessionApi = ReturnType<typeof sessionApi>;
+
+/**
+ * New Agent 对话框的三个只读数据源（§6.4）。与写端点分开：它们没有确认语义，
+ * 401 之外的失败只影响下拉框，不该走 WriteResult 那套。
+ */
+export function catalogApi(fetchImpl: FetchLike = (u, i) => fetch(u, i) /* /api/ */) {
+  return {
+    projects: () => call<{ projects: ProjectInfo[] }>(fetchImpl, "GET", "/api/projects"),
+    worktrees: (path: string) =>
+      call<{ worktrees: WorktreeInfo[] }>(
+        fetchImpl,
+        "GET",
+        `/api/projects/worktrees?path=${encodeURIComponent(path)}`,
+      ),
+    agents: () => call<{ agents: AgentInfo[] }>(fetchImpl, "GET", "/api/agents"),
+    system: () => call<{ node: string }>(fetchImpl, "GET", "/api/system"),
+  };
+}
+
+export type CatalogApi = ReturnType<typeof catalogApi>;

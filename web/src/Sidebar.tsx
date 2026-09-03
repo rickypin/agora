@@ -64,16 +64,20 @@ interface SidebarProps {
   rows: SessionRow[];
   active: string | null;
   onOpen: (id: string) => void;
+  onNewAgent?: () => void;
   onRowRender?: (id: string) => void;
 }
 
-export function Sidebar({ rows, active, onOpen, onRowRender }: SidebarProps) {
+export function Sidebar({ rows, active, onOpen, onNewAgent, onRowRender }: SidebarProps) {
   return (
     <aside className="sidebar">
       <div className="sidebar-head">
         <h1>agora</h1>
         <span className="muted">AGENTS {rows.length}</span>
       </div>
+      <button className="new-agent" onClick={onNewAgent}>
+        + New Agent
+      </button>
       {rows.length === 0 && <p className="muted pad">还没有会话。</p>}
       <ul>
         {rows.map((r) => (

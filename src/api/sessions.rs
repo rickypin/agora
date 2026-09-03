@@ -109,7 +109,7 @@ pub struct CreateBody {
     pub worktree: Option<String>,
     #[serde(default)]
     pub task_ref: Option<String>,
-    /// 缺省用 `agents.<agent_type>.command`，再缺省就是 agent_type 本身（可移植的裸命令名）。
+    /// 缺省链见 `create`；存的一律是可移植的裸命令名（ADR-001 D7）。
     #[serde(default)]
     pub command: Option<String>,
     #[serde(default)]
@@ -126,6 +126,8 @@ pub async fn create(
     if body.display_name.trim().is_empty() || body.agent_type.trim().is_empty() {
         return Err(bad_request("display_name 与 agent_type 不能为空"));
     }
+    // 缺省链：请求 > `agents.<type>.command` 覆盖 > Adapter 的 default_command >
+    // agent_type 本身（`GET /api/agents` 走同一条链的前两段）。
     let command = body
         .command
         .filter(|c| !c.trim().is_empty())
@@ -135,15 +137,20 @@ pub async fn create(
                 .get(&body.agent_type)
                 .and_then(|a| a.command.clone())
         })
+        .or_else(|| {
+            crate::adapter::find(&body.agent_type)
+                .map(|a| crate::adapter::AgentIdentity::default_command(a).to_owned())
+        })
         .unwrap_or_else(|| body.agent_type.clone());
     let mut size = Size::default();
     if let (Some(c), Some(r)) = (body.cols, body.rows) {
         size = Size { cols: c, rows: r };
     }
+    let working_directory = body.working_directory;
     let new = NewSession {
         display_name: body.display_name,
         agent_type: body.agent_type,
-        working_directory: body.working_directory,
+        working_directory: working_directory.clone(),
         worktree: body.worktree,
         task_ref: body.task_ref,
         command,
@@ -151,6 +158,7 @@ pub async fn create(
         size,
     };
     let view = blocking(&state.sessions, move |s| s.create(&new)).await?;
+    touch_project(&state, working_directory).await;
     tracing::info!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, "创建会话");
     Ok((StatusCode::CREATED, Json(announce_created(&state, &view))))
 }
@@ -181,6 +189,16 @@ pub async fn adopt(
     let view = blocking(&state.sessions, move |s| s.adopt(&spec)).await?;
     tracing::info!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, "采纳会话");
     Ok((StatusCode::CREATED, Json(announce_created(&state, &view))))
+}
+
+/// 项目列表的"最近使用"排序只在起会话时更新（MISSION §6.4）。记不上不该让创建失败：
+/// 用户要的是会话，排序错一次下次就好了。
+async fn touch_project(state: &AppState, path: PathBuf) {
+    let projects = state.projects.clone();
+    let res = tokio::task::spawn_blocking(move || projects.touch(&path)).await;
+    if let Ok(Err(err)) = res {
+        tracing::warn!(component = "api", %err, "更新项目最近使用失败");
+    }
 }
 
 fn announce_created(state: &AppState, view: &SessionView) -> Value {

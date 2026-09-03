@@ -6,7 +6,7 @@
 
 ```
 GET    /api/sessions               # { sessions: [...], unregistered: [...] }：已登记会话 + 运行时里未登记的（Unknown Agent，可采纳，§5.5）
-POST   /api/sessions               # { display_name, agent_type, working_directory, worktree?, task_ref?, command?, cols?, rows? } → 201；command 缺省取 agents.<agent_type>.command，再缺省就是 agent_type 本身
+POST   /api/sessions               # { display_name, agent_type, working_directory, worktree?, task_ref?, command?, cols?, rows? } → 201；command 缺省链：agents.<agent_type>.command → Adapter 的 default_command → agent_type 本身
 GET    /api/sessions/:id
 PATCH  /api/sessions/:id           # { display_name }：改名即落锁（§4.5）；其它 Session Settings 字段随前端落地
 POST   /api/sessions/:id/input     # 不经终端的 respond：文本 / 选项；WAITING 与 TURN_DONE 的主路径（M1b）
@@ -16,7 +16,8 @@ POST   /api/sessions/:id/cleanup   # 回收已退出会话保留的运行时会�
 DELETE /api/sessions/:id           # 只删 metadata；已退出的顺手清理
 POST   /api/sessions/adopt         # { runtime_ref, display_name?, project?, agent_type? }：采纳可采纳运行时里的未注册会话（§5.5）→ 201；已登记 → 409 already_registered
 GET    /api/projects               # project_roots 扫描结果，按最近使用排序（§6.4）
-GET    /api/projects/worktrees     # ?path=<repo>：该仓库现有 worktree（§6.4；新建 worktree 归 M3 A44）
+GET    /api/projects/worktrees     # ?path=<repo>：该仓库现有 worktree（§6.4；新建 worktree 归 M3 A44）；path 不是已知项目 → 400 bad_request
+GET    /api/agents                 # New Agent 对话框的 Agent 下拉：[{ name, command }]，来自 Adapter 启动侧 + agents.<name>.command 覆盖（§5.2）
 GET    /api/tasks/ready            # ?path=<repo>：有 bd 的仓库的 bd ready，只读（M3 A43）
 GET    /api/nodes                  # 本机 + 已配置 peer 的状态：online / last_seen
 GET    /api/system                 # { api_version, version, node }
@@ -28,7 +29,9 @@ GET    /api/auth/devices           # 已配对设备列表（含已吊销的，r
 DELETE /api/auth/devices/:id       # 吊销一台设备 → 204；即时生效
 ```
 
-错误应答统一为 `{ "error": "<type>", "message": "..." }`，`type` 是 snake_case，调用方按它分支、不做字符串匹配（§2.3 规则 10）：`unauthenticated`（401）、`bearer_requires_tls`（401）、`pair_invalid`（401，未知 / 已用 / 过期不区分）、`cross_origin`（403）、`pair_pending_limit`（429）、`device_not_found`（404）；会话端点：`not_found`（404）、`node_unknown`（404，id 的节点前缀不是本节点）、`needs_confirmation`（409）、`still_alive`（409）、`no_runtime`（409，external 会话没有运行时句柄）、`already_registered`（409）、`read_only`（409，采纳 socket 上的会话拒绝写操作）、`bad_request`（400）、`runtime`（502）、`database`（500）。`NoPendingDecision` 随 M1b 落地为 `no_pending_decision`。
+错误应答统一为 `{ "error": "<type>", "message": "..." }`，`type` 是 snake_case，调用方按它分支、不做字符串匹配（§2.3 规则 10）：`unauthenticated`（401）、`bearer_requires_tls`（401）、`pair_invalid`（401，未知 / 已用 / 过期不区分）、`cross_origin`（403）、`pair_pending_limit`（429）、`device_not_found`（404）；会话端点：`not_found`（404）、`node_unknown`（404，id 的节点前缀不是本节点）、`needs_confirmation`（409）、`still_alive`（409）、`no_runtime`（409，external 会话没有运行时句柄）、`already_registered`（409）、`read_only`（409，采纳 socket 上的会话拒绝写操作）、`bad_request`（400）、`runtime`（502）、`git`（502，`/api/projects/worktrees` 的 git 调用失败）、`database`（500）。`NoPendingDecision` 随 M1b 落地为 `no_pending_decision`。
+
+`GET /api/projects` 每项是 `{ path, name, last_used_at }`，按最近使用排序（未用过的排在后面、按名字）；列表是 `project_roots` 的扫描结果与库里 `projects` 表的并集，目录已不存在的行在读取时删除。`last_used_at` 只在 `POST /api/sessions` 时更新——"最近使用"指的是起过会话。`GET /api/projects/worktrees` 每项是 `{ path, branch, head, main, locked }`，`branch` 去掉 `refs/heads/` 前缀、detached HEAD 为 null，第一项是主 worktree。
 
 每条会话的形态是 `sessions` 行的全部字段 + 运行时实时事实（`name`、`alive`、`exit`、`pid`、`managed`）+ 状态判定（`status`、`source`、`reason`）；`id` 是全局 id `<node>:<id>`，本机 id 在 `local_id`，另带 `node`。`unregistered` 的每项是 `{ runtime_ref, name, title, alive, managed, working_directory, node }`。
 
