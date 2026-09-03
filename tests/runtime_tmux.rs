@@ -197,20 +197,41 @@ fn terminate_leaves_no_orphans() {
     let s = f.rt.inspect(&r).unwrap();
     assert!(!s.alive);
     assert!(matches!(s.exit, Some(Exit::Signal(_))), "{:?}", s.exit);
-    // 进程组里没人了：kill(-pgid, 0) 报 ESRCH。
-    let deadline = Instant::now() + Duration::from_secs(3);
+    // 进程组里没有**活着**的成员了。这里不能用 kill(-pgid, 0)：僵尸也还在进程组里，
+    // 信号 0 对它同样返回 0，于是"孤儿已经被杀干净、只是还没被 init 收尸"会被误判成失败
+    // （CI ubuntu-22.04 实测 2026-09-03 run 33734626320；本机容器约 1/6 复现，agora-ty7）。
+    // 后台子进程的父进程（pane 里的 shell）先死，它要等重新挂到 init 名下才被回收，
+    // 这段时间长短不归我们管。改成问 ps 要状态，只把非 Z 的成员算数。
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        // SAFETY: 信号 0 只做存在性检查。
-        let rc = unsafe { libc::kill(-(pid as i32), 0) };
-        if rc == -1 {
+        let alive = live_group_members(pid);
+        if alive.is_empty() {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "process group {pid} still has members"
+            "process group {pid} still has live members: {alive:?}"
         );
         std::thread::sleep(POLL);
     }
+}
+
+/// 进程组里非僵尸的成员（`pid stat`）。macOS 与 Linux 的 ps 都认这三个 -o 字段。
+fn live_group_members(pgid: u32) -> Vec<String> {
+    let out = Command::new("ps")
+        .args(["-e", "-o", "pid=,pgid=,stat="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let pid = f.next()?;
+            let g = f.next()?.parse::<u32>().ok()?;
+            let stat = f.next()?;
+            (g == pgid && !stat.starts_with('Z')).then(|| format!("{pid} {stat}"))
+        })
+        .collect()
 }
 
 #[test]
