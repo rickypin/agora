@@ -32,6 +32,11 @@ pub enum Event {
     SessionRemoved {
         id: String,
     },
+    /// metadata 改了（改名等）：整行重发，客户端就地替换（agora-xqa.11：改名后列表不刷新）。
+    SessionUpdated {
+        id: String,
+        session: serde_json::Value,
+    },
     StatusChanged {
         id: String,
         status: Status,
@@ -54,6 +59,7 @@ impl Event {
     pub fn coalesce_key(&self) -> Option<(&'static str, &str)> {
         match self {
             Event::StatusChanged { id, .. } => Some(("status", id)),
+            Event::SessionUpdated { id, .. } => Some(("updated", id)),
             _ => None,
         }
     }

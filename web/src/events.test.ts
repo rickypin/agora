@@ -74,6 +74,15 @@ describe("EventsClient", () => {
     expect(client.sessions.get("n:a")?.status).toBe("waiting");
     expect(client.sessions.get("n:b")?.status).toBe("starting");
     expect(client.snapshots).toBe(1);
+
+    // session_updated（改名）：整行替换；内容相等不触发 onChange。
+    sockets[0].serverSend([{ type: "session_updated", id: "n:b", session: { ...row("n:b", "starting"), name: "renamed" } }]);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(onChange.mock.calls.length).toBe(calls + 2);
+    expect(client.sessions.get("n:b")?.name).toBe("renamed");
+    sockets[0].serverSend([{ type: "session_updated", id: "n:b", session: { ...row("n:b", "starting"), name: "renamed" } }]);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(onChange.mock.calls.length).toBe(calls + 2);
   });
 
   it("re-pulls the snapshot after a reconnect and on resync, never polling", async () => {

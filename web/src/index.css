@@ -1,0 +1,78 @@
+/* dark-mode-first、dense、low visual noise（MISSION §6.10；docs/spec/ux.md 视觉参考）。 */
+:root {
+  color-scheme: dark;
+  --bg: #0e1116;
+  --panel: #151a21;
+  --panel-2: #1c2229;
+  --fg: #d6dbe3;
+  --muted: #7d8590;
+  --accent: #58a6ff;
+  --border: #262d36;
+  --warn: #e3b341;
+  --ok: #3fb950;
+  --bad: #f85149;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+}
+html, body, #root { height: 100%; margin: 0; background: var(--bg); color: var(--fg); }
+h1 { font-size: 14px; margin: 0; letter-spacing: 0.04em; }
+h2 { font-size: 13px; margin: 0; }
+button { font: inherit; color: var(--fg); background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: default; }
+button.danger { border-color: #6e2a2a; color: var(--bad); }
+input { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
+.gate { padding: 2rem; }
+.muted { color: var(--muted); }
+.error { color: var(--bad); }
+.pad { padding: 6px; }
+
+/* grid 子项默认 min-height:auto，会被 xterm 已渲染的高度撑住、窗口变矮时不缩（agent-browser 实测 2026-09-03：
+   700→40 行、400 仍 40 行）；minmax(0,1fr) + min-height:0 让它跟着视口缩。 */
+.workspace { display: grid; grid-template-columns: 260px 1fr; grid-template-rows: minmax(0, 1fr); height: 100%; }
+.sidebar { background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; }
+.sidebar-head { display: flex; justify-content: space-between; align-items: baseline; padding: 10px 10px 6px; }
+.sidebar ul { list-style: none; margin: 0; padding: 0 6px; }
+.row { display: flex; gap: 8px; align-items: flex-start; width: 100%; text-align: left; background: none; border: 0; padding: 5px 6px; border-radius: 4px; }
+.row:hover { background: var(--panel-2); }
+.row.selected { background: #1f2a38; }
+.row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.3; }
+.row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .meta { display: flex; gap: 6px; color: var(--muted); font-size: 12px; }
+.row .preview { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { width: 1em; text-align: center; flex: none; }
+.st-waiting { color: var(--warn); }
+.st-turn_done { color: var(--accent); }
+.st-running, .st-starting { color: var(--ok); }
+.st-failed { color: var(--bad); }
+.st-finished, .st-idle { color: var(--muted); }
+
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.tabs { display: flex; gap: 2px; padding: 4px 6px 0; border-bottom: 1px solid var(--border); background: var(--panel); overflow-x: auto; }
+.tab { display: flex; align-items: center; border: 1px solid transparent; border-bottom: 0; border-radius: 4px 4px 0 0; color: var(--muted); }
+.tab.active { background: var(--bg); border-color: var(--border); color: var(--fg); }
+.tab-label, .tab-close { background: none; border: 0; padding: 3px 6px; color: inherit; display: flex; gap: 6px; align-items: center; }
+.tab-close:hover { color: var(--bad); }
+.crumb { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; border-bottom: 1px solid var(--border); color: var(--muted); }
+.pane { position: relative; flex: 1; min-height: 0; display: flex; }
+.pane .term { flex: 1; min-width: 0; }
+.empty { padding: 2rem; }
+
+.term { display: flex; flex-direction: column; height: 100%; }
+.term-bar { display: flex; gap: 10px; align-items: center; padding: 3px 10px; color: var(--muted); font-size: 12px; }
+.link-attached { color: var(--ok); }
+.link-exited, .link-detached { color: var(--warn); }
+.term-host { flex: 1; min-height: 0; padding: 0 4px 4px; }
+.term-host .xterm { height: 100%; }
+
+.settings { width: 320px; border-left: 1px solid var(--border); background: var(--panel); padding: 10px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+.settings-head { display: flex; justify-content: space-between; align-items: center; }
+.settings-row { display: flex; gap: 6px; align-items: center; }
+.settings-row label { color: var(--muted); width: 44px; }
+.settings-row input { flex: 1; min-width: 0; }
+.settings-row.actions { flex-wrap: wrap; }
+
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 10; }
+.dialog { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 16px; width: 420px; max-width: 90vw; }
+.dialog h2 { margin-bottom: 8px; }
+.dialog p { margin: 0 0 14px; color: var(--muted); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }

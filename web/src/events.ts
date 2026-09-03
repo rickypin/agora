@@ -23,6 +23,7 @@ export interface Snapshot {
 export type AgoraEvent =
   | { type: "session_created"; id: string; session: SessionRow }
   | { type: "session_removed"; id: string }
+  | { type: "session_updated"; id: string; session: SessionRow }
   | {
       type: "status_changed";
       id: string;
@@ -157,7 +158,8 @@ export class EventsClient {
   /** 就地 patch；返回是否真的变了。 */
   private apply(e: AgoraEvent): boolean {
     switch (e.type) {
-      case "session_created": {
+      case "session_created":
+      case "session_updated": {
         const prev = this.sessions.get(e.id);
         if (prev && JSON.stringify(prev) === JSON.stringify(e.session)) return false;
         this.sessions.set(e.id, e.session);

@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { fetchHealth } from "./health";
 import { clearFragment, extractPairToken, isPaired, redeemPair } from "./pair";
+import { Workspace } from "./Workspace";
 
 type Probe = "probing" | "ok" | "down";
 type Auth = "checking" | "paired" | "unpaired" | "pair_failed";
 
-/** 占位页：Dashboard / Terminal Workspace 在 agora-xqa.11 落地。 */
+/** 入口：配对门 → Terminal Workspace（agora-xqa.11）。Dashboard 的 attention 视图归 M1b。 */
 export function App() {
   const [probe, setProbe] = useState<Probe>("probing");
   const [auth, setAuth] = useState<Auth>("checking");
@@ -32,15 +33,16 @@ export function App() {
     };
   }, []);
 
-  return (
-    <main style={{ fontFamily: "system-ui, sans-serif", padding: "2rem" }}>
-      <h1>agora</h1>
-      <p>
-        daemon：{probe === "probing" ? "探测中…" : probe === "ok" ? "在线" : "不可达"}
-      </p>
-      <p>{authLine(auth)}</p>
-    </main>
-  );
+  if (auth !== "paired") {
+    return (
+      <main className="gate">
+        <h1>agora</h1>
+        <p>daemon：{probe === "probing" ? "探测中…" : probe === "ok" ? "在线" : "不可达"}</p>
+        <p>{authLine(auth)}</p>
+      </main>
+    );
+  }
+  return <Workspace />;
 }
 
 function authLine(auth: Auth): string {

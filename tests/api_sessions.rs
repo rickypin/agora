@@ -269,6 +269,23 @@ async fn cleanup_refuses_alive_and_patch_renames() {
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["name"], "改过名");
     assert_eq!(v["name_locked"], true);
+    // 改名要发 session_updated：不然侧栏到下一次全量前一直是旧名字（agora-xqa.11）。
+    let mut rx = fx.state.events.subscribe();
+    let (_, v2) = call(
+        &fx,
+        &cookie,
+        Method::PATCH,
+        &format!("/api/sessions/{gid}"),
+        Some(json!({ "display_name": "再改" })),
+    )
+    .await;
+    match rx.try_recv() {
+        Ok(agora::events::Event::SessionUpdated { id, session }) => {
+            assert_eq!(id, gid);
+            assert_eq!(session, v2);
+        }
+        other => panic!("期待 SessionUpdated，得到 {other:?}"),
+    }
 
     fx.rt.set_dead(
         created["runtime_ref"].as_str().unwrap(),

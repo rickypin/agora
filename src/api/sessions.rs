@@ -216,7 +216,12 @@ pub async fn patch(
     }
     let view = blocking(&state.sessions, move |s| s.rename(&id, &name)).await?;
     tracing::info!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, "改名");
-    Ok(Json(export(&state.node, &view)))
+    let session = export(&state.node, &view);
+    state.events.publish(Event::SessionUpdated {
+        id: global_id(&state.node, &view.record.id),
+        session: session.clone(),
+    });
+    Ok(Json(session))
 }
 
 // ---------- 生命周期 ----------
