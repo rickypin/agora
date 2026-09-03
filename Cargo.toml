@@ -25,6 +25,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 # 只用来给进程组发信号（terminate 不经 tmux，ADR-001 D2）。
 libc = "0.2"
+# Terminal Gateway 的 PTY（ADR-001 D5/D8）；unix 与 ConPTY 同一接口，是 D9 第二运行时的地基。
+portable-pty = "0.9"
 # metadata 库；bundled 免去三平台各自的 sqlite 版本差异（ADR-001 D8）。
 rusqlite = { version = "0.40", features = ["bundled"] }
 # 配对链接与 session token 的随机源、只落哈希（ADR-003 D2）。

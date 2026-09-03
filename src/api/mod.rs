@@ -10,6 +10,7 @@ mod events;
 mod health;
 mod sessions;
 mod spa;
+mod terminal;
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
@@ -117,6 +118,7 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/sessions/{id}/kill"),
     ("POST", "/api/sessions/{id}/restart"),
     ("POST", "/api/sessions/{id}/cleanup"),
+    ("GET", "/api/sessions/{id}/terminal"),
     ("GET", "/api/events"),
     ("POST", "/api/auth/pair"),
     ("POST", "/api/auth/pair/new"),
@@ -145,6 +147,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/{id}/kill", post(sessions::kill))
         .route("/api/sessions/{id}/restart", post(sessions::restart))
         .route("/api/sessions/{id}/cleanup", post(sessions::cleanup))
+        .route("/api/sessions/{id}/terminal", get(terminal::upgrade))
         .route("/api/events", get(events::upgrade))
         .route("/api/auth/pair", post(auth::pair))
         .route("/api/auth/pair/new", post(auth::pair_new))

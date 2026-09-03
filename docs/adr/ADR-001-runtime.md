@@ -156,6 +156,8 @@ Terminal Gateway 的一端是 daemon 自己 open 的 PTY，里面跑 `tmux attac
 
 为避开 devcenter 在 Rust 上踩的坑，施工约束四条：只有一种并发模型（tokio）；子进程只经 `runtime::exec` 一个入口（超时 + blocking + stderr 有界）；PTY 读写在 blocking 线程 + 有界 channel；模块边界用错误枚举，不用 `anyhow`，锁不 `expect("poisoned")`。
 
+判据评估结果（2026-09-03，`agora-xqa.10` 网关打通时）：没有出现第二种并发模型，不重议。一个实测边界：PTY 的阻塞 read 不能放 `spawn_blocking`——runtime 关闭时会等它，而它只在 attach 退出后返回，整个进程挂死；PTY 与子进程的阻塞 I/O 一律用 `std::thread` + 有界 channel（`src/gateway/mod.rs`、`runtime::exec`）。
+
 ### D9 Windows 与第二运行时的留位
 
 `Runtime` 接口 + `Ref` 的 scheme 前缀就是留位：第二个实现是 **native supervisor**（每会话一个 supervisor 进程持有 ConPTY / PTY、自带 scrollback ring、经本地 socket 多客户端 attach），随 Windows 进入范围时另立 ADR 并实现（`agora-fs8`）。V1 不写它一行代码，但 V1 的代码**不得**在 `runtime/tmux/` 之外假设 tmux 存在（守卫 1）。容器 / 云沙箱 / SDK 运行时同归此处。

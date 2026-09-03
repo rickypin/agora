@@ -2,6 +2,8 @@
 
 #![allow(dead_code)]
 
+pub mod node;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -21,6 +23,8 @@ pub const NODE: &str = "testnode";
 pub struct FakeRuntime {
     pub sessions: Mutex<HashMap<String, RuntimeSession>>,
     pub removed: Mutex<Vec<String>>,
+    /// `attach` 返回的 argv；网关测试用它塞一个真实的假 attach（`sh -c ...`）。
+    pub attach_argv: Mutex<Vec<String>>,
 }
 
 impl FakeRuntime {
@@ -84,9 +88,12 @@ impl Runtime for FakeRuntime {
             .cloned()
             .ok_or_else(|| RuntimeError::NotFound(r.clone()))
     }
-    fn attach(&self, _r: &RuntimeRef, _s: Size) -> Result<AttachSpec, RuntimeError> {
+    fn attach(&self, r: &RuntimeRef, _s: Size) -> Result<AttachSpec, RuntimeError> {
+        if !self.sessions.lock().unwrap().contains_key(&r.0) {
+            return Err(RuntimeError::NotFound(r.clone()));
+        }
         Ok(AttachSpec {
-            argv: vec![],
+            argv: self.attach_argv.lock().unwrap().clone(),
             env: vec![],
         })
     }

@@ -14,7 +14,9 @@ use serde::Serialize;
 
 use super::db::{Db, DbError};
 use super::model::{Origin, SessionRecord};
-use crate::runtime::{LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, Size};
+use crate::runtime::{
+    AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, Size,
+};
 use crate::status::{self, Assessment, Status};
 
 /// Kill 的宽限：TERM → 5 s → KILL（ADR-001 D2）。
@@ -292,6 +294,17 @@ impl SessionManager {
             None => Vec::new(),
         };
         Ok(self.view(rec, &live))
+    }
+
+    /// Terminal Gateway 要的 attach 规格（ADR-001 D5）。external 会话没有运行时句柄。
+    /// 这里不检查会话是否 alive：dead pane 的输出还在，attach 上去看 scrollback 是 Kill 之后
+    /// "输出保留"承诺的一部分（MISSION §4.6）。
+    pub fn attach(&self, id: &str, size: Size) -> Result<AttachSpec, SessionError> {
+        let rec = self.record(id)?;
+        let r = rec
+            .runtime_ref
+            .ok_or_else(|| SessionError::NoRuntime(id.into()))?;
+        Ok(self.runtime.attach(&RuntimeRef(r), size)?)
     }
 
     fn view(&self, rec: SessionRecord, live: &[RuntimeSession]) -> SessionView {

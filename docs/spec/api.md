@@ -53,7 +53,7 @@ WS /api/events                   # 全局事件：status change / session create
 
 终端流 Client → Server：`{ "type": "input", "data" }`、`{ "type": "resize", "cols", "rows" }`、`{ "type": "ping" }`
 
-终端流 Server → Client：`{ "type": "output", "data" }`、`{ "type": "status", "status" }`、`{ "type": "exit", "exit": { "code": n } | { "signal": "term" } }`（ADR-001 的 `Exit` 形态）
+终端流 Server → Client：`{ "type": "output", "data" }`、`{ "type": "status", "status": "attached" }`、`{ "type": "exit", "exit": { "kind": "code", "value": n } | { "kind": "signal", "value": "hup" } }`（与 `GET /api/sessions` 里 `exit` 字段同一形态，ADR-001 的 `Exit`）、`{ "type": "pong" }`。`exit` 只说明这一条 attach 流结束了，不代表会话或 agent 退出。升级 URL 可带 `?cols=&rows=` 作为初始尺寸（缺省 160×48），之后由 `resize` 消息调整；多客户端同看时由运行时仲裁尺寸。keepalive：服务端每 20 s 发 WS Ping，65 s 内没有任何入站帧就断开这一条 attach（会话不受影响）。断开时给 attach 进程 SIGHUP，确认其退出后才释放 PTY（ADR-001 D5）。
 
 事件流 Server → Client 每帧一个 JSON **数组**（服务端 ~50 ms 合并突发，同一会话的连续状态变化只留最后一条）：`{ "type": "session_created", "id", "session" }`、`{ "type": "session_removed", "id" }`、`{ "type": "status_changed", "id", "status", "source", "reason", "alive" }`、`{ "type": "notification", "id", "title", "body" }`（M1b 接上）、`{ "type": "resync" }`（服务端丢过该客户端的事件，必须重拉全量）。Client → Server 只有 `{ "type": "ping" }` → `{ "type": "pong" }`。进程状态的变化由 daemon 按 `status.detector_interval` 轮询 Session Manager 求差发出；API 自己做的增删立即发。两个 WS 升级都先过 principal，再校验 `Origin` 与 `Host` 同源（403 `cross_origin`）。
 

@@ -24,7 +24,7 @@ use crate::runtime::Size;
 use crate::session::{AdoptSession, NewSession, SessionError, SessionManager, SessionView};
 
 /// `<node>:<id>` → 本机 id；节点不对就报错。
-fn local_id(state: &AppState, gid: &str) -> Result<String, ApiError> {
+pub(super) fn local_id(state: &AppState, gid: &str) -> Result<String, ApiError> {
     match gid.split_once(':') {
         Some((node, id)) if node == &*state.node => Ok(id.to_owned()),
         Some((node, _)) => Err(ApiError {
@@ -41,7 +41,7 @@ fn local_id(state: &AppState, gid: &str) -> Result<String, ApiError> {
 }
 
 /// 在 blocking 线程上跑 Session Manager 的一步。
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
     sessions: &Arc<SessionManager>,
     f: impl FnOnce(&SessionManager) -> Result<T, SessionError> + Send + 'static,
 ) -> Result<T, ApiError> {
