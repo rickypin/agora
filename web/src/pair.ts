@@ -1,3 +1,5 @@
+import { apiFetch } from "./net";
+
 /** 设备配对（ADR-003 D2）：链接 `<origin>/#pair=<token>`，前端兑换后清掉 fragment。 */
 
 export function extractPairToken(hash: string): string | null {
@@ -12,7 +14,7 @@ export interface PairedDevice {
 
 /** `POST /api/auth/pair`：成功返回设备，失败（未知 / 已用 / 过期）返回 null。 */
 export async function redeemPair(token: string): Promise<PairedDevice | null> {
-  const resp = await fetch("/api/auth/pair", {
+  const resp = await apiFetch("/api/auth/pair", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ token }),
@@ -24,7 +26,7 @@ export async function redeemPair(token: string): Promise<PairedDevice | null> {
 
 /** 有没有有效 session：`GET /api/auth/devices` 200 即已配对。 */
 export async function isPaired(): Promise<boolean> {
-  const resp = await fetch("/api/auth/devices");
+  const resp = await apiFetch("/api/auth/devices");
   return resp.ok;
 }
 

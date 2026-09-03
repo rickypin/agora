@@ -66,6 +66,78 @@ fn assert_absent(sub: &str, needle: &str, why: &str) {
     assert_only_under(sub, needle, &[], why);
 }
 
+/// 把 JS/TS 源码里的注释换成空白，字符串与模板串原样保留。
+///
+/// 守卫扫的是"会执行的代码"：`/* /api/ */` 这种注释曾经让 `fetch(u, i)`
+/// 满足"同行含 /api/"，守卫等于没有（agora-gwm）。反过来，注释里出现
+/// `new WebSocket(` 也不该让守卫去敲一行说明文字。
+///
+/// 必须认字符串：WS 的 URL 里有 `${proto}//${host}/api/…`，按 `//` 一刀切会把 `/api/`
+/// 砍掉，守卫反而误报。
+fn strip_js_comments(src: &str) -> String {
+    #[derive(PartialEq)]
+    enum St {
+        Code,
+        Line,
+        Block,
+        Str(char),
+    }
+    let mut out = String::with_capacity(src.len());
+    let mut st = St::Code;
+    let mut chars = src.chars().peekable();
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        match st {
+            St::Code => match (c, chars.peek()) {
+                ('/', Some('/')) => {
+                    chars.next();
+                    st = St::Line;
+                    out.push_str("  ");
+                }
+                ('/', Some('*')) => {
+                    chars.next();
+                    st = St::Block;
+                    out.push_str("  ");
+                }
+                ('"', _) | ('\'', _) | ('`', _) => {
+                    st = St::Str(c);
+                    escaped = false;
+                    out.push(c);
+                }
+                _ => out.push(c),
+            },
+            St::Line => {
+                if c == '\n' {
+                    st = St::Code;
+                    out.push(c);
+                } else {
+                    out.push(' ');
+                }
+            }
+            St::Block => {
+                if c == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    st = St::Code;
+                    out.push_str("  ");
+                } else {
+                    out.push(if c == '\n' { '\n' } else { ' ' });
+                }
+            }
+            St::Str(q) => {
+                out.push(c);
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == q {
+                    st = St::Code;
+                }
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn tmux_identifiers_only_in_runtime_tmux() {
     // ADR-001 D2：tmux 泄漏到 runtime/ 之外，第二运行时无处安放。
@@ -133,25 +205,77 @@ fn subprocesses_only_through_runtime_exec() {
     for needle in ["process::Command", "tokio::process"] {
         assert_only_under("src", needle, &["src/runtime/exec.rs"], "ADR-001 D8");
     }
+    // PTY 里的 attach 是第二个子进程入口，D8 显式列它为例外（长进程 + PTY，塞不进
+    // "跑完拿输出"的 exec 模型）。守卫原先只认 Command / tokio::process，gateway 从旁边
+    // 走过去谁也没拦（agora-gwm）：现在这个入口也被钉在 gateway 一个文件里。
+    for needle in ["spawn_command", "native_pty_system"] {
+        assert_only_under(
+            "src",
+            needle,
+            &["src/gateway/"],
+            "ADR-001 D8 约束 2 的显式例外",
+        );
+    }
 }
+
+/// 唯一允许出现 `fetch(` 的前端文件。
+const NET_EXIT: &str = "web/src/net.ts";
 
 #[test]
 fn frontend_only_talks_to_api_and_ws() {
     // A36 不变量 9：前端只经 /api 与 WS 和节点通信，没有客户端专用后门。
+    //
+    // 旧版逐行找 `fetch(` 并要求同行含 `/api/`，`fetch(u, i) /* /api/ */` 一句注释就能
+    // 满足它——守卫等于没有（agora-gwm）。现在扫的是剥掉注释后的代码：`fetch(` 收在
+    // net.ts 一个出口，WebSocket 的 URL 字面量必须同行以 /api/ 开头。
     let offenders: Vec<String> = sources("web/src")
         .into_iter()
-        .filter(|(_, body)| {
-            body.lines().any(|l| {
-                let l = l.trim();
-                (l.contains("fetch(") || l.contains("new WebSocket("))
-                    && !l.contains("/api/")
-                    && !l.starts_with("//")
-            })
-        })
+        .filter(|(p, body)| rel(p) != NET_EXIT && strip_js_comments(body).contains("fetch("))
         .map(|(p, _)| rel(&p))
         .collect();
     assert!(
         offenders.is_empty(),
-        "前端直连了 /api 之外的地址: {offenders:?}"
+        "`fetch(` 只允许出现在 {NET_EXIT}（前端唯一的网络出口），越界文件: {offenders:?}"
     );
+
+    let ws_offenders: Vec<String> = sources("web/src")
+        .into_iter()
+        .filter(|(_, body)| {
+            strip_js_comments(body)
+                .lines()
+                .any(|l| l.contains("new WebSocket(") && !l.contains("/api/"))
+        })
+        .map(|(p, _)| rel(&p))
+        .collect();
+    assert!(
+        ws_offenders.is_empty(),
+        "WebSocket 的 URL 必须同行以 /api/ 开头: {ws_offenders:?}"
+    );
+}
+
+#[test]
+fn the_single_network_exit_checks_the_prefix_at_runtime() {
+    // 文本守卫拦得住"新写一个 fetch"，拦不住"经 net.ts 请求 /api/ 之外的地址"。
+    // 出口里必须有真正会执行的前缀校验——剥掉注释再找，写在注释里不算（agora-gwm）。
+    let body = fs::read_to_string(root().join(NET_EXIT)).expect("net.ts 存在");
+    let code = strip_js_comments(&body);
+    assert!(
+        code.contains(r#"API_PREFIX = "/api/""#),
+        "{NET_EXIT} 必须定义 API_PREFIX = \"/api/\""
+    );
+    assert!(
+        code.contains("startsWith(API_PREFIX)") && code.contains("throw"),
+        "{NET_EXIT} 必须在发请求前校验前缀并抛错"
+    );
+}
+
+#[test]
+fn comment_stripping_keeps_strings_and_drops_comments() {
+    // 剥离器自身的守卫：它错一点，上面两条就会误报或漏报。
+    let src = r#"const u = `${p}//${h}/api/events`; // fetch("/evil")
+/* new WebSocket("/evil") */ const s = "a/*b";"#;
+    let out = strip_js_comments(src);
+    assert!(out.contains("/api/events"), "模板串里的 // 不是注释: {out}");
+    assert!(!out.contains("/evil"), "注释没被剥掉: {out}");
+    assert!(out.contains(r#""a/*b""#), "字符串里的 /* 不是注释: {out}");
 }

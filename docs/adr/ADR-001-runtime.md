@@ -72,6 +72,7 @@ RuntimeError   = NotFound | StillAlive | ServerUnavailable | VersionMismatch
 
 - **`Ref` 是不透明字符串**，形态 `tmux:agora:ag-a81c28`、`tmux:default:mywork`；`session.runtime_ref` 原样落库，解析只发生在 `runtime/tmux/`。`managed` = 是否在 agora 自己的 socket 上。
 - **子进程只经一个入口**：argv 直传（不经 shell，zsh 会把 `=name:` 当等号展开，实测 2026-09-02）；每次调用有超时（默认 5 s；attach 是长进程不计）；在 blocking 线程上跑；stdout / stderr 都排空、stderr 只保留尾部 4 KB 进错误（devcenter 两次管道死锁换来的规则）；错误按 `RuntimeError` 分类，不做字符串匹配（规则 10）。
+- **PTY 里的 attach 是这条约束唯一的显式例外**：它是长进程 + PTY，塞不进 `exec` 那个「跑完拿输出」的模型，所以走 `portable-pty` 的 `spawn_command`，且只允许出现在 `src/gateway/`。守卫原先只认 `process::Command` / `tokio::process`，gateway 从旁边走过去没人拦（agora-gwm，2026-09-03）；现在 `spawn_command` / `native_pty_system` 也被钉在那一个目录里 → `tests/arch_boundary.rs::subprocesses_only_through_runtime_exec`。
 - **`exit` 是数据不是判断**：`Code(0)` / `Code(n)` / `Signal(name)` 原样交给 observer；FINISHED / FAILED 的映射、以及"agora 自己 terminate 的会话按信号退出算什么"归 ADR-002（已写入 `agora-90t.3` 注记）。
 - **`attach` 在实现里交出的是 `AttachSpec { argv, env }` 而不是 `PtyStream`**（2026-09-03，`agora-xqa.7`）：PTY 由 Terminal Gateway 一处持有，运行时只回答"起什么进程"，这样 PTY 读写的 blocking 线程只在 gateway 一处，`runtime/` 也不用依赖 portable-pty。签名里的 `PtyStream` 读作"gateway 用 AttachSpec 起出来的流"。
 - **`LaunchSpec.env` 是 ADR-002 把每会话身份交给 agent 的通道**（定稿后是 `AGORA_SESSION_ID` / `AGORA_EPOCH`；hook 投递走投递箱 + unix socket，没有一次性 token，ADR-002 D3）；tmux 路线下走 `new-session -e`，不写 shell、不改用户配置。

@@ -11,12 +11,14 @@ export interface ApiErrorBody {
   message: string;
 }
 
+import { apiFetch, type FetchLike } from "./net";
+
 export type WriteResult<T = unknown> =
   | { ok: true; value: T }
   | { ok: false; needsConfirmation: true }
   | { ok: false; needsConfirmation: false; error: ApiErrorBody };
 
-export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
+export type { FetchLike } from "./net";
 
 /** `GET /api/projects` 的一项（MISSION §6.4：扫描发现 + 最近使用）。 */
 export interface ProjectInfo {
@@ -77,8 +79,8 @@ async function call<T>(
 
 const enc = (id: string) => `/api/sessions/${encodeURIComponent(id)}`;
 
-// 只发往 /api/（路径全部由 enc() 生成；tests/arch_boundary.rs 逐行守卫前端只连 /api/）。
-export function sessionApi(fetchImpl: FetchLike = (u, i) => fetch(u, i) /* /api/ */) {
+// 路径全部由 enc() 生成；真正发请求的是 net.ts 里唯一的出口（tests/arch_boundary.rs）。
+export function sessionApi(fetchImpl: FetchLike = apiFetch) {
   return {
     /** 改名：改成同名字符串也发——同名也落锁（MISSION §4.5）。 */
     rename: (id: string, display_name: string) =>
@@ -101,7 +103,7 @@ export type SessionApi = ReturnType<typeof sessionApi>;
  * New Agent 对话框的三个只读数据源（§6.4）。与写端点分开：它们没有确认语义，
  * 401 之外的失败只影响下拉框，不该走 WriteResult 那套。
  */
-export function catalogApi(fetchImpl: FetchLike = (u, i) => fetch(u, i) /* /api/ */) {
+export function catalogApi(fetchImpl: FetchLike = apiFetch) {
   return {
     projects: () => call<{ projects: ProjectInfo[] }>(fetchImpl, "GET", "/api/projects"),
     worktrees: (path: string) =>

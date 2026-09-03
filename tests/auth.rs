@@ -116,6 +116,121 @@ async fn json(resp: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+/// `ROUTES` 是上面那条测试遍历的对象：router 里新加一条路由而忘了登记，它就照样绿，
+/// 新路由的认证从此没人敲（agora-gwm）。这里从 `router()` 的源码机械派生出路由清单，
+/// 与常量表双向比对——两边不一致就红，方向和原因都写在断言里。
+///
+/// 派生靠文本扫描而不是 axum 的内省：axum 0.8 不公开路由表。扫的是 `router()` 函数体里
+/// 的 `.route("<path>", get(..).post(..))`，方法名从第二个参数里取。
+#[test]
+fn routes_table_is_derived_from_the_router_not_maintained_by_hand() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/api/mod.rs"),
+    )
+    .unwrap();
+    let derived = parse_routes(&router_body(&src));
+    assert!(
+        derived.len() >= 5,
+        "解析器没认出路由，先修解析器再看这条断言: {derived:?}"
+    );
+
+    let mut declared: Vec<(String, String)> = ROUTES
+        .iter()
+        .map(|(m, p)| ((*m).to_owned(), (*p).to_owned()))
+        .collect();
+    declared.sort();
+    let mut derived: Vec<(String, String)> = derived.into_iter().collect();
+    derived.sort();
+
+    let missing: Vec<_> = derived.iter().filter(|r| !declared.contains(r)).collect();
+    assert!(
+        missing.is_empty(),
+        "router() 里有而 ROUTES 没登记（这些路由的认证没人敲）: {missing:?}"
+    );
+    let stale: Vec<_> = declared.iter().filter(|r| !derived.contains(r)).collect();
+    assert!(
+        stale.is_empty(),
+        "ROUTES 里有而 router() 没注册（表过期了）: {stale:?}"
+    );
+}
+
+/// `pub fn router(` 的函数体（大括号配对）。
+fn router_body(src: &str) -> String {
+    let start = src
+        .find("pub fn router(")
+        .expect("router() 在 src/api/mod.rs 里");
+    let open = src[start..].find('{').unwrap() + start;
+    let mut depth = 0usize;
+    for (i, c) in src[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return src[open..open + i].to_owned();
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("router() 的大括号没配上");
+}
+
+/// 从函数体里抽出 `(METHOD, path)`。
+fn parse_routes(body: &str) -> Vec<(String, String)> {
+    const METHODS: &[&str] = &["get", "post", "patch", "delete", "put", "head", "options"];
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(at) = rest.find(".route(") {
+        let args = balanced(&rest[at + ".route(".len() - 1..]);
+        rest = &rest[at + ".route(".len()..];
+        let Some(path) = string_literal(&args) else {
+            continue;
+        };
+        // 第一个字符串字面量之后才是 method router，避免把路径里的字符当方法名。
+        let after = &args[args.find(&format!("\"{path}\"")).unwrap() + path.len() + 2..];
+        for m in METHODS {
+            let needle = format!("{m}(");
+            let mut from = 0;
+            while let Some(i) = after[from..].find(&needle) {
+                let abs = from + i;
+                let prev = after[..abs].chars().last().unwrap_or(' ');
+                // `sessions::get(` 这种不是方法路由；方法名前面只会是 `(` 或 `.`。
+                if !prev.is_alphanumeric() && prev != '_' && prev != ':' {
+                    out.push((m.to_uppercase(), path.clone()));
+                    break;
+                }
+                from = abs + needle.len();
+            }
+        }
+    }
+    out
+}
+
+/// 从 `(` 开始取到配对的 `)`（含两端）。
+fn balanced(s: &str) -> String {
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return s[..=i].to_owned();
+                }
+            }
+            _ => {}
+        }
+    }
+    s.to_owned()
+}
+
+fn string_literal(s: &str) -> Option<String> {
+    let a = s.find('"')? + 1;
+    let b = s[a..].find('"')? + a;
+    Some(s[a..b].to_owned())
+}
+
 #[tokio::test]
 async fn every_route_requires_principal_except_allowlist() {
     let fx = Fx::new();

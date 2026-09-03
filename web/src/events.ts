@@ -4,8 +4,10 @@
  * - 合并突发：事件先进缓冲，~300 ms 后一次性应用；
  * - 断流重连 / 收到 `resync` → 重拉全量对齐；绝不回退为轮询。
  *
- * 与 DOM 无关（vitest 在 node 环境里跑）：WebSocket 与 fetch 通过参数注入。
+ * 与 DOM 无关（vitest 在 node 环境里跑）：WebSocket 与快照拉取通过参数注入。
  */
+
+import { apiFetch } from "./net";
 
 export interface SessionRow {
   id: string;
@@ -47,7 +49,7 @@ export interface SocketLike {
 export interface EventsClientOptions {
   /** 建 WS 连接；默认 `new WebSocket(<同源>/api/events)`。 */
   connect?: () => SocketLike;
-  /** 拉全量；默认 `fetch("/api/sessions")`。 */
+  /** 拉全量；默认 `apiFetch("/api/sessions")`。 */
   fetchSnapshot?: () => Promise<Snapshot>;
   /** 合并窗口，默认 300 ms。 */
   coalesceMs?: number;
@@ -65,7 +67,7 @@ export function defaultSocket(): SocketLike {
 }
 
 export async function defaultSnapshot(): Promise<Snapshot> {
-  const resp = await fetch("/api/sessions");
+  const resp = await apiFetch("/api/sessions");
   if (!resp.ok) throw new Error(`GET /api/sessions ${resp.status}`);
   return (await resp.json()) as Snapshot;
 }
