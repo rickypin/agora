@@ -15,7 +15,7 @@ use serde::Serialize;
 use super::db::{Db, DbError};
 use super::model::{Origin, SessionRecord};
 use crate::runtime::{
-    AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, Size,
+    AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, RuntimeStatus, Size,
 };
 use crate::status::{self, Assessment, Status};
 
@@ -118,6 +118,8 @@ pub struct SessionManager {
     db: Arc<Db>,
     runtime: Arc<dyn Runtime>,
     prefix: String,
+    /// 运行时可用性的实时结论（ADR-001 D7）：每次读运行时都会更新它，`/api/health` 读它。
+    runtime_status: Arc<RuntimeStatus>,
 }
 
 impl SessionManager {
@@ -131,7 +133,13 @@ impl SessionManager {
             db,
             runtime,
             prefix: prefix.to_owned(),
+            runtime_status: Arc::new(RuntimeStatus::default()),
         }
+    }
+
+    /// `/api/health` 与 daemon 启动流程共用的那一个实时结论。
+    pub fn runtime_status(&self) -> &Arc<RuntimeStatus> {
+        &self.runtime_status
     }
 
     pub fn db(&self) -> &Db {
@@ -270,8 +278,8 @@ impl SessionManager {
             .filter_map(|r| r.runtime_ref)
             .collect();
         Ok(self
-            .runtime
-            .list()?
+            .live_all()?
+            .0
             .into_iter()
             .filter(|s| !known.contains(&s.r#ref.0))
             .collect())
@@ -281,24 +289,47 @@ impl SessionManager {
 
     pub fn list(&self) -> Result<Vec<SessionView>, SessionError> {
         let records = self.all_records()?;
-        let live = self.runtime.list()?;
+        let (live, degraded) = self.live_all()?;
         Ok(records
             .into_iter()
-            .map(|rec| self.view(rec, &live))
+            .map(|rec| self.view(rec, &live, degraded.as_deref()))
             .collect())
+    }
+
+    /// 全部运行时会话 + 本次是否降级。运行时整体不可用时**不报错也不当成"会话都没了"**：
+    /// 读路径退化成"没有活性信息"，由 [`SessionManager::view`] 把它报成 UNKNOWN（ADR-001 D7）。
+    /// 写路径与 [`SessionManager::reconcile`] 仍然照常报错——那两条路上"读不到"绝不能当"已经死了"。
+    fn live_all(&self) -> Result<(Vec<RuntimeSession>, Option<String>), SessionError> {
+        let r = self.runtime.list();
+        self.runtime_status.observe(&r);
+        match r {
+            Ok(v) => Ok((v, None)),
+            Err(e) if e.degrades_runtime() => Ok((Vec::new(), Some(e.to_string()))),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn get(&self, id: &str) -> Result<SessionView, SessionError> {
         let rec = self.record(id)?;
+        let mut degraded = None;
         let live = match &rec.runtime_ref {
-            Some(r) => match self.runtime.inspect(&RuntimeRef(r.clone())) {
-                Ok(s) => vec![s],
-                Err(RuntimeError::NotFound(_)) => Vec::new(),
-                Err(e) => return Err(e.into()),
-            },
+            Some(r) => {
+                let r = self.runtime.inspect(&RuntimeRef(r.clone()));
+                self.runtime_status.observe(&r);
+                match r {
+                    Ok(s) => vec![s],
+                    Err(RuntimeError::NotFound(_)) => Vec::new(),
+                    // 运行时整体不可用：同 list，退化成"没有活性信息"→ UNKNOWN（D7）。
+                    Err(e) if e.degrades_runtime() => {
+                        degraded = Some(e.to_string());
+                        Vec::new()
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
             None => Vec::new(),
         };
-        Ok(self.view(rec, &live))
+        Ok(self.view(rec, &live, degraded.as_deref()))
     }
 
     /// Terminal Gateway 要的 attach 规格（ADR-001 D5）。external 会话没有运行时句柄。
@@ -312,7 +343,12 @@ impl SessionManager {
         Ok(self.runtime.attach(&RuntimeRef(r), size)?)
     }
 
-    fn view(&self, rec: SessionRecord, live: &[RuntimeSession]) -> SessionView {
+    fn view(
+        &self,
+        rec: SessionRecord,
+        live: &[RuntimeSession],
+        degraded: Option<&str>,
+    ) -> SessionView {
         let rt = rec
             .runtime_ref
             .as_deref()
@@ -322,6 +358,15 @@ impl SessionManager {
         // 改名后两秒内会把跑了一天的会话报成 STARTING（agora-xqa.15，2026-09-03）。
         let spawn_age = rec.spawned_at.as_deref().and_then(age_secs);
         let assessment = match (rec.origin, rt) {
+            // 运行时此刻不可信：不知道就报 UNKNOWN，不许拿"读不到"当"已经死了"（ADR-001 D7）。
+            _ if degraded.is_some() && rec.runtime_ref.is_some() => Assessment {
+                status: Status::Unknown,
+                source: status::Source::None,
+                reason: Some(format!(
+                    "runtime unavailable: {}",
+                    degraded.unwrap_or_default()
+                )),
+            },
             (Origin::External, None) => Assessment {
                 status: Status::Unknown,
                 source: status::Source::None,

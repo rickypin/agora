@@ -88,7 +88,8 @@ pub struct AppState {
     pub agents: Arc<BTreeMap<String, AgentOverride>>,
     /// New Agent 对话框的项目与 worktree 数据源；`project_roots` 由 `main.rs` 注入。
     pub projects: Arc<Projects>,
-    pub runtime_health: Arc<RuntimeHealth>,
+    /// 启动时探到的 PATH 来源（"shell" / "daemon"）；运行时好不好是实时的，见 `RuntimeStatus`。
+    pub runtime_path_source: &'static str,
 }
 
 impl AppState {
@@ -100,7 +101,7 @@ impl AppState {
             node: Arc::from(node),
             agents: Arc::new(BTreeMap::new()),
             projects: Arc::new(Projects::new(sessions.db_handle(), Vec::new())),
-            runtime_health: Arc::new(RuntimeHealth::default()),
+            runtime_path_source: "daemon",
         }
     }
 }

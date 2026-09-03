@@ -2,7 +2,8 @@
 //!
 //! health 未认证只回 `{ "status": "ok" }`（MISSION §10.3；ADR-003 D1 白名单），带 principal
 //! 才是完整报告——这里刻意不让未认证请求看到任何能区分节点配置的字段。
-//! 运行时的 degraded 判定随 agora-xqa.4 变成实时探测；现在是启动时的一次结论。
+//! 运行时的 degraded 是**实时**结论：每次读运行时的成败都记进 `RuntimeStatus`，这里现算
+//! （agora-xqa.4）。所以运行时升级导致的失明会在 server 换代后自愈，不必重启 daemon。
 
 use axum::extract::State;
 use axum::Json;
@@ -12,7 +13,8 @@ use serde_json::{json, Value};
 use super::AppState;
 use crate::auth::Principal;
 
-/// 启动时得出的运行时健康（ADR-001 D7）。
+/// `/api/health` 里 runtime 那一段（ADR-001 D7）。status / reason 每次请求现算，
+/// path_source 是启动时探到的、不会变。
 #[derive(Debug, Clone, Serialize)]
 pub struct RuntimeHealth {
     pub status: &'static str,
@@ -20,12 +22,12 @@ pub struct RuntimeHealth {
     pub path_source: &'static str,
 }
 
-impl Default for RuntimeHealth {
-    fn default() -> Self {
+impl RuntimeHealth {
+    fn now(reason: Option<String>, path_source: &'static str) -> Self {
         RuntimeHealth {
-            status: "ok",
-            reason: None,
-            path_source: "daemon",
+            status: if reason.is_some() { "degraded" } else { "ok" },
+            reason,
+            path_source,
         }
     }
 }
@@ -40,9 +42,13 @@ pub async fn health(principal: Option<Principal>, State(state): State<AppState>)
         .conn()
         .query_row("SELECT 1", [], |r| r.get::<_, i64>(0))
         .is_ok();
+    let runtime = RuntimeHealth::now(
+        state.sessions.runtime_status().reason(),
+        state.runtime_path_source,
+    );
     Json(json!({
         "status": "ok",
-        "runtime": &*state.runtime_health,
+        "runtime": runtime,
         "database": database,
         "tls": Value::Null,
         "push": { "apple": false, "fcm": false },

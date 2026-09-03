@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agora::api::{self, AppState, RuntimeHealth};
+use agora::api::{self, AppState};
 use agora::auth::{Auth, PairedVia};
 use agora::config::{self, Config, Settings};
 use agora::local::{self, Request, Response, SOCKET_FILE};
@@ -138,22 +138,12 @@ async fn serve() -> i32 {
             return 1;
         }
     };
-    // 只降级不退出（ADR-001 D7）；实时探测与恢复归 agora-xqa.4，现在是启动时一次结论。
-    let runtime_health = match runtime.check_version() {
-        Ok(_) => RuntimeHealth {
-            status: "ok",
-            reason: None,
-            path_source,
-        },
-        Err(err) => {
-            tracing::warn!(component = "main", %err, "运行时降级");
-            RuntimeHealth {
-                status: "degraded",
-                reason: Some(err.to_string()),
-                path_source,
-            }
-        }
-    };
+    // 只降级不退出（ADR-001 D7）。启动时探一次版本给出初始结论；之后每次读运行时的成败
+    // 都由同一个 observe 更新它，所以 server 换代之后不必重启 daemon 就能自愈。
+    let version_probe = runtime.check_version();
+    if let Err(err) = &version_probe {
+        tracing::warn!(component = "main", %err, "运行时降级");
+    }
 
     let db = open_db(&home);
     let sessions = Arc::new(SessionManager::with_prefix(
@@ -161,6 +151,7 @@ async fn serve() -> i32 {
         runtime.clone() as Arc<dyn Runtime>,
         &section.prefix,
     ));
+    sessions.runtime_status().observe(&version_probe);
     // reconcile 会起子进程：放 blocking 线程，不占 tokio worker。
     let sessions_for_reconcile = sessions.clone();
     match tokio::task::spawn_blocking(move || sessions_for_reconcile.reconcile()).await {
@@ -200,7 +191,7 @@ async fn serve() -> i32 {
         sessions.db_handle(),
         settings.raw.project_roots.clone(),
     ));
-    state.runtime_health = Arc::new(runtime_health);
+    state.runtime_path_source = path_source;
     // 状态变化没有人来通知：轮询求差发 /api/events。
     tokio::spawn(agora::events::watch(
         sessions,

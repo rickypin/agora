@@ -10,6 +10,7 @@ pub mod exec;
 pub mod tmux;
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 /// 不透明字符串，形态 `<kind>:<socket>:<session>`；原样落库，只在运行时内部解析。
@@ -97,6 +98,55 @@ pub enum RuntimeError {
     /// 非 agora socket 上的会话只读（ADR-001 D3）。
     #[error("会话不由 agora 管理，拒绝写操作: {0}")]
     ReadOnly(RuntimeRef),
+}
+
+impl RuntimeError {
+    /// 这个错误说的是"整个运行时此刻不可信"，而不是某个会话的语义结论。
+    /// `NotFound` / `StillAlive` / `ReadOnly` 是关于单个会话的**回答**，不算降级。
+    pub fn degrades_runtime(&self) -> bool {
+        matches!(
+            self,
+            RuntimeError::ServerUnavailable { .. }
+                | RuntimeError::VersionMismatch { .. }
+                | RuntimeError::Timeout(_)
+                | RuntimeError::Failed { .. }
+        )
+    }
+}
+
+/// 运行时可用性的**实时**结论（ADR-001 D7）。daemon 启动时探一次版本，之后每一次 list /
+/// inspect 的成败都更新它：失败 → degraded 并带原因，成功 → 自动转回 ok。典型场景是运行时
+/// 升级之后新 client 连不上旧 server（协议版本不匹配），agora 对那个 socket 失明——此时
+/// **绝不销毁 server、绝不退出 daemon**：失明期间已有会话报 UNKNOWN 而不是"已经死了"，
+/// 等 server 换代后自己转回 ok。
+#[derive(Debug, Default)]
+pub struct RuntimeStatus {
+    reason: Mutex<Option<String>>,
+}
+
+impl RuntimeStatus {
+    /// `None` = ok。
+    pub fn reason(&self) -> Option<String> {
+        self.lock().clone()
+    }
+
+    pub fn is_degraded(&self) -> bool {
+        self.lock().is_some()
+    }
+
+    /// 把一次运行时调用的结果记进来：成功即恢复，失败按 [`RuntimeError::degrades_runtime`] 判。
+    /// 关于单个会话的错误（NotFound 等）既不降级也不恢复——它没有回答"运行时好不好"。
+    pub fn observe<T>(&self, r: &Result<T, RuntimeError>) {
+        match r {
+            Ok(_) => *self.lock() = None,
+            Err(e) if e.degrades_runtime() => *self.lock() = Some(e.to_string()),
+            Err(_) => {}
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        self.reason.lock().unwrap_or_else(|p| p.into_inner())
+    }
 }
 
 impl From<exec::ExecError> for RuntimeError {

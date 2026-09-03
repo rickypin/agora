@@ -84,7 +84,7 @@ MVP 用 JSON / Text WebSocket 足够；binary terminal frames 放到 V2。
 ```
 GET /api/health
 → { "status": "ok",
-    "runtime": { "status": "ok" | "degraded", "reason": null, "path_source": "shell" | "daemon" },   // ADR-001 D7
+    "runtime": { "status": "ok" | "degraded", "reason": null, "path_source": "shell" | "daemon" },   // ADR-001 D7；status/reason 每次请求现算，运行时恢复后自动转回 ok
     "database": true,
     "tls": "external", "push": { "apple": true, "fcm": false },
     "peers": { "mac": { "online": false, "last_seen": "2026-09-02T23:10:00Z" } } }
