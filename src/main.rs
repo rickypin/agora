@@ -26,7 +26,8 @@ use agora::session::{Db, SessionManager};
 /// V1 唯一的运行时；配置里 `runtime.kind` 缺省就是它。
 const RUNTIME_KIND: &str = "tmux";
 
-const USAGE: &str = "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all]";
+const USAGE: &str =
+    "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all | fake-agent <script>|-e <inline>]";
 
 #[tokio::main]
 async fn main() {
@@ -38,6 +39,8 @@ async fn main() {
         ["open"] => pair_link(true).await,
         ["auth", "devices"] => auth_devices(),
         ["auth", "revoke", target] => auth_revoke(target),
+        // 测试用假 agent（agora-3la）：藏在子命令里，不占第二个 binary。
+        ["fake-agent", rest @ ..] => agora::fake_agent::run(rest),
         _ => {
             eprintln!("{USAGE}");
             2

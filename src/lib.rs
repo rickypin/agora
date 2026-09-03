@@ -10,6 +10,7 @@
 //! - `api/`：HTTP + WS，前端只经这里与节点通信（A36 不变量 9）。
 //! - `config/`：`config.yaml` 的形态与校验；运行时子段对它不透明（ADR-001 D2）。
 //! - `gateway/`：Terminal Gateway——PTY 里跑运行时 attach，与 WS 互桥（ADR-001 D5）。
+//! - `fake_agent`：`agora fake-agent` 子命令，集成测试里扮演 agent（agora-3la）。
 //! - `events/`：全局事件总线与轮询求差；`/api/events` 只是它的 WS 出口。
 //! - `local/`：`AGORA_HOME` 与本机 unix socket 通道（ADR-003 D6）。
 
@@ -19,6 +20,7 @@ pub mod auth;
 pub mod clock;
 pub mod config;
 pub mod events;
+pub mod fake_agent;
 pub mod gateway;
 pub mod hook;
 pub mod local;
