@@ -32,6 +32,27 @@ pub const DEAD_DETAIL_VERSION: (u32, u32) = (3, 3);
 /// `exit` 保持 `None`（上层显示"退出码尚未收集"，与 3.3+ 同一形态），之后才报 `Signal("unknown")`。
 /// 否则正常 `exit 7` 会先闪一次 FAILED "signal unknown"（agora-5nu）。
 pub const UNKNOWN_SIGNAL_GRACE: Duration = Duration::from_secs(2);
+/// tmux 3.6 以前 + libutempter 会**永久丢掉** pane 的退出状态（agora-tc4，2026-09-03 查明）。
+/// 机理：pane 死时 `server_destroy_pane()` 先关 fd（于是 `pane_dead=1`）再调
+/// `utempter_remove_record()`；libutempter 的 `execute_helper()` 在 fork 助手前把 SIGCHLD 置为
+/// `SIG_DFL`（altlinux/libutempter iface.c），SIGCHLD 的默认动作是忽略——正好落在这几毫秒里的
+/// pane 子进程 SIGCHLD 就被丢弃，tmux 再没人 waitpid 它，`PANE_STATUSREADY` 永远不置位，
+/// `pane_dead_status` / `pane_dead_signal` 永远为空，子进程留成 defunct。上游 issue 4559，
+/// 修复 fa5f3cef3「Send SIGCHLD after utempter_remove_record as well」进 3.6；add_record 一侧同修。
+/// macOS/brew 不链 libutempter，所以本机永远复现不出来。
+///
+/// 解法：tmux 的 SIGCHLD handler 是 `waitpid(WAIT_ANY, WNOHANG)` 循环，**任何**后来的 SIGCHLD
+/// 都会顺手收掉那个 zombie 并补上 status。所以看到"已死却没有退出信息"时，让 server 自己 fork
+/// 一个短命子进程（`run-shell -b true`）把 SIGCHLD 补上即可。实测（ubuntu 24.04 / tmux 3.4 /
+/// aarch64，`echo READY; read; exit 3` + send-keys + 密集轮询，30 次）：丢 7 次，每次 server 下
+/// 恰好 1 个 defunct，nudge 后 7/7 拿回 `exit 3`。
+pub const SIGCHLD_EATEN_BELOW: (u32, u32) = (3, 6);
+/// 两次 nudge 之间的最小间隔（每 socket）：nudge 一次就能收掉该 server 下所有 zombie，
+/// 不必按会话数发。
+const SIGCHLD_NUDGE_INTERVAL: Duration = Duration::from_millis(200);
+/// 同一个死会话最多 nudge 几次。3.2a 上信号退出本来就没有 `pane_dead_signal` 可读，
+/// 一直没有 status 是正常终局，不能每 tick 都去 fork 一次。
+const SIGCHLD_NUDGE_MAX: u32 = 5;
 /// Restart 一个活着的会话时先按 Kill 同一条路（进程组 SIGTERM → SIGKILL）杀干净再重生，
 /// 这是 SIGTERM 之后等多久升级 SIGKILL。
 const RESPAWN_KILL_GRACE: Duration = Duration::from_secs(2);
@@ -114,6 +135,10 @@ pub struct TmuxRuntime {
     version: OnceLock<Option<(u32, u32)>>,
     /// 老 tmux 没有 pane_dead_time：记下每个会话第一次被看到已死的时刻，保持各 tick 稳定。
     first_dead_seen: Mutex<HashMap<String, SystemTime>>,
+    /// 每个死会话已经为它补发过几次 SIGCHLD（见 [`SIGCHLD_EATEN_BELOW`]）。
+    nudge_count: Mutex<HashMap<String, u32>>,
+    /// 每个 socket 上一次补发 SIGCHLD 的时刻。
+    last_nudge: Mutex<HashMap<String, Instant>>,
 }
 
 /// 解析后的 ref；只在本模块存在。
@@ -141,6 +166,8 @@ impl TmuxRuntime {
             recorded: Mutex::new(Vec::new()),
             version: OnceLock::new(),
             first_dead_seen: Mutex::new(HashMap::new()),
+            nudge_count: Mutex::new(HashMap::new()),
+            last_nudge: Mutex::new(HashMap::new()),
         })
     }
 
@@ -306,6 +333,7 @@ impl TmuxRuntime {
         let text = String::from_utf8_lossy(&out.stdout);
         let mut sessions: Vec<RuntimeSession> = Vec::new();
         let mut detail = None;
+        let mut want_nudge = false;
         for line in text.lines() {
             let Some(mut s) = parse_pane_line(line, socket, managed) else {
                 continue;
@@ -318,12 +346,59 @@ impl TmuxRuntime {
                 // 只在真有死 pane 时才问版本，避免无谓的子进程。
                 let detail = *detail.get_or_insert_with(|| self.dead_detail_supported());
                 self.fill_dead_fallbacks(&mut s, detail);
+                want_nudge |= self.wants_sigchld_nudge(&s);
             } else {
                 lock(&self.first_dead_seen).remove(&s.r#ref.0);
+                lock(&self.nudge_count).remove(&s.r#ref.0);
             }
             sessions.push(s);
         }
+        if want_nudge {
+            self.nudge_sigchld(socket);
+        }
         Ok(sessions)
+    }
+
+    /// 这个死会话还没有退出信息，而且本机 tmux 属于会吃掉 SIGCHLD 的版本 → 该补发一次
+    /// （见 [`SIGCHLD_EATEN_BELOW`]）。只对自己管的 socket 做：采纳来的用户 socket 是只读的，
+    /// 不往里塞 `run-shell`。
+    fn wants_sigchld_nudge(&self, s: &RuntimeSession) -> bool {
+        if s.exit.is_some() || !s.managed {
+            return false;
+        }
+        if self
+            .version()
+            .map(|v| v >= SIGCHLD_EATEN_BELOW)
+            .unwrap_or(true)
+        {
+            return false;
+        }
+        let mut counts = lock(&self.nudge_count);
+        let n = counts.entry(s.r#ref.0.clone()).or_insert(0);
+        if *n >= SIGCHLD_NUDGE_MAX {
+            return false;
+        }
+        *n += 1;
+        true
+    }
+
+    /// 让 tmux server 自己 fork 一个短命子进程：它退出时的 SIGCHLD 会把 handler 里的
+    /// `waitpid(WAIT_ANY)` 循环叫醒，顺手收掉之前被 libutempter 吃掉信号的 zombie pane，
+    /// `pane_dead_status` 于是在下一 tick 出现。失败只记日志——这是补救，不是主路径。
+    fn nudge_sigchld(&self, socket: &str) {
+        {
+            let mut last = lock(&self.last_nudge);
+            let now = Instant::now();
+            if let Some(t) = last.get(socket) {
+                if now.duration_since(*t) < SIGCHLD_NUDGE_INTERVAL {
+                    return;
+                }
+            }
+            last.insert(socket.to_owned(), now);
+        }
+        if let Err(err) = self.run(Some(socket), &["run-shell", "-b", "true"]) {
+            tracing::debug!(component = "runtime", socket = %socket, %err, "补发 SIGCHLD 失败");
+        }
     }
 
     /// 3.3 以前没有 pane_dead_signal / pane_dead_time：退出时刻用首次观测替代；"死了但 status 为空"

@@ -66,33 +66,26 @@ async fn send_input(ws: &mut Ws, data: &str) {
     ws.send(Message::Text(frame.into())).await.unwrap();
 }
 
-/// A12 的终局断言。tmux 在**经 PTY 交互输入之后**退出时，有时根本不收集退出状态：pane 死了
-/// 但 `pane_dead_status` 与 `pane_dead_signal` 都为空，而且不会再补上（agora-tc4）。实测
-/// 2026-09-03（`print READY; read; exit 3` 经 send-keys 喂一行）：3.2a 密集轮询 5/6 丢、
-/// 200 ms 轮询 1/6 丢，3.4 1/6 丢，3.7c 0/6。所以这里不按版本分档（3.4 也会丢），只钉住
-/// 「进程确实死了，而且拿到的结论必须自洽」：有退出码就必须是期望的那个且判 FAILED；
-/// 只剩信号也判 FAILED；什么都没有则只能是 UNKNOWN。不经交互的秒退退出码仍是硬要求，
-/// 由 runtime_tmux::quick_exit_keeps_exit_code 与 session_tmux 的 daemon 重启用例守住。
+/// A12 的终局断言：进程死了，退出码就必须读得到。
+///
+/// 曾经这里是"已死且结论自洽"的软断言：tmux 在**经 PTY 交互输入之后**退出时有时根本不收集
+/// 退出状态，会话永远停在 UNKNOWN（agora-tc4）。2026-09-03 查明那不是"迟到"而是 tmux < 3.6
+/// 链 libutempter 时 SIGCHLD 被吞（上游 issue 4559），runtime 现在会补发 SIGCHLD 把它捞回来
+/// （见 `runtime::tmux::SIGCHLD_EATEN_BELOW`）。所以这条断言重新收紧：捞不回来就是那条补救坏了。
 fn assert_dead_with_code(node: &TmuxNode, id: &str, expected: i32) -> agora::session::SessionView {
     let mut v = node.wait(id, |v| !v.alive);
-    // 退出信息可能比"进程已死"晚一两个 tick；给它 3 s，但不强求。
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    // 退出信息可能比"进程已死"晚一两个 tick；被吞掉的那次还要等一轮补发 SIGCHLD。
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while v.exit.is_none() && std::time::Instant::now() < deadline {
         std::thread::sleep(POLL);
         v = node.sessions.get(id).unwrap();
     }
-    match &v.exit {
-        Some(Exit::Code(c)) => {
-            assert_eq!(*c, expected, "拿到退出码就必须是期望值");
-            assert_eq!(v.assessment.status, Status::Failed);
-        }
-        Some(Exit::Signal(_)) => assert_eq!(v.assessment.status, Status::Failed),
-        None => assert_eq!(
-            v.assessment.status,
-            Status::Unknown,
-            "tmux 没给退出信息时只能报 UNKNOWN"
-        ),
-    }
+    assert_eq!(
+        v.exit,
+        Some(Exit::Code(expected)),
+        "进程死了退出码就必须读得到（A12）"
+    );
+    assert_eq!(v.assessment.status, Status::Failed);
     v
 }
 
