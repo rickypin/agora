@@ -1,6 +1,6 @@
 # ADR 索引与约定
 
-约定（继承自 devcenter 报告 §3.3 / §6.1 第 2 条）：
+约定（继承自 `docs/analysis/devcenter/README.md` §3.3 / §6.1 第 2 条）：
 
 - 编号 `ADR-NNN`，文件名 `ADR-NNN-<slug>.md`，一经分配不复用。
 - 状态：Proposed → Accepted / Rejected / Superseded by ADR-MMM。**被否决的 ADR 保留全文**，它记录的是"为什么不"。

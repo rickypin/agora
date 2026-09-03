@@ -95,7 +95,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 
 - 连接方按 `peers[].cert_fingerprint = "sha256:<hex>"` 钉住对方 **SPKI**（公钥）的 SHA-256；只比对指纹，**不看 CA、主机名、有效期**——信任就是这一个指纹，像 ssh 的 host key。钉 SPKI 而非整张证书，是让"换证书不换密钥"（续期）不打断 peer。
 - **没有 TOFU**：指纹必须来自配置；不匹配 → 该 peer 显示为"指纹不匹配"，与"离线 / stale"是不同状态，绝不自动接受。`agora tls fingerprint` 在被访问节点打印当前指纹；`agora tls rotate-key` 换密钥并列出需更新的 peer。
-- 没有钉住，LAN 上的中间人拿到 Bearer 明文就是全权（devcenter 的 token 明文走 LAN TCP，附录 B §58）。
+- 没有钉住，LAN 上的中间人拿到 Bearer 明文就是全权（devcenter 的 token 明文走 LAN TCP，`docs/analysis/devcenter/appendix-b-multihost.md` §58）。
 
 **证书来源 `tls.mode`**：
 

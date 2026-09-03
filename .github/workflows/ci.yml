@@ -9,6 +9,15 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # 文档引用一致性（规则 9 的 CI 骨架，agora-xqa.2）：只要 git + python3，不进 matrix。
+  # ② A 编号那一项需要 bd，CI 上没有（beads 的库不进 git），脚本会自己跳过并说明。
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: doc lint
+        run: scripts/doc-lint.sh
+
   build:
     strategy:
       fail-fast: false

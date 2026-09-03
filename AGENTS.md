@@ -5,7 +5,7 @@
 ## agora 项目约定
 
 - 开工先读 `MISSION.md`（北极星、层次定位、施工规则）；设计决策先对照 `docs/adr/`（ADR-001 运行时、ADR-002 状态来源、ADR-003 认证、ADR-004 拓扑），devcenter 报告（`docs/analysis/devcenter/`）只是 ADR 的引文与历史分析。
-- 规划分层的地图见 MISSION 文首"文档分层"（唯一出处）。操作规则：`ROADMAP.md` 由 `scripts/roadmap-view.sh` 生成，不手改、不放 checkbox；`docs/spec/` 随代码改，与代码冲突时以代码为准并回写 spec；beads 里阶段 = epic、阶段门 = blocks、验收 = `--acceptance`、演示剧本 = epic 的 `--design`（ROADMAP 视图同步展示）。
+- 规划分层的地图见 MISSION 文首"文档分层"（唯一出处）。操作规则：`ROADMAP.md` 由 `scripts/roadmap-view.sh` 生成，不手改、不放 checkbox；`docs/spec/` 随代码改，与代码冲突时以代码为准并回写 spec；文档改完跑 `scripts/doc-lint.sh`（§引用、epic 的 A 编号、相对链接与仓内路径；CI 也跑）；beads 里阶段 = epic、阶段门 = blocks、验收 = `--acceptance`、演示剧本 = epic 的 `--design`（ROADMAP 视图同步展示）。
 - 任务纪律（本文件是唯一出处；"一个 issue 做完"的定义见 MISSION §1.5）：`bd update <id> --claim` 后才动手；commit subject 末尾带 `(agora-xxxx)`；干活中发现的问题 `bd create ... --deps discovered-from:<id>` 另立；任务超出一个会话能承载的范围就 `bd create --parent=<id>` 拆子任务并在 notes 写交接，提交保持小切片、提交信息写测试数与本次打开的守卫；关闭：验收完全机械的任务（CI 绿 + 验收点名的守卫测试通过）由实施 agent `bd close --reason` 关闭并写明证据，epic 与验收含人眼条款的 issue 由人按演示剧本关闭（MISSION §1.5）；commit message 用叙事句说"为什么"而不只是"改了什么"；非显然的决定（绕坑、反直觉写法）在注释里带实测日期与反例，防后来者好心改回去。
 - 同步授权：本仓库**明确授权** agent 在会话结束时执行 `bd dolt push`（仅同步 beads 数据，覆盖下方 Beads 块的 Conservative 默认）；`git commit` / `git push` 仍需用户当次明确授权。
 - ADR 约定见 `docs/adr/README.md`，模板 `docs/adr/TEMPLATE.md`；被否决的 ADR 保留全文。
