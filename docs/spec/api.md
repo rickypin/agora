@@ -21,19 +21,21 @@ GET    /api/tasks/ready            # ?path=<repo>：有 bd 的仓库的 bd ready
 GET    /api/nodes                  # 本机 + 已配置 peer 的状态：online / last_seen
 GET    /api/system                 # 含 api_version
 GET    /api/health                 # 未认证只返回 { "status": "ok" }
-POST   /api/auth/pair              # { token } → Set-Cookie agora_session；唯一的未认证写端点
-POST   /api/auth/pair/new          # 已认证：铸造一条配对链接（Dashboard "配对新设备"，V2-1）
-POST   /api/auth/logout            # 删当前设备的 session
-GET    /api/auth/devices           # 已配对设备列表（V2-1）
-DELETE /api/auth/devices/:id       # 吊销一台设备（V2-1）
+POST   /api/auth/pair              # { token } → Set-Cookie agora_session + { device }；唯一的未认证写端点
+POST   /api/auth/pair/new          # 已认证：铸造一条配对链接 → { url }（origin 取自 Host；Dashboard "配对新设备"的 UI 在 V2-1）
+POST   /api/auth/logout            # 吊销当前设备并清 cookie → 204
+GET    /api/auth/devices           # 已配对设备列表（含已吊销的，revoked_at 非空）
+DELETE /api/auth/devices/:id       # 吊销一台设备 → 204；即时生效
 ```
+
+错误应答统一为 `{ "error": "<type>", "message": "..." }`，`type` 是 snake_case：`unauthenticated`（401）、`bearer_requires_tls`（401）、`pair_invalid`（401，未知 / 已用 / 过期不区分）、`cross_origin`（403）、`pair_pending_limit`（429）、`device_not_found`（404）。上文的 `StillAlive` / `NeedsConfirmation` / `NoPendingDecision` 落地时同样写成 snake_case。
 
 ## 认证（ADR-003）
 
 - 每个请求先解析出一个 principal：`Human { device }`（cookie `agora_session`）或 `Peer { name }`（`Authorization: Bearer apt_<name>_…`）；两者互斥，Bearer 优先解析。未认证白名单只有 SPA 静态资源、`GET /api/health` 的公开子集、`POST /api/auth/pair`；其余一律 401 `unauthenticated`。**没有 loopback 例外**。
 - 配对链接 `<origin>/#pair=<token>` 由 `agora open` / `agora url` / `agora pair`（经 unix socket）或已认证的 `POST /api/auth/pair/new` 铸造；256 位、单次、5 分钟。前端读 fragment 后 `POST /api/auth/pair`，再清掉 fragment。
 - Bearer 只在 TLS 监听器上被接受，明文监听器回 401 `bearer_requires_tls`。
-- cookie 认证的非 GET 请求必须带同源 `Origin`（或 `Sec-Fetch-Site: same-origin`）；WS 升级校验 `Origin` 与 `Host` 同源；Bearer 跳过。
+- cookie 认证的非 GET 请求必须带同源 `Origin`（或 `Sec-Fetch-Site: same-origin`），两者都没有 → 403 `cross_origin`（curl 调写端点要自己带 Origin）；WS 升级校验 `Origin` 与 `Host` 同源；Bearer 跳过。
 - Kill / Restart 带 `confirmed`；所属节点判断需要确认而未确认 → 错误类型 `NeedsConfirmation`；转发节点原样转发 `confirmed`。
 
 会话 id 一律 `<node>:<id>`；`GET /api/sessions` 同列本机与 peer 会话，每条带 `node` 字段，对 peer 会话的写操作与终端流经一跳转发（原则与调用方、API 版本、DELETE ≠ kill 见 MISSION §7.3）。

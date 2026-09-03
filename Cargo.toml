@@ -27,6 +27,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 libc = "0.2"
 # metadata 库；bundled 免去三平台各自的 sqlite 版本差异（ADR-001 D8）。
 rusqlite = { version = "0.40", features = ["bundled"] }
+# 配对链接与 session token 的随机源、只落哈希（ADR-003 D2）。
+getrandom = "0.4"
+sha2 = "0.11"
+base64 = "0.23"
 
 [dev-dependencies]
 tokio = { version = "1.53", features = ["full"] }

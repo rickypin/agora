@@ -8,11 +8,14 @@
 //! - `hook/`：`agora hook` 投递箱与 unix socket（ADR-002 D3/D5）。
 //! - `auth/`：设备配对、session、peer token（ADR-003）。
 //! - `api/`：HTTP + WS，前端只经这里与节点通信（A36 不变量 9）。
+//! - `local/`：`AGORA_HOME` 与本机 unix socket 通道（ADR-003 D6）。
 
 pub mod adapter;
 pub mod api;
 pub mod auth;
+pub mod clock;
 pub mod hook;
+pub mod local;
 pub mod runtime;
 pub mod session;
 pub mod status;

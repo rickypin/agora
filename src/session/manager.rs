@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::clock::age_secs;
+
 use rusqlite::{params, OptionalExtension, Row};
 use serde::Serialize;
 
@@ -478,41 +480,6 @@ fn runtime_name(r: &RuntimeRef) -> String {
     r.0.rsplit(':').next().unwrap_or("").to_owned()
 }
 
-/// `YYYY-MM-DDTHH:MM:SSZ` 距今秒数；解析失败当作"很久以前"（不会误判 STARTING）。
-fn age_secs(ts: &str) -> Option<u64> {
-    let secs = parse_utc_secs(ts)?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
-    Some((now - secs).max(0) as u64)
-}
-
-fn parse_utc_secs(ts: &str) -> Option<i64> {
-    let b = ts.as_bytes();
-    if b.len() < 19 {
-        return None;
-    }
-    let num = |s: &str| s.parse::<i64>().ok();
-    let (y, mo, d, h, mi, s) = (
-        num(&ts[0..4])?,
-        num(&ts[5..7])?,
-        num(&ts[8..10])?,
-        num(&ts[11..13])?,
-        num(&ts[14..16])?,
-        num(&ts[17..19])?,
-    );
-    // days-from-civil（Howard Hinnant）
-    let (y2, mo2) = if mo <= 2 {
-        (y - 1, mo + 9)
-    } else {
-        (y, mo - 3)
-    };
-    let era = y2.div_euclid(400);
-    let yoe = y2 - era * 400;
-    let doy = (153 * mo2 + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(days * 86_400 + h * 3600 + mi * 60 + s)
-}
-
 fn fnv(x: u128) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in x.to_le_bytes() {
@@ -520,16 +487,4 @@ fn fnv(x: u128) -> u64 {
         h = h.wrapping_mul(0x0100_0000_01b3);
     }
     h
-}
-
-#[cfg(test)]
-mod unit {
-    use super::*;
-
-    #[test]
-    fn utc_parse_matches_epoch() {
-        assert_eq!(parse_utc_secs("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(parse_utc_secs("2026-09-03T00:00:00Z"), Some(1_788_393_600));
-        assert_eq!(parse_utc_secs("garbage"), None);
-    }
 }

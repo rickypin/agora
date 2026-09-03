@@ -50,6 +50,10 @@ fn migration_sets_user_version_and_is_idempotent() {
     assert_eq!(db.user_version().unwrap(), SCHEMA_VERSION);
     assert!(columns(&db, "projects").contains(&"path".to_string()));
     assert!(columns(&db, "preferences").contains(&"key".to_string()));
+    // v3：devices 只有哈希列，没有明文 token 列（ADR-003 D2）。
+    let devices = columns(&db, "devices");
+    assert!(devices.contains(&"session_sha256".to_string()));
+    assert!(!devices.iter().any(|c| c == "session" || c == "token"));
 }
 
 #[test]

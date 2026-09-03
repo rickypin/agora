@@ -25,6 +25,8 @@
 npm --prefix web ci && npm --prefix web run build   # 前端
 cargo build                                          # 内嵌并编译
 ./target/debug/agora                                 # 监听 127.0.0.1:7680；curl /api/health → {"status":"ok"}
+./target/debug/agora open                            # 另开终端：铸造一次性配对链接并打开浏览器（30 天免登录；`agora url` 只打印）
+./target/debug/agora auth devices                    # 已配对设备；`agora auth revoke <id>|--all` 即时吊销
 ```
 
 守卫：`cargo fmt --check`、`cargo clippy --all-targets -D warnings`、`cargo test`（含 `tests/arch_boundary.rs` 源码边界扫描）、`npm --prefix web run typecheck` / `test`。CI 在 macOS 与 Ubuntu 22.04 / 24.04 上跑同一套（`.github/workflows/ci.yml`）。日志级别 `AGORA_LOG=debug`，JSON 输出 `AGORA_LOG_FORMAT=json`。

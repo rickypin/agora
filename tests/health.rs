@@ -1,13 +1,25 @@
 //! A25：单机 daemon 可起并回答 `/api/health` 公开子集。
 
+use std::sync::Arc;
+
+use agora::api::AppState;
+use agora::auth::{Auth, AuthConfig};
+use agora::session::Db;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+fn app() -> axum::Router {
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    agora::api::router(AppState {
+        auth: Arc::new(Auth::new(db, AuthConfig::default())),
+    })
+}
+
 #[tokio::test]
 async fn health_public_subset_is_exactly_status_ok() {
-    let app = agora::api::router();
+    let app = app();
     let resp = app
         .oneshot(Request::get("/api/health").body(Body::empty()).unwrap())
         .await
@@ -22,7 +34,7 @@ async fn health_public_subset_is_exactly_status_ok() {
 
 #[tokio::test]
 async fn unknown_api_path_is_404_not_spa() {
-    let app = agora::api::router();
+    let app = app();
     let resp = app
         .oneshot(Request::get("/api/nope").body(Body::empty()).unwrap())
         .await
@@ -32,7 +44,7 @@ async fn unknown_api_path_is_404_not_spa() {
 
 #[tokio::test]
 async fn root_serves_html_or_not_built_notice() {
-    let app = agora::api::router();
+    let app = app();
     let resp = app
         .oneshot(Request::get("/").body(Body::empty()).unwrap())
         .await

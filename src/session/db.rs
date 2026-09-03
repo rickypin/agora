@@ -58,6 +58,17 @@ const MIGRATIONS: &[&str] = &[
     // 会话报 FINISHED（killed by user）而不是 FAILED。Restart 时清空。
     "ALTER TABLE sessions ADD COLUMN spawned_at DATETIME;
     ALTER TABLE sessions ADD COLUMN killed_at DATETIME;",
+    // v3：已配对设备 = 人的 session，只存 SHA-256（ADR-003 D2；agora-xqa.5）。
+    "CREATE TABLE devices (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        session_sha256 TEXT NOT NULL UNIQUE,
+        paired_via TEXT NOT NULL,
+        paired_from_addr TEXT,
+        created_at DATETIME NOT NULL,
+        last_seen_at DATETIME NOT NULL,
+        revoked_at DATETIME
+    );",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
