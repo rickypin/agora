@@ -129,7 +129,7 @@ describe("Workspace", () => {
       ]);
       await new Promise((r) => setTimeout(r, 5));
     });
-    expect(n.created.map((c) => [c.title, c.body, c.tag])).toEqual([["Claude / b @ n needs input", "Bash: rm -rf x", "n:b"]]);
+    expect(n.created.map((c) => [c.title, c.body, c.tag])).toEqual([["Claude / b @ n needs input", "Bash: rm -rf x", "n:b#1"]]);
     expect(screen.queryByTestId("respond-n:b")).toBeNull(); // 还没点：不抢焦点
     await act(async () => {
       n.created[0]!.note.onclick?.({});

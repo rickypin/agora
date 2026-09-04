@@ -53,6 +53,9 @@ export function browserDeps(): NotifierDeps {
 export class Notifier {
   /** 弹过的通知数（测试断言用）。 */
   shown = 0;
+  private seq = 0;
+  /** 每个会话当前还挂着的那条：弹新的先关旧的。 */
+  private readonly open = new Map<string, NotificationLike>();
 
   constructor(
     private readonly deps: NotifierDeps,
@@ -73,13 +76,18 @@ export class Notifier {
   /** 返回是否弹了。没权限 / 不支持 → 静默；服务端已保证每个转换只来一条，这里不再去重。 */
   show(n: Incoming): boolean {
     if (this.deps.permission() !== "granted") return false;
-    // 2026-09-04 实测 Chrome：同 tag 的新通知替换旧的而不是叠一条，所以 tag 用会话 id——一个会话
-    // 只占通知中心一格，最新的转换赢；两个标签页各弹一次也只显示一条。系统通知（无 id）不合并。
-    const tag = n.id ?? `agora-${Date.now()}`;
+    // 2026-09-04 人眼验收实测（macOS Chrome 152）：同 tag 的新通知只会静默替换通知中心里的旧条目，
+    // 不再弹横幅，renotify 在 macOS 原生通知这条路上也不生效——用户只看到第一条。所以 tag 每条唯一，
+    // "一个会话只占一格"改由我们自己做：弹新的之前把该会话上一条 close 掉。代价是多开几个标签页会
+    // 各弹一条（同页面多标签本来就少见）。
+    if (n.id) this.open.get(n.id)?.close();
+    const tag = `${n.id ?? "agora"}#${++this.seq}`;
     const note = this.deps.create(n.title, { body: n.body, tag });
+    if (n.id) this.open.set(n.id, note);
     this.shown += 1;
     note.onclick = () => {
       note.close();
+      if (n.id && this.open.get(n.id) === note) this.open.delete(n.id);
       this.deps.focus();
       if (n.id) this.onOpen(n.id, n.status ?? null);
     };

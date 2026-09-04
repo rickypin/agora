@@ -171,7 +171,9 @@ impl Default for Differ {
     }
 }
 
-/// 四种值得打扰人的转换（MISSION §6.6 的表）：都从 RUNNING 出发。RUNNING → IDLE / UNKNOWN 不算
+/// 四种值得打扰人的转换（MISSION §6.6 的表）：从 RUNNING 出发，IDLE 出发也算——IDLE 只是"安静了
+/// 一阵"（无 hook 会话 idle_after 后就是它），之后再死或再提问同样需要人；2026-09-04 人眼验收时
+/// `sleep 70; exit 1` 因为先过了 60 s 的 IDLE 而一条没弹。RUNNING → IDLE / UNKNOWN 不算
 /// （那是 agora 没把握，不是 agent 需要人）；STARTING → FAILED 也不算（起不来会立刻在列表里看到）；
 /// TURN_DONE → FINISHED 也不算（2026-09-04 实测：Claude 的 /exit 与 Kill 都是从 TURN_DONE 退出，
 /// 人刚收过 "finished its turn"，再来一条 "finished" 只是噪音）。用户自己按的 Kill（reason
@@ -203,7 +205,9 @@ pub fn notification_for(t: Transition<'_>) -> Option<Event> {
         reason,
         detail,
     } = t;
-    if prev != Status::Running || reason.is_some_and(|r| r.starts_with("killed by user")) {
+    if !matches!(prev, Status::Running | Status::Idle)
+        || reason.is_some_and(|r| r.starts_with("killed by user"))
+    {
         return None;
     }
     let verb = match next {
@@ -448,10 +452,14 @@ mod tests {
             (Running, Running),
             (Starting, Failed),
             (Waiting, TurnDone),
-            (Idle, Waiting),
+            (TurnDone, Finished),
+            (Idle, Running),
         ] {
             assert!(n(p, q).is_none(), "{p:?} → {q:?} 不该通知");
         }
+        // IDLE 出发也通知：安静一阵之后再提问 / 死掉，人同样需要知道。
+        assert_eq!(title(n(Idle, Failed)).0, "Myagent / frontend @ zuan failed");
+        assert_eq!(title(n(Idle, Waiting)).2, Some(Waiting));
         assert!(
             notification_for(Transition {
                 id: "n:1",
