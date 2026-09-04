@@ -115,7 +115,7 @@ set -g exit-unattached off        # 两条都是默认值，写出来是为了�
 |---|---|---|
 | 创建 | `create` → 写 metadata；写库失败 → `remove` 回滚 | 先外部资源后 metadata，不留孤儿记录（不变量 7 同构） |
 | Detach / Close Tab | 关掉那条 `attach` 流 | 运行时不知道浏览器存在 |
-| **Kill** | `terminate`（TERM → KILL）；**会话保留为 dead pane**；写 `killed_at` | 与 MISSION §4.6 "杀掉运行时会话"字面不同，见下。`killed_at` 是"用户做过这件事"的事件时刻，与 `ended_at` 同类而非活性（不变量 7 不禁）：按信号退出 + `killed_at` 非空 → FINISHED（killed by user），否则 FAILED；daemon 重启后照旧（2026-09-03 之前只在内存里记，重启后被 Kill 的会话变 FAILED，agora-xqa.16） |
+| **Kill** | `terminate`（TERM → KILL）；**会话保留为 dead pane**；写 `killed_at` | 与 MISSION §4.6 "杀掉运行时会话"字面不同，见下。`killed_at` 是"用户做过这件事"的事件时刻，与 `ended_at` 同类而非活性（不变量 7 不禁）：按信号或 128+signo 码（129/130/143）退出 + `killed_at` 非空 → FINISHED（killed by user），否则 FAILED；对已经死掉的会话 Kill 是空操作、不写 `killed_at`（agora-1a0）；daemon 重启后照旧（2026-09-03 之前只在内存里记，重启后被 Kill 的会话变 FAILED，agora-xqa.16） |
 | **Restart** | `respawn`；命令由 Adapter 按 `agent_session_id` 重算 resume 参数（§5.6）；`epoch + 1`、写 `spawned_at`、清 `killed_at` | 同一会话、同名、同 cwd，scrollback 与最后一屏保留（D2 respawn 行的缩放窗口手法，agora-6bo）；活着才需确认（§8）。`spawned_at` 是本代进程的起始时刻，进程状态层的 2 s STARTING 窗口只看它——不看 `updated_at`，那个被 rename / kill / 清理刷新（agora-xqa.15） |
 | 清理 | `remove`（只对 dead pane） | 触发：用户在 Dashboard 确认 / Delete Metadata / Restart 复用。**V1 不做定时 GC**：看没看过只有人知道 |
 | Delete Metadata | 删行；会话活着 → 留在 socket 上变成"未注册"（可再采纳）；已死 → 顺手 `remove` | 两个端点、两个语义（§7.3） |

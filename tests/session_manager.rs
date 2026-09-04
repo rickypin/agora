@@ -317,3 +317,52 @@ fn reconcile_covers_all_six_cases() {
     assert!(back.alive);
     assert_eq!(back.record.epoch, 2);
 }
+
+#[test]
+fn kill_on_already_dead_session_leaves_failed_and_no_killed_at() {
+    // agora-1a0：被别人 kill -9 的 FAILED 会话，Dashboard 点 Kill 是空操作，不能冒充"用户杀的"。
+    let (m, rt, _db) = mgr();
+    let v = m.create(&new_session("dead")).unwrap();
+    rt.set_dead(
+        v.record.runtime_ref.as_deref().unwrap(),
+        Exit::Signal("KILL".into()),
+    );
+    let after = m.kill(&v.record.id).unwrap();
+    assert!(
+        after.record.killed_at.is_none(),
+        "已死的会话 Kill 不写 killed_at"
+    );
+    assert_eq!(after.assessment.status, Status::Failed);
+    assert_eq!(after.assessment.reason.as_deref(), Some("signal KILL"));
+    assert!(after.record.ended_at.is_some(), "空操作也把结束时刻补上");
+}
+
+#[test]
+fn user_kill_answered_with_shell_signal_exit_code_counts_as_finished() {
+    // agora-3ib：Claude 收到 SIGTERM 后自己以 143 退出，tmux 报的是 Code(143) 不是 Signal。
+    let (m, rt, _db) = mgr();
+    let v = m.create(&new_session("c")).unwrap();
+    let r = v.record.runtime_ref.clone().unwrap();
+    let killed = m.kill(&v.record.id).unwrap();
+    assert!(killed.record.killed_at.is_some());
+    rt.set_dead(&r, Exit::Code(143));
+    let view = m.get(&v.record.id).unwrap();
+    assert_eq!(view.assessment.status, Status::Finished);
+    assert_eq!(
+        view.assessment.reason.as_deref(),
+        Some("killed by user (exit code 143)")
+    );
+    // 用户杀了但 agent 以别的非零码退出（真崩了）→ 仍 FAILED。
+    rt.set_dead(&r, Exit::Code(1));
+    assert_eq!(
+        m.get(&v.record.id).unwrap().assessment.status,
+        Status::Failed
+    );
+    // 没人按 Kill 的 143 → FAILED。
+    let w = m.create(&new_session("w")).unwrap();
+    rt.set_dead(w.record.runtime_ref.as_deref().unwrap(), Exit::Code(143));
+    assert_eq!(
+        m.get(&w.record.id).unwrap().assessment.status,
+        Status::Failed
+    );
+}

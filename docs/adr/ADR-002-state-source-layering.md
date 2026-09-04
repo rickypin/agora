@@ -44,7 +44,7 @@ MISSION v0.10 已把"hook-first 是 V1 架构"定为前提（§5.1），依据�
 
 裁决规则（都有测试，见守卫）：
 
-- **进程退出压倒一切**：`Exit::Code(0)` → FINISHED，`Code(n≠0)` → FAILED，`Signal(x)` → FAILED；**agora 自己 `terminate` 的会话**按信号退出报 FINISHED，reason `killed by user`（Kill 是人的决定，不该拿 attention 100）。退出后任何 hook 事件只更新 metadata（如 SessionEnd 的 reason），不改状态。
+- **进程退出压倒一切**：`Exit::Code(0)` → FINISHED，`Code(n≠0)` → FAILED，`Signal(x)` → FAILED；**agora 自己 `terminate` 的会话**按信号退出、或以壳的 128+signo 码退出（129/130/143，agent 自己捕获 SIGTERM 后以 143 退出，2026-09-04 Claude 2.1.260 实测，agora-3ib）报 FINISHED，reason `killed by user`（Kill 是人的决定，不该拿 attention 100）；其它非零码即使按过 Kill 也是 FAILED。退出后任何 hook 事件只更新 metadata（如 SessionEnd 的 reason），不改状态。
 - **有 hook 的 agent**：文本层永远不能把状态抬到 WAITING / TURN_DONE；活动层不能产生 IDLE。它们只提供 pane preview。
 - **hook 沉默规则**（有 hook 的 agent 的兜底）：进程活着、`hook_silence_after`（默认 10 min）内没有任何 hook 事件、且文本层看见了空闲提示符或权限提示 → **UNKNOWN**，reason `hooks silent`。这是"宁可 UNKNOWN"的落点：hook 没装好、被 `disableAllHooks` 关掉、或 agent 升级改了事件名时，Dashboard 显示"看不清"而不是永远 RUNNING，也不会误报 WAITING。
 - **epoch 与顺序**：每个会话有 `epoch`（ADR-001 `create` 为 1，每次 `respawn` +1，经 `LaunchSpec.env` 的 `AGORA_EPOCH` 交给 agent，hook 原样带回）；epoch 小于当前的事件丢弃；同 epoch 内按投递箱文件名（时间戳 + 序号）顺序应用。

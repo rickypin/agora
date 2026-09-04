@@ -736,6 +736,13 @@ impl SessionManager {
     pub fn kill(&self, id: &str) -> Result<SessionView, SessionError> {
         let rec = self.record(id)?;
         let r#ref = self.require_ref(&rec)?;
+        // agora-1a0：已经死掉的会话（OOM、用户在终端 kill -9）Kill 是空操作，不能留下 killed_at，
+        // 否则一个按信号 FAILED 的会话点一下 Kill 就冒充成 FINISHED "killed by user"。
+        // terminate 对 !alive 直接 Ok，所以只能在这里先看。
+        if !self.runtime.inspect(&r#ref)?.alive {
+            self.mark_ended(id)?;
+            return self.get(id);
+        }
         // 先记事实再动手：terminate 成功即进程已死，若先杀后写，中间那一瞬 get 会报 FAILED。
         // terminate 失败则撤回，免得日后被别人用信号杀掉时冒充"用户杀的"。
         self.set_killed_at(id, true)?;

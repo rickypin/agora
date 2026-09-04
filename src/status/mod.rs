@@ -104,6 +104,11 @@ pub const STARTING_WINDOW_SECS: u64 = 2;
 /// 进程状态层：只看运行时事实加两个落库的事件时刻。
 /// `spawn_age_secs` 是本代进程起始（`sessions.spawned_at`）距今的秒数，None = 不知道起始时刻，
 /// 不算 STARTING；`killed_by_user` 来自 `sessions.killed_at`，daemon 重启后仍在。
+/// 128+signo 的壳退出码里，只认 agora terminate 会发的那几个（TERM/INT/HUP），其余不算。
+fn is_shell_signal_code(code: i32) -> bool {
+    matches!(code, 129 | 130 | 143)
+}
+
 pub fn process_layer(
     runtime: Option<&RuntimeSession>,
     spawn_age_secs: Option<u64>,
@@ -127,6 +132,16 @@ pub fn process_layer(
     }
     match &rt.exit {
         Some(Exit::Code(0)) => Assessment::new(Status::Finished, Source::Process, 1.0, None),
+        // agora-3ib（2026-09-04 实测 Claude 2.1.260）：agent 收到 agora 的 SIGTERM 后自己捕获并以
+        // 128+signo 退出（143），或被 sh 包装成退出码，运行时报的是 Code 不是 Signal。用户自己按的
+        // Kill 不能显示成 FAILED，所以 128+TERM/INT/HUP 在 killed_by_user 时也算 FINISHED。
+        // 其它非零码（agent 真崩了）照旧 FAILED。
+        Some(Exit::Code(n)) if killed_by_user && is_shell_signal_code(*n) => Assessment::new(
+            Status::Finished,
+            Source::Process,
+            1.0,
+            Some(&format!("killed by user (exit code {n})")),
+        ),
         Some(Exit::Code(n)) => Assessment::new(
             Status::Failed,
             Source::Process,
