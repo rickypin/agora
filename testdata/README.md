@@ -25,6 +25,13 @@ fixture 驱动测试的数据（ADR-002 D10）。
 五个的事件名、键集合、顺序与时间间隔都来自真录；`api_error`、`parallel_tools` 按文档合成。真录证实的反直觉处
 写在 `src/adapter/grok.rs` 模块文档。
 
+## codex/0.152.1
+
+2026-09-05 在本机 Codex 0.152.1 上录的（tmux 内 TUI `approval_policy=on-request` + `sandbox_mode=workspace-write`，探针 hook
+落盘 stdin；路径与 id 脱敏）：`turn_complete`、`permission_dashboard`、`permission_terminal`、`clear`、`interrupted` 五个的
+事件名、键集合、顺序与时间间隔来自真录；`api_error`、`parallel_tools` 按真录的键集合合成。两个反直觉处：PermissionRequest
+不带 `tool_use_id`（PreToolUse 带）；挂起期间 TUI 不显示审批提示，hook 退出后才弹——见 ADR-002 附录 A。
+
 ## generic/pane
 
 文本兜底（ADR-002 D6）的屏幕 fixture：首行 `# expect: waiting [secret] | none`，其余是屏幕内容

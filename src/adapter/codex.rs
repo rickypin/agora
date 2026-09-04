@@ -1,5 +1,9 @@
-//! Codex CLI。事件表、安装规格、`resume <id>` 子命令随 agora-dvh.7 按实测落地；本阶段
-//! 只有身份与通用映射表（`hooks::GenericHooks`），hook 能替用户批准（文档说法，未实测）。
+//! Codex CLI。事件表、安装规格、`resume <id>` 子命令随 agora-dvh.7 落地；本阶段只有身份与
+//! 通用映射表（`hooks::GenericHooks`）。2026-09-05 实测 0.152.1（ADR-002 附录 A，agora-dvh.2）：
+//! 事件名 CamelCase、键 snake_case，通用表拼法对；hook 返回 allow 确实放行，但**挂起期间 TUI
+//! 不显示审批提示**，终端里的人答不了——hook 退出后提示才弹。所以 Codex 的挂起上限必须是
+//! 秒级（dvh.7 定），不能照搬 Claude 的长挂起。PermissionRequest 不带 tool_use_id；未在 `/hooks`
+//! 信任的 hook 被静默跳过，信任哈希按条存在 `~/.codex/config.toml [hooks.state]`。
 
 use super::hooks::GenericHooks;
 use super::{program_is, Adapter, AgentFallback, AgentHooks, AgentIdentity, Version, VersionProbe};

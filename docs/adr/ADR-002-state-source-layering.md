@@ -233,6 +233,18 @@ AgentFallback {                      # 所有 agent 都有默认实现
 
 未核实项全部进 Codex adapter 实测 issue（M1b）：交互式 TUI 下事件触发、`approval_policy = on-request` 时 PermissionRequest 的挂起与并存、`/hooks` 信任流程对安装器的要求、`CODEX_*` 环境变量、`TMUX_PANE` 继承。
 
+#### Codex 0.152.1 交互式补测（2026-09-05，tmux 内 TUI `-c approval_policy=on-request -c sandbox_mode=workspace-write` + `codex exec` 无头，探针 hook 落盘 stdin 与环境；agora-dvh.2）
+
+| 项 | 实测结果 | 对 agora 的含义 |
+|---|---|---|
+| ① TUI 触发 | 交互式会话触发 SessionStart(`source` startup / clear) / UserPromptSubmit / PreToolUse / PostToolUse / PermissionRequest / Stop / Interrupt / SessionEnd；事件名 **CamelCase**、键 **snake_case**（`hook_event_name`、`tool_use_id`），与 Grok 相反；每条带 `model`、`permission_mode`，turn 级带 `turn_id` | `hooks::GenericHooks` 的拼法对 Codex 是对的 |
+| ② 挂起与并存 | on-request 下沙箱外写文件（`touch ~/x`）fire PermissionRequest，**不带 `tool_use_id`**（PreToolUse 带 `exec-<uuid>`），只能按 `tool_name` 键；挂起期间 TUI 只显示 `• Running PermissionRequest hook`，**不显示审批提示**——终端里的人答不了；hook 返回 `{"hookSpecificOutput":{"decision":{"behavior":"allow"}}}` 直接放行；hook 无输出退出后 TUI 才弹出三选项审批（y / p 不再问 / esc），终端按 y → PostToolUse | **与 Claude 的"并存"不同：挂起 = 独占**。Codex 的挂起上限必须短（秒级、可配），否则终端用户只看到一行 "Running hook" 干等；dvh.7 定上限并在 UI 说明 |
+| ③ `/hooks` 信任 | 未信任的非托管 hook **静默跳过**，TUI 与 `codex exec` 都无任何提示；`/hooks` 面板列出每条 hook，`t` 一键信任全部、`enter` 逐条审阅；信任存 `~/.codex/config.toml` 的 `[hooks.state."<file>:<event>:<i>:<j>"] trusted_hash = "sha256:…"`，**每条 hook 单独一个哈希**；哈希覆盖 hook 条目本身（只改 Stop 的 `timeout` 20→21，只有 Stop 失去信任，其余照常 fire），**不覆盖命令指向的脚本内容**（改脚本不失效）；`--dangerously-bypass-hook-trust` 跳过信任检查 | 安装器必须写稳定不变的条目（命令字符串、timeout 都不能随版本漂），装后必须提示用户进 TUI `/hooks` 按 `t`——否则一条事件都收不到且无从察觉；agora 侧要有"装了却从未收到 SessionStart"的提醒 |
+| ④ `CODEX_*` | hook 子进程环境里**没有** `CODEX_THREAD_ID` / `CODEX_SESSION_ID`（也没有 agent 自己的进程号变量）；ppid 是 codex 本体 | 身份靠 payload `session_id`；进程号靠 `exec` 后的 ppid（同 Grok） |
+| ⑤ `TMUX_PANE` | `TMUX` / `TMUX_PANE` 原样继承 | pane 归属可用 |
+| ⑥ TURN_DONE | 没有 Notification / idle_prompt / StopFailure；每轮以 Stop(`last_assistant_message`) 收尾，Esc 中断以 Interrupt(`turn_id`) 收尾且没有 PostToolUse；被中断的命令转成后台终端继续跑 | Stop + Interrupt 够用；API 错误未触发到，靠沉默规则 |
+| 其他 | `/clear` 只发新 id 的 SessionStart(`source=clear`)，旧会话当时不发 SessionEnd，退出时两个 session 各发一次 SessionEnd(`reason=other`)；SessionEnd / Interrupt 的 hook timeout 上限 3 s（超过自动 clamp 并 stderr 警告）；插件 `codex@openai-codex` 1.0.6 自带 hooks.json 也走同一信任表；沙箱直接拦网络（`curl` 无输出、不问）| SessionEnd 里不能干慢活；testdata/codex/0.152.1/hooks 七场景中五个真录、`api_error` / `parallel_tools` 按键集合合成 |
+
 ## 附录 B：事故记录
 
 （上线后追加）

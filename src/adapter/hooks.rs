@@ -3,9 +3,9 @@
 //! 决定的形态（[`Decision`]）、解除的形态（[`Release`]）、payload 取键的小工具，以及一张
 //! **通用映射表** [`GenericHooks`]：Codex 在它的 adapter（agora-dvh.7）按实测分叉之前先用它；
 //! Claude（`claude.rs`）与 Grok（`grok.rs`）各有自己的表。键名双写 camel / snake 都认，因为
-//! Grok 双写、Codex 文档用 snake。注意这张表按 CamelCase 事件名匹配——Grok 实测发的是
-//! `pre_tool_use` 小写蛇形（2026-09-04），所以它**不能**直接给 Grok 用，dvh.7 实测 Codex 时同样
-//! 先核对事件名拼法。
+//! Grok 双写、Codex 用 snake。注意这张表按 CamelCase 事件名匹配——Grok 实测发的是
+//! `pre_tool_use` 小写蛇形（2026-09-04），所以它**不能**直接给 Grok 用；Codex 0.152.1 实测
+//! （2026-09-05）发的是 `PreToolUse` CamelCase + snake 键，拼法与这张表一致。
 
 use serde_json::Value;
 
@@ -64,9 +64,9 @@ pub(crate) fn tool_use_id(payload: &Value) -> Option<String> {
     str_of(payload, &["tool_use_id", "toolUseId", "call_id"]).map(str::to_owned)
 }
 
-/// `PermissionRequest` 决定写回 stdout 的形态：Claude Code 文档的
-/// `hookSpecificOutput.decision.behavior`；Codex 文档同为 `decision.behavior`，本机未实测
-/// （agora-dvh.7 核实后若形态不同在它的 adapter 里分叉）。`None` → 不输出（fail-open）。
+/// `PermissionRequest` 决定写回 stdout 的形态：`hookSpecificOutput.decision.behavior`，Claude
+/// 与 Codex 0.152.1（2026-09-05 实测放行）都认。`None` → 不输出（fail-open）：Codex 要等 hook
+/// 退出后才弹自己的审批提示，所以 None 必须尽快退出。
 pub(crate) fn permission_output(decision: &Decision) -> Option<String> {
     let decision = match decision {
         Decision::Allow => serde_json::json!({ "behavior": "allow" }),
