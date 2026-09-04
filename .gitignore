@@ -40,3 +40,6 @@ target/
 # 前端产物由 rust-embed 在 cargo build 时内嵌；本地先 `npm --prefix web run build`
 web/dist/*
 !web/dist/.gitkeep
+
+# beads 交互日志：上游 #4688 起是默认关闭的 sidecar；本机 bd 1.2.2 仍无条件写它，只会弄脏工作区
+.beads/interactions.jsonl
