@@ -22,6 +22,13 @@ use crate::runtime::{
 use crate::status::{
     self, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation, Status,
 };
+use crate::task::{TaskIndex, TaskInfo};
+
+/// 首条 prompt 当 task_ref 摘要时最多留多长（ADR-002 D8）。
+pub const TASK_SUMMARY_MAX: usize = 120;
+/// pane 预览兜底读屏幕末尾几行（无 hook 的会话，MISSION §6.3 §6.7）。
+const PREVIEW_TAIL_LINES: u32 = 5;
+const PREVIEW_MAX: usize = 160;
 
 /// Kill 的宽限：TERM → 5 s → KILL（ADR-001 D2）。
 pub const KILL_GRACE: Duration = Duration::from_secs(5);
@@ -109,6 +116,17 @@ pub struct SessionView {
     /// WAITING(decision) 怎么答："hook"（allow / deny 经挂起的 hook 返回）或 "terminal"
     /// （agent 的 hook 不能替用户批准，只能打开终端；ADR-002 D2/D5）。
     pub respond_via: &'static str,
+    /// 两行预览（MISSION §6.3；ADR-002 D8）：`❯` 用户最后输入 / `↳` agent 正在做或最后说的。
+    /// 都来自 hook 事件；没有 hook 的会话两者皆 None。
+    pub prompt: Option<String>,
+    pub progress: Option<String>,
+    /// 无 hook 会话的一行 pane 预览（屏幕末尾最后一个非空行，已 strip ANSI）；有 hook 的
+    /// 会话不读 pane，为 None。
+    pub preview: Option<String>,
+    /// 当前状态从什么时候起（unix 秒）："waiting 3m"与同分按等待时长排序。
+    pub status_since: i64,
+    /// `task_ref` 像 beads id 且查得到时的标题与优先级（只读 beads，不变量 12）。
+    pub task: Option<TaskInfo>,
 }
 
 impl SessionView {
@@ -153,6 +171,8 @@ pub struct SessionManager {
     /// external 会话最近一次 hook 报来的 agent 进程号：`kill(pid, 0)` 判存活（ADR-002 D4）。
     /// 内存态：daemon 重启后要等下一条 hook 才再知道，之前活性 UNKNOWN。
     external_pids: Mutex<HashMap<String, u32>>,
+    /// 任务标签（只读 beads）。
+    tasks: Arc<TaskIndex>,
 }
 
 impl SessionManager {
@@ -170,7 +190,14 @@ impl SessionManager {
             machines: Mutex::new(HashMap::new()),
             status_cfg: MachineConfig::default(),
             external_pids: Mutex::new(HashMap::new()),
+            tasks: Arc::new(TaskIndex::default()),
         }
+    }
+
+    /// 任务标签的数据源（测试塞同步的假 bd）。
+    pub fn with_task_index(mut self, tasks: Arc<TaskIndex>) -> Self {
+        self.tasks = tasks;
+        self
     }
 
     /// 状态机参数来自配置（`status.*`、`hooks.silence_after`）。
@@ -215,11 +242,25 @@ impl SessionManager {
             }
         }
         for e in events {
-            if let AgoraEvent::SessionId(sid) = e {
-                self.db.conn().execute(
-                    "UPDATE sessions SET agent_session_id = ?2 WHERE id = ?1",
-                    params![id, sid],
-                )?;
+            match e {
+                AgoraEvent::SessionId(sid) => {
+                    self.db.conn().execute(
+                        "UPDATE sessions SET agent_session_id = ?2 WHERE id = ?1",
+                        params![id, sid],
+                    )?;
+                }
+                // 没有任务的会话：首条 prompt 的首行就是它的任务摘要（ADR-002 D8）。只补空的，
+                // 用户在对话框填的 issue id / 一句话永远不被覆盖；只写 agora 自己的库。
+                AgoraEvent::PromptSubmitted(p) if rec.task_ref.is_none() => {
+                    let summary = summarize(p, TASK_SUMMARY_MAX);
+                    if !summary.is_empty() {
+                        self.db.conn().execute(
+                            "UPDATE sessions SET task_ref = ?2 WHERE id = ?1 AND task_ref IS NULL",
+                            params![id, summary],
+                        )?;
+                    }
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -595,7 +636,7 @@ impl SessionManager {
             }
         };
         let now = clock::now_secs();
-        let (assessment, detail) = {
+        let (assessment, detail, prompt, progress, status_since, hooked) = {
             let mut machines = lock(&self.machines);
             let m = machines.entry(rec.id.clone()).or_insert_with(|| {
                 Machine::new(
@@ -613,7 +654,28 @@ impl SessionManager {
                 epoch: rec.epoch,
                 now,
             });
-            (a, m.detail().map(str::to_owned))
+            (
+                a,
+                m.detail().map(str::to_owned),
+                m.prompt().map(str::to_owned),
+                m.progress().map(str::to_owned),
+                m.status_since(),
+                m.has_hooks(),
+            )
+        };
+        // pane 预览只给无 hook 的会话（MISSION §6.3 "没有 hook 的会话保持一行 pane preview"）；
+        // 读不到（dead pane、运行时降级）就没有，不报错。
+        let preview = match rt {
+            Some(s) if !hooked && s.alive => self
+                .runtime
+                .capture_tail(&s.r#ref, PREVIEW_TAIL_LINES)
+                .ok()
+                .and_then(|bytes| last_line(&String::from_utf8_lossy(&bytes), PREVIEW_MAX)),
+            _ => None,
+        };
+        let task = match (&rec.working_directory, &rec.task_ref) {
+            (Some(cwd), Some(r)) => self.tasks.get(std::path::Path::new(cwd), r),
+            _ => None,
         };
         let respond_via = if adapter::find(&rec.agent_type)
             .and_then(|a| a.hooks())
@@ -636,6 +698,11 @@ impl SessionManager {
             assessment,
             detail,
             respond_via,
+            prompt,
+            progress,
+            preview,
+            status_since,
+            task,
             record: rec,
         }
     }
@@ -930,4 +997,63 @@ fn agent_hint(table: &[proctree::Proc], live: &RuntimeSession) -> Option<String>
             let argv: Vec<&str> = p.argv.iter().map(String::as_str).collect();
             adapter::identify(&argv).map(|a| a.name().to_owned())
         })
+}
+
+/// 首条 prompt → 任务摘要：第一个非空行，按字符截断。
+pub fn summarize(text: &str, max_chars: usize) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default();
+    line.chars().take(max_chars).collect()
+}
+
+/// 屏幕末尾最后一个非空行，strip ANSI / 控制字符，截断（MISSION §6.7：不显示大段内容）。
+fn last_line(screen: &str, max_chars: usize) -> Option<String> {
+    let clean = strip_ansi(screen);
+    let line = clean.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
+    Some(line.chars().take(max_chars).collect())
+}
+
+/// 去掉 CSI / OSC 序列与其它控制字符。`capture-pane -p` 不带 `-e` 本就不含颜色，这里是
+/// 防御：pane 里 agent 自己打出的裸 ESC（进度条、光标控制）不能进侧栏。
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    // CSI：参数 0x30–0x3F，中间 0x20–0x2F，终结 0x40–0x7E。
+                    for t in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&t) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    chars.next();
+                    // OSC：到 BEL 或 ESC \。
+                    let mut prev = '\0';
+                    for t in chars.by_ref() {
+                        if t == '\u{7}' || (prev == '\u{1b}' && t == '\\') {
+                            break;
+                        }
+                        prev = t;
+                    }
+                }
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            }
+            continue;
+        }
+        if c == '\n' || c == '\t' || !c.is_control() {
+            out.push(c);
+        }
+    }
+    out
 }

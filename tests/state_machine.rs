@@ -418,3 +418,29 @@ fn parallel_tools_stay_waiting_until_every_decision_is_answered() {
     m.apply(&AgoraEvent::DecisionResolved(None), 1, 6);
     assert_eq!(m.current().status, Status::Running);
 }
+
+#[test]
+fn status_since_is_when_the_state_was_set_not_the_last_tick() {
+    // MISSION §6.3："waiting 3m"与同分按等待时长排序：起点是状态写入的那一刻，tick 不刷新它。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::PromptSubmitted("do x".into()), 1, 1);
+    m.apply(
+        &AgoraEvent::DecisionNeeded {
+            tool_use_id: "t1".into(),
+            summary: "Write /tmp/x".into(),
+        },
+        1,
+        5,
+    );
+    assert_eq!(m.status_since(), 5);
+    let r = rt(true, Some(40));
+    tick(&mut m, 50, &r, None);
+    assert_eq!(m.current().status, Status::Waiting);
+    assert_eq!(m.status_since(), 5, "tick 没改状态就不能改起点");
+    // 同一状态被同样的结论再写一次也不刷新；换了状态才刷新。
+    m.apply(&AgoraEvent::DecisionResolved(Some("t1".into())), 1, 60);
+    assert_eq!(
+        (m.current().status, m.status_since()),
+        (Status::Running, 60)
+    );
+}

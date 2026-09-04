@@ -71,6 +71,15 @@ pub struct Observation<'a> {
     pub now: i64,
 }
 
+/// 预览只要一行：取第一个非空行，去首尾空白。
+fn first_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+        .to_owned()
+}
+
 /// 来源的层级：只用来比"谁能覆盖谁"。
 fn layer(source: Source) -> u8 {
     match source {
@@ -106,8 +115,12 @@ pub struct Machine {
     seen_output_at: Option<i64>,
     last_size: Option<Size>,
     last_attached: Option<bool>,
-    /// 最近一次 hook 给的"正在做什么"/ 最后一条回复，给两行预览（dvh.10）。
+    /// 最近一次 hook 给的问题文本 / 最后一条回复，就地回答用（dvh.9）。
     detail: Option<String>,
+    /// 两行预览（MISSION §6.3；ADR-002 D8）：`❯` = 最近 `prompt.submitted` 的首行；
+    /// `↳` = `activity` 的当前工具或 `turn.ended` 的最后一条回复。都来自 hook，不读 pane。
+    prompt: Option<String>,
+    progress: Option<String>,
     /// 还没答的权限 / 提问（并行工具各一个）：清空才回 RUNNING。
     pending: BTreeSet<String>,
 }
@@ -130,6 +143,8 @@ impl Machine {
             last_size: None,
             last_attached: None,
             detail: None,
+            prompt: None,
+            progress: None,
             pending: BTreeSet::new(),
         }
     }
@@ -144,6 +159,21 @@ impl Machine {
 
     pub fn detail(&self) -> Option<&str> {
         self.detail.as_deref()
+    }
+
+    /// `❯` 行：用户最后输入的那一条（首行）。
+    pub fn prompt(&self) -> Option<&str> {
+        self.prompt.as_deref()
+    }
+
+    /// `↳` 行：agent 正在做什么 / 最后说了什么。
+    pub fn progress(&self) -> Option<&str> {
+        self.progress.as_deref()
+    }
+
+    /// 当前状态从什么时候起（unix 秒）："waiting 3m"与同分按等待时长排序的依据。
+    pub fn status_since(&self) -> i64 {
+        self.set_at
     }
 
     pub fn epoch(&self) -> i64 {
@@ -194,12 +224,16 @@ impl Machine {
             AgoraEvent::PromptSubmitted(p) => {
                 self.pending.clear();
                 self.detail = Some(p.clone());
+                self.prompt = Some(first_line(p));
+                // 新一轮开始：上一轮的"最后说了什么"不再是"现在到哪了"。
+                self.progress = None;
                 Some(hook(Status::Running, 1.0, Some("prompt submitted")))
             }
             // 并行工具：一个在等权限时另一个的 PreToolUse / PostToolUse 照样到，不算"人答了"。
             AgoraEvent::Activity(_) if waiting_on_others(&self.pending, &self.current) => None,
             AgoraEvent::Activity(what) => {
                 self.detail = Some(what.clone());
+                self.progress = Some(first_line(what));
                 Some(hook(Status::Running, 1.0, Some("activity")))
             }
             AgoraEvent::InputNeeded {
@@ -230,8 +264,9 @@ impl Machine {
             }
             AgoraEvent::TurnEnded(last) => {
                 self.pending.clear();
-                if last.is_some() {
-                    self.detail = last.clone();
+                if let Some(last) = last {
+                    self.detail = Some(last.clone());
+                    self.progress = Some(first_line(last));
                 }
                 Some(hook(Status::TurnDone, 1.0, Some("turn ended")))
             }

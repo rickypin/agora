@@ -14,6 +14,7 @@
 //! - `events/`：全局事件总线与轮询求差；`/api/events` 只是它的 WS 出口。
 //! - `local/`：`AGORA_HOME` 与本机 unix socket 通道（ADR-003 D6）。
 //! - `project/`：`project_roots` 扫描与 worktree 列举，New Agent 对话框的数据源（MISSION §6.4）。
+//! - `task/`：任务标签层，全仓唯一允许起 `bd` 的地方，且只读（MISSION §6.3；不变量 12）。
 
 pub mod adapter;
 pub mod api;
@@ -29,4 +30,5 @@ pub mod project;
 pub mod runtime;
 pub mod session;
 pub mod status;
+pub mod task;
 pub mod telemetry;

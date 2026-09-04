@@ -46,6 +46,11 @@ select:disabled { opacity: 0.5; }
 .adopt input { flex: 1; min-width: 0; }
 .adopt-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .row .preview { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .line-prompt, .row .line-progress { color: var(--fg); opacity: 0.85; }
+.row .meta .state { margin-left: auto; white-space: nowrap; }
+.sidebar .counts { margin: 0 10px 6px; font-size: 12px; }
+.sidebar-head.section { padding-top: 8px; font-size: 11px; letter-spacing: 0.06em; }
+.section-row { padding: 8px 6px 2px; font-size: 11px; letter-spacing: 0.06em; }
 .dot { width: 1em; text-align: center; flex: none; }
 .respond { margin: 2px 6px 6px 28px; padding: 6px 8px; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
 .respond-question { margin: 0; white-space: pre-wrap; word-break: break-word; }

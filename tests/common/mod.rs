@@ -29,6 +29,8 @@ pub struct FakeRuntime {
     pub inputs: Mutex<Vec<(String, String)>>,
     /// `locate` 的答案：TMUX_PANE 值 → ref（dvh.12 外部会话定位）。
     pub panes: Mutex<HashMap<String, String>>,
+    /// `capture_tail` 的答案：ref → 屏幕文本（dvh.10 pane 预览兜底）。
+    pub tails: Mutex<HashMap<String, String>>,
 }
 
 impl FakeRuntime {
@@ -102,8 +104,14 @@ impl Runtime for FakeRuntime {
             env: vec![],
         })
     }
-    fn capture_tail(&self, _r: &RuntimeRef, _n: u32) -> Result<Vec<u8>, RuntimeError> {
-        Ok(Vec::new())
+    fn capture_tail(&self, r: &RuntimeRef, _n: u32) -> Result<Vec<u8>, RuntimeError> {
+        Ok(self
+            .tails
+            .lock()
+            .unwrap()
+            .get(&r.0)
+            .map(|s| s.as_bytes().to_vec())
+            .unwrap_or_default())
     }
     fn terminate(&self, r: &RuntimeRef, _g: Duration) -> Result<(), RuntimeError> {
         if Self::socket_of(&r.0) != "agora" {

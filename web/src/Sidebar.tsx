@@ -1,8 +1,9 @@
-import { memo, useState, type ReactNode, type RefObject } from "react";
+import { Fragment, memo, useEffect, useState, type ReactNode, type RefObject } from "react";
 import type { AdoptBody } from "./api";
+import { countByStatus, needsAttention, statusLine, taskLabel } from "./attention";
 import type { SessionRow, UnregisteredRow } from "./events";
 
-/** 状态符号（docs/spec/ux.md 线框）。attention 排序与两行预览归 M1b。 */
+/** 状态符号（docs/spec/ux.md 线框）。 */
 export function statusSymbol(status: string): string {
   switch (status) {
     case "waiting":
@@ -28,9 +29,32 @@ export function rowName(s: SessionRow): string {
   return String(s.name ?? s.display_name ?? s.id);
 }
 
-/** 侧栏过滤匹配的字段（docs/spec/ux.md：name / node / agent / preview）。 */
+/** 侧栏过滤匹配的字段（docs/spec/ux.md：name / node / agent / preview）：任务标签与两行预览也算。 */
 export function rowHaystack(s: SessionRow): string {
-  return [rowName(s), String(s.agent_type ?? ""), s.node, String(s.reason ?? s.status)].join(" ");
+  return [
+    taskLabel(s),
+    rowName(s),
+    String(s.agent_type ?? ""),
+    s.node,
+    String(s.reason ?? s.status),
+    str(s.prompt),
+    str(s.progress),
+    str(s.preview),
+  ].join(" ");
+}
+
+function str(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
+/** 每 30 s 走一次的时钟，只为"waiting 3m"这种时长文案。 */
+function useNowSeconds(periodMs = 30_000): number {
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), periodMs);
+    return () => clearInterval(t);
+  }, [periodMs]);
+  return now;
 }
 
 interface RowProps {
@@ -43,28 +67,57 @@ interface RowProps {
   onRender?: (id: string) => void;
   /** 选中行下方的展开区（就地回答，MISSION §6.3）。 */
   expanded?: ReactNode;
+  /** unix 秒；"waiting 3m"的基准。 */
+  now: number;
 }
 
 /** memo：行对象引用没变就不重渲染（store.ts）。 */
-export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, expanded }: RowProps) {
+export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, expanded, now }: RowProps) {
   onRender?.(row.id);
+  const prompt = str(row.prompt);
+  const progress = str(row.progress);
+  const preview = str(row.preview);
+  // 两行预览读自 hook（❯ 用户最后输入 / ↳ agent 正在做或最后说的）；没有 hook 的会话保持一行
+  // pane preview；两者都没有时退回状态理由（MISSION §6.3；ADR-002 D8）。
+  const lines = prompt || progress ? null : preview || String(row.reason ?? "");
   return (
     <li className={active ? "selected" : undefined}>
       <button
         className={active ? "row selected" : "row"}
         onClick={() => onOpen(row.id)}
-        title={row.id}
+        title={`${rowName(row)} (${row.id})`}
         data-testid={`row-${row.id}`}
       >
         <span className={`dot st-${row.status}`}>{statusSymbol(row.status)}</span>
         <span className="row-main">
-          <span className="name">{rowName(row)}</span>
+          <span className="name" data-testid={`label-${row.id}`}>
+            {taskLabel(row)}
+          </span>
           <span className="meta">
             <span>{String(row.agent_type ?? "")}</span>
             {row.origin === "external" && <span className="origin">external</span>}
             <span className="node">@ {row.node}</span>
+            <span className={`state st-${row.status}`} data-testid={`state-${row.id}`}>
+              {statusLine(row, now)}
+            </span>
           </span>
-          <span className="preview muted">{String(row.reason ?? row.status)}</span>
+          {prompt && (
+            <span className="preview line-prompt" data-testid={`prompt-${row.id}`}>
+              <span className="muted">❯ </span>
+              {prompt}
+            </span>
+          )}
+          {progress && (
+            <span className="preview line-progress" data-testid={`progress-${row.id}`}>
+              <span className="muted">↳ </span>
+              {progress}
+            </span>
+          )}
+          {lines && (
+            <span className="preview muted" data-testid={`preview-${row.id}`}>
+              {lines}
+            </span>
+          )}
         </span>
         <span className="ord muted">{ordinal >= 1 && ordinal <= 9 ? ordinal : ""}</span>
       </button>
@@ -73,9 +126,34 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
   );
 });
 
+/** header 的计数行（docs/spec/ux.md 线框：Running 5 · Needs Input 2 · …）。 */
+function CountsLine({ rows }: { rows: SessionRow[] }) {
+  const c = countByStatus(rows);
+  const parts: [string, number][] = [
+    ["Running", c.running],
+    ["Needs Input", c.needsInput],
+    ["Turn Done", c.turnDone],
+    ["Finished", c.finished],
+    ["Failed", c.failed],
+    ["Idle", c.idle],
+    ["Unknown", c.unknown],
+  ];
+  return (
+    <p className="counts muted" data-testid="counts">
+      {parts
+        .filter(([, n]) => n > 0)
+        .map(([label, n]) => `${label} ${n}`)
+        .join(" · ") || "no agents"}
+    </p>
+  );
+}
+
 interface SidebarProps {
-  /** 已经按过滤后的显示顺序——Alt/Option+N 跳的就是这个顺序（agora-xqa.14 验收）。 */
+  /** 已经按 attention 排好、NEEDS ATTENTION 在前的显示顺序——Alt/Option+N 跳的就是这个顺序
+   * （agora-xqa.14 验收）；本组件只在分区交界处插标题。 */
   rows: SessionRow[];
+  /** 过滤前的全部行：header 计数用。 */
+  all?: SessionRow[];
   active: string | null;
   onOpen: (id: string) => void;
   onNewAgent?: () => void;
@@ -157,6 +235,7 @@ function UnknownRow({ row, onAdopt }: UnknownProps) {
 
 export function Sidebar({
   rows,
+  all = rows,
   active,
   onOpen,
   onNewAgent,
@@ -170,12 +249,16 @@ export function Sidebar({
   unregistered = [],
   onAdopt,
 }: SidebarProps) {
+  const now = useNowSeconds();
+  const firstRunning = rows.findIndex((r) => !needsAttention(r));
+  const hasAttention = rows.length > 0 && needsAttention(rows[0]);
   return (
     <aside className="sidebar">
       <div className="sidebar-head">
         <h1>agora</h1>
         <span className="muted">AGENTS {filter ? `${rows.length}/${total}` : total}</span>
       </div>
+      <CountsLine rows={all} />
       <input
         ref={filterRef}
         className="filter"
@@ -200,17 +283,29 @@ export function Sidebar({
       </button>
       {total === 0 && unregistered.length === 0 && <p className="muted pad">还没有会话。</p>}
       {total > 0 && rows.length === 0 && <p className="muted pad">没有匹配的会话。</p>}
+      {hasAttention && (
+        <div className="sidebar-head section" data-testid="section-attention">
+          <span className="muted">NEEDS ATTENTION</span>
+        </div>
+      )}
       <ul>
         {rows.map((r, i) => (
-          <SidebarRow
-            key={r.id}
-            row={r}
-            active={r.id === active}
-            ordinal={i + 1}
-            onOpen={onOpen}
-            onRender={onRowRender}
-            expanded={r.id === active ? renderExpanded?.(r) : undefined}
-          />
+          <Fragment key={r.id}>
+            {i === firstRunning && hasAttention && (
+              <li className="section-row" data-testid="section-running">
+                <span className="muted">RUNNING</span>
+              </li>
+            )}
+            <SidebarRow
+              row={r}
+              active={r.id === active}
+              ordinal={i + 1}
+              onOpen={onOpen}
+              onRender={onRowRender}
+              expanded={r.id === active ? renderExpanded?.(r) : undefined}
+              now={now}
+            />
+          </Fragment>
         ))}
       </ul>
       {unregistered.length > 0 && !filter && (

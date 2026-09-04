@@ -112,8 +112,10 @@ describe("Workspace", () => {
     const t = setup([row("n:a"), row("n:b"), row("n:c")]);
     await online(t);
     t.renders.length = 0;
+    // 不改分数的变化（RUNNING 里换个 activity）：行不挪位，别的行连序号都没变，一行都不重渲染。
+    // 挪位的变化（RUNNING → WAITING 提到最上）会让序号变了的行跟着重渲染，那是真的变了。
     await act(async () => {
-      t.sock.send([{ type: "status_changed", id: "n:b", status: "waiting", source: "hook", reason: "permission", alive: true }]);
+      t.sock.send([{ type: "status_changed", id: "n:b", status: "running", source: "hook", reason: "activity", alive: true, progress: "Edit x" }]);
       await new Promise((r) => setTimeout(r, 5));
     });
     expect(t.renders).toEqual(["n:b"]);
@@ -121,7 +123,7 @@ describe("Workspace", () => {
     // 内容相等的事件：不重渲染。
     t.renders.length = 0;
     await act(async () => {
-      t.sock.send([{ type: "status_changed", id: "n:b", status: "waiting", source: "hook", reason: "permission", alive: true }]);
+      t.sock.send([{ type: "status_changed", id: "n:b", status: "running", source: "hook", reason: "activity", alive: true, progress: "Edit x" }]);
       await new Promise((r) => setTimeout(r, 5));
     });
     expect(t.renders).toEqual([]);
@@ -215,6 +217,60 @@ describe("Workspace", () => {
     // 未登记列表不走事件流：采纳后主动重拉一次快照。
     expect(t.store.client.snapshots).toBe(snapshotsBefore + 1);
     expect(screen.queryByTestId("adopt-tmux:default:manual")).toBeNull();
+  });
+
+  it("sorts by attention with NEEDS ATTENTION above RUNNING and ordinals following the display order (A17 A23)", async () => {
+    const t = setup([
+      row("n:run"),
+      { ...row("n:p3", "waiting"), task: { id: "x-3", title: "低", priority: 3 } },
+      row("n:fail", "failed"),
+      { ...row("n:p1", "waiting"), task: { id: "x-1", title: "高", priority: 1 } },
+      row("n:done", "turn_done"),
+    ]);
+    await online(t);
+    const rows = screen.getAllByTestId(/^row-n:/).map((el) => el.getAttribute("data-testid"));
+    expect(rows).toEqual(["row-n:fail", "row-n:p1", "row-n:p3", "row-n:done", "row-n:run"]);
+    // 分区标题：NEEDS ATTENTION 在最上，RUNNING 在第一条 running 之前。
+    const list = screen.getByTestId("section-attention").parentElement!;
+    const order = Array.from(list.querySelectorAll("[data-testid]"))
+      .map((el) => el.getAttribute("data-testid")!)
+      .filter((id) => id.startsWith("section-") || id.startsWith("row-"));
+    expect(order).toEqual(["section-attention", "row-n:fail", "row-n:p1", "row-n:p3", "row-n:done", "section-running", "row-n:run"]);
+    // 第一列是任务：issue id + 标题。
+    expect(screen.getByTestId("label-n:p1").textContent).toBe("x-1 高");
+    expect(screen.getByTestId("label-n:run").textContent).toBe("run");
+    expect(screen.getByTestId("counts").textContent).toBe("Running 1 · Needs Input 2 · Turn Done 1 · Failed 1");
+    // Alt/Option+N 跳的是显示顺序里的第 N 条：第 2 条是 p1。
+    fireEvent.keyDown(window, { code: "Digit2", altKey: true });
+    expect(screen.getByTestId("tab-n:p1")).toBeTruthy();
+  });
+
+  it("shows the two hook lines, or one pane preview line when the session has no hooks", async () => {
+    const t = setup([
+      { ...row("n:h", "waiting"), prompt: "把 sidebar 换掉", progress: "Edit Sidebar.tsx", status_since: Math.floor(Date.now() / 1000) - 200 },
+      { ...row("n:s"), agent_type: "shell", preview: "$ cargo test", reason: null },
+    ]);
+    await online(t);
+    expect(screen.getByTestId("prompt-n:h").textContent).toBe("❯ 把 sidebar 换掉");
+    expect(screen.getByTestId("progress-n:h").textContent).toBe("↳ Edit Sidebar.tsx");
+    expect(screen.queryByTestId("preview-n:h")).toBeNull();
+    expect(screen.getByTestId("state-n:h").textContent).toBe("waiting 3m");
+    expect(screen.getByTestId("preview-n:s").textContent).toBe("$ cargo test");
+    // status_changed 带来的新预览就地替换；没带的字段沿用。
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:h", status: "turn_done", source: "hook", reason: "turn ended", alive: true, progress: "改完了" }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(screen.getByTestId("progress-n:h").textContent).toBe("↳ 改完了");
+    expect(screen.getByTestId("prompt-n:h").textContent).toBe("❯ 把 sidebar 换掉");
+    // 一条 running 行变成 WAITING 后要挪进 NEEDS ATTENTION（A17）。
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:s", status: "waiting", source: "text", reason: "prompt", alive: true }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    // WAITING 90 > TURN_DONE 85：s 排到 h 前面；两条都在 NEEDS ATTENTION，RUNNING 标题消失。
+    expect(screen.getAllByTestId(/^row-n:/).map((el) => el.getAttribute("data-testid"))).toEqual(["row-n:s", "row-n:h"]);
+    expect(screen.queryByTestId("section-running")).toBeNull();
   });
 
   it("an external session is tagged in the sidebar and opens without a terminal (A16)", async () => {

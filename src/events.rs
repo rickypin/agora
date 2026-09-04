@@ -45,6 +45,12 @@ pub enum Event {
         alive: bool,
         /// hook 给的问题 / 最后一条回复；变了也算状态变化（就地回答要显示它）。
         detail: Option<String>,
+        /// 两行预览与 pane 兜底（MISSION §6.3）：变了也算状态变化。
+        prompt: Option<String>,
+        progress: Option<String>,
+        preview: Option<String>,
+        /// 当前状态的起点（unix 秒）。
+        status_since: i64,
     },
     /// 挂起的决定被解除（ADR-002 D5）：`via` 是 dashboard / terminal / session / exit / timeout。
     DecisionResolved {
@@ -121,6 +127,12 @@ struct Seen {
     reason: Option<String>,
     alive: bool,
     detail: Option<String>,
+    prompt: Option<String>,
+    progress: Option<String>,
+    preview: Option<String>,
+    status_since: i64,
+    /// 任务标签是异步补齐的（`task/`）：到了要整行重发。
+    task: Option<crate::task::TaskInfo>,
 }
 
 fn seen(v: &SessionView) -> Seen {
@@ -130,6 +142,11 @@ fn seen(v: &SessionView) -> Seen {
         reason: v.assessment.reason.clone(),
         alive: v.alive,
         detail: v.detail.clone(),
+        prompt: v.prompt.clone(),
+        progress: v.progress.clone(),
+        preview: v.preview.clone(),
+        status_since: v.status_since,
+        task: v.task.clone(),
     }
 }
 
@@ -153,6 +170,11 @@ impl Differ {
                     id: gid.clone(),
                     session: export(node, v),
                 }),
+                // task_ref 是 metadata，标签又是异步查回来的：整行重发最省事也最不会漏字段。
+                Some(prev) if prev.task != s.task => out.push(Event::SessionUpdated {
+                    id: gid.clone(),
+                    session: export(node, v),
+                }),
                 Some(prev) if *prev != s => out.push(Event::StatusChanged {
                     id: gid.clone(),
                     status: s.status,
@@ -160,6 +182,10 @@ impl Differ {
                     reason: s.reason.clone(),
                     alive: s.alive,
                     detail: s.detail.clone(),
+                    prompt: s.prompt.clone(),
+                    progress: s.progress.clone(),
+                    preview: s.preview.clone(),
+                    status_since: s.status_since,
                 }),
                 _ => {}
             }
@@ -236,6 +262,10 @@ mod tests {
             reason: None,
             alive: true,
             detail: None,
+            prompt: None,
+            progress: None,
+            preview: None,
+            status_since: 0,
         }
     }
 

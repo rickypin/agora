@@ -200,6 +200,22 @@ fn locks_are_not_expected_unpoisoned() {
 }
 
 #[test]
+fn beads_is_read_only_and_lives_in_task() {
+    // 不变量 12：agora 对 beads 零写入。起 `bd` 的地方只有 `src/task/`（子命令白名单由
+    // `tests/task_beads.rs` 用假 bd 录下核对）；别处连 "bd" 这个命令名都不许出现。
+    assert_only_under("src", "\"bd\"", &["src/task/"], "MISSION 不变量 12");
+    for write in [
+        "\"update\"",
+        "\"close\"",
+        "\"create\"",
+        "\"claim\"",
+        "\"dep\"",
+    ] {
+        assert_only_under("src/task", write, &[], "对 beads 只读");
+    }
+}
+
+#[test]
 fn subprocesses_only_through_runtime_exec() {
     // ADR-001 D8 施工约束 2：子进程只经 runtime::exec 一个入口。
     for needle in ["process::Command", "tokio::process"] {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
+import { partitionByAttention, sortByAttention } from "./attention";
 import { CommandPalette } from "./CommandPalette";
 import { fuzzyFilter } from "./fuzzy";
 import { isDesktop, matchShortcut } from "./keys";
@@ -20,7 +21,7 @@ interface Props {
   onRowRender?: (id: string) => void;
 }
 
-/** Screen B：侧栏 + Tabs + 终端 + Session Settings。 */
+/** Screen A 的侧栏（Attention Dashboard）+ Screen B：Tabs + 终端 + Session Settings。 */
 export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender }: Props) {
   const store = useMemo(() => given ?? new SessionStore(), [given]);
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
@@ -68,8 +69,12 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     [api, store],
   );
 
-  // 侧栏显示顺序 = 过滤后的顺序，Alt/Option+N 跳的就是它（agora-xqa.14 验收）。
-  const visible = useMemo(() => fuzzyFilter(rows, filter, rowHaystack), [rows, filter]);
+  // 侧栏显示顺序：先按 attention 排（MISSION §6.3），过滤只删不换序（空 query 同分稳定），
+  // 再把 NEEDS ATTENTION 提到 RUNNING 前面；Alt/Option+N 跳的就是这个顺序（agora-xqa.14 验收）。
+  const visible = useMemo(
+    () => partitionByAttention(fuzzyFilter(sortByAttention(rows), filter, rowHaystack)),
+    [rows, filter],
+  );
 
   useEffect(() => {
     // 手机端没有键盘：全局快捷键与命令面板只在桌面装（MISSION §6.5）。
@@ -115,6 +120,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     <div className="workspace">
       <Sidebar
         rows={visible}
+        all={rows}
         total={rows.length}
         active={tabs.active}
         onOpen={openTab}

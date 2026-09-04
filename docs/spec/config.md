@@ -70,7 +70,7 @@ CREATE TABLE sessions (
     agent_type TEXT NOT NULL,
     working_directory TEXT,
     worktree TEXT,                                 -- git worktree 路径；可空（§4.2）
-    task_ref TEXT,                                 -- issue id 或摘要
+    task_ref TEXT,                                 -- issue id 或摘要；为空时首条 prompt 的首行补上（ADR-002 D8）
     command TEXT,
     agent_session_id TEXT,                         -- agent 自报的当前对话 id（§5.6），Restart resume 依据
     epoch INTEGER NOT NULL DEFAULT 1,              -- 进程代次：create 为 1，每次 respawn +1；旧代次的 hook 事件丢弃（ADR-002 D1）
