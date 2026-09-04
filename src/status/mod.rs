@@ -6,7 +6,7 @@
 
 pub mod machine;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::runtime::{Exit, RuntimeSession};
 
@@ -21,15 +21,19 @@ pub enum AgoraEvent {
     PromptSubmitted(String),
     /// RUNNING 行的"正在做什么"。
     Activity(String),
-    /// 提问类工具：WAITING(question)，只能在终端答（D5）。
-    InputNeeded(String),
+    /// 提问类工具：WAITING(question)，只能在终端答（D5）；同 `tool_use_id` 的解除才算答完。
+    InputNeeded {
+        tool_use_id: String,
+        question: String,
+    },
     /// 权限请求：WAITING(decision)。
     DecisionNeeded {
         tool_use_id: String,
         summary: String,
     },
-    /// 挂起的决定被终端或 Dashboard 解决。
-    DecisionResolved,
+    /// 挂起的决定 / 提问被终端或 Dashboard 解决：`Some(id)` 只解一个（并行工具各有各的），
+    /// `None` 全解。全部解完才回 RUNNING。
+    DecisionResolved(Option<String>),
     /// 一轮做完；带最后一条回复。
     TurnEnded(Option<String>),
     /// 一轮以错误 / 中断结束；reason 是错误类型。
@@ -47,7 +51,7 @@ pub struct DetectionResult {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Starting,
@@ -60,7 +64,7 @@ pub enum Status {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     Hook,

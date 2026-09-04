@@ -16,6 +16,7 @@
 //!
 //! 状态不落库（不变量 7）；daemon 重启后从进程层重新长出来，hook 侧靠投递箱重放补上。
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use crate::runtime::{RuntimeSession, Size};
@@ -107,6 +108,8 @@ pub struct Machine {
     last_attached: Option<bool>,
     /// 最近一次 hook 给的"正在做什么"/ 最后一条回复，给两行预览（dvh.10）。
     detail: Option<String>,
+    /// 还没答的权限 / 提问（并行工具各一个）：清空才回 RUNNING。
+    pending: BTreeSet<String>,
 }
 
 impl Machine {
@@ -127,6 +130,7 @@ impl Machine {
             last_size: None,
             last_attached: None,
             detail: None,
+            pending: BTreeSet::new(),
         }
     }
 
@@ -178,40 +182,70 @@ impl Machine {
         let hook = |status, conf, reason: Option<&str>| {
             Assessment::new(status, Source::Hook, conf, reason)
         };
+        let waiting_on_others = |pending: &BTreeSet<String>, current: &Assessment| {
+            current.status == Status::Waiting && !pending.is_empty()
+        };
         let next = match event {
             AgoraEvent::SessionStarted => {
+                self.pending.clear();
                 Some(hook(Status::Starting, 1.0, Some("session started")))
             }
             AgoraEvent::SessionId(_) => None,
             AgoraEvent::PromptSubmitted(p) => {
+                self.pending.clear();
                 self.detail = Some(p.clone());
                 Some(hook(Status::Running, 1.0, Some("prompt submitted")))
             }
+            // 并行工具：一个在等权限时另一个的 PreToolUse / PostToolUse 照样到，不算"人答了"。
+            AgoraEvent::Activity(_) if waiting_on_others(&self.pending, &self.current) => None,
             AgoraEvent::Activity(what) => {
                 self.detail = Some(what.clone());
                 Some(hook(Status::Running, 1.0, Some("activity")))
             }
-            AgoraEvent::InputNeeded(q) => {
-                self.detail = Some(q.clone());
+            AgoraEvent::InputNeeded {
+                tool_use_id,
+                question,
+            } => {
+                self.pending.insert(tool_use_id.clone());
+                self.detail = Some(question.clone());
                 Some(hook(Status::Waiting, 0.95, Some("question")))
             }
-            AgoraEvent::DecisionNeeded { summary, .. } => {
+            AgoraEvent::DecisionNeeded {
+                tool_use_id,
+                summary,
+            } => {
+                self.pending.insert(tool_use_id.clone());
                 self.detail = Some(summary.clone());
                 Some(hook(Status::Waiting, 1.0, Some("permission")))
             }
-            AgoraEvent::DecisionResolved => (self.current.status == Status::Waiting)
-                .then(|| hook(Status::Running, 0.95, Some("decision resolved"))),
+            AgoraEvent::DecisionResolved(id) => {
+                match id {
+                    Some(id) => {
+                        self.pending.remove(id);
+                    }
+                    None => self.pending.clear(),
+                }
+                (self.current.status == Status::Waiting && self.pending.is_empty())
+                    .then(|| hook(Status::Running, 0.95, Some("decision resolved")))
+            }
             AgoraEvent::TurnEnded(last) => {
+                self.pending.clear();
                 if last.is_some() {
                     self.detail = last.clone();
                 }
                 Some(hook(Status::TurnDone, 1.0, Some("turn ended")))
             }
-            AgoraEvent::TurnFailed(reason) => Some(hook(Status::TurnDone, 0.95, Some(reason))),
+            AgoraEvent::TurnFailed(reason) => {
+                self.pending.clear();
+                Some(hook(Status::TurnDone, 0.95, Some(reason)))
+            }
             // 空闲通知只是 TURN_DONE 的确认 / 补漏：RUNNING 里听到它才改，WAITING 不动。
             AgoraEvent::Idle => (self.current.status == Status::Running)
                 .then(|| hook(Status::TurnDone, 0.9, Some("idle"))),
-            AgoraEvent::SessionEnded(_) => None,
+            AgoraEvent::SessionEnded(_) => {
+                self.pending.clear();
+                None
+            }
         };
         if let Some(a) = next {
             self.set(a, now);

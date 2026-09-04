@@ -9,14 +9,14 @@ use axum::Json;
 use serde_json::Value;
 
 use super::{ApiError, AppState};
-use crate::adapter::{AgentIdentity, BUILTINS};
+use crate::adapter::ADAPTERS;
 use crate::auth::Principal;
 
 pub async fn list(
     _principal: Principal,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, ApiError> {
-    let agents: Vec<Value> = BUILTINS
+    let agents: Vec<Value> = ADAPTERS
         .iter()
         .map(|a| {
             serde_json::json!({

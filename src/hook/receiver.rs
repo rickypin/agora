@@ -2,7 +2,7 @@
 //!
 //! 挂起的决定以 `(session, tool_use_id)` 为键。session 是 agora 的会话 id；外部会话
 //! （没有 `AGORA_SESSION_ID`）用 `<host>:<agent_session_id>`，采纳（agora-dvh.12）时再对上。
-//! 上限、超时、解除规则都在这里；哪些事件算解除问 `adapter::hooks`。
+//! 上限、超时、解除规则都在这里；哪些事件算解除、映射成什么事件，问宿主的 `AgentHooks`。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
 
-use crate::adapter::hooks::{self, Decision, Release};
+use crate::adapter::{self, Decision, Release};
 use crate::local::Response;
 use crate::session::SessionManager;
 
@@ -50,6 +50,14 @@ pub struct Receiver {
     sessions: Arc<SessionManager>,
     holds: Mutex<HashMap<(String, String), Hold>>,
     ledger: Mutex<Vec<Received>>,
+}
+
+/// 账本里记的事件名：只给排障看，所以键名风格两种都认，不算核心层懂 payload。
+fn event_name(payload: &serde_json::Value) -> Option<String> {
+    ["hook_event_name", "hookEventName"]
+        .iter()
+        .find_map(|k| payload.get(k).and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
 }
 
 /// 挂起键：agora 会话 id，或外部会话的 `<host>:<agent_session_id>`。
@@ -105,7 +113,15 @@ impl Receiver {
             tracing::debug!(component = "hook", session = %key, "旧 epoch 的事件丢弃");
             return Ok(None);
         }
-        match hooks::release_for(&delivery.payload) {
+        // 宿主名来自 `--host`，`parse_args` 已校验；文件是别人手写的才会走到 Outside。
+        let Some(hooks) = adapter::for_host(&delivery.envelope.host) else {
+            return Err(HookError::Outside(format!(
+                "{}（宿主 {} 不认识）",
+                path.display(),
+                delivery.envelope.host
+            )));
+        };
+        match hooks.release_for(&delivery.payload) {
             Release::ToolUse(id) => {
                 self.resolve(&key, &id, Decision::None);
             }
@@ -114,7 +130,7 @@ impl Receiver {
         }
         // 进状态机：只有 agora 起的 / 采纳的会话在库里；外部会话等 dvh.12 采纳后再对上。
         if let Some(id) = &delivery.envelope.agora_session_id {
-            let events = hooks::to_events(&delivery.envelope.host, &delivery.payload);
+            let events = hooks.parse(&delivery.payload);
             if let Err(err) =
                 self.sessions
                     .apply_hook(id, delivery.envelope.agora_epoch.unwrap_or(0), &events)
@@ -124,7 +140,7 @@ impl Receiver {
         }
         let received = Received {
             session_key: key,
-            event: hooks::event_name(&delivery.payload).map(str::to_owned),
+            event: event_name(&delivery.payload),
             delivery,
         };
         self.ledger
@@ -163,8 +179,9 @@ impl Receiver {
                 };
             }
         };
-        let host = received.delivery.envelope.host.as_str();
-        let Some(tool_use_id) = hooks::hold_key(host, &received.delivery.payload) else {
+        let Some(tool_use_id) = adapter::for_host(&received.delivery.envelope.host)
+            .and_then(|h| h.hold_key(&received.delivery.payload))
+        else {
             return Response::Hook {
                 decision: Decision::None,
             };

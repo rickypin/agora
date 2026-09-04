@@ -1,0 +1,3 @@
+# API 错误：StopFailure 带 error_type → turn.failed → TURN_DONE，reason 是错误类型。
+{"at":0,"payload":{"hook_event_name":"UserPromptSubmit","prompt":"explain","prompt_id":"p1","session_id":"a1b2c3d4-0000-4000-8000-000000000001","transcript_path":"~/.claude/projects/x/a1b2.jsonl","cwd":"/work/agora","permission_mode":"default","effort":"medium"},"expect":{"status":"running"}}
+{"at":3,"payload":{"hook_event_name":"StopFailure","error_type":"rate_limit","error_message":"rate limited","session_id":"a1b2c3d4-0000-4000-8000-000000000001","transcript_path":"~/.claude/projects/x/a1b2.jsonl","cwd":"/work/agora","permission_mode":"default","effort":"medium"},"expect":{"status":"turn_done","source":"hook","min_confidence":0.95}}

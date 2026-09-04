@@ -87,7 +87,7 @@ fn every_status_has_a_producer() {
         ),
         (Status::Waiting, Source::Hook, 1.0)
     );
-    m.apply(&AgoraEvent::DecisionResolved, 1, 3);
+    m.apply(&AgoraEvent::DecisionResolved(Some("t".into())), 1, 3);
     assert_eq!(m.current().status, Status::Running);
     m.apply(&AgoraEvent::TurnEnded(Some("done".into())), 1, 4);
     assert_eq!(m.current().status, Status::TurnDone);
@@ -386,4 +386,35 @@ fn external_session_follows_hooks_only() {
     assert_eq!(m.observe(unknown()).status, Status::Unknown);
     m.apply(&AgoraEvent::TurnEnded(None), 1, 1);
     assert_eq!(m.observe(unknown()).status, Status::TurnDone);
+}
+
+#[test]
+fn parallel_tools_stay_waiting_until_every_decision_is_answered() {
+    // 并行工具各挂一个决定；答了一个还在 WAITING，其间别的工具活动也不算答了。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    let need = |id: &str| AgoraEvent::DecisionNeeded {
+        tool_use_id: id.into(),
+        summary: "Bash".into(),
+    };
+    m.apply(&AgoraEvent::PromptSubmitted("x".into()), 1, 0);
+    m.apply(&need("a"), 1, 1);
+    m.apply(&need("b"), 1, 1);
+    m.apply(&AgoraEvent::Activity("Read".into()), 1, 2);
+    assert_eq!(m.current().status, Status::Waiting);
+    m.apply(&AgoraEvent::DecisionResolved(Some("a".into())), 1, 3);
+    assert_eq!(m.current().status, Status::Waiting);
+    m.apply(&AgoraEvent::DecisionResolved(Some("b".into())), 1, 4);
+    assert_eq!(m.current().status, Status::Running);
+    // 提问也走同一套：同 id 解除才算答完。
+    m.apply(
+        &AgoraEvent::InputNeeded {
+            tool_use_id: "q".into(),
+            question: "which?".into(),
+        },
+        1,
+        5,
+    );
+    assert_eq!(m.current().status, Status::Waiting);
+    m.apply(&AgoraEvent::DecisionResolved(None), 1, 6);
+    assert_eq!(m.current().status, Status::Running);
 }

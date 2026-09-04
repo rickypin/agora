@@ -10,7 +10,7 @@
 //!   PostToolUse 等、Stop / SessionEnd、进程退出都解除挂起（`decision.resolved`）。
 //!
 //! 本模块只知道"一个宿主、一坨 JSON"；宿主名、payload 键、哪些事件挂起与解除、决定写回的
-//! 形态都问 `adapter::hooks`（ADR-002 规则 5）。事件到状态机的映射是 agora-dvh.4 的事。
+//! 形态都问宿主的 `adapter::AgentHooks`（ADR-002 规则 5）；映射成的事件交给状态机（dvh.4）。
 
 pub mod cmd;
 pub mod inbox;

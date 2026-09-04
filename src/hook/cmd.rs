@@ -1,4 +1,4 @@
-//! `agora hook --host <宿主> --home <AGORA_HOME>`（ADR-002 D3/D4/D5）；宿主名单在 `adapter::hooks::HOSTS`。
+//! `agora hook --host <宿主> --home <AGORA_HOME>`（ADR-002 D3/D4/D5）；宿主名单是 `adapter::hosts()`。
 //!
 //! 在 agent 进程里跑，stdin 是 agent 的 hook payload。原则是**永远不拖累 agent**：
 //! 任何失败（目录写不了、daemon 不在、socket 断、超时、超上限）都 exit 0 不输出——TUI 的
@@ -10,7 +10,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::adapter::hooks;
+use crate::adapter::{self, AgentHooks};
 use crate::local::{self, Request, Response, SOCKET_FILE};
 
 use super::inbox::{self, Delivery, Envelope, Inbox};
@@ -19,7 +19,7 @@ use super::HOLD_TIMEOUT;
 fn usage() -> String {
     format!(
         "用法: agora hook --host <{}> --home <AGORA_HOME>",
-        hooks::HOSTS.join("|")
+        adapter::hosts().join("|")
     )
 }
 
@@ -43,7 +43,7 @@ pub fn parse_args(argv: &[&str]) -> Result<Args, String> {
         }
     }
     let host = host.ok_or_else(|| format!("缺 --host\n{}", usage()))?;
-    if !hooks::is_host(&host) {
+    if adapter::for_host(&host).is_none() {
         return Err(format!("不认识的宿主 {host}\n{}", usage()));
     }
     // --home 缺省用环境变量：外部会话没有 AGORA_HOME，安装写入的命令总是显式带 --home。
@@ -60,7 +60,10 @@ pub async fn run(argv: &[&str]) -> i32 {
             return 2;
         }
     };
-    if !hooks::host_matches_env(&args.host, std::env::var_os("GROK_SESSION_ID").is_some()) {
+    let Some(hooks) = adapter::for_host(&args.host) else {
+        return 2;
+    };
+    if !hooks.host_matches_env(std::env::var_os("GROK_SESSION_ID").is_some()) {
         return 0;
     }
     let mut raw = Vec::new();
@@ -70,7 +73,7 @@ pub async fn run(argv: &[&str]) -> i32 {
     let payload = serde_json::from_slice(&raw)
         .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&raw).into_owned()));
     let delivery = Delivery {
-        envelope: envelope(&args.host, &payload),
+        envelope: envelope(hooks, &payload),
         payload,
     };
     let path = match Inbox::new(&args.home).write(&delivery) {
@@ -80,20 +83,26 @@ pub async fn run(argv: &[&str]) -> i32 {
             return 0;
         }
     };
-    deliver(&args.home, &args.host, &delivery, path).await;
+    deliver(&args.home, hooks, &delivery, path).await;
     0
 }
 
-fn envelope(host: &str, payload: &serde_json::Value) -> Envelope {
+fn envelope(hooks: &dyn AgentHooks, payload: &serde_json::Value) -> Envelope {
     let env = |k: &str| std::env::var(k).ok();
     let agent_env: BTreeMap<String, String> = std::env::vars()
-        .filter(|(k, _)| hooks::agent_env_prefixes().iter().any(|p| k.starts_with(p)))
+        .filter(|(k, _)| {
+            adapter::hooks::agent_env_prefixes()
+                .iter()
+                .any(|p| k.starts_with(p))
+        })
         .collect();
     Envelope {
-        host: host.to_owned(),
+        host: hooks.host().to_owned(),
         agora_session_id: env("AGORA_SESSION_ID"),
         agora_epoch: env("AGORA_EPOCH").and_then(|e| e.parse().ok()),
-        agent_session_id: hooks::agent_session_id(payload).unwrap_or_else(|| "unknown".into()),
+        agent_session_id: hooks
+            .agent_session_id(payload)
+            .unwrap_or_else(|| "unknown".into()),
         agent_env,
         runtime_env: crate::runtime::PANE_ENV_VARS
             .iter()
@@ -107,9 +116,9 @@ fn envelope(host: &str, payload: &serde_json::Value) -> Envelope {
 }
 
 /// 连 socket 唤醒；挂起的等决定，决定有就写 stdout。所有失败路径静默返回。
-async fn deliver(home: &Path, host: &str, delivery: &Delivery, path: PathBuf) {
+async fn deliver(home: &Path, hooks: &dyn AgentHooks, delivery: &Delivery, path: PathBuf) {
     let socket = home.join(SOCKET_FILE);
-    let hold = hooks::hold_key(host, &delivery.payload).is_some();
+    let hold = hooks.hold_key(&delivery.payload).is_some();
     // daemon 侧 55 min 自己会解除；客户端再宽 30 s 只是防 daemon 卡死。
     let wait = if hold {
         HOLD_TIMEOUT + Duration::from_secs(30)
@@ -121,7 +130,7 @@ async fn deliver(home: &Path, host: &str, delivery: &Delivery, path: PathBuf) {
     };
     let reply = tokio::time::timeout(wait, local::request(&socket, &req)).await;
     if let Ok(Ok(Response::Hook { decision })) = reply {
-        if let Some(out) = hooks::decision_output(host, &decision) {
+        if let Some(out) = hooks.decision_output(&decision) {
             println!("{out}");
         }
     }
@@ -133,9 +142,10 @@ mod tests {
 
     #[test]
     fn args_require_a_known_host() {
-        assert!(parse_args(&["--host", hooks::HOSTS[0], "--home", "/x"]).is_ok());
+        let hosts = adapter::hosts();
+        assert!(parse_args(&["--host", hosts[0], "--home", "/x"]).is_ok());
         assert!(parse_args(&["--host", "nope"]).is_err());
         assert!(parse_args(&["--home", "/x"]).is_err());
-        assert!(parse_args(&["--host", hooks::HOSTS[1], "--bogus"]).is_err());
+        assert!(parse_args(&["--host", hosts[1], "--bogus"]).is_err());
     }
 }
