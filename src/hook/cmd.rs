@@ -95,6 +95,9 @@ fn envelope(hooks: &dyn AgentHooks, payload: &serde_json::Value) -> Envelope {
                 .iter()
                 .any(|p| k.starts_with(p))
         })
+        // 实测 2026-09-04：Claude 2.1.260 的 hook 环境里有 CLAUDE_CODE_MESSAGING_TOKEN。
+        // 信封是排障用的，凭据不落盘。
+        .filter(|(k, _)| !is_secret_name(k))
         .collect();
     Envelope {
         host: hooks.host().to_owned(),
@@ -113,6 +116,13 @@ fn envelope(hooks: &dyn AgentHooks, payload: &serde_json::Value) -> Envelope {
         received_at: inbox::local_time_string(),
         received_unix_ms: inbox::now_unix_ms(),
     }
+}
+
+fn is_secret_name(name: &str) -> bool {
+    let n = name.to_ascii_uppercase();
+    ["TOKEN", "SECRET", "PASSWORD", "API_KEY", "CREDENTIAL"]
+        .iter()
+        .any(|w| n.contains(w))
 }
 
 /// 连 socket 唤醒；挂起的等决定，决定有就写 stdout。所有失败路径静默返回。
@@ -147,5 +157,12 @@ mod tests {
         assert!(parse_args(&["--host", "nope"]).is_err());
         assert!(parse_args(&["--home", "/x"]).is_err());
         assert!(parse_args(&["--host", hosts[1], "--bogus"]).is_err());
+    }
+
+    #[test]
+    fn credentials_never_enter_the_envelope() {
+        assert!(is_secret_name("CLAUDE_CODE_MESSAGING_TOKEN"));
+        assert!(is_secret_name("CODEX_API_KEY"));
+        assert!(!is_secret_name("CLAUDE_PID"));
     }
 }

@@ -1,6 +1,6 @@
 //! `agora hook` 命令、投递箱、unix socket 唤醒与挂起（ADR-002 D3/D5；agora-dvh.3）。
 //!
-//! 链路是三段：
+//! 安装（`agora hooks install`）在 [`install`]；投递链路是三段：
 //! - [`cmd`]：agent 进程里跑的 `agora hook --host <h> --home <dir>`——读 stdin 落盘、连 socket
 //!   唤醒、该挂起的挂起等决定；daemon 不在、socket 断、超时一律 exit 0 不输出（fail-open）。
 //! - [`inbox`]：投递箱文件的形态与权限：`<home>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`，
@@ -14,6 +14,7 @@
 
 pub mod cmd;
 pub mod inbox;
+pub mod install;
 mod receiver;
 
 pub use inbox::{Delivery, Envelope, Inbox};

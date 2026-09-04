@@ -18,7 +18,8 @@ tower = { version = "0.5", features = ["util"] }
 rust-embed = { version = "8.12", features = ["include-exclude"] }
 mime_guess = "2.0"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# preserve_order：写回用户配置文件时不打乱他的键序（hooks install 的 diff 才只有加的行）。
+serde_json = { version = "1.0", features = ["preserve_order"] }
 # 模块边界用错误枚举（ADR-001 D8 施工约束 4）；万能错误 crate 被 tests/arch_boundary.rs 禁止。
 thiserror = "2.0"
 tracing = "0.1"

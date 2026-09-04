@@ -74,6 +74,7 @@ MVP 用 JSON / Text WebSocket 足够；binary terminal frames 放到 V2。
 ## hook 投递（ADR-002 D3）
 
 - **没有 HTTP 端点**。agent 的 hook 命令是 `<AGORA_HOME>/bin/agora hook --host <agent> --home <AGORA_HOME>`（安装写入的完整形态见 ADR-002 D4）：payload 落到 `<AGORA_HOME>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`（先 `.part` 再 rename），再经 `<AGORA_HOME>/agora.sock`（unix socket，仅属主可访问 + 对端 uid 校验，ADR-003 D6）唤醒 daemon；daemon 不在时文件留着，启动时按文件名顺序重放（MISSION §3.4）；应用过的文件移到 `<AGORA_HOME>/hooks/done/` 保留 24 h 供排障；信封里 `AGORA_EPOCH` 小于会话当前 epoch 的事件丢弃（Restart 之前那代进程发的）；`hooks/` 下任何一级目录属主不对或 group / other 有位，daemon 拒绝读并记日志（agent 照跑）。
+- 安装：`agora hooks install|uninstall <agent> [--dry-run]` 写用户自己的 agent 配置（Claude `~/.claude/settings.json` 的 `hooks`），装前把 diff 打到 stderr，`--dry-run` 只看不写；条目以 `<AGORA_HOME>/bin/agora hook` 为自己的标记，重复装不重复、卸载只删自己的、别人的条目与其它键原样；`install` 顺手把 `<AGORA_HOME>/bin/agora` 指向当前二进制。每个事件的 timeout 由 Adapter 的 `install_spec` 给（PermissionRequest 3600 s、SessionEnd 1 s、其余 20 s）。信封里的 agent 环境变量只收 `CLAUDE_*` / `CODEX_*` / `GROK_*`，名字含 TOKEN / SECRET 之类的不落盘。
 - 需要答复的事件（Claude Code `PermissionRequest`）由 hook 进程在 socket 上挂起等 daemon 回 allow / deny / none；none、超时、socket 断都是 fail-open（exit 0 不输出，TUI 的提示仍在）。挂起上限每会话 8、节点 256，超时 55 min。
 - `/api/events` 新增 `decision.resolved`（挂起被终端答复、进程退出或超时解除）。
 
