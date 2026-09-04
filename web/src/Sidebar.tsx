@@ -61,6 +61,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
           <span className="name">{rowName(row)}</span>
           <span className="meta">
             <span>{String(row.agent_type ?? "")}</span>
+            {row.origin === "external" && <span className="origin">external</span>}
             <span className="node">@ {row.node}</span>
           </span>
           <span className="preview muted">{String(row.reason ?? row.status)}</span>

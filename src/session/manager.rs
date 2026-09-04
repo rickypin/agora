@@ -918,11 +918,16 @@ fn process_alive(pid: u32) -> bool {
     r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// pane 进程的后代里第一个认得的 adapter 名（离 shell 最近的优先）。
+/// pane 进程的后代里第一个认得的 adapter 名（离 shell 最近的优先）；后代都认不出才看 pane
+/// 进程自己——它通常是 shell，只有里面什么都没跑时才该报 `shell`。
 fn agent_hint(table: &[proctree::Proc], live: &RuntimeSession) -> Option<String> {
     let pid = live.pid?;
-    proctree::descendants(table, pid).into_iter().find_map(|p| {
-        let argv: Vec<&str> = p.argv.iter().map(String::as_str).collect();
-        adapter::identify(&argv).map(|a| a.name().to_owned())
-    })
+    let root = table.iter().filter(|p| p.pid == pid);
+    proctree::descendants(table, pid)
+        .into_iter()
+        .chain(root)
+        .find_map(|p| {
+            let argv: Vec<&str> = p.argv.iter().map(String::as_str).collect();
+            adapter::identify(&argv).map(|a| a.name().to_owned())
+        })
 }

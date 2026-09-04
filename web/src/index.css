@@ -39,6 +39,7 @@ select:disabled { opacity: 0.5; }
 .row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.3; }
 .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .meta { display: flex; gap: 6px; color: var(--muted); font-size: 12px; }
+.row .origin { border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
 .unknown .dot { color: var(--muted); }
 .adopt { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px 8px 28px; font-size: 12px; }
 .adopt label { display: flex; gap: 6px; align-items: center; }

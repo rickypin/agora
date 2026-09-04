@@ -216,4 +216,13 @@ describe("Workspace", () => {
     expect(t.store.client.snapshots).toBe(snapshotsBefore + 1);
     expect(screen.queryByTestId("adopt-tmux:default:manual")).toBeNull();
   });
+
+  it("an external session is tagged in the sidebar and opens without a terminal (A16)", async () => {
+    const t = setup([{ ...row("n:x"), origin: "external", agent_type: "claude" }]);
+    await online(t);
+    expect(screen.getByText("external")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("row-n:x"));
+    expect(screen.getByTestId("no-terminal")).toBeTruthy();
+    expect(mounted).toEqual([]);
+  });
 });

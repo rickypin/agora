@@ -151,7 +151,14 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
             </div>
             <div className="pane">
               {/* key=会话 id：切 Tab 时旧终端卸载（detach）、新终端挂载，永不 restart。 */}
-              <TerminalView key={active.id} sessionId={active.id} />
+              {active.origin === "external" ? (
+                // external 会话没有运行时句柄（MISSION §5.5）：只有状态与 hook 的 respond，没有终端可挂。
+                <p className="muted empty" data-testid="no-terminal">
+                  external 会话：agora 没有它的终端，只能看状态、经 hook 回答；要操作请去它自己的窗口。
+                </p>
+              ) : (
+                <TerminalView key={active.id} sessionId={active.id} />
+              )}
               {settingsOpen && <SessionSettings row={active} api={api} onClose={() => setSettingsOpen(false)} />}
             </div>
           </>
