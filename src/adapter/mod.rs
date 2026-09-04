@@ -137,9 +137,15 @@ pub trait AgentHooks: Send + Sync {
         None
     }
 
-    /// 信封 `agent_env` 里 agent 自己的进程号（如 `CLAUDE_PID`）：无运行时句柄的外部会话
-    /// 靠它判断存活（ADR-002 D4）。不认识就 None → 活性 UNKNOWN。
-    fn agent_pid(&self, _agent_env: &std::collections::BTreeMap<String, String>) -> Option<u32> {
+    /// agent 自己的进程号：无运行时句柄的外部会话靠它判断存活（ADR-002 D4）。来源两种：信封
+    /// `agent_env` 里 agent 自报的（Claude `CLAUDE_PID`），或 hook 进程的父进程 `ppid`——安装命令
+    /// `exec` 进 agora，所以 ppid 就是 agent 本体（Grok 没有进程号变量，只能靠它）。
+    /// 不认识就 None → 活性 UNKNOWN。
+    fn agent_pid(
+        &self,
+        _agent_env: &std::collections::BTreeMap<String, String>,
+        _ppid: u32,
+    ) -> Option<u32> {
         None
     }
 }

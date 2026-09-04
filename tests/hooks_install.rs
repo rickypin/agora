@@ -146,3 +146,31 @@ fn dry_run_shows_the_diff_and_writes_nothing() {
         after: json!({}),
     };
 }
+
+#[test]
+fn grok_installs_into_its_own_global_hooks_file() {
+    // ADR-002 D4：Grok 写 ~/.grok/hooks/agora.json（全局目录永远受信）；没有 PermissionRequest
+    // 可装；命令 exec 进 agora，hook 的 ppid 才是 grok 本体（agent_pid 的依据）。
+    let tmp = tempfile::tempdir().unwrap();
+    let inst = installer(tmp.path());
+    let hooks = adapter::for_host("grok").unwrap();
+    let plan = inst.plan_install(hooks).unwrap();
+    assert_eq!(plan.file, inst.user_home.join(".grok/hooks/agora.json"));
+    inst.write(&plan).unwrap();
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&plan.file).unwrap()).unwrap();
+    assert!(v["hooks"].get("PermissionRequest").is_none());
+    assert_eq!(
+        v["hooks"]["Notification"][0]["matcher"],
+        "permission_prompt|idle_prompt"
+    );
+    assert!(v["hooks"]["StopCancelled"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .contains("exec "));
+    assert_eq!(ours(&v, &inst.agora_home), hooks.install_spec().len());
+    assert!(inst.plan_install(hooks).unwrap().is_noop());
+    let un = inst.plan_uninstall(hooks).unwrap();
+    inst.write(&un).unwrap();
+    let after: Value = serde_json::from_str(&std::fs::read_to_string(&plan.file).unwrap()).unwrap();
+    assert_eq!(ours(&after, &inst.agora_home), 0);
+}

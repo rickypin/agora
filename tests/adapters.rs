@@ -158,3 +158,49 @@ fn pin_only_when_version_known_and_user_did_not_pick_a_conversation() {
     assert!(plan_pin("myagent", "myagent", avail).is_none());
     assert!(plan_pin("shell", "bash", avail).is_none());
 }
+
+// ---------- Grok adapter（ADR-002 D2/D4/D7；agora-dvh.6） ----------
+
+#[test]
+fn grok_is_first_class_but_answers_only_in_the_terminal() {
+    let grok = adapter::find("grok").unwrap();
+    assert_eq!(
+        grok.version("grok 1.0.13 (5e9a58528b76)"),
+        VersionProbe::Available(Version(1, 0, 13))
+    );
+    assert!(matches!(
+        grok.version("grok 1.0.2 (abc)"),
+        VersionProbe::Unparsable(_)
+    ));
+    // Restart 用自报的 id：grok --resume <id>；起会话钉 --session-id。
+    let avail =
+        |_: &dyn agora::adapter::Adapter, _: &str| VersionProbe::Available(Version(1, 0, 13));
+    let plan = plan_restart(
+        "grok",
+        "grok --permission-mode default",
+        Some("conv-g"),
+        avail,
+    );
+    assert_eq!(
+        plan.command(),
+        "grok --permission-mode default --resume conv-g"
+    );
+    let (cmd, id) = plan_pin("grok", "grok", avail).unwrap();
+    assert_eq!(cmd, format!("grok --session-id {id}"));
+    // WAITING(decision) 只能在终端答：没有挂起、没有决定输出。
+    let hooks = grok.hooks().unwrap();
+    assert!(!hooks.decision_via_hook());
+    let n = serde_json::json!({"hookEventName":"notification","notificationType":"permission_prompt","message":"Tool permission requested"});
+    assert_eq!(hooks.hold_key(&n), None);
+    assert_eq!(
+        hooks.decision_output(&agora::adapter::Decision::Allow),
+        None
+    );
+    // 实测的事件名是小写蛇形：通用表那种 CamelCase 匹配在 Grok 上一条都认不出。
+    assert!(!hooks
+        .parse(&serde_json::json!({"hookEventName":"stop","reason":"end_turn"}))
+        .is_empty());
+    assert!(hooks
+        .parse(&serde_json::json!({"hookEventName":"stop","reason":"shutdown"}))
+        .is_empty());
+}

@@ -2,8 +2,10 @@
 //!
 //! hook 装进用户自己的 agent 配置：文件与事件表由宿主的 `AgentHooks::install_spec` 给，
 //! 这里只会"把一组条目拼进一份 JSON"，不认识任何 agent。规则：
-//! - 命令形态 `if [ -x <AGORA_HOME>/bin/agora ]; then <AGORA_HOME>/bin/agora hook --host <h> --home <AGORA_HOME>; fi`：
-//!   稳定路径 + 显式 `--home`；`bin/agora` 是指向当前二进制的符号链接，安装时建 / 修。
+//! - 命令形态 `if [ -x <AGORA_HOME>/bin/agora ]; then exec <AGORA_HOME>/bin/agora hook --host <h> --home <AGORA_HOME>; fi`：
+//!   稳定路径 + 显式 `--home`；`bin/agora` 是指向当前二进制的符号链接，安装时建 / 修。`exec` 让
+//!   agora 顶替 `sh -c` 那层，hook 进程的 ppid 就是 agent 本体——实测 2026-09-04 Grok 1.0.13 不带
+//!   `exec` 时 ppid 是 sh，而 Grok 的环境里没有进程号变量，外部会话的存活只能靠 ppid。
 //! - 幂等：命令里的 `<AGORA_HOME>/bin/agora hook` 是自己条目的标记——先删自己的再加，重复装不重复；
 //!   卸载只删自己的，别人的条目与文件里其它键原样。
 //! - 装前显示 diff（stderr），`--dry-run` 只看不写；写文件先 `.part` 再 rename。
@@ -61,7 +63,7 @@ fn sh_quote(p: &Path) -> String {
 pub fn command(agora_home: &Path, host: &str) -> String {
     let bin = sh_quote(&bin_path(agora_home));
     let home = sh_quote(agora_home);
-    format!("if [ -x {bin} ]; then {bin} hook --host {host} --home {home}; fi")
+    format!("if [ -x {bin} ]; then exec {bin} hook --host {host} --home {home}; fi")
 }
 
 /// 自己条目的标记：稳定路径 + `hook` 子命令。

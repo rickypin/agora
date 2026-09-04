@@ -188,7 +188,11 @@ impl AgentHooks for Claude {
     }
 
     /// 实测 2.1.260（2026-09-04）：hook 环境里 `CLAUDE_PID` 就是 claude 主进程。
-    fn agent_pid(&self, env: &std::collections::BTreeMap<String, String>) -> Option<u32> {
+    fn agent_pid(
+        &self,
+        env: &std::collections::BTreeMap<String, String>,
+        _ppid: u32,
+    ) -> Option<u32> {
         env.get("CLAUDE_PID")?.trim().parse().ok()
     }
 

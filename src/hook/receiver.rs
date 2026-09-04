@@ -234,7 +234,7 @@ impl Receiver {
                 None
             }
         };
-        if let (Some(id), Some(pid)) = (&found, hooks.agent_pid(&env.agent_env)) {
+        if let (Some(id), Some(pid)) = (&found, hooks.agent_pid(&env.agent_env, env.ppid)) {
             self.sessions.note_external_pid(id, pid);
         }
         found

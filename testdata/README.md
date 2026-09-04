@@ -16,3 +16,11 @@ fixture 驱动测试的数据（ADR-002 D10）。
   `parallel_tools` 因为上面那条实测只能用两个不同名工具。
 
 `respond` 行是 Dashboard 的答复，永远是合成的——agent 侧看不到它。
+
+## grok/1.0.13
+
+2026-09-04 在本机 Grok 1.0.13 上录的（tmux 内交互式 `--permission-mode default` + `-p` 无头，探针 hook
+落盘 stdin；路径与 id 脱敏，`toolResult` 的字节数组换成空串）：`turn_complete`、`permission_terminal`、
+`permission_dashboard`（其实是终端拒绝路径——Grok 的 Dashboard 答不了，见文件头）、`clear`、`interrupted`
+五个的事件名、键集合、顺序与时间间隔都来自真录；`api_error`、`parallel_tools` 按文档合成。真录证实的反直觉处
+写在 `src/adapter/grok.rs` 模块文档。

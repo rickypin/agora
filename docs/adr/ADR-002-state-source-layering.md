@@ -72,7 +72,7 @@ agora 内部事件（§5.6 的集合，补两个）：`session.started` / `sessi
 
 ### D3 投递：投递箱文件 + unix socket 唤醒；hook 命令是 agora 自己
 
-hook 命令统一为 `agora hook --host <claude|grok|codex>`（安装时写成 `if [ -x <稳定路径> ]; then <稳定路径> hook --host claude --home <AGORA_HOME>; fi`，形态见 D4；卸载或升级期间二进制不在也不会让 agent 报错——orca 在本机就是这么装的）。它做三件事：
+hook 命令统一为 `agora hook --host <claude|grok|codex>`（安装时写成 `if [ -x <稳定路径> ]; then exec <稳定路径> hook --host claude --home <AGORA_HOME>; fi`，形态见 D4；卸载或升级期间二进制不在也不会让 agent 报错——orca 在本机就是这么装的）。它做三件事：
 
 1. **落盘**：把 stdin 的 payload 连同信封（host、`AGORA_SESSION_ID` / `AGORA_EPOCH` 若有、`CLAUDE_PID` / `GROK_*`、`TMUX` / `TMUX_PANE`、hook 进程的 ppid、本地时间）写到 `<state_dir>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`（`<state_dir>` = `AGORA_HOME`，默认 `~/.agora`，ADR-003 D6；hook 进程不依赖环境里有 `AGORA_HOME`——Terminal.app 里起的外部会话没有它——安装写入的命令显式带 `--home`，D4），先写 `.part` 再 rename——daemon 不在也不丢（§3.4）。
 2. **唤醒**：连 `<state_dir>/agora.sock`，送文件路径；socket 不在（daemon 没起）→ 直接 exit 0。daemon 只读文件，不信 socket 上的内容——单一真相。
@@ -85,7 +85,7 @@ daemon 侧：启动时按文件名顺序重放 inbox 全部文件（§3.4 的重
 ### D4 安装：装进用户配置，幂等、可卸载、装前 diff、宿主自认
 
 - `agora hooks install <agent>`：Claude Code 写 `~/.claude/settings.json`（user 作用域）的 `hooks`，Grok 写 `~/.grok/hooks/agora.json`，Codex 写 `~/.codex/hooks.json`（**Codex 的非托管 hook 必须由用户在 TUI 里 `/hooks` 审阅、按内容哈希信任，改动即失效**——所以 command 里的 agora 路径必须是升级不变的稳定路径，否则每次升级都要重新信任；agora 不用 `--dangerously-bypass-hook-trust`）；装前显示 diff，只增不删别人的条目（hooks 是拼接不是替换，文档确认）；条目里 command 含 agora 二进制路径，是识别自己条目的标记——重复安装不重复，卸载只删自己的。Claude Code 与 Grok 都热加载配置文件（文档：file watcher / Hooks tab reload），装完不用重启 agent。
-- **命令形态**：`if [ -x <AGORA_HOME>/bin/agora ]; then <AGORA_HOME>/bin/agora hook --host <agent> --home <AGORA_HOME>; fi`。二进制走 `<AGORA_HOME>/bin/agora` 这个稳定路径（安装与升级维护的符号链接，A26 / A39，ADR-003 D6），Codex 的内容哈希信任才不会随升级失效；对 Claude / Grok 则是升级不静默断 hook——二进制位置一变，`if [ -x … ]` 守卫会静默跳过，会话只会经 hook 沉默规则退成 UNKNOWN 而没人知道原因。`--home` 显式给出，因为外部会话的环境里没有 `AGORA_HOME`。三家命令形态一致，宿主自认（下文）与"识别自己的条目"只需一种写法。
+- **命令形态**：`if [ -x <AGORA_HOME>/bin/agora ]; then exec <AGORA_HOME>/bin/agora hook --host <agent> --home <AGORA_HOME>; fi`。`exec`（2026-09-04 补）：让 agora 顶替 `sh -c` 那层，hook 进程的 ppid 就是 agent 本体——Grok 的环境里没有进程号变量，外部 Grok 会话的存活只能靠 ppid（实测不带 `exec` 时 ppid 是 sh）。二进制走 `<AGORA_HOME>/bin/agora` 这个稳定路径（安装与升级维护的符号链接，A26 / A39，ADR-003 D6），Codex 的内容哈希信任才不会随升级失效；对 Claude / Grok 则是升级不静默断 hook——二进制位置一变，`if [ -x … ]` 守卫会静默跳过，会话只会经 hook 沉默规则退成 UNKNOWN 而没人知道原因。`--home` 显式给出，因为外部会话的环境里没有 `AGORA_HOME`。三家命令形态一致，宿主自认（下文）与"识别自己的条目"只需一种写法。
 - 每个事件的 `timeout` 显式写死：PermissionRequest 3600 s（挂起上限，D5）；SessionEnd 1 s（Claude 给全部 SessionEnd hook 共 1.5 s 预算，所以 SessionEnd 只落盘不唤醒等待）；其余 20 s。不依赖各家默认值（Claude 600 s、Grok 5 s、UserPromptSubmit 30 s，三处都不一样）。
 - **agora 起的会话不再重复注入**（§5.1）：身份靠 `LaunchSpec.env` 的 `AGORA_SESSION_ID` / `AGORA_EPOCH`，hook 进程继承环境后带回（实测 hook 能看到 agent 进程的全部环境）。
 - **Grok 兼容加载的串扰**：Grok 默认也执行 `~/.claude/settings.json` 里的 hooks，agora 装给 Claude 的条目会被 Grok 以 `--host claude` 跑一遍。对策：`agora hook` 发现 `GROK_SESSION_ID` 存在而 `--host` 不是 grok → exit 0；反之亦然。不靠 payload 键名风格猜宿主。
@@ -204,6 +204,16 @@ AgentFallback {                      # 所有 agent 都有默认实现
 ### Grok 1.0.13（`agora-90t.3` 注记，2026-09-02 无头 `-p` + 自带文档）
 
 事件全集与时序、payload 双写、`Stop` 的 `reason` 过滤、`lastAssistantMessage`、`GROK_SESSION_ID` ≡ resume id、fail-open、5 s / 600 s 默认超时、兼容加载 `~/.claude/settings.json` 与 `~/.cursor/hooks.json`——见该注记；文档补充：PreToolUse 的 `allow` 不能替用户批准（"only not blocked"），`permission_prompt` 只在权限 UI 真等人时 fire，`idle_prompt` 约 1 min 后 fire。
+
+#### Grok 1.0.13 交互式补测（2026-09-04，tmux 内 `--permission-mode default`，探针 hook 落盘 stdin；agora-dvh.6）
+
+- **事件名是小写蛇形**：payload 的 `hookEventName` 是 `session_start` / `user_prompt_submit` / `pre_tool_use` / `post_tool_use` / `permission_denied` / `notification` / `stop` / `stop_cancelled` / `session_end`，不是配置文件里的 `SessionStart`；每个键双写 camel + snake（`sessionId` / `session_id`）。按 CamelCase 匹配的映射表在 Grok 上一条都认不出——adapter 归一后再比。
+- `session_start.source = new`（不是 startup）；`/clear` 直接 fire 新 id 的 `session_start(source=new)`，旧会话**不发** `session_end`。
+- 权限：default 模式下 `echo > file`、`curl` 都被判安全直接放行，`rm -rf` 才弹权限 UI；`notification(permission_prompt)` 只有 `level` / `message`("Tool permission requested") / `notificationType`，**不带工具身份**。终端选 reject → `permission_denied`（带 toolName / toolUseId）+ `stop_cancelled(reason=permission_rejected, cancelledBy, reasonDetails)`；约 60 s 后 `notification(idle_prompt, message="Waiting for your next prompt")`。
+- Esc 中断 → `stop_cancelled(reason=user_interrupt, cancelTrigger, lastAssistantMessage)`，没有 `post_tool_use_failure`。
+- 会话结束：`session_end(reason=shutdown)` 之后还有一次 `stop(reason=shutdown)`（无 promptId）。
+- hook 进程环境：`GROK_SESSION_ID` / `GROK_HOOK_EVENT` / `GROK_HOOK_NAME` / `GROK_WORKSPACE_ROOT`，**没有进程号**；`CLAUDE_PID` 等是从起 grok 的 Claude Code 会话继承的，不是 grok 的。命令写成 `if [ -x … ]; then <bin> …; fi` 时 hook 的 ppid 是 `sh`，其父才是 grok → 安装命令改为 `exec`（D4）。
+- `toolUseId` 形如 `call-<uuid>-0`；`post_tool_use.toolResult.output` 是字节数组。fixture 见 `testdata/grok/1.0.13/hooks/`。
 
 ### Codex 0.152.1（2026-09-02，研究 agent：本机二进制 strings + `codex features list` + 官方文档 learn.chatgpt.com/docs/hooks + GitHub release notes；未做交互式实测）
 

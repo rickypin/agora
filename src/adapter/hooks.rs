@@ -1,9 +1,11 @@
 //! 各宿主 `AgentHooks` 实现共用的零件（ADR-002 D2/D3/D5）。
 //!
 //! 决定的形态（[`Decision`]）、解除的形态（[`Release`]）、payload 取键的小工具，以及一张
-//! **三家共用的通用映射表** [`GenericHooks`]：Codex / Grok 在各自的 adapter（agora-dvh.7 /
-//! dvh.6）按实测分叉之前先用它；Claude 已经有自己的表（`claude.rs`）。键名双写 camel / snake
-//! 都认，因为 Grok 双写、Codex 文档用 snake。
+//! **通用映射表** [`GenericHooks`]：Codex 在它的 adapter（agora-dvh.7）按实测分叉之前先用它；
+//! Claude（`claude.rs`）与 Grok（`grok.rs`）各有自己的表。键名双写 camel / snake 都认，因为
+//! Grok 双写、Codex 文档用 snake。注意这张表按 CamelCase 事件名匹配——Grok 实测发的是
+//! `pre_tool_use` 小写蛇形（2026-09-04），所以它**不能**直接给 Grok 用，dvh.7 实测 Codex 时同样
+//! 先核对事件名拼法。
 
 use serde_json::Value;
 
@@ -126,7 +128,7 @@ pub(crate) fn generic_release(payload: &Value) -> Release {
     }
 }
 
-/// 三家共用的一张映射表（ADR-002 D2）。Grok 的 Stop 要按 `reason == end_turn` 过滤已在此处。
+/// 通用映射表（ADR-002 D2）。Stop 按 `reason == end_turn` 过滤（缺 reason 的宿主照常算一轮结束）。
 pub struct GenericHooks {
     pub host: &'static str,
     pub decision_via_hook: bool,
