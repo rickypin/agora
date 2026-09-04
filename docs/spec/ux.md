@@ -33,12 +33,12 @@
 | Cmd/Ctrl + K | Command Palette |
 | Cmd/Ctrl + F | Filter sidebar（name / node / agent / preview；Enter 打开第一条） |
 | Alt/Option + 1…9 | 跳到侧栏第 N 条（按当前过滤后的显示顺序） |
-| Cmd/Ctrl + Shift + ] / [ | Next / Previous Agent |
-| Cmd/Ctrl + N | New Agent |
+| Alt/Option + ] / [ | Next / Previous Agent |
+| Alt/Option + N | New Agent |
 
-浏览器全局快捷键必须避免吞掉终端内 Ctrl+C / Ctrl+D / Ctrl+Z / Ctrl+R / Ctrl+A / Ctrl+E 等常见操作；Cmd/Ctrl+数字被浏览器保留，所以数字跳转用 Alt/Option。
+浏览器全局快捷键必须避免吞掉终端内 Ctrl+C / Ctrl+D / Ctrl+Z / Ctrl+R / Ctrl+A / Ctrl+E 等常见操作。**能留给 agora 的只有浏览器自己没占的组合**：Cmd/Ctrl+数字（标签页）、Cmd/Ctrl+Shift+] / [（下/上一个标签页）、Cmd/Ctrl+N（新窗口）都在浏览器 UI 层被吃掉，页面连 keydown 都收不到，`preventDefault` 也救不回来（macOS Chrome 人眼实测 2026-09-04，agora-rzn：这三类原先都写在本表里，按下去响应的是 Chrome）。所以除了面板与过滤这两个 Cmd/Ctrl 组合，其余一律走 Alt/Option。**验证纪律**：jsdom 没有保留键这回事，agent-browser 经 CDP 把按键直接注入渲染进程、绕过浏览器的加速键处理——两者对 Cmd/Ctrl 系键位都只会给出假阳性，只有人在真浏览器里按过才算数。
 
-实现落在 `web/src/keys.ts` 一层（终端侧接在 TerminalView 的 `attachCustomKeyEventHandler`，全局侧接在 Workspace 的 window keydown）：那六个 Ctrl 组合被写成名单，全局层一律不认，哪怕将来给它们绑了动作。Alt/Option+数字认 `event.code`（`Digit3`）而不是 `event.key`——macOS 上 Option+3 的 key 是 `£`。
+实现落在 `web/src/keys.ts` 一层（终端侧接在 TerminalView 的 `attachCustomKeyEventHandler`，全局侧接在 Workspace 的 window keydown）：那六个 Ctrl 组合被写成名单，全局层一律不认，哪怕将来给它们绑了动作。Alt/Option 系一律认 `event.code`（`Digit3` / `BracketRight` / `KeyN`）而不是 `event.key`——macOS 上 Option+3 的 key 是 `£`、Option+] 是 `‘`、Option+N 是死键 `Dead`。
 
 ### 终端要回来的键（agora-xqa.3）
 

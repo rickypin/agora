@@ -153,15 +153,15 @@ describe("侧栏过滤与序号跳转", () => {
     expect(mounted).toEqual(["mac:a", "mac:b"]);
   });
 
-  it("Cmd+Shift+] / [ 在显示顺序里前后走，走到头绕回来", async () => {
+  it("Alt+] / [ 在显示顺序里前后走，走到头绕回来", async () => {
     const t = setup([row("mac:a"), row("mac:b"), row("mac:c")]);
     await online(t);
     press({ key: "1", code: "Digit1", altKey: true });
-    expect(press({ key: "}", code: "BracketRight", metaKey: true, shiftKey: true })).toBe(true);
-    press({ key: "}", code: "BracketRight", metaKey: true, shiftKey: true });
+    expect(press({ key: "‘", code: "BracketRight", altKey: true })).toBe(true);
+    press({ key: "‘", code: "BracketRight", altKey: true });
     expect(mounted).toEqual(["mac:a", "mac:b", "mac:c"]);
-    press({ key: "}", code: "BracketRight", metaKey: true, shiftKey: true }); // 绕回第一条
-    press({ key: "{", code: "BracketLeft", metaKey: true, shiftKey: true }); // 往回 = 最后一条
+    press({ key: "‘", code: "BracketRight", altKey: true }); // 绕回第一条
+    press({ key: "“", code: "BracketLeft", altKey: true }); // 往回 = 最后一条
     expect(mounted).toEqual(["mac:a", "mac:b", "mac:c", "mac:a", "mac:c"]);
   });
 });

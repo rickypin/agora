@@ -37,20 +37,34 @@ export type ShortcutAction =
   | { action: "jump"; index: number };
 
 /**
- * 全局快捷键（Cmd/Ctrl+K/F/N、Cmd/Ctrl+Shift+]/[、Alt/Option+1…9）。
+ * 全局快捷键（Cmd/Ctrl+K/F、Alt/Option+1…9、Alt/Option+]/[、Alt/Option+N）。
  *
- * 数字跳转用 Alt/Option 而不是 Cmd/Ctrl+数字：后者被浏览器保留给标签页切换，抢不过来
- * （docs/spec/ux.md）。返回 null = 这个键与 agora 无关，让它去它本来该去的地方。
+ * 除了面板与过滤这两个 Cmd/Ctrl 组合，其余一律走 Alt/Option：Cmd/Ctrl+数字、
+ * Cmd/Ctrl+Shift+]/[、Cmd/Ctrl+N 都是浏览器自己的加速键（标签页切换、新窗口），
+ * 在浏览器 UI 层就被吃掉，页面连 keydown 都收不到，`preventDefault` 救不回来
+ * （macOS Chrome 人眼实测 2026-09-04，agora-rzn；jsdom 与 CDP 注入的按键都测不出
+ * 这件事——它们绕过了浏览器的加速键处理，只会给出假阳性）。
+ * 返回 null = 这个键与 agora 无关，让它去它本来该去的地方。
  */
 export function matchShortcut(ev: KeyLike): ShortcutAction | null {
   if (ev.type && ev.type !== "keydown") return null;
   const mod = ev.metaKey || ev.ctrlKey;
 
-  // Alt/Option + 1…9：不带 Cmd/Ctrl，靠 code 认（见 KeyLike.code）。
+  // Alt/Option 系：数字跳转、上下一个、新建。都不带 Cmd/Ctrl，靠 code 认——macOS 上
+  // Option+] 的 key 是 `‘`、Option+N 是死键 `Dead`，只有 code 还认得出（见 KeyLike.code）。
   if (ev.altKey && !mod) {
     const d = digit(ev);
     if (d !== null) return { action: "jump", index: d - 1 };
-    return null;
+    switch (ev.code ?? "") {
+      case "BracketRight":
+        return { action: "next" };
+      case "BracketLeft":
+        return { action: "prev" };
+      case "KeyN":
+        return { action: "new" };
+      default:
+        return null;
+    }
   }
   if (!mod || ev.altKey) return null;
 
@@ -59,19 +73,13 @@ export function matchShortcut(ev: KeyLike): ShortcutAction | null {
     return null;
   }
 
-  const code = ev.code ?? "";
-  if (ev.shiftKey) {
-    if (ev.key === "]" || code === "BracketRight") return { action: "next" };
-    if (ev.key === "[" || code === "BracketLeft") return { action: "prev" };
-    return null;
-  }
+  // Cmd/Ctrl 系只剩这两个——它们浏览器不保留，页面按得住。
+  if (ev.shiftKey) return null;
   switch (ev.key.toLowerCase()) {
     case "k":
       return { action: "palette" };
     case "f":
       return { action: "filter" };
-    case "n":
-      return { action: "new" };
     default:
       return null;
   }

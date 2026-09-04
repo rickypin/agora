@@ -73,21 +73,29 @@ describe("全局快捷键不吞终端的 Ctrl 键（agora-xqa.14 / MISSION §6.5
 });
 
 describe("键位表（docs/spec/ux.md）", () => {
-  it("Cmd/Ctrl+K / F / N", () => {
+  it("Cmd/Ctrl+K / F", () => {
     expect(matchShortcut(key("k", { metaKey: true }))).toEqual({ action: "palette" });
     expect(matchShortcut(key("k", { ctrlKey: true }))).toEqual({ action: "palette" });
     expect(matchShortcut(key("f", { metaKey: true }))).toEqual({ action: "filter" });
-    expect(matchShortcut(key("n", { ctrlKey: true }))).toEqual({ action: "new" });
+    expect(matchShortcut(key("f", { ctrlKey: true }))).toEqual({ action: "filter" });
   });
 
-  it("Cmd/Ctrl+Shift+] / [ 上下一个", () => {
-    // macOS 上 Cmd+Shift+] 的 key 是 `}`：只有 code 还认得出物理键。
-    expect(matchShortcut(key("}", { metaKey: true, shiftKey: true, code: "BracketRight" }))).toEqual({
-      action: "next",
-    });
-    expect(matchShortcut(key("{", { metaKey: true, shiftKey: true, code: "BracketLeft" }))).toEqual({
-      action: "prev",
-    });
+  it("Alt/Option+] / [ 上下一个、Alt/Option+N 新建，认 code 不认 key", () => {
+    // macOS 上 Option+] 的 key 是 `‘`、Option+N 是死键 `Dead`：认 key 的实现一条都按不动。
+    expect(matchShortcut(key("‘", { altKey: true, code: "BracketRight" }))).toEqual({ action: "next" });
+    expect(matchShortcut(key("“", { altKey: true, code: "BracketLeft" }))).toEqual({ action: "prev" });
+    expect(matchShortcut(key("Dead", { altKey: true, code: "KeyN" }))).toEqual({ action: "new" });
+  });
+
+  it("浏览器自己的加速键 agora 一律不认（agora-rzn）", () => {
+    // macOS Chrome 人眼实测 2026-09-04：Cmd+Shift+]/[ 是下/上一个标签页、Cmd+N 是新窗口，
+    // 在浏览器 UI 层就被吃掉，页面收不到 keydown——绑了也白绑，还会骗后来者以为有这个键。
+    // Linux/Windows 上 Ctrl+Shift+]/[ 与 Ctrl+N 同理。
+    for (const mods of [{ metaKey: true }, { ctrlKey: true }]) {
+      expect(matchShortcut(key("}", { ...mods, shiftKey: true, code: "BracketRight" }))).toBeNull();
+      expect(matchShortcut(key("{", { ...mods, shiftKey: true, code: "BracketLeft" }))).toBeNull();
+      expect(matchShortcut(key("n", { ...mods, code: "KeyN" }))).toBeNull();
+    }
   });
 
   it("Alt/Option+1…9 跳转，认 code 不认 key", () => {
