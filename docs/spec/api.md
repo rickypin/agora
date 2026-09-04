@@ -33,7 +33,7 @@ DELETE /api/auth/devices/:id       # 吊销一台设备 → 204；即时生效
 
 `GET /api/projects` 每项是 `{ path, name, last_used_at }`，按最近使用排序（未用过的排在后面、按名字）；列表是 `project_roots` 的扫描结果与库里 `projects` 表的并集，目录已不存在的行在读取时删除。`last_used_at` 只在 `POST /api/sessions` 时更新——"最近使用"指的是起过会话。`GET /api/projects/worktrees` 每项是 `{ path, branch, head, main, locked }`，`branch` 去掉 `refs/heads/` 前缀、detached HEAD 为 null，第一项是主 worktree。
 
-每条会话的形态是 `sessions` 行的全部字段 + 运行时实时事实（`name`、`alive`、`exit`、`pid`、`managed`）+ 状态判定（`status`、`source`、`reason`）；`id` 是全局 id `<node>:<id>`，本机 id 在 `local_id`，另带 `node`。`unregistered` 的每项是 `{ runtime_ref, name, title, alive, managed, working_directory, node }`。
+每条会话的形态是 `sessions` 行的全部字段 + 运行时实时事实（`name`、`alive`、`exit`、`pid`、`managed`）+ 状态判定（`status`、`source`、`confidence`、`reason`；四层来源仲裁见 ADR-002 D1，`confidence` 0–1 只供排障，UI 不显示）；`id` 是全局 id `<node>:<id>`，本机 id 在 `local_id`，另带 `node`。`unregistered` 的每项是 `{ runtime_ref, name, title, alive, managed, working_directory, node }`。
 
 ## 认证（ADR-003）
 

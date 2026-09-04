@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use agora::hook::{Delivery, Envelope, HookError, Inbox, Receiver};
 use agora::runtime::Size;
 use agora::session::{Db, NewSession, SessionManager};
+use agora::status::{Source, Status};
 
 use common::node::{TmuxNode, AGORA_BIN};
 use common::FakeRuntime;
@@ -109,11 +110,37 @@ async fn events_survive_daemon_restart() {
         r.delivery.envelope.runtime_env
     );
     assert!(inbox.pending().unwrap().is_empty());
+    // A36 不变量 10：重放后的状态来自 hook 层——Stop → TURN_DONE，带来源与置信度。
+    let v = node.sessions.get(&id).unwrap();
+    assert_eq!(
+        (v.assessment.status, v.assessment.source),
+        (Status::TurnDone, Source::Hook),
+        "{:?}",
+        v.assessment
+    );
+    assert!(v.assessment.confidence >= 0.95);
+    assert_eq!(node.sessions.detail(&id).as_deref(), Some("ok"));
+    // SessionStart 自报的对话 id 落进 agent_session_id（每次命中覆盖）。
+    assert_eq!(v.record.agent_session_id.as_deref(), Some("agent-1"));
     // 三个文件（含被丢的）都进了 done/。
     let done: Vec<_> = walkdir(&inbox.done_dir());
     assert_eq!(done.len(), 3, "{done:?}");
     // 再重放一次什么都没有：不会重复应用。
     assert_eq!(receiver.replay().unwrap(), 0);
+
+    // Restart → epoch 2（新一代 fake-agent 自己也会发 epoch 2 的事件）：上一代（epoch 1）
+    // 迟到的 Stop 在重放时丢弃，账本里 epoch 1 的条目还是原来那两条。
+    node.sessions.restart(&id, &[]).unwrap();
+    inbox.write(&delivery(&id, 1, "Stop", 999)).unwrap();
+    receiver.replay().unwrap();
+    let old: Vec<_> = receiver
+        .received_for(&id)
+        .into_iter()
+        .filter(|r| r.delivery.envelope.agora_epoch == Some(1))
+        .collect();
+    assert_eq!(old.len(), 2, "{old:?}");
+    let v = node.wait(&id, |v| v.alive);
+    assert_eq!(v.record.epoch, 2);
 }
 
 fn walkdir(d: &std::path::Path) -> Vec<std::path::PathBuf> {

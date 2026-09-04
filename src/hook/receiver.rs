@@ -112,6 +112,16 @@ impl Receiver {
             Release::Session => self.resolve_session(&key),
             Release::None => {}
         }
+        // 进状态机：只有 agora 起的 / 采纳的会话在库里；外部会话等 dvh.12 采纳后再对上。
+        if let Some(id) = &delivery.envelope.agora_session_id {
+            let events = hooks::to_events(&delivery.envelope.host, &delivery.payload);
+            if let Err(err) =
+                self.sessions
+                    .apply_hook(id, delivery.envelope.agora_epoch.unwrap_or(0), &events)
+            {
+                tracing::debug!(component = "hook", session = %id, %err, "hook 事件没有对应会话");
+            }
+        }
         let received = Received {
             session_key: key,
             event: hooks::event_name(&delivery.payload).map(str::to_owned),

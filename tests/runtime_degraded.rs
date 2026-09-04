@@ -48,10 +48,10 @@ fn fake(tag: &str, mode0: &str) -> Fake {
     std::fs::write(&mode, mode0).unwrap();
     std::fs::write(&name_file, "ag-none").unwrap();
 
-    // 与 src/runtime/tmux/mod.rs 的 SEP 一致；12 段，最后一段是 title。
+    // 与 src/runtime/tmux/mod.rs 的 SEP 一致；13 段（第 10 段是 window_activity），最后一段是 title。
     let sep = "|#|";
     let pane = [
-        "$NAME", "4242", "0", "", "", "", "0", "160", "48", "fakehost", "/tmp", "",
+        "$NAME", "4242", "0", "", "", "", "0", "160", "48", "0", "fakehost", "/tmp", "",
     ]
     .join(sep);
     let body = format!(

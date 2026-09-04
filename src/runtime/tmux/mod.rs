@@ -313,6 +313,8 @@ impl TmuxRuntime {
             "#{session_attached}",
             "#{pane_width}",
             "#{pane_height}",
+            // 窗口最近活动时刻：pane 有输出就刷新，是活动层唯一的输入（不抓屏）。
+            "#{window_activity}",
             // 主机名向 tmux 自己要（见 `effective_title`），不猜格式、也不多起一个进程。
             "#{host}",
             "#{pane_current_path}",
@@ -729,9 +731,9 @@ fn effective_title(title: &str, host: &str, session: &str) -> String {
 }
 
 fn parse_pane_line(line: &str, socket: &str, managed: bool) -> Option<RuntimeSession> {
-    // 12 段：最后一段 title 吞掉剩余全部，分隔符出现在 title 里也不会错位。
-    let f: Vec<&str> = line.splitn(12, SEP).collect();
-    if f.len() < 12 {
+    // 13 段：最后一段 title 吞掉剩余全部，分隔符出现在 title 里也不会错位。
+    let f: Vec<&str> = line.splitn(13, SEP).collect();
+    if f.len() < 13 {
         return None;
     }
     let name = f[0];
@@ -765,8 +767,9 @@ fn parse_pane_line(line: &str, socket: &str, managed: bool) -> Option<RuntimeSes
             cols: f[7].parse().unwrap_or(0),
             rows: f[8].parse().unwrap_or(0),
         },
-        cwd: PathBuf::from(f[10]),
-        title: effective_title(f[11], f[9], name),
+        output_at: f[9].parse::<i64>().ok().filter(|t| *t > 0),
+        cwd: PathBuf::from(f[11]),
+        title: effective_title(f[12], f[10], name),
         managed,
     })
 }
@@ -807,6 +810,7 @@ mod unit {
             "0",
             "160",
             "48",
+            "1700000000",
             "myhost.local",
             "/x",
             "t",
@@ -814,6 +818,7 @@ mod unit {
         .join(SEP);
         let s = parse_pane_line(&line, "agora", true).unwrap();
         assert!(!s.alive);
+        assert_eq!(s.output_at, Some(1_700_000_000));
         assert_eq!(s.exit, Some(Exit::Code(7)));
         assert_eq!(s.r#ref.0, "tmux:agora:ag-1");
     }
@@ -830,6 +835,7 @@ mod unit {
             "1",
             "80",
             "24",
+            "",
             "myhost.local",
             "/",
             "a|#|b",
@@ -856,6 +862,7 @@ mod unit {
                 "0",
                 "160",
                 "48",
+                "1700000000",
                 "rickys-macbook-air.tail5fb9b.ts.net",
                 "/x",
                 title,

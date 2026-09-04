@@ -15,7 +15,7 @@ const SEP: &str = "|#|";
 
 fn pane_line(status: &str) -> String {
     [
-        "ag-w", "123", "1", status, "", "", "0", "160", "48", "fakehost", "/tmp", "t",
+        "ag-w", "123", "1", status, "", "", "0", "160", "48", "0", "fakehost", "/tmp", "t",
     ]
     .join(SEP)
 }

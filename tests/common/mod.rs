@@ -48,6 +48,7 @@ impl FakeRuntime {
                 attached: false,
                 size: Size::default(),
                 managed,
+                output_at: None,
             },
         );
     }

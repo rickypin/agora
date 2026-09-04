@@ -75,6 +75,9 @@ pub struct RuntimeSession {
     pub size: Size,
     /// 是否在 agora 自己的 socket 上；`false` 的会话只读。
     pub managed: bool,
+    /// pane 最近一次产生输出的时刻（unix 秒）；运行时不提供就是 None。活动启发式（IDLE，
+    /// ADR-002 D1 第 4 层）只用它，不抓屏——每 tick 抓一次屏对 tmux 是一个子进程，太贵。
+    pub output_at: Option<i64>,
 }
 
 /// attach 要起的长进程：Terminal Gateway（agora-xqa.10）把它放进自己的 PTY。

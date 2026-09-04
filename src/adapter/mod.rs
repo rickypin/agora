@@ -85,6 +85,12 @@ impl AgentIdentity for Builtin {
     }
 }
 
+/// 这个 agent 类型有没有 hook（ADR-002 D1 "有 hook 的 agent"）：状态机据此拒绝文本层的
+/// WAITING / TURN_DONE。名字不认识（custom、fake）按没有算——收到 hook 事件会自动升级。
+pub fn has_hooks(agent_type: &str) -> bool {
+    hooks::is_host(agent_type)
+}
+
 /// 按名字取内置 Adapter。
 pub fn find(name: &str) -> Option<&'static Builtin> {
     BUILTINS.iter().find(|b| b.name == name)

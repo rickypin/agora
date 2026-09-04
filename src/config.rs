@@ -291,6 +291,7 @@ pub struct Settings {
     pub node_id: String,
     pub detector_interval: Duration,
     pub idle_after: Duration,
+    pub hook_silence_after: Duration,
     pub auth: crate::auth::AuthConfig,
     pub raw: Config,
 }
@@ -358,9 +359,9 @@ impl Config {
         let detector_interval =
             parse_duration("status.detector_interval", &self.status.detector_interval)?;
         let idle_after = parse_duration("status.idle_after", &self.status.idle_after)?;
+        let hook_silence_after = parse_duration("hooks.silence_after", &self.hooks.silence_after)?;
         // 其余时长字段现在没有消费者，但语法先卡住，免得日后消费时才在运行中炸。
         for (field, value) in [
-            ("hooks.silence_after", &self.hooks.silence_after),
             ("hooks.hold_timeout", &self.hooks.hold_timeout),
             ("hooks.inbox_retention", &self.hooks.inbox_retention),
             ("tls.external.renew_before", &self.tls.external.renew_before),
@@ -373,6 +374,7 @@ impl Config {
             node_id: id.to_owned(),
             detector_interval,
             idle_after,
+            hook_silence_after,
             auth,
             raw: self,
         })

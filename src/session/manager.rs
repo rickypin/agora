@@ -2,12 +2,13 @@
 //!
 //! 所有方法同步阻塞（内部会起运行时子进程），API 层用 `spawn_blocking` 调。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::clock::age_secs;
+use crate::adapter;
+use crate::clock::{self, age_secs};
 
 use rusqlite::{params, OptionalExtension, Row};
 use serde::Serialize;
@@ -17,7 +18,9 @@ use super::model::{Origin, SessionRecord};
 use crate::runtime::{
     AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, RuntimeStatus, Size,
 };
-use crate::status::{self, Assessment, Status};
+use crate::status::{
+    self, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation, Status,
+};
 
 /// Kill 的宽限：TERM → 5 s → KILL（ADR-001 D2）。
 pub const KILL_GRACE: Duration = Duration::from_secs(5);
@@ -120,6 +123,9 @@ pub struct SessionManager {
     prefix: String,
     /// 运行时可用性的实时结论（ADR-001 D7）：每次读运行时都会更新它，`/api/health` 读它。
     runtime_status: Arc<RuntimeStatus>,
+    /// 每个会话一台状态机（ADR-002 D1）；内存态，不落库（不变量 7）。
+    machines: Mutex<HashMap<String, Machine>>,
+    status_cfg: MachineConfig,
 }
 
 impl SessionManager {
@@ -134,7 +140,68 @@ impl SessionManager {
             runtime,
             prefix: prefix.to_owned(),
             runtime_status: Arc::new(RuntimeStatus::default()),
+            machines: Mutex::new(HashMap::new()),
+            status_cfg: MachineConfig::default(),
         }
+    }
+
+    /// 状态机参数来自配置（`status.*`、`hooks.silence_after`）。
+    pub fn with_status_config(mut self, cfg: MachineConfig) -> Self {
+        self.status_cfg = cfg;
+        self
+    }
+
+    // ---------- hook 事件 ----------
+
+    /// hook 事件进状态机（立即生效）。`epoch` 是信封里带回的；比库里的旧就丢。
+    /// `SessionId` 顺手覆盖 `agent_session_id`（ADR-002 D7：每次命中都覆盖）。
+    pub fn apply_hook(
+        &self,
+        id: &str,
+        epoch: i64,
+        events: &[AgoraEvent],
+    ) -> Result<(), SessionError> {
+        let rec = self.record(id)?;
+        let now = clock::now_secs();
+        {
+            let mut machines = lock(&self.machines);
+            let m = machines.entry(id.to_owned()).or_insert_with(|| {
+                Machine::new(
+                    self.status_cfg.clone(),
+                    adapter::has_hooks(&rec.agent_type),
+                    rec.epoch,
+                    now,
+                )
+            });
+            for e in events {
+                if !m.apply(e, epoch, now) {
+                    tracing::debug!(
+                        component = "status",
+                        session = id,
+                        epoch,
+                        current = rec.epoch,
+                        "旧 epoch 的 hook 事件丢弃"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        for e in events {
+            if let AgoraEvent::SessionId(sid) = e {
+                self.db.conn().execute(
+                    "UPDATE sessions SET agent_session_id = ?2 WHERE id = ?1",
+                    params![id, sid],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 状态机记下的"正在做什么"/ 最后一条回复（两行预览，dvh.10）。
+    pub fn detail(&self, id: &str) -> Option<String> {
+        lock(&self.machines)
+            .get(id)
+            .and_then(|m| m.detail().map(str::to_owned))
     }
 
     /// `/api/health` 与 daemon 启动流程共用的那一个实时结论。
@@ -357,22 +424,48 @@ impl SessionManager {
         // STARTING 只看本代进程的起始时刻。updated_at 不行：rename / kill / cleanup 都刷新它，
         // 改名后两秒内会把跑了一天的会话报成 STARTING（agora-xqa.15，2026-09-03）。
         let spawn_age = rec.spawned_at.as_deref().and_then(age_secs);
-        let assessment = match (rec.origin, rt) {
+        let (process, liveness) = match (rec.origin, rt) {
             // 运行时此刻不可信：不知道就报 UNKNOWN，不许拿"读不到"当"已经死了"（ADR-001 D7）。
-            _ if degraded.is_some() && rec.runtime_ref.is_some() => Assessment {
-                status: Status::Unknown,
-                source: status::Source::None,
-                reason: Some(format!(
+            _ if degraded.is_some() && rec.runtime_ref.is_some() => (
+                Assessment::unknown(&format!(
                     "runtime unavailable: {}",
                     degraded.unwrap_or_default()
                 )),
-            },
-            (Origin::External, None) => Assessment {
-                status: Status::Unknown,
-                source: status::Source::None,
-                reason: Some("external session: no runtime, hook only".into()),
-            },
-            _ => status::process_layer(rt, spawn_age, killed),
+                Liveness::Dead,
+            ),
+            (Origin::External, None) => (
+                Assessment::unknown("external session: no runtime, hook only"),
+                Liveness::Unknown,
+            ),
+            _ => {
+                let a = status::process_layer(rt, spawn_age, killed);
+                let live = if rt.is_some_and(|s| s.alive) {
+                    Liveness::Alive
+                } else {
+                    Liveness::Dead
+                };
+                (a, live)
+            }
+        };
+        let now = clock::now_secs();
+        let assessment = {
+            let mut machines = lock(&self.machines);
+            let m = machines.entry(rec.id.clone()).or_insert_with(|| {
+                Machine::new(
+                    self.status_cfg.clone(),
+                    adapter::has_hooks(&rec.agent_type),
+                    rec.epoch,
+                    now,
+                )
+            });
+            m.observe(Observation {
+                process,
+                liveness,
+                text: None,
+                runtime: rt,
+                epoch: rec.epoch,
+                now,
+            })
         };
         let name = match rt {
             Some(s) if !rec.name_locked && !s.title.trim().is_empty() => s.title.clone(),
@@ -645,4 +738,9 @@ fn fnv(x: u128) -> u64 {
         h = h.wrapping_mul(0x0100_0000_01b3);
     }
     h
+}
+
+/// 锁中毒时取回内层值继续用（ADR-001 D8 施工约束 4）。
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
 }

@@ -147,11 +147,19 @@ async fn serve() -> i32 {
     }
 
     let db = open_db(&home);
-    let sessions = Arc::new(SessionManager::with_prefix(
-        db.clone(),
-        runtime.clone() as Arc<dyn Runtime>,
-        &section.prefix,
-    ));
+    let sessions = Arc::new(
+        SessionManager::with_prefix(
+            db.clone(),
+            runtime.clone() as Arc<dyn Runtime>,
+            &section.prefix,
+        )
+        .with_status_config(agora::status::MachineConfig {
+            idle_after: settings.idle_after,
+            silence_after: settings.hook_silence_after,
+            tick: settings.detector_interval,
+            ..agora::status::MachineConfig::default()
+        }),
+    );
     sessions.runtime_status().observe(&version_probe);
     // reconcile 会起子进程：放 blocking 线程，不占 tokio worker。
     let sessions_for_reconcile = sessions.clone();
