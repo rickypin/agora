@@ -5,6 +5,7 @@
  */
 import { useSyncExternalStore } from "react";
 import { EventsClient, type EventsClientOptions, type SessionRow, type UnregisteredRow } from "./events";
+import type { Incoming } from "./notify";
 
 export class SessionStore {
   private rows: SessionRow[] = [];
@@ -13,10 +14,13 @@ export class SessionStore {
   readonly client: EventsClient;
   /** onChange 次数（测试断言用）。 */
   changes = 0;
+  /** `notification` 事件的出口；Workspace 装上 Notifier（web/src/notify.ts）。 */
+  onNotification: ((n: Incoming) => void) | null = null;
 
-  constructor(opts: Omit<EventsClientOptions, "onChange" | "onUnregistered"> = {}) {
+  constructor(opts: Omit<EventsClientOptions, "onChange" | "onUnregistered" | "onNotification"> = {}) {
     this.client = new EventsClient({
       ...opts,
+      onNotification: (n) => this.onNotification?.(n),
       onChange: (map) => {
         this.changes += 1;
         this.rows = [...map.values()];

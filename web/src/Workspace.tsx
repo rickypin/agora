@@ -5,6 +5,7 @@ import { CommandPalette } from "./CommandPalette";
 import { fuzzyFilter } from "./fuzzy";
 import { isDesktop, matchShortcut } from "./keys";
 import { NewAgentDialog } from "./NewAgentDialog";
+import { browserDeps, Notifier, type NotifierDeps, type Permission } from "./notify";
 import { Respond } from "./Respond";
 import { SessionSettings } from "./SessionSettings";
 import { rowHaystack, rowName, Sidebar } from "./Sidebar";
@@ -19,10 +20,12 @@ interface Props {
   catalog?: CatalogApi;
   /** 测试注入：侧栏行渲染计数。 */
   onRowRender?: (id: string) => void;
+  /** 测试注入：浏览器通知的构造器与权限。 */
+  notifyDeps?: NotifierDeps;
 }
 
 /** Screen A 的侧栏（Attention Dashboard）+ Screen B：Tabs + 终端 + Session Settings。 */
-export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender }: Props) {
+export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender, notifyDeps }: Props) {
   const store = useMemo(() => given ?? new SessionStore(), [given]);
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
   const catalog = useMemo(() => givenCatalog ?? catalogApi(), [givenCatalog]);
@@ -38,10 +41,21 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   // 这时开 Tab 会被 prune（列表里还没有这一行）立刻关掉。
   const [pendingOpen, setPendingOpen] = useState<string | null>(null);
 
+  // 浏览器通知（MISSION §6.6；A18）：点击回到该行——openTab 让它成为侧栏 active 行，WAITING /
+  // TURN_DONE 的就地回答区就随行展开（Sidebar 只给 active 行渲染 renderExpanded）。
+  const notifier = useMemo(
+    () => new Notifier(notifyDeps ?? browserDeps(), (id) => dispatch({ type: "open", id })),
+    [notifyDeps],
+  );
+  const [notifyPerm, setNotifyPerm] = useState<Permission>(() => notifier.permission());
   useEffect(() => {
+    store.onNotification = (n) => notifier.show(n);
     store.start();
-    return () => store.stop();
-  }, [store]);
+    return () => {
+      store.onNotification = null;
+      store.stop();
+    };
+  }, [store, notifier]);
 
   const byId = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   useEffect(() => {
@@ -138,6 +152,15 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         onAdopt={adopt}
       />
       <section className="main">
+        {notifyPerm === "default" && (
+          <div className="notify-ask" data-testid="notify-ask">
+            <span>agent 需要你时弹浏览器通知？</span>
+            <button onClick={() => void notifier.request().then(setNotifyPerm)}>允许通知</button>
+            <button onClick={() => setNotifyPerm("denied")} title="本次不问；浏览器设置里随时可开">
+              以后再说
+            </button>
+          </div>
+        )}
         <Tabs
           open={tabs.open}
           active={tabs.active}

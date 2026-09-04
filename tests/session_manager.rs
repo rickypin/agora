@@ -391,3 +391,96 @@ fn conversation_id_change_resends_the_row() {
         "{events:?}"
     );
 }
+
+#[test]
+fn differ_notifies_once_per_transition_out_of_running_and_obeys_the_switch() {
+    // agora-dvh.11（A18）：进程退出 → RUNNING → FINISHED / FAILED 各发一条 notification，
+    // 跟在 status_changed 后面；同一状态再来一轮不重复；notifications.enabled=false 只静音通知。
+    use agora::events::{Differ, Event};
+    let (m, rt, db) = mgr();
+    let ok = m.create(&new_session("ok")).unwrap();
+    let bad = m.create(&new_session("bad")).unwrap();
+    backdate_spawn(&db, &ok.record.id);
+    backdate_spawn(&db, &bad.record.id);
+    let mut differ = Differ::default();
+    assert!(differ.step("n", &m.list().unwrap()).is_empty());
+    rt.set_dead(ok.record.runtime_ref.as_deref().unwrap(), Exit::Code(0));
+    rt.set_dead(bad.record.runtime_ref.as_deref().unwrap(), Exit::Code(1));
+    let events = differ.step("n", &m.list().unwrap());
+    let mut notes: Vec<(String, String, String)> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Notification {
+                id, title, status, ..
+            } => Some((
+                id.clone().unwrap(),
+                title.clone(),
+                format!("{:?}", status.unwrap()),
+            )),
+            _ => None,
+        })
+        .collect();
+    notes.sort();
+    let mut want = vec![
+        (
+            format!("n:{}", bad.record.id),
+            "Shell / bad @ n failed".to_owned(),
+            "Failed".to_owned(),
+        ),
+        (
+            format!("n:{}", ok.record.id),
+            "Shell / ok @ n finished".to_owned(),
+            "Finished".to_owned(),
+        ),
+    ];
+    want.sort();
+    assert_eq!(notes, want, "{events:?}");
+    // 通知紧跟在同一会话的 status_changed 之后（客户端先改行再弹）。
+    let idx = |pred: &dyn Fn(&Event) -> bool| events.iter().position(pred).unwrap();
+    let ok_gid = format!("n:{}", ok.record.id);
+    assert!(
+        idx(&|e| matches!(e, Event::StatusChanged { id, .. } if *id == ok_gid))
+            < idx(&|e| matches!(e, Event::Notification { id: Some(id), .. } if *id == ok_gid))
+    );
+    // 抖动：下一轮什么都没变 → 无事件。
+    assert!(differ.step("n", &m.list().unwrap()).is_empty());
+
+    // 用户自己 Kill 的（RUNNING → FINISHED，reason killed by user）不通知：是他自己干的。
+    let k = m.create(&new_session("killed")).unwrap();
+    backdate_spawn(&db, &k.record.id);
+    differ.step("n", &m.list().unwrap());
+    m.kill(&k.record.id).unwrap();
+    rt.set_dead(k.record.runtime_ref.as_deref().unwrap(), Exit::Code(143));
+    let events = differ.step("n", &m.list().unwrap());
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::StatusChanged {
+            status: Status::Finished,
+            ..
+        }
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::Notification { .. })),
+        "{events:?}"
+    );
+
+    // 开关关掉：状态事件照发，通知一条没有。
+    let (m2, rt2, db2) = mgr();
+    let v = m2.create(&new_session("quiet")).unwrap();
+    backdate_spawn(&db2, &v.record.id);
+    let mut muted = Differ::new(false);
+    muted.step("n", &m2.list().unwrap());
+    rt2.set_dead(v.record.runtime_ref.as_deref().unwrap(), Exit::Code(1));
+    let events = muted.step("n", &m2.list().unwrap());
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::StatusChanged { .. })));
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::Notification { .. })),
+        "{events:?}"
+    );
+}

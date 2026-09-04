@@ -53,7 +53,8 @@ export type AgoraEvent =
       status_since?: number;
     }
   | { type: "decision_resolved"; id: string; tool_use_id: string; via: string }
-  | { type: "notification"; id: string | null; title: string; body: string }
+  /** 浏览器通知（MISSION §6.6）：服务端只在四种转换上发；`status` 是转换后的状态。 */
+  | { type: "notification"; id: string | null; title: string; body: string; status?: string | null }
   | { type: "resync" };
 
 /** 最小的 WebSocket 形态，便于测试用假对象。 */
@@ -77,7 +78,7 @@ export interface EventsClientOptions {
   reconnectMaxMs?: number;
   /** 视图变了才回调；内容相等不重渲染由调用方比较。 */
   onChange: (sessions: Map<string, SessionRow>) => void;
-  onNotification?: (n: { id: string | null; title: string; body: string }) => void;
+  onNotification?: (n: { id: string | null; title: string; body: string; status?: string | null }) => void;
   /** 挂起的决定被终端 / 超时 / 退出解除：就地回答的面板据此收起（ADR-002 D5）。 */
   onDecisionResolved?: (e: { id: string; tool_use_id: string; via: string }) => void;
   /** 未登记会话只随全量快照来（事件流不推它们）；每次 resync 后回调。 */

@@ -99,6 +99,7 @@ impl TmuxNode {
             self.state.events.clone(),
             self.state.node.clone(),
             Duration::from_millis(200),
+            true,
         ));
         let server = tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;

@@ -229,6 +229,7 @@ async fn serve() -> i32 {
         state.events.clone(),
         state.node.clone(),
         settings.detector_interval,
+        settings.raw.notifications.enabled,
     ));
     tracing::info!(component = "main", node = %settings.node_id, "daemon 就绪");
 

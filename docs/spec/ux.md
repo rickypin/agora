@@ -84,6 +84,14 @@ RUNNING
   ↳ 改完了，144 个 e2e 全绿，要不要 push？
 ```
 
+## 浏览器通知（MISSION §6.6；A18）
+
+`web/src/notify.ts`（agora-dvh.11）。该不该发是服务端的事（`notification` 事件只在 RUNNING → WAITING / TURN_DONE / FINISHED / FAILED 上来，`docs/spec/api.md`）；前端只管权限、弹、点击：
+
+- 权限问一次：`Notification.permission` 还是 `default` 时主区顶部有一条"agent 需要你时弹浏览器通知？ [允许通知] [以后再说]"，答过（granted / denied）或点了"以后再说"就没了，之后不再弹权限框；denied 时通知静默丢掉。
+- 弹：`tag = 会话 id`，同一会话在通知中心只占一格（最新的转换赢），多开几个标签页也只显示一条。
+- 点击：窗口拉到前面，该行成为侧栏 active 行——WAITING / TURN_DONE 的就地回答区随行展开（Allow / Deny / 下一条指令），不是把人扔进终端。
+
 ## New Agent 对话框线框（MISSION §6.4）
 
 ```

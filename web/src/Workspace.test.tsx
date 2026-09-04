@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { catalogApi, sessionApi, type FetchLike } from "./api";
 import type { SessionRow, SocketLike, UnregisteredRow } from "./events";
+import type { NotificationLike, NotifierDeps, Permission } from "./notify";
 import { KILL_BODY } from "./SessionSettings";
 import { SessionStore } from "./store";
 import { Workspace } from "./Workspace";
@@ -37,10 +38,26 @@ class FakeSocket implements SocketLike {
 }
 
 function row(id: string, status = "running"): SessionRow {
-  return { id, node: "n", status, alive: true, display_name: id.slice(2), agent_type: "claude", reason: null };
+  return { id, node: "n", status, alive: true, display_name: id.slice(2), agent_type: "claude", reason: null, respond_via: "hook" };
 }
 
-function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = []) {
+/** 假的 Notification API：记下弹了什么，点击靠测试自己触发 onclick。 */
+function fakeNotify(permission: Permission) {
+  const created: { title: string; body: string; tag: string; note: NotificationLike }[] = [];
+  const deps: NotifierDeps = {
+    permission: () => permission,
+    request: async () => (permission = "granted"),
+    create: (title, opts) => {
+      const note: NotificationLike = { onclick: null, close() {} };
+      created.push({ title, body: opts.body, tag: opts.tag, note });
+      return note;
+    },
+    focus: () => {},
+  };
+  return { deps, created };
+}
+
+function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?: NotifierDeps) {
   const sock = new FakeSocket();
   const store = new SessionStore({
     connect: () => sock,
@@ -66,7 +83,13 @@ function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = []) {
   };
   const renders: string[] = [];
   const ui = render(
-    <Workspace store={store} api={sessionApi(f)} catalog={catalogApi(f)} onRowRender={(id) => renders.push(id)} />,
+    <Workspace
+      store={store}
+      api={sessionApi(f)}
+      catalog={catalogApi(f)}
+      onRowRender={(id) => renders.push(id)}
+      notifyDeps={notify ?? fakeNotify("denied").deps}
+    />,
   );
   return { ui, store, sock, requests, renders, setKill: (fn: typeof killResponse) => (killResponse = fn) };
 }
@@ -93,6 +116,50 @@ afterEach(() => {
 });
 
 describe("Workspace", () => {
+  it("a notification event pops a browser notification whose click lands on the row's in-place respond (A18)", async () => {
+    const n = fakeNotify("granted");
+    const t = setup([row("n:a"), row("n:b")], [], n.deps);
+    await online(t);
+    expect(screen.queryByTestId("notify-ask")).toBeNull(); // 已答过：不再问
+    // 服务端先改行再通知（同一帧）：行变 WAITING，通知带 status。
+    await act(async () => {
+      t.sock.send([
+        { type: "status_changed", id: "n:b", status: "waiting", source: "hook", reason: "permission", alive: true, detail: "Bash: rm -rf x" },
+        { type: "notification", id: "n:b", title: "Claude / b @ n needs input", body: "Bash: rm -rf x", status: "waiting" },
+      ]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(n.created.map((c) => [c.title, c.body, c.tag])).toEqual([["Claude / b @ n needs input", "Bash: rm -rf x", "n:b"]]);
+    expect(screen.queryByTestId("respond-n:b")).toBeNull(); // 还没点：不抢焦点
+    await act(async () => {
+      n.created[0]!.note.onclick?.({});
+    });
+    // 点击：该行成为 active，就地回答区随行展开（不是终端的事）。
+    expect(screen.getByTestId("respond-n:b")).toBeTruthy();
+    expect(screen.getByTestId("allow")).toBeTruthy();
+    expect(screen.getByTestId("tab-n:b")).toBeTruthy();
+  });
+
+  it("asks for notification permission once, in a banner that goes away after the answer", async () => {
+    const n = fakeNotify("default");
+    const t = setup([row("n:a")], [], n.deps);
+    await online(t);
+    // 没权限：通知静默丢掉，不抛。
+    await act(async () => {
+      t.sock.send([{ type: "notification", id: "n:a", title: "t", body: "", status: "failed" }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(n.created).toEqual([]);
+    fireEvent.click(within(screen.getByTestId("notify-ask")).getByText("允许通知"));
+    await flush();
+    expect(screen.queryByTestId("notify-ask")).toBeNull();
+    await act(async () => {
+      t.sock.send([{ type: "notification", id: "n:a", title: "t2", body: "", status: "failed" }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(n.created.map((c) => c.title)).toEqual(["t2"]);
+  });
+
   it("opening / switching / closing tabs only mounts and unmounts terminals, never writes to the API (A20)", async () => {
     const t = setup([row("n:a"), row("n:b")]);
     await online(t);

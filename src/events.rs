@@ -58,11 +58,14 @@ pub enum Event {
         tool_use_id: String,
         via: &'static str,
     },
-    /// 通知（WAITING 等）在 M1b 的状态层接上；形态先定下来。
+    /// 浏览器通知（MISSION §6.6；A18）：只在 RUNNING → WAITING / TURN_DONE / FINISHED / FAILED
+    /// 这四种转换上发一条；`status` 是转换后的状态，前端据此决定点击落到哪（WAITING →
+    /// 就地回答）。`id` 为 None 是不针对会话的系统通知（暂未使用，形态保留）。
     Notification {
         id: Option<String>,
         title: String,
         body: String,
+        status: Option<Status>,
     },
     /// 服务端丢了该客户端的事件：客户端必须重拉全量快照。
     Resync,
@@ -154,13 +157,90 @@ fn seen(v: &SessionView) -> Seen {
 }
 
 /// 求差器：喂它每一轮的列表，吐出该发的事件。与 tokio 无关，便于单测。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Differ {
     last: HashMap<String, Seen>,
     primed: bool,
+    /// `notifications.enabled`：关掉后只是不发 `notification`，状态事件照发。
+    notifications: bool,
+}
+
+impl Default for Differ {
+    fn default() -> Self {
+        Differ::new(true)
+    }
+}
+
+/// 四种值得打扰人的转换（MISSION §6.6 的表）：都从 RUNNING 出发。RUNNING → IDLE / UNKNOWN 不算
+/// （那是 agora 没把握，不是 agent 需要人）；STARTING → FAILED 也不算（起不来会立刻在列表里看到）；
+/// TURN_DONE → FINISHED 也不算（2026-09-04 实测：Claude 的 /exit 与 Kill 都是从 TURN_DONE 退出，
+/// 人刚收过 "finished its turn"，再来一条 "finished" 只是噪音）。用户自己按的 Kill（reason
+/// `killed by user…`）即使从 RUNNING 落到 FINISHED 也不通知：是他自己干的。
+/// 驻留时间在状态层已经处理（ADR-002 D1），这里看到的转换都是稳定的；同一会话每次真的从
+/// RUNNING 落到这四态各发一条，不去重——每次权限请求都需要人。
+/// 一次状态转换的事实（求差器已比对过的那一行）。
+#[derive(Debug, Clone, Copy)]
+pub struct Transition<'a> {
+    pub id: &'a str,
+    pub agent_type: &'a str,
+    /// 用户起的名字（display_name），不是 pane title。
+    pub name: &'a str,
+    pub node: &'a str,
+    pub prev: Status,
+    pub next: Status,
+    pub reason: Option<&'a str>,
+    pub detail: Option<&'a str>,
+}
+
+pub fn notification_for(t: Transition<'_>) -> Option<Event> {
+    let Transition {
+        id,
+        agent_type,
+        name,
+        node,
+        prev,
+        next,
+        reason,
+        detail,
+    } = t;
+    if prev != Status::Running || reason.is_some_and(|r| r.starts_with("killed by user")) {
+        return None;
+    }
+    let verb = match next {
+        Status::Waiting => "needs input",
+        Status::TurnDone => "finished its turn",
+        Status::Finished => "finished",
+        Status::Failed => "failed",
+        _ => return None,
+    };
+    Some(Event::Notification {
+        id: Some(id.to_owned()),
+        title: format!("{} / {name} @ {node} {verb}", agent_label(agent_type)),
+        body: detail
+            .map(|d| d.lines().next().unwrap_or("").trim().to_owned())
+            .unwrap_or_default(),
+        status: Some(next),
+    })
+}
+
+/// 通知标题里的 agent 名首字母大写（§6.6 的表：agent_type 小写，标题里是专名）。
+fn agent_label(agent_type: &str) -> String {
+    let mut c = agent_type.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
 }
 
 impl Differ {
+    pub fn new(notifications: bool) -> Self {
+        Differ {
+            last: HashMap::new(),
+            primed: false,
+            notifications,
+        }
+    }
+
     /// 第一轮只建立基线不发事件：daemon 刚起来时客户端本来就要拉全量。
     pub fn step(&mut self, node: &str, views: &[SessionView]) -> Vec<Event> {
         let mut now: HashMap<String, Seen> = HashMap::with_capacity(views.len());
@@ -183,18 +263,39 @@ impl Differ {
                         session: export(node, v),
                     })
                 }
-                Some(prev) if *prev != s => out.push(Event::StatusChanged {
-                    id: gid.clone(),
-                    status: s.status,
-                    source: s.source,
-                    reason: s.reason.clone(),
-                    alive: s.alive,
-                    detail: s.detail.clone(),
-                    prompt: s.prompt.clone(),
-                    progress: s.progress.clone(),
-                    preview: s.preview.clone(),
-                    status_since: s.status_since,
-                }),
+                Some(prev) if *prev != s => {
+                    out.push(Event::StatusChanged {
+                        id: gid.clone(),
+                        status: s.status,
+                        source: s.source,
+                        reason: s.reason.clone(),
+                        alive: s.alive,
+                        detail: s.detail.clone(),
+                        prompt: s.prompt.clone(),
+                        progress: s.progress.clone(),
+                        preview: s.preview.clone(),
+                        status_since: s.status_since,
+                    });
+                    if self.notifications {
+                        // 标题里用用户起的名字而不是 pane title：后者是 agent 随手改的
+                        // （"✳ 创建文件 x.txt"），2026-09-04 实测通知里读起来像任务不像会话。
+                        let name = if v.record.display_name.is_empty() {
+                            v.name.as_str()
+                        } else {
+                            v.record.display_name.as_str()
+                        };
+                        out.extend(notification_for(Transition {
+                            id: &gid,
+                            agent_type: &v.record.agent_type,
+                            name,
+                            node,
+                            prev: prev.status,
+                            next: s.status,
+                            reason: s.reason.as_deref(),
+                            detail: s.detail.as_deref(),
+                        }));
+                    }
+                }
                 _ => {}
             }
             now.insert(gid, s);
@@ -238,8 +339,9 @@ pub async fn watch(
     bus: EventBus,
     node: Arc<str>,
     interval: Duration,
+    notifications: bool,
 ) {
-    let mut differ = Differ::default();
+    let mut differ = Differ::new(notifications);
     let mut tick = tokio::time::interval(interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -293,6 +395,76 @@ mod tests {
                 status("a", Status::Running),
                 status("c", Status::Running),
             ]
+        );
+    }
+
+    #[test]
+    fn notifications_only_on_the_four_transitions_out_of_running() {
+        use Status::*;
+        let n = |prev, next| {
+            notification_for(Transition {
+                id: "n:1",
+                agent_type: "myagent",
+                name: "frontend",
+                node: "zuan",
+                prev,
+                next,
+                reason: None,
+                detail: Some("Bash: rm -rf x\n第二行"),
+            })
+        };
+        let title = |e: Option<Event>| match e {
+            Some(Event::Notification {
+                title,
+                body,
+                status,
+                ..
+            }) => (title, body, status),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            title(n(Running, Waiting)),
+            (
+                "Myagent / frontend @ zuan needs input".to_owned(),
+                "Bash: rm -rf x".to_owned(),
+                Some(Waiting)
+            )
+        );
+        assert_eq!(
+            title(n(Running, TurnDone)).0,
+            "Myagent / frontend @ zuan finished its turn"
+        );
+        assert_eq!(
+            title(n(Running, Finished)).0,
+            "Myagent / frontend @ zuan finished"
+        );
+        assert_eq!(
+            title(n(Running, Failed)).0,
+            "Myagent / frontend @ zuan failed"
+        );
+        for (p, q) in [
+            (Running, Idle),
+            (Running, Unknown),
+            (Running, Running),
+            (Starting, Failed),
+            (Waiting, TurnDone),
+            (Idle, Waiting),
+        ] {
+            assert!(n(p, q).is_none(), "{p:?} → {q:?} 不该通知");
+        }
+        assert!(
+            notification_for(Transition {
+                id: "n:1",
+                agent_type: "myagent",
+                name: "f",
+                node: "z",
+                prev: Running,
+                next: Finished,
+                reason: Some("killed by user (exit code 143)"),
+                detail: None,
+            })
+            .is_none(),
+            "用户自己 Kill 的不通知"
         );
     }
 
