@@ -31,8 +31,10 @@ pub enum Decision {
 /// 一条事件到达时会解除哪些挂起（ADR-002 D5）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Release {
-    /// 同 `tool_use_id` 的 PostToolUse / PostToolUseFailure / PermissionDenied：终端里答了。
-    ToolUse(String),
+    /// 同工具的 PostToolUse / PostToolUseFailure / PermissionDenied：终端里答了。列表是候选键：
+    /// `tool_use_id` 与 `tool_name`——实测 2026-09-04 Claude 2.1.260 的 PermissionRequest **不带**
+    /// `tool_use_id`，挂起只能按 `tool_name` 键，解除时两个键都试。
+    ToolUse(Vec<String>),
     /// Stop / SessionEnd：这一轮结束，所有挂起都过期。
     Session,
     None,
@@ -78,20 +80,42 @@ pub(crate) fn permission_output(decision: &Decision) -> Option<String> {
     )
 }
 
-/// 通用的挂起判定：只有能替用户批准的宿主的 `PermissionRequest`。没带 tool_use_id 的
-/// （不该发生）也挂，用事件名占位，免得一个会话里只能挂一个。
+/// 挂起 / 待决的键：`tool_use_id`，没有就 `tool_name`（Claude 2.1.260 的 PermissionRequest
+/// 实测只有后者），再没有用事件名占位，免得一个会话里只能挂一个。按 tool_name 键的代价：
+/// 并行的两个同名工具分不开，后到的接替先到的（`Receiver::hold` 同键接替）。
+pub(crate) fn decision_key(payload: &Value) -> String {
+    tool_use_id(payload)
+        .or_else(|| str_of(payload, &["tool_name", "toolName"]).map(str::to_owned))
+        .unwrap_or_else(|| "PermissionRequest".into())
+}
+
+/// 通用的挂起判定：只有能替用户批准的宿主的 `PermissionRequest`。
 pub(crate) fn generic_hold_key(decision_via_hook: bool, payload: &Value) -> Option<String> {
     if !decision_via_hook || event_name(payload) != Some("PermissionRequest") {
         return None;
     }
-    Some(tool_use_id(payload).unwrap_or_else(|| "PermissionRequest".into()))
+    Some(decision_key(payload))
+}
+
+/// PostToolUse 等解除时的候选键：id 与工具名都算。
+pub(crate) fn release_keys(payload: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = tool_use_id(payload).into_iter().collect();
+    if let Some(name) = str_of(payload, &["tool_name", "toolName"]) {
+        keys.push(name.to_owned());
+    }
+    keys
 }
 
 pub(crate) fn generic_release(payload: &Value) -> Release {
     match event_name(payload) {
-        Some("PostToolUse" | "PostToolUseFailure" | "PermissionDenied") => tool_use_id(payload)
-            .map(Release::ToolUse)
-            .unwrap_or(Release::None),
+        Some("PostToolUse" | "PostToolUseFailure" | "PermissionDenied") => {
+            let keys = release_keys(payload);
+            if keys.is_empty() {
+                Release::None
+            } else {
+                Release::ToolUse(keys)
+            }
+        }
         Some("Stop" | "SessionEnd") => Release::Session,
         _ => Release::None,
     }
@@ -144,11 +168,15 @@ impl AgentHooks for GenericHooks {
             )),
             Some("PreToolUse") => out.push(AgoraEvent::Activity(tool.to_owned())),
             Some("PostToolUse" | "PostToolUseFailure" | "PermissionDenied") => {
-                out.push(AgoraEvent::DecisionResolved(tool_use_id(payload)));
+                out.extend(
+                    release_keys(payload)
+                        .into_iter()
+                        .map(|k| AgoraEvent::DecisionResolved(Some(k))),
+                );
                 out.push(AgoraEvent::Activity(tool.to_owned()));
             }
             Some("PermissionRequest") => out.push(AgoraEvent::DecisionNeeded {
-                tool_use_id: tool_use_id(payload).unwrap_or_default(),
+                tool_use_id: decision_key(payload),
                 summary: tool.to_owned(),
             }),
             Some("Notification") => {
@@ -162,7 +190,7 @@ impl AgentHooks for GenericHooks {
                     // 不能的（Grok）它就是 WAITING(decision) 的唯一来源。
                     Some("permission_prompt") if !self.decision_via_hook => {
                         out.push(AgoraEvent::DecisionNeeded {
-                            tool_use_id: tool_use_id(payload).unwrap_or_default(),
+                            tool_use_id: decision_key(payload),
                             summary: str_of(payload, &["message"]).unwrap_or(tool).to_owned(),
                         })
                     }
@@ -238,6 +266,7 @@ mod tests {
             CAN.parse(&json!({"hookEventName":"PostToolUse","toolUseId":"t","toolName":"Bash"})),
             vec![
                 AgoraEvent::DecisionResolved(Some("t".into())),
+                AgoraEvent::DecisionResolved(Some("Bash".into())),
                 AgoraEvent::Activity("Bash".into())
             ]
         );
@@ -251,7 +280,7 @@ mod tests {
                 &json!({"hookEventName":"Notification","notificationType":"permission_prompt","message":"needs you"})
             ),
             vec![AgoraEvent::DecisionNeeded {
-                tool_use_id: String::new(),
+                tool_use_id: "PermissionRequest".into(),
                 summary: "needs you".into()
             }]
         );
@@ -279,6 +308,12 @@ mod tests {
         assert_eq!(CAN.hold_key(&pr).as_deref(), Some("t1"));
         assert_eq!(CANNOT.hold_key(&pr), None);
         assert_eq!(CAN.hold_key(&json!({ "hook_event_name": "Stop" })), None);
+        // 2.1.260 实测：没有 tool_use_id，按 tool_name 键；什么都没有才用事件名占位。
+        assert_eq!(
+            CAN.hold_key(&json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash" }))
+                .as_deref(),
+            Some("Bash")
+        );
         assert_eq!(
             CAN.hold_key(&json!({ "hook_event_name": "PermissionRequest" }))
                 .as_deref(),
@@ -289,12 +324,14 @@ mod tests {
     #[test]
     fn releases_follow_adr_002_d5() {
         assert_eq!(
-            generic_release(&json!({ "hook_event_name": "PostToolUse", "tool_use_id": "t1" })),
-            Release::ToolUse("t1".into())
+            generic_release(
+                &json!({ "hook_event_name": "PostToolUse", "tool_use_id": "t1", "tool_name": "Bash" })
+            ),
+            Release::ToolUse(vec!["t1".into(), "Bash".into()])
         );
         assert_eq!(
             generic_release(&json!({ "hookEventName": "PermissionDenied", "toolUseId": "t2" })),
-            Release::ToolUse("t2".into())
+            Release::ToolUse(vec!["t2".into()])
         );
         assert_eq!(
             generic_release(&json!({ "hook_event_name": "Stop" })),

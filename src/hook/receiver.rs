@@ -122,8 +122,10 @@ impl Receiver {
             )));
         };
         match hooks.release_for(&delivery.payload) {
-            Release::ToolUse(id) => {
-                self.resolve(&key, &id, Decision::None);
+            Release::ToolUse(keys) => {
+                for k in keys {
+                    self.resolve(&key, &k, Decision::None);
+                }
             }
             Release::Session => self.resolve_session(&key),
             Release::None => {}

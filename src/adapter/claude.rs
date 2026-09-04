@@ -1,7 +1,8 @@
 //! Claude Code adapter（ADR-002 D2/D4/D7；agora-dvh.5）。
 //!
-//! 事件表按 2.1.258 实测的 payload 键集合（agora-90t.3 注记）与 Claude Code hooks 文档：
-//! 键全是 snake_case，`session_id` 是对话 id，`transcript_path` 只存路径不解析（D8）。
+//! 事件表按 2.1.258 / 2.1.260 实测的 payload 键集合（agora-90t.3 注记；2026-09-04 真录）与
+//! Claude Code hooks 文档：键全是 snake_case，`session_id` 是对话 id，`transcript_path` 只存
+//! 路径不解析（D8）。实测反直觉处：`PermissionRequest` 没有 `tool_use_id`，只有 `tool_name`。
 //! fixture 在 `testdata/claude/<version>/hooks/`，回放器见 `super::replay`。
 
 use std::path::PathBuf;
@@ -12,8 +13,8 @@ use serde_json::Value;
 use crate::status::AgoraEvent;
 
 use super::hooks::{
-    self, event_name, generic_hold_key, generic_release, permission_output, str_of, tool_use_id,
-    Decision, Release,
+    self, decision_key, event_name, generic_hold_key, generic_release, permission_output,
+    release_keys, str_of, tool_use_id, Decision, Release,
 };
 use super::{
     program_is, Adapter, AgentFallback, AgentHooks, AgentIdentity, HookInstall, Version,
@@ -210,14 +211,17 @@ impl AgentHooks for Claude {
             Some("ElicitationResult") => out.push(AgoraEvent::DecisionResolved(Some(
                 id().unwrap_or_else(|| "Elicitation".to_owned()),
             ))),
+            // 解除按 id 与工具名两个键：PermissionRequest 实测（2.1.260）只带 tool_name。
             Some("PostToolUse" | "PostToolUseFailure" | "PermissionDenied") => {
-                out.push(AgoraEvent::DecisionResolved(Some(
-                    id().unwrap_or_else(|| tool.to_owned()),
-                )));
+                out.extend(
+                    release_keys(payload)
+                        .into_iter()
+                        .map(|k| AgoraEvent::DecisionResolved(Some(k))),
+                );
                 out.push(AgoraEvent::Activity(tool.to_owned()));
             }
             Some("PermissionRequest") => out.push(AgoraEvent::DecisionNeeded {
-                tool_use_id: id().unwrap_or_default(),
+                tool_use_id: decision_key(payload),
                 summary: tool.to_owned(),
             }),
             // permission_prompt 只是 PermissionRequest 的确认（挂起已经登记）；idle_prompt
