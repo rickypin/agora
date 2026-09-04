@@ -35,6 +35,10 @@ export function SessionSettings({ row, api, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [restartNote, setRestartNote] = useState<string | null>(null);
+  /** 确认之后到节点返回之前：Kill 走 TERM → 5 s → KILL 宽限（ADR-001 D2），shell 会吃满，
+   * 只把按钮变灰会让人以为没点上（agora-9nv）。 */
+  const [ending, setEnding] = useState<"kill" | "restart" | null>(null);
+  const canRestart = typeof row.command === "string" && row.command.trim() !== "";
 
   useEffect(() => {
     setName(String(row.display_name ?? rowName(row)));
@@ -44,8 +48,10 @@ export function SessionSettings({ row, api, onClose }: Props) {
     setBusy(true);
     setError(null);
     setRestartNote(null);
+    if (confirmed) setEnding(kind);
     const r = await (kind === "kill" ? api.kill(row.id, confirmed) : api.restart(row.id, confirmed));
     setBusy(false);
+    setEnding(null);
     if (r.ok) {
       setPending(null);
       if (kind === "restart") setRestartNote(restartNoteOf(r.value));
@@ -100,7 +106,11 @@ export function SessionSettings({ row, api, onClose }: Props) {
         </button>
       </form>
       <div className="settings-row actions">
-        <button onClick={() => void run("restart", false)} disabled={busy}>
+        <button
+          onClick={() => void run("restart", false)}
+          disabled={busy || !canRestart}
+          title={canRestart ? undefined : "采纳的会话没记下启动命令，无法 Restart；请在终端里自己重启"}
+        >
           Restart
         </button>
         <button className="danger" onClick={() => void run("kill", false)} disabled={busy} data-testid="kill">
@@ -116,6 +126,11 @@ export function SessionSettings({ row, api, onClose }: Props) {
         ；Delete metadata 不杀进程。
       </p>
       {restartNote && <p className="muted" data-testid="restart-note">{restartNote}</p>}
+      {ending && (
+        <p className="muted" data-testid="ending-note">
+          {ending === "kill" ? "正在结束…" : "正在重启…"}（先请进程退出，最多等 7 秒）
+        </p>
+      )}
       {error && <p className="error">{error}</p>}
       {pending && (
         <ConfirmDialog

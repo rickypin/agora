@@ -49,6 +49,10 @@ pub enum SessionError {
     /// adopt 一个已经登记过的运行时会话。
     #[error("运行时会话已登记: {0}")]
     AlreadyRegistered(String),
+    /// 采纳的会话没有记下启动命令（运行时不报 pane 的起始命令），Restart 不知道该重跑什么——
+    /// 空命令会让运行时起一个交互 shell，与"同一会话内重生 agent"的语义不符（agora-vto）。
+    #[error("会话没有记下启动命令，无法 Restart（采纳的会话请在终端里自己重启）: {0}")]
+    NoCommand(String),
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
     #[error(transparent)]
@@ -779,6 +783,10 @@ impl SessionManager {
     ) -> Result<SessionView, SessionError> {
         let rec = self.record(id)?;
         let r#ref = self.require_ref(&rec)?;
+        // 覆盖命令是从库里的命令算出来的（API 层的 resume 形态）；库里没有就什么都算不出。
+        let Some(base) = rec.command.clone().filter(|c| !c.trim().is_empty()) else {
+            return Err(SessionError::NoCommand(rec.id.clone()));
+        };
         let epoch = rec.epoch + 1;
         let mut env = env.to_vec();
         env.push(("AGORA_SESSION_ID".into(), rec.id.clone()));
@@ -786,9 +794,9 @@ impl SessionManager {
         let spec = LaunchSpec {
             name: runtime_name(&r#ref),
             command: command
+                .filter(|c| !c.trim().is_empty())
                 .map(str::to_owned)
-                .or_else(|| rec.command.clone())
-                .unwrap_or_default(),
+                .unwrap_or(base),
             cwd: PathBuf::from(rec.working_directory.clone().unwrap_or_else(|| "/".into())),
             env,
             size: Size::default(),

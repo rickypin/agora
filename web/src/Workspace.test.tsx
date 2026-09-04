@@ -65,7 +65,10 @@ function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?
     coalesceMs: 0,
   });
   const requests: { url: string; method: string; body: string | undefined }[] = [];
-  let killResponse: () => { status: number; body: unknown } = () => ({ status: 200, body: {} });
+  let killResponse: () => { status: number; body: unknown } | Promise<{ status: number; body: unknown }> = () => ({
+    status: 200,
+    body: {},
+  });
   const f: FetchLike = async (url, init) => {
     const method = init.method ?? "GET";
     requests.push({ url, method, body: init.body as string | undefined });
@@ -78,7 +81,7 @@ function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?
     if (url.startsWith("/api/system")) return json({ node: "n" });
     if (url === "/api/sessions" && method === "POST") return json({ id: "n:new" }, 201);
     if (url === "/api/sessions/adopt") return json({ id: "n:adopted" }, 201);
-    const r = killResponse();
+    const r = await killResponse();
     return json(r.body, r.status);
   };
   const renders: string[] = [];
@@ -205,14 +208,31 @@ describe("Workspace", () => {
     fireEvent.click(screen.getByTestId("kill"));
     await flush();
     expect(screen.getByRole("dialog").textContent).toContain(KILL_BODY);
-    t.setKill(() => ({ status: 200, body: {} }));
+    // 确认后节点要等 TERM → 5 s 宽限（ADR-001 D2），这几秒里要有字说明在结束（agora-9nv）。
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    t.setKill(() => gate.then(() => ({ status: 200, body: {} })));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Kill" }));
     await flush();
+    expect(screen.getByTestId("ending-note").textContent).toContain("正在结束");
+    expect(screen.getByTestId("kill")).toHaveProperty("disabled", true);
+    release();
+    await flush();
+    expect(screen.queryByTestId("ending-note")).toBeNull();
     expect(t.requests.map((r) => [r.method, r.url, r.body])).toEqual([
       ["POST", "/api/sessions/n%3Aa/kill", "{}"],
       ["POST", "/api/sessions/n%3Aa/kill", JSON.stringify({ confirmed: true })],
     ]);
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("Restart is disabled for adopted sessions that never recorded a command (agora-vto)", async () => {
+    const t = setup([{ ...row("n:a"), origin: "adopted", command: null }]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("row-n:a"));
+    fireEvent.click(screen.getByText("Settings"));
+    expect(screen.getByRole("button", { name: "Restart" })).toHaveProperty("disabled", true);
+    expect(screen.getByTestId("kill")).toHaveProperty("disabled", false);
   });
 
   it("New Agent opens the created session as a tab only once it is in the list", async () => {

@@ -460,6 +460,7 @@ impl From<SessionError> for ApiError {
             SessionError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             SessionError::StillAlive(_) => (StatusCode::CONFLICT, "still_alive"),
             SessionError::NoRuntime(_) => (StatusCode::CONFLICT, "no_runtime"),
+            SessionError::NoCommand(_) => (StatusCode::CONFLICT, "no_command"),
             SessionError::AlreadyRegistered(_) => (StatusCode::CONFLICT, "already_registered"),
             SessionError::Runtime(RuntimeError::NotFound(_)) => {
                 (StatusCode::NOT_FOUND, "runtime_session_not_found")

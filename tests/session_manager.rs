@@ -484,3 +484,27 @@ fn differ_notifies_once_per_transition_out_of_running_and_obeys_the_switch() {
         "{events:?}"
     );
 }
+
+#[test]
+fn restart_of_an_adopted_session_without_a_command_is_a_typed_error_not_an_empty_shell() {
+    // agora-vto：adopted 会话的 command 是 NULL；空命令 respawn 会让 tmux 起一个交互 shell，
+    // 看起来像"重启成功"其实 agent 没了。要的是明确的错误类型。
+    let (m, rt, _db) = mgr();
+    rt.insert("fake:agora:manual", true, None, true);
+    let v = m
+        .adopt(&agora::session::AdoptSession {
+            runtime_ref: "fake:agora:manual".into(),
+            display_name: Some("manual".into()),
+            agent_type: Some("shell".into()),
+            working_directory: None,
+        })
+        .unwrap();
+    assert_eq!(v.record.origin, Origin::Adopted);
+    assert!(v.record.command.is_none());
+    let err = m.restart(&v.record.id, &[]).unwrap_err();
+    assert!(matches!(err, SessionError::NoCommand(_)), "{err}");
+    // 覆盖命令也救不了：它本来就是从库里的命令算出来的。
+    let err = m.restart_with(&v.record.id, &[], Some("")).unwrap_err();
+    assert!(matches!(err, SessionError::NoCommand(_)), "{err}");
+    assert!(rt.respawns.lock().unwrap().is_empty(), "不该有任何 respawn");
+}

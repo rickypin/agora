@@ -26,6 +26,23 @@ fn home_perms_too_open_refuses_start() {
     local::ensure_home(&home).unwrap();
 }
 
+#[test]
+fn overlong_home_is_refused_with_the_limit_in_the_message() {
+    // agora-kkd：socket 路径超过 SUN_LEN 时底层只说 "path must be shorter than SUN_LEN"；
+    // 要在起 daemon 之前就说清上限与出路。
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("x".repeat(120));
+    let err = local::ensure_home(&home).unwrap_err();
+    assert!(matches!(err, HomeError::PathTooLong { .. }), "{err}");
+    let msg = err.to_string();
+    assert!(
+        msg.contains(&local::max_socket_path_len().to_string()),
+        "{msg}"
+    );
+    assert!(msg.contains("AGORA_HOME"), "{msg}");
+    assert!(!home.exists(), "太长的目录不该被创建");
+}
+
 #[tokio::test]
 async fn socket_answers_same_uid_one_line_per_request() {
     // 其他 uid 的拒绝（peer_cred）没法在单用户测试里演；这里验证同 uid 的通路与文件权限。

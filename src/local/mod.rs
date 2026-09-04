@@ -37,6 +37,21 @@ pub enum HomeError {
     WrongOwner { path: String, owner: u32, me: u32 },
     #[error("AGORA_HOME {path} 权限过宽（{mode:o}）：其他用户能读到凭据与 socket；请执行 chmod 700 {path}")]
     TooOpen { path: String, mode: u32 },
+    /// unix socket 路径上限（macOS 104、Linux 108 字节，含结尾 NUL）：目录太长时 socket 根本绑不上，
+    /// 底层错误只说 "path must be shorter than SUN_LEN"，用户看不出该怎么办（agora-kkd）。
+    #[error("AGORA_HOME {path} 太长：socket 路径 {len} 字节超过系统上限 {max}；请用 AGORA_HOME 指向更短的目录")]
+    PathTooLong {
+        path: String,
+        len: usize,
+        max: usize,
+    },
+}
+
+/// 本平台 unix socket 路径的最大长度（不含结尾 NUL）。
+pub fn max_socket_path_len() -> usize {
+    // SAFETY: sockaddr_un 是 plain C struct，全零是合法值；只读它的数组长度。
+    let addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    addr.sun_path.len() - 1
 }
 
 /// `$AGORA_HOME` | `~/.agora` | `./.agora`（ADR-003 D6）。
@@ -51,6 +66,15 @@ pub fn resolve_home() -> PathBuf {
 /// 过宽时拒绝启动并把 chmod 命令写进错误——与 ssh 对 `~/.ssh` 的做法一致。
 pub fn ensure_home(path: &Path) -> Result<(), HomeError> {
     let display = path.display().to_string();
+    let socket_len = path.join(SOCKET_FILE).as_os_str().len();
+    let max = max_socket_path_len();
+    if socket_len > max {
+        return Err(HomeError::PathTooLong {
+            path: display,
+            len: socket_len,
+            max,
+        });
+    }
     if !path.exists() {
         std::fs::create_dir_all(path).map_err(|source| HomeError::Create {
             path: display.clone(),
