@@ -29,6 +29,7 @@ status:
   detector_interval: "2s"
 hooks:                        # ADR-002 D1 / D5 / D3
   silence_after: "10m"        # 有 hook 的 agent 无事件超过此时长且屏幕像在等人 → UNKNOWN（hook 沉默规则）
+  unheard_after: "90s"        # 装了 hook 却一条事件没收到过、终端在启动 10 s 宽限后又活动了这么久 → 行上"hook 没接上"提示
   hold_timeout: "55m"         # 挂起的权限决定的上限；安装到 agent 配置里的 hook timeout 必须大于它
   hold_per_session: 8         # 并行工具调用可同时产生多个 PermissionRequest
   hold_per_node: 256

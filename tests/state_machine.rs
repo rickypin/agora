@@ -15,6 +15,7 @@ fn cfg() -> MachineConfig {
     MachineConfig {
         idle_after: Duration::from_secs(60),
         silence_after: Duration::from_secs(600),
+        unheard_after: Duration::from_secs(90),
         high_hold: Duration::from_secs(30),
         text_ticks: 2,
         tick: Duration::from_secs(2),
@@ -443,4 +444,43 @@ fn status_since_is_when_the_state_was_set_not_the_last_tick() {
         (m.current().status, m.status_since()),
         (Status::Running, 60)
     );
+}
+
+#[test]
+fn hooks_never_heard_after_terminal_activity_is_flagged_but_not_at_startup() {
+    // 守卫（agora-dvh.15）：装了 hook 的会话，启动宽限后终端有过活动、再过 unheard_after
+    // 仍一条事件没有 → hooks_unheard 报沉默秒数；TUI 启动时那波输出不算起点（Codex 的
+    // SessionStart 要到第一条 prompt 才 fire，2026-09-05 实测）；hook 一出声就撤。
+    // 关掉：sample_activity 里不再记 first_activity_at → 第一个 Some 断言红。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    // 起会话时 pane 立刻有输出（TUI 画界面）：不是起点。
+    tick(&mut m, 1, &rt(true, Some(1)), None);
+    tick(&mut m, 3, &rt(true, Some(3)), None);
+    assert_eq!(m.hooks_unheard(200), None, "启动时的输出不能当用户已经提问");
+    // 宽限过后终端又动了（用户敲了 prompt）：从这时起算。
+    tick(&mut m, 30, &rt(true, Some(30)), None);
+    assert_eq!(m.hooks_unheard(100), None);
+    assert_eq!(m.hooks_unheard(120), Some(90));
+    // 一条 hook 事件就撤销提示。
+    m.apply(&AgoraEvent::SessionStarted, 1, 121);
+    assert_eq!(m.hooks_unheard(300), None);
+    // 没声明 hook 的会话（shell）从不提示。
+    let mut m = Machine::new(cfg(), false, 1, 0);
+    tick(&mut m, 30, &rt(true, Some(30)), None);
+    assert_eq!(m.hooks_unheard(500), None);
+    // 进程退出后不提示：没接上也没意义了。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    // 第一次采样只是"看见了"，不算活动（IDLE 同款规则）；第二次前进才是。
+    tick(&mut m, 20, &rt(true, Some(20)), None);
+    tick(&mut m, 30, &rt(true, Some(30)), None);
+    assert_eq!(m.hooks_unheard(200), Some(170));
+    m.observe(Observation {
+        process: Assessment::new(Status::Finished, Source::Process, 1.0, None),
+        liveness: Liveness::Dead,
+        text: None,
+        runtime: Some(&rt(false, Some(30))),
+        epoch: 1,
+        now: 201,
+    });
+    assert_eq!(m.hooks_unheard(202), None);
 }

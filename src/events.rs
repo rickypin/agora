@@ -51,6 +51,8 @@ pub enum Event {
         preview: Option<String>,
         /// 当前状态的起点（unix 秒）。
         status_since: i64,
+        /// "hook 没接上"提示（agora-dvh.15）：出现 / 消失都算状态变化。
+        hooks_unheard: Option<String>,
     },
     /// 挂起的决定被解除（ADR-002 D5）：`via` 是 dashboard / terminal / session / exit / timeout。
     DecisionResolved {
@@ -134,6 +136,7 @@ struct Seen {
     progress: Option<String>,
     preview: Option<String>,
     status_since: i64,
+    hooks_unheard: Option<String>,
     /// 任务标签是异步补齐的（`task/`）：到了要整行重发。
     task: Option<crate::task::TaskInfo>,
     /// agent 自报的对话 id（`/clear` 后会换）：Settings 里"当前对话"要跟着变（dvh.13）。
@@ -151,6 +154,7 @@ fn seen(v: &SessionView) -> Seen {
         progress: v.progress.clone(),
         preview: v.preview.clone(),
         status_since: v.status_since,
+        hooks_unheard: v.hooks_unheard.clone(),
         task: v.task.clone(),
         agent_session_id: v.record.agent_session_id.clone(),
     }
@@ -279,6 +283,7 @@ impl Differ {
                         progress: s.progress.clone(),
                         preview: s.preview.clone(),
                         status_since: s.status_since,
+                        hooks_unheard: s.hooks_unheard.clone(),
                     });
                     if self.notifications {
                         // 标题里用用户起的名字而不是 pane title：后者是 agent 随手改的
@@ -380,6 +385,7 @@ mod tests {
             progress: None,
             preview: None,
             status_since: 0,
+            hooks_unheard: None,
         }
     }
 

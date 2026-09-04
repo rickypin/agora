@@ -360,6 +360,21 @@ describe("Workspace", () => {
     expect(screen.queryByTestId("section-running")).toBeNull();
   });
 
+  it("shows the hook-not-connected hint from the server and drops it once hooks are heard (agora-dvh.15)", async () => {
+    const hint = "终端活动了 95 秒仍没收到任何 hook 事件。请在 Codex TUI 里输入 /hooks，按 t 信任 agora 的条目。";
+    const t = setup([{ ...row("n:c"), agent_type: "codex", hooks_unheard: hint }]);
+    await online(t);
+    const el = screen.getByTestId("hooks-unheard-n:c");
+    expect(el.textContent).toBe(`⚠ hook 没接上：${hint}`);
+    expect(el.getAttribute("title")).toBe(hint);
+    // 第一条 hook 事件到了：服务端把字段清成 null，提示消失。
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:c", status: "running", source: "hook", reason: "prompt submitted", alive: true, hooks_unheard: null }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(screen.queryByTestId("hooks-unheard-n:c")).toBeNull();
+  });
+
   it("an external session is tagged in the sidebar and opens without a terminal (A16)", async () => {
     const t = setup([{ ...row("n:x"), origin: "external", agent_type: "claude" }]);
     await online(t);

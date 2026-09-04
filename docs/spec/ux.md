@@ -84,6 +84,8 @@ RUNNING
   ↳ 改完了，144 个 e2e 全绿，要不要 push？
 ```
 
+装了 hook 却一条事件都没收到过的会话（`hooks_unheard` 非空，`docs/spec/api.md`；Codex 未在 `/hooks` 信任是最常见的一种，agora-dvh.15）在预览下面多一行黄色 `⚠ hook 没接上：…`，全文放在 title 里；服务端判定，第一条事件到达就撤。
+
 ## 浏览器通知（MISSION §6.6；A18）
 
 `web/src/notify.ts`（agora-dvh.11）。该不该发是服务端的事（`notification` 事件只在 RUNNING 或 IDLE → WAITING / TURN_DONE / FINISHED / FAILED 上来，`docs/spec/api.md`）；前端只管权限、弹、点击：

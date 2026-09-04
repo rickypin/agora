@@ -133,6 +133,9 @@ pub struct SessionView {
     pub preview: Option<String>,
     /// 当前状态从什么时候起（unix 秒）："waiting 3m"与同分按等待时长排序。
     pub status_since: i64,
+    /// 装了 hook 却从没收到过事件、终端却已经活动了一阵（`hooks.unheard_after`）：给用户看的
+    /// 一句话，Codex 指向 `/hooks` 信任，其余指向重装（agora-dvh.15）。没这回事就是 None。
+    pub hooks_unheard: Option<String>,
     /// `task_ref` 像 beads id 且查得到时的标题与优先级（只读 beads，不变量 12）。
     pub task: Option<TaskInfo>,
 }
@@ -658,7 +661,7 @@ impl SessionManager {
         let text = screen
             .as_deref()
             .and_then(|scr| adapter::detect_screen(&rec.agent_type, scr));
-        let (assessment, detail, prompt, progress, status_since, hooked) = {
+        let (assessment, detail, prompt, progress, status_since, hooked, unheard) = {
             let mut machines = lock(&self.machines);
             let m = machines
                 .entry(rec.id.clone())
@@ -679,8 +682,21 @@ impl SessionManager {
                 m.status_since(),
                 // 状态机听到 hook 事件会自己升级（custom agent 也可能装了 hook）：升级后预览归零。
                 m.has_hooks(),
+                m.hooks_unheard(now),
             )
         };
+        let hooks_unheard = unheard.map(|secs| {
+            let hint = adapter::find(&rec.agent_type)
+                .and_then(|a| a.hooks())
+                .and_then(|h| h.install_hint())
+                .unwrap_or_else(|| {
+                    format!(
+                        "检查 `agora hooks install {}` 装到的配置是不是这个 agent 读的那份，以及 hook 有没有被关掉。",
+                        rec.agent_type
+                    )
+                });
+            format!("终端活动了 {secs} 秒仍没收到任何 hook 事件。{hint}")
+        });
         let preview = screen
             .as_deref()
             .filter(|_| !hooked)
@@ -716,6 +732,7 @@ impl SessionManager {
             progress,
             preview,
             status_since,
+            hooks_unheard,
             task,
             record: rec,
         }

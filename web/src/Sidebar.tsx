@@ -77,6 +77,9 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
   const prompt = str(row.prompt);
   const progress = str(row.progress);
   const preview = str(row.preview);
+  // 装了 hook 却从没收到过事件（Codex 未在 /hooks 信任是最常见的一种，agora-dvh.15）：
+  // 行上一行醒目提示，全文放 title；服务端判定，前端不猜。
+  const unheard = str(row.hooks_unheard);
   // 两行预览读自 hook（❯ 用户最后输入 / ↳ agent 正在做或最后说的）；没有 hook 的会话保持一行
   // pane preview；两者都没有时退回状态理由（MISSION §6.3；ADR-002 D8）。
   const lines = prompt || progress ? null : preview || String(row.reason ?? "");
@@ -116,6 +119,11 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
           {lines && (
             <span className="preview muted" data-testid={`preview-${row.id}`}>
               {lines}
+            </span>
+          )}
+          {unheard && (
+            <span className="preview hooks-unheard" data-testid={`hooks-unheard-${row.id}`} title={unheard}>
+              ⚠ hook 没接上：{unheard}
             </span>
           )}
         </span>

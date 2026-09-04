@@ -157,6 +157,7 @@ async fn serve() -> i32 {
         .with_status_config(agora::status::MachineConfig {
             idle_after: settings.idle_after,
             silence_after: settings.hook_silence_after,
+            unheard_after: settings.hook_unheard_after,
             tick: settings.detector_interval,
             ..agora::status::MachineConfig::default()
         }),

@@ -51,6 +51,7 @@ export type AgoraEvent =
       progress?: string | null;
       preview?: string | null;
       status_since?: number;
+      hooks_unheard?: string | null;
     }
   | { type: "decision_resolved"; id: string; tool_use_id: string; via: string }
   /** 浏览器通知（MISSION §6.6）：服务端只在四种转换上发；`status` 是转换后的状态。 */
@@ -205,10 +206,14 @@ export class EventsClient {
         if (!row) return false;
         const next: SessionRow = { ...row, status: e.status, source: e.source, reason: e.reason, alive: e.alive };
         // 预览与起点字段：事件没带（undefined）就沿用旧值，带了 null 就是清空。
-        for (const k of ["detail", "prompt", "progress", "preview", "status_since"] as const) {
+        for (const k of ["detail", "prompt", "progress", "preview", "status_since", "hooks_unheard"] as const) {
           if (e[k] !== undefined) next[k] = e[k];
         }
-        if ((["status", "source", "reason", "alive", "detail", "prompt", "progress", "preview", "status_since"] as const).every((k) => row[k] === next[k]))
+        if (
+          (["status", "source", "reason", "alive", "detail", "prompt", "progress", "preview", "status_since", "hooks_unheard"] as const).every(
+            (k) => row[k] === next[k],
+          )
+        )
           return false;
         this.sessions.set(e.id, next);
         return true;

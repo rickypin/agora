@@ -47,6 +47,7 @@ select:disabled { opacity: 0.5; }
 .adopt-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .row .preview { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .line-prompt, .row .line-progress { color: var(--fg); opacity: 0.85; }
+.row .hooks-unheard { color: var(--warn); }
 .row .meta .state { margin-left: auto; white-space: nowrap; }
 .sidebar .counts { margin: 0 10px 6px; font-size: 12px; }
 .sidebar-head.section { padding-top: 8px; font-size: 11px; letter-spacing: 0.06em; }

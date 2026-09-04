@@ -29,6 +29,9 @@ pub struct MachineConfig {
     pub idle_after: Duration,
     /// hook 多久没声音算沉默（`hooks.silence_after`）。
     pub silence_after: Duration,
+    /// 从没听过 hook 的会话：启动宽限后的终端活动之后多久还没事件就提示"hook 没接上"
+    /// （`hooks.unheard_after`，agora-dvh.15）。
+    pub unheard_after: Duration,
     /// 高层写入后多久内低层不得覆盖。
     pub high_hold: Duration,
     /// 文本层 WAITING 需要连续几个 tick 一致。
@@ -42,12 +45,18 @@ impl Default for MachineConfig {
         MachineConfig {
             idle_after: Duration::from_secs(60),
             silence_after: Duration::from_secs(600),
+            unheard_after: Duration::from_secs(90),
             high_hold: Duration::from_secs(30),
             text_ticks: 2,
             tick: Duration::from_secs(2),
         }
     }
 }
+
+/// "hook 没接上"的起点不能是 TUI 启动时的那波输出：Codex 的 SessionStart 要到第一条 prompt
+/// 提交才 fire（2026-09-05 实测），起会话后没提问就没有事件，不能算异常。所以只认本代起始
+/// `STARTUP_GRACE_SECS` 之后的真实输出（用户敲了东西、agent 在答）为起点。
+pub const STARTUP_GRACE_SECS: i64 = 10;
 
 /// 进程活着与否的三值：外部会话（无运行时）是 Unknown，只有 hook 能说话。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +122,8 @@ pub struct Machine {
     last_output_at: Option<i64>,
     /// 最近看到的输出时刻，含重绘：只用来判断"前进了没有"。
     seen_output_at: Option<i64>,
+    /// 启动宽限之后第一次真实输出的时刻："hook 没接上"提示的起点（dvh.15）。
+    first_activity_at: Option<i64>,
     last_size: Option<Size>,
     last_attached: Option<bool>,
     /// 最近一次 hook 给的问题文本 / 最后一条回复，就地回答用（dvh.9）。
@@ -140,6 +151,7 @@ impl Machine {
             last_text_at: 0,
             last_output_at: None,
             seen_output_at: None,
+            first_activity_at: None,
             last_size: None,
             last_attached: None,
             detail: None,
@@ -151,6 +163,21 @@ impl Machine {
 
     pub fn has_hooks(&self) -> bool {
         self.declared_hooks || self.heard_hooks
+    }
+
+    /// 装了 hook（Adapter 声明）却一条事件都没听过，而终端在启动宽限之后已经活动了
+    /// `unheard_after` 以上 → 返回沉默了多少秒；否则 None。Codex 未在 `/hooks` 信任、Claude 的
+    /// `disableAllHooks`、二进制路径失效都长这样（agora-dvh.15）。进程已经退出的不提示。
+    pub fn hooks_unheard(&self, now: i64) -> Option<i64> {
+        if !self.declared_hooks
+            || self.heard_hooks
+            || matches!(self.current.status, Status::Finished | Status::Failed)
+        {
+            return None;
+        }
+        let since = self.first_activity_at?;
+        let quiet = now - since;
+        (quiet >= self.cfg.unheard_after.as_secs() as i64).then_some(quiet)
     }
 
     pub fn current(&self) -> &Assessment {
@@ -335,6 +362,9 @@ impl Machine {
         // 重绘：看到的时刻记下（免得下一 tick 又当成新活动），但不是活动，IDLE 起点不动。
         if advanced && !redraw {
             self.last_output_at = Some(at);
+            if self.first_activity_at.is_none() && at - self.since >= STARTUP_GRACE_SECS {
+                self.first_activity_at = Some(at.min(now));
+            }
             return true;
         }
         false
