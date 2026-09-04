@@ -7,7 +7,7 @@ import { NewAgentDialog } from "./NewAgentDialog";
 import { Respond } from "./Respond";
 import { SessionSettings } from "./SessionSettings";
 import { rowHaystack, rowName, Sidebar } from "./Sidebar";
-import { SessionStore, useSessions } from "./store";
+import { SessionStore, useSessions, useUnregistered } from "./store";
 import { Tabs } from "./Tabs";
 import { TerminalView } from "./TerminalView";
 import { emptyTabs, tabsReducer } from "./tabstate";
@@ -26,6 +26,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
   const catalog = useMemo(() => givenCatalog ?? catalogApi(), [givenCatalog]);
   const rows = useSessions(store);
+  const unregistered = useUnregistered(store);
   const [tabs, dispatch] = useReducer(tabsReducer, emptyTabs);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newAgentOpen, setNewAgentOpen] = useState(false);
@@ -56,6 +57,16 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   // 回调必须稳定：侧栏行是 memo 的，每次渲染换一个闭包会让所有行跟着重渲染。
   const openTab = useCallback((id: string) => dispatch({ type: "open", id }), []);
   const openNewAgent = useCallback(() => setNewAgentOpen(true), []);
+  // 采纳成功：会话随 `session_created` 进列表后再开 Tab；未登记列表不走事件流，主动重拉。
+  const adopt = useCallback(
+    (body: Parameters<SessionApi["adopt"]>[0]) => {
+      void api.adopt(body).then((r) => {
+        if (r.ok) setPendingOpen(r.value.id);
+        void store.client.refresh();
+      });
+    },
+    [api, store],
+  );
 
   // 侧栏显示顺序 = 过滤后的顺序，Alt/Option+N 跳的就是它（agora-xqa.14 验收）。
   const visible = useMemo(() => fuzzyFilter(rows, filter, rowHaystack), [rows, filter]);
@@ -117,6 +128,8 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           if (first) openTab(first.id);
         }}
         renderExpanded={(r) => <Respond row={r} api={api} onOpenTerminal={openTab} />}
+        unregistered={unregistered}
+        onAdopt={adopt}
       />
       <section className="main">
         <Tabs

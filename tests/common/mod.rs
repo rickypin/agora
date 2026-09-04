@@ -27,6 +27,8 @@ pub struct FakeRuntime {
     pub attach_argv: Mutex<Vec<String>>,
     /// `send_input` 写过的 `(ref, data)`。
     pub inputs: Mutex<Vec<(String, String)>>,
+    /// `locate` 的答案：TMUX_PANE 值 → ref（dvh.12 外部会话定位）。
+    pub panes: Mutex<HashMap<String, String>>,
 }
 
 impl FakeRuntime {
@@ -119,6 +121,15 @@ impl Runtime for FakeRuntime {
         s.alive = true;
         s.exit = None;
         Ok(())
+    }
+    fn locate(
+        &self,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Option<RuntimeRef>, RuntimeError> {
+        Ok(env
+            .get("TMUX_PANE")
+            .and_then(|p| self.panes.lock().unwrap().get(p).cloned())
+            .map(RuntimeRef))
     }
     fn send_input(&self, r: &RuntimeRef, data: &str) -> Result<(), RuntimeError> {
         self.inspect(r)?;

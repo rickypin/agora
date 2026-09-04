@@ -93,6 +93,19 @@ impl Fixture {
     }
 }
 
+/// hook 进程会带回的运行时环境（`runtime::PANE_ENV_VARS`）：`TMUX=<socket 路径>,<pid>,<idx>`。
+fn pane_env(socket: &str, pane: &str) -> std::collections::BTreeMap<String, String> {
+    [
+        (
+            "TMUX".to_owned(),
+            format!("{},1,0", socket_path(socket).display()),
+        ),
+        ("TMUX_PANE".to_owned(), pane.to_owned()),
+    ]
+    .into_iter()
+    .collect()
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         for s in [&self.socket, &self.foreign] {
@@ -276,10 +289,11 @@ fn foreign_socket_is_read_only() {
         "write attempts must not spawn tmux"
     );
 
-    // 全程发往 foreign socket 的命令只有这三种。
+    // 全程发往 foreign socket 的命令只有这三种（含 hook 反查 pane 的 locate，dvh.12）。
     let _ = f.rt.list();
     let _ = f.rt.capture_tail(&r, 5);
     let _ = f.rt.attach(&r, Size::default());
+    let _ = f.rt.locate(&pane_env(&f.foreign, "%0"));
     for argv in f.rt.take_recorded() {
         let on_foreign = argv.windows(2).any(|w| w[0] == "-L" && w[1] == f.foreign);
         if on_foreign {
@@ -328,4 +342,40 @@ fn absent_server_lists_empty_without_error() {
     assert!(!socket_path(&f.socket).exists());
     assert!(f.rt.list().unwrap().is_empty());
     assert!(f.rt.take_recorded().is_empty(), "no server → no subprocess");
+}
+
+#[test]
+fn locate_maps_hook_env_to_the_session_only_on_allowed_sockets() {
+    // dvh.12：hook 信封里的 TMUX / TMUX_PANE → 采纳 socket 上的会话；别的 socket 一个 tmux 进程都不起。
+    let f = Fixture::new();
+    f.foreign_session("located");
+    let pane = Command::new("tmux")
+        .args([
+            "-L",
+            &f.foreign,
+            "list-panes",
+            "-t",
+            "located",
+            "-F",
+            "#{pane_id}",
+        ])
+        .output()
+        .unwrap();
+    let pane = String::from_utf8_lossy(&pane.stdout).trim().to_owned();
+    assert!(pane.starts_with('%'), "{pane}");
+    let found = f.rt.locate(&pane_env(&f.foreign, &pane)).unwrap();
+    assert_eq!(found, Some(f.rt.make_ref(&f.foreign, "located")));
+    assert_eq!(f.rt.locate(&pane_env(&f.foreign, "%9999")).unwrap(), None);
+
+    f.rt.take_recorded();
+    let other = format!("{}-notallowed", f.foreign);
+    assert_eq!(f.rt.locate(&pane_env(&other, &pane)).unwrap(), None);
+    assert_eq!(
+        f.rt.locate(&std::collections::BTreeMap::new()).unwrap(),
+        None
+    );
+    assert!(
+        f.rt.take_recorded().is_empty(),
+        "unlisted socket must not be touched"
+    );
 }

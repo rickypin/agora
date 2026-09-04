@@ -5,12 +5,15 @@
 //! 自己的子目录（`tests/arch_boundary.rs`）。trait 方法是**同步阻塞**的：调用方在
 //! `tokio::task::spawn_blocking` 里跑，保证只有 tokio 一种并发模型（D8）。
 
+use std::collections::BTreeMap;
+
 /// hook 进程要把"我在哪个 pane 里"带回信封（ADR-002 D3/D4），而哪些环境变量能定位 pane
 /// 是运行时的知识：放这里而不是 hook/，第二运行时来了只改这一处。
 pub const PANE_ENV_VARS: &[&str] = &["TMUX", "TMUX_PANE"];
 
 pub mod env_probe;
 pub mod exec;
+pub mod proctree;
 pub mod tmux;
 
 use std::path::PathBuf;
@@ -190,6 +193,13 @@ pub trait Runtime: Send + Sync {
     /// 不经终端把字节写进会话的 PTY（MISSION §7.3 respond 的 `text`）：自由问答、下一条指令。
     /// 尾部的换行按"回车键"发，其余按字面写入。
     fn send_input(&self, r#ref: &RuntimeRef, data: &str) -> Result<(), RuntimeError>;
+
+    /// 用 hook 进程带来的运行时环境（[`PANE_ENV_VARS`]）反查它跑在哪个会话里（MISSION §5.4）：
+    /// 只认 agora 自己的 socket 与 `adopt_sockets`，其余一律 None（不是这个运行时 / 不可采纳）。
+    fn locate(&self, env: &BTreeMap<String, String>) -> Result<Option<RuntimeRef>, RuntimeError> {
+        let _ = env;
+        Ok(None)
+    }
 }
 
 /// capture_tail 的整体上限（D6：每次整体替换，不累积）。

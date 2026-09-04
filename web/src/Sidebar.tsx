@@ -1,5 +1,6 @@
-import { memo, type ReactNode, type RefObject } from "react";
-import type { SessionRow } from "./events";
+import { memo, useState, type ReactNode, type RefObject } from "react";
+import type { AdoptBody } from "./api";
+import type { SessionRow, UnregisteredRow } from "./events";
 
 /** 状态符号（docs/spec/ux.md 线框）。attention 排序与两行预览归 M1b。 */
 export function statusSymbol(status: string): string {
@@ -88,6 +89,69 @@ interface SidebarProps {
   total: number;
   /** 选中行的展开区。 */
   renderExpanded?: (row: SessionRow) => ReactNode;
+  /** 运行时里未登记的会话（Unknown Agent，MISSION §5.5）。 */
+  unregistered?: UnregisteredRow[];
+  onAdopt?: (body: AdoptBody) => void;
+}
+
+interface UnknownProps {
+  row: UnregisteredRow;
+  onAdopt?: (body: AdoptBody) => void;
+}
+
+/** `? name / Unknown Agent`（docs/spec/ux.md）+ 采纳表单：display name / project / agent type。 */
+function UnknownRow({ row, onAdopt }: UnknownProps) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(row.title || row.name);
+  const [project, setProject] = useState(row.working_directory);
+  const [agent, setAgent] = useState(row.agent_hint ?? "");
+  const label = row.agent_hint ? `Unknown Agent（像 ${row.agent_hint}）` : "Unknown Agent";
+  return (
+    <li className="unknown">
+      <button className="row" onClick={() => setOpen((v) => !v)} title={row.runtime_ref} data-testid={`unreg-${row.runtime_ref}`}>
+        <span className="dot st-unknown">?</span>
+        <span className="row-main">
+          <span className="name">{row.name}</span>
+          <span className="meta">
+            <span>{label}</span>
+            <span className="node">@ {row.node}</span>
+          </span>
+        </span>
+      </button>
+      {open && (
+        <form
+          className="adopt"
+          data-testid={`adopt-${row.runtime_ref}`}
+          onSubmit={(e) => {
+            e.preventDefault();
+            onAdopt?.({
+              runtime_ref: row.runtime_ref,
+              display_name: name.trim() || undefined,
+              project: project.trim() || undefined,
+              agent_type: agent.trim() || undefined,
+            });
+            setOpen(false);
+          }}
+        >
+          <label>
+            Name <input value={name} onChange={(e) => setName(e.target.value)} aria-label="采纳：名字" />
+          </label>
+          <label>
+            Project <input value={project} onChange={(e) => setProject(e.target.value)} aria-label="采纳：项目" />
+          </label>
+          <label>
+            Agent <input value={agent} onChange={(e) => setAgent(e.target.value)} placeholder="unknown" aria-label="采纳：agent 类型" />
+          </label>
+          <div className="adopt-actions">
+            <button type="button" onClick={() => setOpen(false)}>
+              取消
+            </button>
+            <button type="submit">采纳</button>
+          </div>
+        </form>
+      )}
+    </li>
+  );
 }
 
 export function Sidebar({
@@ -102,6 +166,8 @@ export function Sidebar({
   onFilterEnter,
   total,
   renderExpanded,
+  unregistered = [],
+  onAdopt,
 }: SidebarProps) {
   return (
     <aside className="sidebar">
@@ -131,7 +197,7 @@ export function Sidebar({
       <button className="new-agent" onClick={onNewAgent}>
         + New Agent
       </button>
-      {total === 0 && <p className="muted pad">还没有会话。</p>}
+      {total === 0 && unregistered.length === 0 && <p className="muted pad">还没有会话。</p>}
       {total > 0 && rows.length === 0 && <p className="muted pad">没有匹配的会话。</p>}
       <ul>
         {rows.map((r, i) => (
@@ -146,6 +212,18 @@ export function Sidebar({
           />
         ))}
       </ul>
+      {unregistered.length > 0 && !filter && (
+        <>
+          <div className="sidebar-head">
+            <span className="muted">UNREGISTERED {unregistered.length}</span>
+          </div>
+          <ul>
+            {unregistered.map((u) => (
+              <UnknownRow key={u.runtime_ref} row={u} onAdopt={onAdopt} />
+            ))}
+          </ul>
+        </>
+      )}
     </aside>
   );
 }

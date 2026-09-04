@@ -435,7 +435,9 @@ async fn invariant_7_runtime_is_the_source_of_truth_not_the_database() {
     assert!(m.list().unwrap().is_empty(), "新库是空的");
     let found = m.unregistered().unwrap();
     assert!(
-        found.iter().any(|r| r.r#ref.0 == rref && r.alive),
+        found
+            .iter()
+            .any(|r| r.session.r#ref.0 == rref && r.session.alive),
         "会话必须从运行时重新被发现: {found:?}"
     );
     assert!(node.pane_alive(&s), "删库不能碰到 agent");

@@ -49,6 +49,11 @@ pub(crate) fn event_name(payload: &Value) -> Option<&str> {
     str_of(payload, &["hook_event_name", "hookEventName"])
 }
 
+/// payload 的 `cwd`（Claude / Codex / Grok 三家的事件都带）。
+pub(crate) fn cwd(payload: &Value) -> Option<std::path::PathBuf> {
+    str_of(payload, &["cwd"]).map(std::path::PathBuf::from)
+}
+
 pub(crate) fn session_id(payload: &Value) -> Option<String> {
     str_of(payload, &["session_id", "sessionId"]).map(str::to_owned)
 }
@@ -151,6 +156,10 @@ impl AgentHooks for GenericHooks {
 
     fn agent_session_id(&self, payload: &Value) -> Option<String> {
         session_id(payload)
+    }
+
+    fn working_directory(&self, payload: &Value) -> Option<std::path::PathBuf> {
+        cwd(payload)
     }
 
     fn parse(&self, payload: &Value) -> Vec<AgoraEvent> {

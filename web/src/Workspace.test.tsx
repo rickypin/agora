@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { catalogApi, sessionApi, type FetchLike } from "./api";
-import type { SessionRow, SocketLike } from "./events";
+import type { SessionRow, SocketLike, UnregisteredRow } from "./events";
 import { KILL_BODY } from "./SessionSettings";
 import { SessionStore } from "./store";
 import { Workspace } from "./Workspace";
@@ -40,11 +40,11 @@ function row(id: string, status = "running"): SessionRow {
   return { id, node: "n", status, alive: true, display_name: id.slice(2), agent_type: "claude", reason: null };
 }
 
-function setup(rows: SessionRow[]) {
+function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = []) {
   const sock = new FakeSocket();
   const store = new SessionStore({
     connect: () => sock,
-    fetchSnapshot: async () => ({ sessions: rows, unregistered: [] }),
+    fetchSnapshot: async () => ({ sessions: rows, unregistered }),
     coalesceMs: 0,
   });
   const requests: { url: string; method: string; body: string | undefined }[] = [];
@@ -60,6 +60,7 @@ function setup(rows: SessionRow[]) {
     if (url.startsWith("/api/agents")) return json({ agents: [{ name: "a1", command: "a1" }] });
     if (url.startsWith("/api/system")) return json({ node: "n" });
     if (url === "/api/sessions" && method === "POST") return json({ id: "n:new" }, 201);
+    if (url === "/api/sessions/adopt") return json({ id: "n:adopted" }, 201);
     const r = killResponse();
     return json(r.body, r.status);
   };
@@ -178,5 +179,41 @@ describe("Workspace", () => {
       ["PATCH", "/api/sessions/n%3Aa", JSON.stringify({ display_name: "a" })],
       ["DELETE", "/api/sessions/n%3Aa", undefined],
     ]);
+  });
+
+  it("unregistered runtime sessions show as Unknown Agent and adopt with the user's choices (7cu)", async () => {
+    const t = setup([row("n:a")], [
+      {
+        runtime_ref: "tmux:default:manual",
+        name: "manual",
+        title: "",
+        alive: true,
+        managed: false,
+        working_directory: "/p",
+        agent_hint: "claude",
+        node: "n",
+      },
+    ]);
+    await online(t);
+    const snapshotsBefore = t.store.client.snapshots;
+    expect(screen.getByText("Unknown Agent（像 claude）")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("unreg-tmux:default:manual"));
+    const form = screen.getByTestId("adopt-tmux:default:manual");
+    // hint 只是默认值：用户改成 codex 就发 codex。
+    fireEvent.change(within(form).getByLabelText("采纳：名字"), { target: { value: "手动起的" } });
+    fireEvent.change(within(form).getByLabelText("采纳：agent 类型"), { target: { value: "codex" } });
+    fireEvent.submit(form);
+    await flush();
+    const adopt = t.requests.find((r) => r.url === "/api/sessions/adopt");
+    expect(adopt?.method).toBe("POST");
+    expect(JSON.parse(adopt!.body!)).toEqual({
+      runtime_ref: "tmux:default:manual",
+      display_name: "手动起的",
+      project: "/p",
+      agent_type: "codex",
+    });
+    // 未登记列表不走事件流：采纳后主动重拉一次快照。
+    expect(t.store.client.snapshots).toBe(snapshotsBefore + 1);
+    expect(screen.queryByTestId("adopt-tmux:default:manual")).toBeNull();
   });
 });

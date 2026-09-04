@@ -105,12 +105,14 @@ V1 的取舍（agora-xqa.12）：Node 只有本机（peer 归 M2），下拉禁�
 
 ## 未注册会话与危险操作确认（MISSION §5.5 / §8）
 
-未注册 / 未识别的会话在列表中显示为：
+未注册 / 未识别的会话在侧栏已登记列表之下单列一段（`UNREGISTERED n`，过滤时不显示），每项显示为：
 
 ```
 ? emergency
-  Unknown Agent
+  Unknown Agent（像 claude）    ← 括号是进程树给的 hint，认不出就没有
 ```
+
+点一下展开采纳表单：Name（默认 pane 标题 / 会话名）、Project（默认 pane 的当前目录）、Agent（默认 hint，可改；用户填的优先）；「采纳」发 `POST /api/sessions/adopt`，会话随 `session_created` 进列表并开成 Tab。
 
 Kill 确认框（MISSION §8：确认跟着"杀"走；Kill 只杀进程，运行时会话与输出保留到清理，§4.6）：
 

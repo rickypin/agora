@@ -261,8 +261,8 @@ impl Machine {
         }
         // 1. 进程退出 / 运行时不可信：压倒一切。
         if obs.liveness == Liveness::Dead || obs.process.source == Source::None {
-            if obs.liveness == Liveness::Unknown && self.current.source == Source::Hook {
-                // 外部会话：没有进程事实，hook 说什么就是什么。
+            if obs.liveness != Liveness::Dead && self.current.source == Source::Hook {
+                // 外部会话：没有退出事实（进程号活着 / 根本不知道），hook 说什么就是什么。
                 return self.current.clone();
             }
             self.set(obs.process, now);

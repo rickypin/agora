@@ -47,6 +47,14 @@ export type InputBody =
   | { kind: "decision"; decision: "allow" | "deny"; message?: string; tool_use_id?: string }
   | { kind: "text"; data: string };
 
+/** `POST /api/sessions/adopt`（MISSION §5.5）：用户填的 agent_type 优先于进程树给的 hint。 */
+export interface AdoptBody {
+  runtime_ref: string;
+  display_name?: string;
+  project?: string;
+  agent_type?: string;
+}
+
 export interface CreateSessionBody {
   display_name: string;
   agent_type: string;
@@ -101,6 +109,8 @@ export function sessionApi(fetchImpl: FetchLike = apiFetch) {
     /** New Agent 对话框的创建（§6.4）；201 的响应体就是新会话那一行。 */
     create: (body: CreateSessionBody) =>
       call<{ id: string }>(fetchImpl, "POST", "/api/sessions", body),
+    /** 采纳未登记的运行时会话（§5.5）；201 的响应体就是新会话那一行。 */
+    adopt: (body: AdoptBody) => call<{ id: string }>(fetchImpl, "POST", "/api/sessions/adopt", body),
   };
 }
 

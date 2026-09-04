@@ -17,9 +17,22 @@ export interface SessionRow {
   [key: string]: unknown;
 }
 
+/** 运行时里有、metadata 里没有的会话（Unknown Agent，可采纳；docs/spec/api.md）。 */
+export interface UnregisteredRow {
+  runtime_ref: string;
+  name: string;
+  title: string;
+  alive: boolean;
+  managed: boolean;
+  working_directory: string;
+  /** 进程树认出来的 adapter 名；只是默认值，用户填的优先（MISSION §5.4）。 */
+  agent_hint: string | null;
+  node: string;
+}
+
 export interface Snapshot {
   sessions: SessionRow[];
-  unregistered: unknown[];
+  unregistered: UnregisteredRow[];
 }
 
 export type AgoraEvent =
@@ -63,6 +76,8 @@ export interface EventsClientOptions {
   onNotification?: (n: { id: string | null; title: string; body: string }) => void;
   /** 挂起的决定被终端 / 超时 / 退出解除：就地回答的面板据此收起（ADR-002 D5）。 */
   onDecisionResolved?: (e: { id: string; tool_use_id: string; via: string }) => void;
+  /** 未登记会话只随全量快照来（事件流不推它们）；每次 resync 后回调。 */
+  onUnregistered?: (rows: UnregisteredRow[]) => void;
 }
 
 export function defaultSocket(): SocketLike {
@@ -78,6 +93,7 @@ export async function defaultSnapshot(): Promise<Snapshot> {
 
 export class EventsClient {
   readonly sessions = new Map<string, SessionRow>();
+  unregistered: UnregisteredRow[] = [];
   private socket: SocketLike | null = null;
   private pending: AgoraEvent[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -176,6 +192,8 @@ export class EventsClient {
         return true;
       }
       case "session_removed":
+        // 只删 metadata 的会话会变成"未登记"，而未登记列表只在快照里：重拉一次。
+        void this.resync();
         return this.sessions.delete(e.id);
       case "status_changed": {
         const row = this.sessions.get(e.id);
@@ -191,6 +209,11 @@ export class EventsClient {
     }
   }
 
+  /** 采纳 / 删除之后让未登记列表对齐（它不走事件流）。 */
+  refresh(): Promise<void> {
+    return this.resync();
+  }
+
   private async resync(): Promise<void> {
     this.snapshots += 1;
     let snap: Snapshot;
@@ -201,6 +224,8 @@ export class EventsClient {
     }
     this.sessions.clear();
     for (const s of snap.sessions) this.sessions.set(s.id, s);
+    this.unregistered = snap.unregistered ?? [];
     this.opts.onChange(this.sessions);
+    this.opts.onUnregistered?.(this.unregistered);
   }
 }

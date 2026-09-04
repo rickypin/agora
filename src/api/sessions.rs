@@ -70,7 +70,8 @@ pub async fn list(
     let sessions: Vec<Value> = views.iter().map(|v| export(&node, v)).collect();
     let unregistered: Vec<Value> = unregistered
         .iter()
-        .map(|s| {
+        .map(|u| {
+            let s = &u.session;
             serde_json::json!({
                 "runtime_ref": s.r#ref.0,
                 "name": s.name,
@@ -78,6 +79,7 @@ pub async fn list(
                 "alive": s.alive,
                 "managed": s.managed,
                 "working_directory": s.cwd,
+                "agent_hint": u.agent_hint,
                 "node": &*node,
             })
         })

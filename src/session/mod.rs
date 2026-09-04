@@ -10,6 +10,7 @@ pub mod model;
 
 pub use db::{Db, DbError};
 pub use manager::{
-    AdoptSession, NewSession, ReconcileReport, SessionError, SessionManager, SessionView,
+    AdoptSession, ExternalSession, NewSession, ReconcileReport, SessionError, SessionManager,
+    SessionView, Unregistered,
 };
 pub use model::{Origin, SessionRecord};

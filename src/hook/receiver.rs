@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::oneshot;
 
-use crate::adapter::{self, Decision, Release};
+use crate::adapter::{self, AgentHooks, Decision, Release};
 use crate::events::{global_id, Event, EventBus};
 use crate::local::Response;
-use crate::session::SessionManager;
+use crate::session::{ExternalSession, SessionManager};
 use crate::status::AgoraEvent;
 
 use super::inbox::{Delivery, Inbox, DONE_RETENTION};
@@ -135,11 +135,10 @@ impl Receiver {
             return Err(HookError::Outside(path.display().to_string()));
         }
         let delivery = self.inbox.read(path)?;
-        let key = session_key(&delivery);
         let stale = self.is_stale(&delivery);
         self.inbox.done(path)?;
         if stale {
-            tracing::debug!(component = "hook", session = %key, "旧 epoch 的事件丢弃");
+            tracing::debug!(component = "hook", session = %session_key(&delivery), "旧 epoch 的事件丢弃");
             return Ok(None);
         }
         // 宿主名来自 `--host`，`parse_args` 已校验；文件是别人手写的才会走到 Outside。
@@ -150,6 +149,13 @@ impl Receiver {
                 delivery.envelope.host
             )));
         };
+        // agora 起的会话带 AGORA_SESSION_ID；其余按 (host, agent_session_id) 找或登记（MISSION §5.4），
+        // 找到了挂起键就用 agora 的 id——这样它的 allow / deny 与 agora 起的会话走同一条路。
+        let (id, epoch) = match &delivery.envelope.agora_session_id {
+            Some(id) => (Some(id.clone()), delivery.envelope.agora_epoch.unwrap_or(0)),
+            None => (self.locate_external(hooks, &delivery), 0),
+        };
+        let key = id.clone().unwrap_or_else(|| session_key(&delivery));
         match hooks.release_for(&delivery.payload) {
             Release::ToolUse(keys) => {
                 for k in keys {
@@ -159,13 +165,15 @@ impl Receiver {
             Release::Session => self.resolve_session(&key, "session"),
             Release::None => {}
         }
-        // 进状态机：只有 agora 起的 / 采纳的会话在库里；外部会话等 dvh.12 采纳后再对上。
-        if let Some(id) = &delivery.envelope.agora_session_id {
+        if let Some(id) = &id {
             let events = hooks.parse(&delivery.payload);
-            if let Err(err) =
-                self.sessions
-                    .apply_hook(id, delivery.envelope.agora_epoch.unwrap_or(0), &events)
-            {
+            // 外部会话没有 epoch 概念：按库里那代算，永不因 epoch 被丢。
+            let epoch = if delivery.envelope.agora_session_id.is_some() {
+                epoch
+            } else {
+                self.sessions.record(id).map(|r| r.epoch).unwrap_or(epoch)
+            };
+            if let Err(err) = self.sessions.apply_hook(id, epoch, &events) {
                 tracing::debug!(component = "hook", session = %id, %err, "hook 事件没有对应会话");
             }
         }
@@ -179,6 +187,57 @@ impl Receiver {
             .unwrap_or_else(|p| p.into_inner())
             .push(received.clone());
         Ok(Some(received))
+    }
+
+    /// 无 AGORA_* 的事件找它的会话：先按 (host, agent 自报 id) 查；没有就登记——信封里的运行时
+    /// 环境能定位到可采纳 socket 上的 pane 就有终端，否则是无句柄的 external。agent 没自报 id
+    /// 的（`unknown`）不登记：那会每条事件造一行垃圾。
+    fn locate_external(&self, hooks: &dyn AgentHooks, delivery: &Delivery) -> Option<String> {
+        let env = &delivery.envelope;
+        if env.agent_session_id == "unknown" {
+            return None;
+        }
+        let found = match self
+            .sessions
+            .find_by_agent_session(&env.host, &env.agent_session_id)
+        {
+            Ok(Some(rec)) => Some(rec.id),
+            Ok(None) => {
+                let runtime_ref = match self.sessions.runtime().locate(&env.runtime_env) {
+                    Ok(r) => r.map(|r| r.0),
+                    Err(err) => {
+                        tracing::debug!(component = "hook", %err, "按运行时环境定位 pane 失败");
+                        None
+                    }
+                };
+                let spec = ExternalSession {
+                    agent_type: env.host.clone(),
+                    agent_session_id: env.agent_session_id.clone(),
+                    runtime_ref,
+                    working_directory: hooks.working_directory(&delivery.payload),
+                };
+                match self.sessions.register_external(&spec) {
+                    // `session_created` 由事件监视器的下一 tick 差分发出，这里不重复广播。
+                    Ok(id) => {
+                        tracing::info!(component = "hook", session = %id, host = %env.host,
+                            terminal = spec.runtime_ref.is_some(), "登记外部会话");
+                        Some(id)
+                    }
+                    Err(err) => {
+                        tracing::warn!(component = "hook", %err, "登记外部会话失败");
+                        None
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(component = "hook", %err, "查外部会话失败");
+                None
+            }
+        };
+        if let (Some(id), Some(pid)) = (&found, hooks.agent_pid(&env.agent_env)) {
+            self.sessions.note_external_pid(id, pid);
+        }
+        found
     }
 
     /// 旧 epoch（Restart 之前那代进程发的）不得污染新进程（ADR-002 "什么会让它变危险"）。

@@ -33,7 +33,9 @@ DELETE /api/auth/devices/:id       # 吊销一台设备 → 204；即时生效
 
 `GET /api/projects` 每项是 `{ path, name, last_used_at }`，按最近使用排序（未用过的排在后面、按名字）；列表是 `project_roots` 的扫描结果与库里 `projects` 表的并集，目录已不存在的行在读取时删除。`last_used_at` 只在 `POST /api/sessions` 时更新——"最近使用"指的是起过会话。`GET /api/projects/worktrees` 每项是 `{ path, branch, head, main, locked }`，`branch` 去掉 `refs/heads/` 前缀、detached HEAD 为 null，第一项是主 worktree。
 
-每条会话的形态是 `sessions` 行的全部字段 + 运行时实时事实（`name`、`alive`、`exit`、`pid`、`managed`）+ 状态判定（`status`、`source`、`confidence`、`reason`；四层来源仲裁见 ADR-002 D1，`confidence` 0–1 只供排障，UI 不显示）+ `detail`（hook 给的问题文本 / 正在用的工具 / 最后一条回复，就地回答与两行预览用）+ `respond_via`（`hook`：WAITING(decision) 可经 `input` 的 decision 回答；`terminal`：agent 的 hook 不能替用户批准，只能打开终端）；`id` 是全局 id `<node>:<id>`，本机 id 在 `local_id`，另带 `node`。`unregistered` 的每项是 `{ runtime_ref, name, title, alive, managed, working_directory, node }`。
+每条会话的形态是 `sessions` 行的全部字段 + 运行时实时事实（`name`、`alive`、`exit`、`pid`、`managed`）+ 状态判定（`status`、`source`、`confidence`、`reason`；四层来源仲裁见 ADR-002 D1，`confidence` 0–1 只供排障，UI 不显示）+ `detail`（hook 给的问题文本 / 正在用的工具 / 最后一条回复，就地回答与两行预览用）+ `respond_via`（`hook`：WAITING(decision) 可经 `input` 的 decision 回答；`terminal`：agent 的 hook 不能替用户批准，只能打开终端）；`id` 是全局 id `<node>:<id>`，本机 id 在 `local_id`，另带 `node`。`unregistered` 的每项是 `{ runtime_ref, name, title, alive, managed, working_directory, agent_hint, node }`，`agent_hint` 是从 pane 进程的后代里认出来的 adapter 名（认不出为 null），只是 Adopt 表单的默认值：`adopt` 请求里用户填的 `agent_type` 优先，没填才用 hint，都没有就是 `unknown`（MISSION §5.4）。未登记列表不走事件流，只随 `GET /api/sessions` 来；前端在 `session_removed` 与采纳之后重拉一次。
+
+agora 没起过的会话经 hook 自己出现（§5.4，A16 / A22 合流）：无 `AGORA_SESSION_ID` 的事件按 `(host, agent_session_id)` 找已登记会话，找不到就登记——信封里的运行时环境（`TMUX` / `TMUX_PANE`）能在 agora 自己的 socket 或 `adopt_sockets` 上定位到 pane 时以 `origin = adopted` 登记（有终端与全部 respond，`agent_type` 就是 hook 的宿主）；定位不到的以 `origin = external` 登记（`runtime_ref` NULL，`display_name` 取工作目录名，状态 / 两行 / 通知与经 hook 的 allow / deny 照常，`text` → 409 `no_runtime`）。external 会话的 `alive` 看最近一条 hook 报来的 agent 进程号（Claude 的 `CLAUDE_PID`）`kill(pid, 0)` 的结果，进程没了报 FINISHED（没有退出码可分 FAILED），daemon 重启到下一条 hook 之前是 UNKNOWN；agent 没自报会话 id 的事件不登记。
 
 ## 认证（ADR-003）
 

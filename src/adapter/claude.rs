@@ -183,6 +183,15 @@ impl AgentHooks for Claude {
         hooks::session_id(payload)
     }
 
+    fn working_directory(&self, payload: &Value) -> Option<std::path::PathBuf> {
+        hooks::cwd(payload)
+    }
+
+    /// 实测 2.1.260（2026-09-04）：hook 环境里 `CLAUDE_PID` 就是 claude 主进程。
+    fn agent_pid(&self, env: &std::collections::BTreeMap<String, String>) -> Option<u32> {
+        env.get("CLAUDE_PID")?.trim().parse().ok()
+    }
+
     fn parse(&self, payload: &Value) -> Vec<AgoraEvent> {
         let mut out = Vec::new();
         let tool = str_of(payload, &["tool_name"]).unwrap_or("tool");

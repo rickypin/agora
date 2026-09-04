@@ -16,7 +16,8 @@ use serde::Serialize;
 use super::db::{Db, DbError};
 use super::model::{Origin, SessionRecord};
 use crate::runtime::{
-    AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, RuntimeStatus, Size,
+    proctree, AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession,
+    RuntimeStatus, Size,
 };
 use crate::status::{
     self, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation, Status,
@@ -69,6 +70,24 @@ pub struct AdoptSession {
     pub runtime_ref: String,
     pub display_name: Option<String>,
     pub agent_type: Option<String>,
+    pub working_directory: Option<PathBuf>,
+}
+
+/// 运行时里有、metadata 里没有的会话（Unknown Agent），附进程树给的 agent 线索。
+#[derive(Debug, Clone)]
+pub struct Unregistered {
+    pub session: RuntimeSession,
+    /// 从 pane 进程的后代里认出来的 adapter 名；认不出就 None。只是 hint（MISSION §5.4）。
+    pub agent_hint: Option<String>,
+}
+
+/// 由 hook 事件带来的、agora 没起过的会话（MISSION §5.4）：`runtime_ref` 有值就是"采纳
+/// socket 上定位到了 pane"，否则是无运行时句柄的 external 会话（Terminal.app 之类）。
+#[derive(Debug, Clone)]
+pub struct ExternalSession {
+    pub agent_type: String,
+    pub agent_session_id: String,
+    pub runtime_ref: Option<String>,
     pub working_directory: Option<PathBuf>,
 }
 
@@ -131,6 +150,9 @@ pub struct SessionManager {
     /// 每个会话一台状态机（ADR-002 D1）；内存态，不落库（不变量 7）。
     machines: Mutex<HashMap<String, Machine>>,
     status_cfg: MachineConfig,
+    /// external 会话最近一次 hook 报来的 agent 进程号：`kill(pid, 0)` 判存活（ADR-002 D4）。
+    /// 内存态：daemon 重启后要等下一条 hook 才再知道，之前活性 UNKNOWN。
+    external_pids: Mutex<HashMap<String, u32>>,
 }
 
 impl SessionManager {
@@ -147,6 +169,7 @@ impl SessionManager {
             runtime_status: Arc::new(RuntimeStatus::default()),
             machines: Mutex::new(HashMap::new()),
             status_cfg: MachineConfig::default(),
+            external_pids: Mutex::new(HashMap::new()),
         }
     }
 
@@ -210,6 +233,10 @@ impl SessionManager {
     }
 
     /// `/api/health` 与 daemon 启动流程共用的那一个实时结论。
+    pub fn runtime(&self) -> &Arc<dyn Runtime> {
+        &self.runtime
+    }
+
     pub fn runtime_status(&self) -> &Arc<RuntimeStatus> {
         &self.runtime_status
     }
@@ -316,10 +343,12 @@ impl SessionManager {
             .clone()
             .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| live.name.clone());
+        // 用户填的优先；没填才用进程树认出来的；都没有就 unknown（MISSION §5.4）。
         let agent_type = adopt
             .agent_type
             .clone()
             .filter(|n| !n.trim().is_empty())
+            .or_else(|| agent_hint(&proctree::process_table(), &live))
             .unwrap_or_else(|| "unknown".into());
         let cwd = adopt
             .working_directory
@@ -343,18 +372,115 @@ impl SessionManager {
     }
 
     /// 运行时里有、metadata 里没有的会话（Unknown Agent，可采纳；A1 列表含全部运行时会话）。
-    pub fn unregistered(&self) -> Result<Vec<RuntimeSession>, SessionError> {
+    /// 进程表只在真有未注册会话时才拉一次。
+    pub fn unregistered(&self) -> Result<Vec<Unregistered>, SessionError> {
         let known: HashSet<String> = self
             .all_records()?
             .into_iter()
             .filter_map(|r| r.runtime_ref)
             .collect();
-        Ok(self
+        let sessions: Vec<RuntimeSession> = self
             .live_all()?
             .0
             .into_iter()
             .filter(|s| !known.contains(&s.r#ref.0))
+            .collect();
+        let table = if sessions.iter().any(|s| s.pid.is_some()) {
+            proctree::process_table()
+        } else {
+            Vec::new()
+        };
+        Ok(sessions
+            .into_iter()
+            .map(|session| Unregistered {
+                agent_hint: agent_hint(&table, &session),
+                session,
+            })
             .collect())
+    }
+
+    /// 已登记会话里 `agent_type` + agent 自报 id 对得上的那条（hook 事件找会话的第二把钥匙）。
+    pub fn find_by_agent_session(
+        &self,
+        agent_type: &str,
+        agent_session_id: &str,
+    ) -> Result<Option<SessionRecord>, SessionError> {
+        Ok(self
+            .db
+            .conn()
+            .query_row(
+                &format!("{SELECT} WHERE agent_type = ?1 AND agent_session_id = ?2 ORDER BY created_at DESC LIMIT 1"),
+                [agent_type, agent_session_id],
+                row_to_record,
+            )
+            .optional()?)
+    }
+
+    /// hook 事件来自 agora 没起过的会话时登记它（MISSION §5.4；A16/A22 合流）。返回会话 id：
+    /// - 定位到了可采纳 socket 上的 pane：那条运行时会话已登记就复用它（补 `agent_session_id`），
+    ///   没登记就以 `adopted` 登记——hook 已经证明里面是哪个 agent，比 Unknown Agent 强；
+    /// - 没有运行时句柄：`external` 行（`runtime_ref` NULL），状态 / 两行 / 通知照常，
+    ///   存活靠 [`SessionManager::note_external_pid`]。
+    pub fn register_external(&self, spec: &ExternalSession) -> Result<String, SessionError> {
+        if let Some(r) = &spec.runtime_ref {
+            let existing: Option<String> = self
+                .db
+                .conn()
+                .query_row(
+                    "SELECT id FROM sessions WHERE runtime_ref = ?1",
+                    [r],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(id) = existing {
+                self.db.conn().execute(
+                    "UPDATE sessions SET agent_session_id = ?2, agent_type = CASE agent_type
+                        WHEN 'unknown' THEN ?3 ELSE agent_type END WHERE id = ?1",
+                    params![id, spec.agent_session_id, spec.agent_type],
+                )?;
+                return Ok(id);
+            }
+            let view = self.adopt(&AdoptSession {
+                runtime_ref: r.clone(),
+                display_name: None,
+                agent_type: Some(spec.agent_type.clone()),
+                working_directory: spec.working_directory.clone(),
+            })?;
+            self.db.conn().execute(
+                "UPDATE sessions SET agent_session_id = ?2 WHERE id = ?1",
+                params![view.record.id, spec.agent_session_id],
+            )?;
+            return Ok(view.record.id);
+        }
+        let id = self.fresh_id()?;
+        let display_name = spec
+            .working_directory
+            .as_deref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| spec.agent_type.clone());
+        self.db.conn().execute(
+            "INSERT INTO sessions (id, runtime_ref, display_name, name_locked, agent_type,
+                working_directory, agent_session_id, epoch, created_at, updated_at, origin)
+             VALUES (?1, NULL, ?2, 0, ?3, ?4, ?5, 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'external')",
+            params![
+                id,
+                display_name,
+                spec.agent_type,
+                spec.working_directory
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                spec.agent_session_id,
+            ],
+        )?;
+        Ok(id)
+    }
+
+    /// external 会话最近一次 hook 报来的 agent 进程号。
+    pub fn note_external_pid(&self, id: &str, pid: u32) {
+        lock(&self.external_pids).insert(id.to_owned(), pid);
     }
 
     // ---------- 读 ----------
@@ -438,10 +564,26 @@ impl SessionManager {
                 )),
                 Liveness::Dead,
             ),
-            (Origin::External, None) => (
-                Assessment::unknown("external session: no runtime, hook only"),
-                Liveness::Unknown,
-            ),
+            (Origin::External, None) => match lock(&self.external_pids).get(&rec.id).copied() {
+                // 没有退出码可拿：进程没了就只知道"结束了"，不分 FINISHED / FAILED。
+                Some(pid) if !process_alive(pid) => (
+                    Assessment::new(
+                        Status::Finished,
+                        status::Source::Process,
+                        0.8,
+                        Some("external process gone (no exit status)"),
+                    ),
+                    Liveness::Dead,
+                ),
+                Some(_) => (
+                    Assessment::unknown("external session: process alive, hook only"),
+                    Liveness::Alive,
+                ),
+                None => (
+                    Assessment::unknown("external session: no runtime, hook only"),
+                    Liveness::Unknown,
+                ),
+            },
             _ => {
                 let a = status::process_layer(rt, spawn_age, killed);
                 let live = if rt.is_some_and(|s| s.alive) {
@@ -487,7 +629,7 @@ impl SessionManager {
         };
         SessionView {
             name,
-            alive: rt.is_some_and(|s| s.alive),
+            alive: rt.is_some_and(|s| s.alive) || liveness == Liveness::Alive,
             exit: rt.and_then(|s| s.exit.clone()),
             pid: rt.and_then(|s| s.pid),
             managed: rt.is_some_and(|s| s.managed),
@@ -767,4 +909,20 @@ fn fnv(x: u128) -> u64 {
 /// 锁中毒时取回内层值继续用（ADR-001 D8 施工约束 4）。
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// `kill(pid, 0)`：进程存在（且我们有权发信号）就是 0；EPERM 也算存在。
+fn process_alive(pid: u32) -> bool {
+    // SAFETY: 信号 0 不投递，只做存在性检查。
+    let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// pane 进程的后代里第一个认得的 adapter 名（离 shell 最近的优先）。
+fn agent_hint(table: &[proctree::Proc], live: &RuntimeSession) -> Option<String> {
+    let pid = live.pid?;
+    proctree::descendants(table, pid).into_iter().find_map(|p| {
+        let argv: Vec<&str> = p.argv.iter().map(String::as_str).collect();
+        adapter::identify(&argv).map(|a| a.name().to_owned())
+    })
 }

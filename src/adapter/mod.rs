@@ -129,6 +129,17 @@ pub trait AgentHooks: Send + Sync {
 
     /// 决定写回 stdout 的形态；None = 不输出（fail-open）。
     fn decision_output(&self, decision: &Decision) -> Option<String>;
+
+    /// payload 里 agent 自报的工作目录：外部会话（无 AGORA_*）登记时的项目与显示名来源。
+    fn working_directory(&self, _payload: &serde_json::Value) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    /// 信封 `agent_env` 里 agent 自己的进程号（如 `CLAUDE_PID`）：无运行时句柄的外部会话
+    /// 靠它判断存活（ADR-002 D4）。不认识就 None → 活性 UNKNOWN。
+    fn agent_pid(&self, _agent_env: &std::collections::BTreeMap<String, String>) -> Option<u32> {
+        None
+    }
 }
 
 /// 文本兜底（ADR-002 D6）：只服务无 hook 的会话；默认什么都不认。

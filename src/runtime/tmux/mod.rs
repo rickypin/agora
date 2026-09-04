@@ -5,7 +5,7 @@
 //! - 没有"杀整个 server"的方法；remove 只碰 `pane_dead=1` 的会话。
 //! - terminate 不经 tmux：`kill(-pane_pid)` 整组杀（pgid == pane_pid，实测 2026-09-02）。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -508,6 +508,36 @@ impl Runtime for TmuxRuntime {
             }
         }
         Ok(all)
+    }
+
+    /// `TMUX=<socket 路径>,<server pid>,<session idx>`、`TMUX_PANE=%N`。socket 名取路径末段；
+    /// 不是 agora 的 socket 也不在 `adopt_sockets` 里 → None（用户没授权看的 server 一个进程都不起）。
+    /// 对采纳 socket 只发 `list-panes`——采纳过程对用户 socket 只读（MISSION §5.4）。
+    fn locate(&self, env: &BTreeMap<String, String>) -> Result<Option<RuntimeRef>, RuntimeError> {
+        let (Some(tmux), Some(pane)) = (env.get("TMUX"), env.get("TMUX_PANE")) else {
+            return Ok(None);
+        };
+        let path = tmux.split(',').next().unwrap_or_default();
+        let socket = std::path::Path::new(path)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if socket.is_empty()
+            || !(self.is_managed(&socket) || self.cfg.adopt_sockets.contains(&socket))
+            || !self.server_running(&socket)
+        {
+            return Ok(None);
+        }
+        let format = ["#{pane_id}", "#{session_name}"].join(SEP);
+        let out = self.run(Some(&socket), &["list-panes", "-a", "-F", &format])?;
+        if !out.status.success() {
+            return Ok(None);
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        Ok(text.lines().find_map(|line| {
+            let (id, name) = line.split_once(SEP)?;
+            (id == pane).then(|| self.make_ref(&socket, name))
+        }))
     }
 
     fn inspect(&self, r: &RuntimeRef) -> Result<RuntimeSession, RuntimeError> {
