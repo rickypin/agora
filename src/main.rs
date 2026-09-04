@@ -6,6 +6,7 @@
 //! agora open                    同上，并用系统默认浏览器打开
 //! agora auth devices            已配对设备列表（直接读 SQLite，不需要 daemon）
 //! agora auth revoke <id>|--all  吊销设备，即时生效
+//! agora hook --host <h> --home <dir>   agent 的 hook 命令：落盘、唤醒、必要时挂起（ADR-002 D3）
 //! ```
 //!
 //! 配置来自 `AGORA_HOME/config.yaml`（docs/spec/config.md），缺文件全走默认；明文监听器
@@ -26,8 +27,7 @@ use agora::session::{Db, SessionManager};
 /// V1 唯一的运行时；配置里 `runtime.kind` 缺省就是它。
 const RUNTIME_KIND: &str = "tmux";
 
-const USAGE: &str =
-    "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all | fake-agent <script>|-e <inline>]";
+const USAGE: &str = "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> | fake-agent <script>|-e <inline>]";
 
 #[tokio::main]
 async fn main() {
@@ -39,6 +39,7 @@ async fn main() {
         ["open"] => pair_link(true).await,
         ["auth", "devices"] => auth_devices(),
         ["auth", "revoke", target] => auth_revoke(target),
+        ["hook", rest @ ..] => agora::hook::cmd::run(rest).await,
         // 测试用假 agent（agora-3la）：藏在子命令里，不占第二个 binary。
         ["fake-agent", rest @ ..] => agora::fake_agent::run(rest),
         _ => {
@@ -160,6 +161,16 @@ async fn serve() -> i32 {
         Err(err) => tracing::warn!(component = "main", %err, "reconcile 任务异常"),
     }
 
+    // 投递箱重放（MISSION §3.4）：daemon 不在时落下的 hook 事件在 reconcile 之后补上。
+    // 权限过宽是拒绝读而不是退出：agent 照跑，只是状态退成 UNKNOWN，日志说明原因。
+    let hooks = Arc::new(agora::hook::Receiver::new(&home, sessions.clone()));
+    match hooks.replay() {
+        Ok(n) if n > 0 => tracing::info!(component = "hook", replayed = n, "投递箱重放完成"),
+        Ok(_) => {}
+        Err(err) => tracing::error!(component = "hook", %err, "投递箱不可用，hook 事件不会被读取"),
+    }
+    tokio::spawn(hooks.clone().run_sweeper(std::time::Duration::from_secs(5)));
+
     let auth = Arc::new(Auth::new(db, settings.auth.clone()));
     if auth.list_devices().map(|d| d.is_empty()).unwrap_or(true) {
         tracing::info!(
@@ -172,16 +183,25 @@ async fn serve() -> i32 {
     let socket_path = home.join(SOCKET_FILE);
     let origin = format!("http://{addr}");
     let auth_for_socket = auth.clone();
-    let handler: local::Handler = Arc::new(move |req| match req {
-        Request::Ping => Response::Pong,
-        Request::Pair { origin: o } => match auth_for_socket.mint_pair_token(PairedVia::Socket) {
-            Ok(token) => Response::Pair {
-                url: Auth::pair_link(o.as_deref().unwrap_or(&origin), &token),
-            },
-            Err(err) => Response::Error {
-                message: err.to_string(),
-            },
-        },
+    let hooks_for_socket = hooks.clone();
+    let handler: local::Handler = Arc::new(move |req| {
+        let auth = auth_for_socket.clone();
+        let hooks = hooks_for_socket.clone();
+        let origin = origin.clone();
+        Box::pin(async move {
+            match req {
+                Request::Ping => Response::Pong,
+                Request::Pair { origin: o } => match auth.mint_pair_token(PairedVia::Socket) {
+                    Ok(token) => Response::Pair {
+                        url: Auth::pair_link(o.as_deref().unwrap_or(&origin), &token),
+                    },
+                    Err(err) => Response::Error {
+                        message: err.to_string(),
+                    },
+                },
+                Request::Hook { path } => hooks.wake(Path::new(&path)).await,
+            }
+        })
     });
     let socket_task = tokio::spawn(async move { local::serve(&socket_path, handler).await });
 

@@ -5,6 +5,10 @@
 //! 自己的子目录（`tests/arch_boundary.rs`）。trait 方法是**同步阻塞**的：调用方在
 //! `tokio::task::spawn_blocking` 里跑，保证只有 tokio 一种并发模型（D8）。
 
+/// hook 进程要把"我在哪个 pane 里"带回信封（ADR-002 D3/D4），而哪些环境变量能定位 pane
+/// 是运行时的知识：放这里而不是 hook/，第二运行时来了只改这一处。
+pub const PANE_ENV_VARS: &[&str] = &["TMUX", "TMUX_PANE"];
+
 pub mod env_probe;
 pub mod exec;
 pub mod tmux;

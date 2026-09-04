@@ -6,7 +6,7 @@
 //! 其它模块**不得**直接碰 `std::process::Command` / `tokio::process`（`tests/arch_boundary.rs`）。
 
 use std::ffi::OsStr;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -27,6 +27,8 @@ pub struct ExecOptions {
     pub env: Vec<(String, String)>,
     /// 清空继承的环境后只用 `env`（PATH 探测用）。
     pub env_clear: bool,
+    /// 喂给子进程 stdin 的字节；`None` 是 `/dev/null`（fake-agent 走真实 `agora hook` 路径要它）。
+    pub stdin: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +86,11 @@ pub fn exec<S: AsRef<OsStr>>(argv: &[S], opts: &ExecOptions) -> Result<Output, E
 
     let mut cmd = Command::new(argv.first().map(AsRef::as_ref).unwrap_or_default());
     cmd.args(&argv[1..])
-        .stdin(Stdio::null())
+        .stdin(if opts.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(cwd) = &opts.cwd {
@@ -99,6 +105,12 @@ pub fn exec<S: AsRef<OsStr>>(argv: &[S], opts: &ExecOptions) -> Result<Output, E
         program: program.clone(),
         source,
     })?;
+    // stdin 另起线程写完就关：子进程要先读完 stdin 才会有输出，主线程不能在这里等它。
+    if let (Some(bytes), Some(mut sin)) = (opts.stdin.clone(), child.stdin.take()) {
+        thread::spawn(move || {
+            let _ = sin.write_all(&bytes);
+        });
+    }
     // take() 之后 child 只剩 kill/wait 两个用途，可以塞进 Mutex 交给看门狗。
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();

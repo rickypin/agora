@@ -2,10 +2,13 @@
 //!
 //! 信任锚是 OS 用户身份：目录 0700、socket 仅属主可访问，再加每个连接的对端 uid 校验
 //! （文件权限挡正常情况，peer_cred 挡权限被改错的情况）。socket 上跑的是一行 JSON 请求、
-//! 一行 JSON 应答：配对链接铸造（`agora open` / `agora url`）；hook 唤醒与挂起随 ADR-002 D3 接入。
+//! 一行 JSON 应答：配对链接铸造（`agora open` / `agora url`）；hook 唤醒与挂起（ADR-002 D3/D5）——
+//! 挂起的请求要等 daemon 有了决定才应答，所以 handler 是异步的，一个连接占一个任务。
 
+use std::future::Future;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -90,15 +93,30 @@ pub fn ensure_home(path: &Path) -> Result<(), HomeError> {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     Ping,
-    Pair { origin: Option<String> },
+    Pair {
+        origin: Option<String>,
+    },
+    /// `agora hook` 落盘后的唤醒：只送路径，daemon 只读文件、不信 socket 上的内容（ADR-002 D3）。
+    /// 要挂起的事件（PermissionRequest）由 daemon 从文件判定，应答要等到决定出来。
+    Hook {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum Response {
     Pong,
-    Pair { url: String },
-    Error { message: String },
+    Pair {
+        url: String,
+    },
+    /// hook 唤醒的应答：不挂起的事件立即回 `None`；挂起的等 Dashboard / 终端 / 超时。
+    Hook {
+        decision: crate::adapter::hooks::Decision,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -117,11 +135,28 @@ pub enum SocketError {
     Protocol(String),
 }
 
-pub type Handler = Arc<dyn Fn(Request) -> Response + Send + Sync>;
+pub type Reply = Pin<Box<dyn Future<Output = Response> + Send>>;
+pub type Handler = Arc<dyn Fn(Request) -> Reply + Send + Sync>;
+
+/// 同步 handler 的便捷包装。
+pub fn sync_handler(f: impl Fn(Request) -> Response + Send + Sync + 'static) -> Handler {
+    Arc::new(move |req| {
+        let resp = f(req);
+        Box::pin(async move { resp })
+    })
+}
 
 /// 绑定并一直服务。已有活的 daemon → `AlreadyRunning`；只剩下残留文件 → 删掉重绑。
 /// 权限：进程 umask 077 使文件生来 0600，再显式 set_permissions 兜一层。
 pub async fn serve(path: &Path, handler: Handler) -> Result<(), SocketError> {
+    // SAFETY: 同 ensure_home。
+    let me = unsafe { libc::getuid() };
+    serve_for_uid(path, handler, me).await
+}
+
+/// 同 [`serve`]，但对端必须是 `uid`。生产永远传自己的 uid；测试用它演"其他用户来连"
+/// （单用户机器上造不出真的第二个 uid，只能把期望值换掉）。
+pub async fn serve_for_uid(path: &Path, handler: Handler, uid: u32) -> Result<(), SocketError> {
     let display = path.display().to_string();
     let io = |source| SocketError::Io {
         path: display.clone(),
@@ -140,18 +175,16 @@ pub async fn serve(path: &Path, handler: Handler) -> Result<(), SocketError> {
         let (stream, _) = listener.accept().await.map_err(io)?;
         let handler = handler.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle(stream, handler).await {
+            if let Err(err) = handle(stream, handler, uid).await {
                 tracing::debug!(component = "local", %err, "连接结束");
             }
         });
     }
 }
 
-async fn handle(stream: UnixStream, handler: Handler) -> std::io::Result<()> {
+async fn handle(stream: UnixStream, handler: Handler, me: u32) -> std::io::Result<()> {
     // 对端 uid ≠ 自己 → 一个字节都不读就关（ADR-003 D6）。
     let cred = stream.peer_cred()?;
-    // SAFETY: 同 ensure_home。
-    let me = unsafe { libc::getuid() };
     if cred.uid() != me {
         tracing::warn!(
             component = "local",
@@ -164,7 +197,7 @@ async fn handle(stream: UnixStream, handler: Handler) -> std::io::Result<()> {
     let mut lines = BufReader::new(rd).lines();
     while let Some(line) = lines.next_line().await? {
         let resp = match serde_json::from_str::<Request>(&line) {
-            Ok(req) => handler(req),
+            Ok(req) => handler(req).await,
             Err(e) => Response::Error {
                 message: format!("请求不是合法 JSON: {e}"),
             },

@@ -587,7 +587,8 @@ impl SessionManager {
         Ok(())
     }
 
-    fn record(&self, id: &str) -> Result<SessionRecord, SessionError> {
+    /// 只读库里的 metadata 行，不碰运行时：hook 重放按 epoch 过滤要它，每条事件问一次运行时太贵。
+    pub fn record(&self, id: &str) -> Result<SessionRecord, SessionError> {
         self.db
             .conn()
             .query_row(&format!("{SELECT} WHERE id = ?1"), [id], row_to_record)

@@ -7,6 +7,8 @@
 //! `default_command`、`match_process`。ADR-002 D9 的其余方法（`version`、`resume_args`、
 //! `pin_args`）与 `AgentHooks` / `AgentFallback` 随 M1b 的 hook 侧与版本表补齐。
 
+pub mod hooks;
+
 use std::path::Path;
 
 /// 对话身份与启动（ADR-002 D9 的 `AgentIdentity`）。

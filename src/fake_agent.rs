@@ -8,10 +8,15 @@
 //! - `read`：阻塞等一行 stdin，回显 `read:<line>`（EOF → 输出 `read:EOF` 并退出 0）
 //! - `ignore-hup`：忽略 SIGHUP（模拟不理会挂断的 agent）
 //! - `exit <code>`：以该码退出
+//! - `hook <host> <json>`：以 agent 的身份跑真实的 `agora hook --host <host>`，json 进它的 stdin
+//!   （ADR-002 D3；环境原样继承，所以 `AGORA_SESSION_ID` / `AGORA_EPOCH` 会进信封）；
+//!   hook 的 stdout 原样回显，前缀 `hook:`；`--home` 取 `AGORA_HOME`
 //!
 //! 脚本走完没有 `exit` 就退出 0。"被信号杀"由外面（terminate / kill）施加，这里不模拟。
 
 use std::io::{BufRead, Write};
+
+use crate::runtime::exec::{exec, ExecOptions};
 
 pub fn run(args: &[&str]) -> i32 {
     let script = match args {
@@ -73,6 +78,35 @@ pub fn run(args: &[&str]) -> i32 {
                 unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) };
             }
             "exit" => return arg.parse().unwrap_or(0),
+            "hook" => {
+                let (host, json) = arg.split_once(' ').unwrap_or((arg, "{}"));
+                let me = std::env::current_exe()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "agora".into());
+                let home = crate::local::resolve_home().display().to_string();
+                let opts = ExecOptions {
+                    stdin: Some(json.as_bytes().to_vec()),
+                    timeout: Some(std::time::Duration::from_secs(3600)),
+                    ..ExecOptions::default()
+                };
+                let mut out = stdout.lock();
+                match exec(
+                    &[me.as_str(), "hook", "--host", host, "--home", &home],
+                    &opts,
+                ) {
+                    Ok(o) => {
+                        let _ = writeln!(
+                            out,
+                            "hook:{}",
+                            String::from_utf8_lossy(&o.stdout).trim_end()
+                        );
+                    }
+                    Err(err) => {
+                        let _ = writeln!(out, "hook:ERR {err}");
+                    }
+                }
+                let _ = out.flush();
+            }
             other => {
                 eprintln!("fake-agent: 未知指令 {other:?}");
                 return 2;
