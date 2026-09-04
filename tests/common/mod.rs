@@ -25,6 +25,8 @@ pub struct FakeRuntime {
     pub removed: Mutex<Vec<String>>,
     /// `attach` 返回的 argv；网关测试用它塞一个真实的假 attach（`sh -c ...`）。
     pub attach_argv: Mutex<Vec<String>>,
+    /// `send_input` 写过的 `(ref, data)`。
+    pub inputs: Mutex<Vec<(String, String)>>,
 }
 
 impl FakeRuntime {
@@ -116,6 +118,14 @@ impl Runtime for FakeRuntime {
             .ok_or_else(|| RuntimeError::NotFound(r.clone()))?;
         s.alive = true;
         s.exit = None;
+        Ok(())
+    }
+    fn send_input(&self, r: &RuntimeRef, data: &str) -> Result<(), RuntimeError> {
+        self.inspect(r)?;
+        self.inputs
+            .lock()
+            .unwrap()
+            .push((r.0.clone(), data.to_owned()));
         Ok(())
     }
     fn remove(&self, r: &RuntimeRef) -> Result<(), RuntimeError> {

@@ -90,6 +90,8 @@ pub struct AppState {
     pub projects: Arc<Projects>,
     /// 启动时探到的 PATH 来源（"shell" / "daemon"）；运行时好不好是实时的，见 `RuntimeStatus`。
     pub runtime_path_source: &'static str,
+    /// hook 挂起表：respond 的 `decision` 走它；没接（测试）时一律 `no_pending_decision`。
+    pub hooks: Option<Arc<crate::hook::Receiver>>,
 }
 
 impl AppState {
@@ -102,6 +104,7 @@ impl AppState {
             agents: Arc::new(BTreeMap::new()),
             projects: Arc::new(Projects::new(sessions.db_handle(), Vec::new())),
             runtime_path_source: "daemon",
+            hooks: None,
         }
     }
 }
@@ -125,6 +128,7 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/sessions/{id}/kill"),
     ("POST", "/api/sessions/{id}/restart"),
     ("POST", "/api/sessions/{id}/cleanup"),
+    ("POST", "/api/sessions/{id}/input"),
     ("GET", "/api/sessions/{id}/terminal"),
     ("GET", "/api/projects"),
     ("GET", "/api/projects/worktrees"),
@@ -157,6 +161,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/{id}/kill", post(sessions::kill))
         .route("/api/sessions/{id}/restart", post(sessions::restart))
         .route("/api/sessions/{id}/cleanup", post(sessions::cleanup))
+        .route("/api/sessions/{id}/input", post(sessions::input))
         .route("/api/sessions/{id}/terminal", get(terminal::upgrade))
         // 静态段先于 `{id}`：`worktrees` 不会被当成项目路径。
         .route("/api/projects/worktrees", get(projects::worktrees))

@@ -221,6 +221,8 @@ async fn serve() -> i32 {
         settings.raw.project_roots.clone(),
     ));
     state.runtime_path_source = path_source;
+    hooks.attach_events(state.events.clone(), state.node.clone());
+    state.hooks = Some(hooks);
     // 状态变化没有人来通知：轮询求差发 /api/events。
     tokio::spawn(agora::events::watch(
         sessions,

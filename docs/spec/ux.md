@@ -72,6 +72,8 @@ RUNNING
 ● 重构 sglog parser        / Codex @ zuan
 ```
 
+侧栏选中行下方是就地 respond 区（MISSION §6.3 §7.3，`web/src/Respond.tsx`）：WAITING 且 `reason = permission`、`respond_via = hook` → 问题文本（`detail`）+ Allow / Deny / 打开终端；WAITING 的其它情形（`question`，或 `respond_via = terminal`）→ 只有问题文本与"打开终端"；TURN_DONE → `↳` 最后一条回复 + "下一条指令"输入框（发 text，尾部带换行）。Allow / Deny 撞上 `no_pending_decision`（终端先答了 / 过期）只显示一行提示，行状态随事件自己变。
+
 行展开的两行（`❯` 用户最后输入 / `↳` agent 正在做或最后说的，MISSION §6.3）：
 
 ```

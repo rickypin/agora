@@ -12,8 +12,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 use crate::adapter::{self, Decision, Release};
+use crate::events::{global_id, Event, EventBus};
 use crate::local::Response;
 use crate::session::SessionManager;
+use crate::status::AgoraEvent;
 
 use super::inbox::{Delivery, Inbox, DONE_RETENTION};
 use super::HookError;
@@ -50,6 +52,9 @@ pub struct Receiver {
     sessions: Arc<SessionManager>,
     holds: Mutex<HashMap<(String, String), Hold>>,
     ledger: Mutex<Vec<Received>>,
+    hold_timeout: Duration,
+    /// `/api/events` 的 `decision_resolved` 从这里发；没接总线就不发。
+    events: Mutex<Option<(EventBus, Arc<str>)>>,
 }
 
 /// 账本里记的事件名：只给排障看，所以键名风格两种都认，不算核心层懂 payload。
@@ -75,6 +80,30 @@ impl Receiver {
             sessions,
             holds: Mutex::new(HashMap::new()),
             ledger: Mutex::new(Vec::new()),
+            hold_timeout: HOLD_TIMEOUT,
+            events: Mutex::new(None),
+        }
+    }
+
+    /// 测试用：缩短挂起超时。
+    pub fn with_hold_timeout(mut self, timeout: Duration) -> Self {
+        self.hold_timeout = timeout;
+        self
+    }
+
+    /// 接上事件总线：解除挂起时发 `decision_resolved`（会话 id 转成 `<node>:<id>`）。
+    pub fn attach_events(&self, bus: EventBus, node: Arc<str>) {
+        *self.events.lock().unwrap_or_else(|p| p.into_inner()) = Some((bus, node));
+    }
+
+    fn announce(&self, session: &str, tool_use_id: &str, via: &'static str) {
+        let guard = self.events.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((bus, node)) = guard.as_ref() {
+            bus.publish(Event::DecisionResolved {
+                id: global_id(node, session),
+                tool_use_id: tool_use_id.to_owned(),
+                via,
+            });
         }
     }
 
@@ -124,10 +153,10 @@ impl Receiver {
         match hooks.release_for(&delivery.payload) {
             Release::ToolUse(keys) => {
                 for k in keys {
-                    self.resolve(&key, &k, Decision::None);
+                    self.resolve(&key, &k, Decision::None, "terminal");
                 }
             }
-            Release::Session => self.resolve_session(&key),
+            Release::Session => self.resolve_session(&key, "session"),
             Release::None => {}
         }
         // 进状态机：只有 agora 起的 / 采纳的会话在库里；外部会话等 dvh.12 采纳后再对上。
@@ -193,11 +222,17 @@ impl Receiver {
                 decision: Decision::None,
             };
         };
-        let decision = match tokio::time::timeout(HOLD_TIMEOUT, rx).await {
+        let decision = match tokio::time::timeout(self.hold_timeout, rx).await {
             Ok(Ok(d)) => d,
-            // 发送端被丢（解除）或超时：都没有决定。
-            _ => {
-                self.resolve(&received.session_key, &tool_use_id, Decision::None);
+            // 发送端被丢（同键被新挂起接替）：那边已经宣布过了。
+            Ok(Err(_)) => Decision::None,
+            Err(_) => {
+                self.resolve(
+                    &received.session_key,
+                    &tool_use_id,
+                    Decision::None,
+                    "timeout",
+                );
                 Decision::None
             }
         };
@@ -224,7 +259,13 @@ impl Receiver {
         Some(rx)
     }
 
-    fn resolve(&self, session: &str, tool_use_id: &str, decision: Decision) -> bool {
+    fn resolve(
+        &self,
+        session: &str,
+        tool_use_id: &str,
+        decision: Decision,
+        via: &'static str,
+    ) -> bool {
         let hold = self
             .holds
             .lock()
@@ -233,6 +274,7 @@ impl Receiver {
         match hold {
             Some(h) => {
                 let _ = h.tx.send(decision);
+                self.announce(session, tool_use_id, via);
                 true
             }
             None => false,
@@ -240,7 +282,7 @@ impl Receiver {
     }
 
     /// Stop / SessionEnd / 进程退出：该会话全部挂起解除（`decision.resolved`）。
-    pub fn resolve_session(&self, session: &str) {
+    pub fn resolve_session(&self, session: &str, via: &'static str) {
         let drained: Vec<_> = {
             let mut holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
             let keys: Vec<_> = holds
@@ -248,28 +290,42 @@ impl Receiver {
                 .filter(|(s, _)| s == session)
                 .cloned()
                 .collect();
-            keys.into_iter().filter_map(|k| holds.remove(&k)).collect()
+            keys.into_iter()
+                .filter_map(|k| holds.remove(&k).map(|h| (k.1, h)))
+                .collect()
         };
-        for h in drained {
+        for (tool_use_id, h) in drained {
             let _ = h.tx.send(Decision::None);
+            self.announce(session, &tool_use_id, via);
         }
     }
 
-    /// Dashboard 的 allow / deny（agora-dvh.9 的 respond 走这里）。
+    /// Dashboard 的 allow / deny（agora-dvh.9）：`tool_use_id` 缺省取最早登记的那个。
+    /// 解除后顺手告诉状态机——hook 侧的 PostToolUse 稍后才到，行不该多等那一拍。
     pub fn respond(
         &self,
         session: &str,
-        tool_use_id: &str,
+        tool_use_id: Option<&str>,
         decision: Decision,
-    ) -> Result<(), RespondError> {
-        if self.resolve(session, tool_use_id, decision) {
-            Ok(())
-        } else {
-            Err(RespondError::NoPendingDecision {
+    ) -> Result<String, RespondError> {
+        let key = match tool_use_id {
+            Some(k) => k.to_owned(),
+            None => self.pending(session).into_iter().next().unwrap_or_default(),
+        };
+        if !self.resolve(session, &key, decision, "dashboard") {
+            return Err(RespondError::NoPendingDecision {
                 session: session.to_owned(),
-                tool_use_id: tool_use_id.to_owned(),
-            })
+                tool_use_id: key,
+            });
         }
+        if let Ok(rec) = self.sessions.record(session) {
+            let _ = self.sessions.apply_hook(
+                session,
+                rec.epoch,
+                &[AgoraEvent::DecisionResolved(Some(key.clone()))],
+            );
+        }
+        Ok(key)
     }
 
     /// 某会话当前挂起的 tool_use_id，按登记时间排序。
@@ -295,12 +351,12 @@ impl Receiver {
             let holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
             holds
                 .iter()
-                .filter(|(_, h)| h.since.elapsed() >= HOLD_TIMEOUT)
+                .filter(|(_, h)| h.since.elapsed() >= self.hold_timeout)
                 .map(|(k, _)| k.clone())
                 .collect()
         };
         for (s, t) in expired {
-            self.resolve(&s, &t, Decision::None);
+            self.resolve(&s, &t, Decision::None, "timeout");
         }
         let sessions: Vec<String> = {
             let holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
@@ -313,7 +369,7 @@ impl Receiver {
             // 外部会话（key 带宿主前缀）不在库里，get 报 NotFound：不当作退出。
             if let Ok(view) = self.sessions.get(&s) {
                 if !view.alive {
-                    self.resolve_session(&s);
+                    self.resolve_session(&s, "exit");
                 }
             }
         }

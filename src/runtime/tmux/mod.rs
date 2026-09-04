@@ -539,6 +539,23 @@ impl Runtime for TmuxRuntime {
         })
     }
 
+    /// `send-keys -l` 字面写入，尾部换行单独发 `Enter`：实测 2026-09-04 Claude 2.1.260 的 TUI
+    /// 把"文本 + 回车"一起到达当成粘贴，只上屏不提交；分两次发才提交。
+    fn send_input(&self, r: &RuntimeRef, data: &str) -> Result<(), RuntimeError> {
+        let session = self.require_managed(r)?;
+        let p = self.parse_ref(r)?;
+        let target = format!("={session}:");
+        let body = data.trim_end_matches(['\n', '\r']);
+        let enter = body.len() != data.len();
+        if !body.is_empty() {
+            self.run_ok(Some(p.socket), &["send-keys", "-t", &target, "-l", body])?;
+        }
+        if enter {
+            self.run_ok(Some(p.socket), &["send-keys", "-t", &target, "Enter"])?;
+        }
+        Ok(())
+    }
+
     fn capture_tail(&self, r: &RuntimeRef, lines: u32) -> Result<Vec<u8>, RuntimeError> {
         let p = self.parse_ref(r)?;
         let start = format!("-{lines}");

@@ -1,4 +1,4 @@
-import { memo, type RefObject } from "react";
+import { memo, type ReactNode, type RefObject } from "react";
 import type { SessionRow } from "./events";
 
 /** 状态符号（docs/spec/ux.md 线框）。attention 排序与两行预览归 M1b。 */
@@ -40,13 +40,15 @@ interface RowProps {
   onOpen: (id: string) => void;
   /** 测试注入：数渲染次数。 */
   onRender?: (id: string) => void;
+  /** 选中行下方的展开区（就地回答，MISSION §6.3）。 */
+  expanded?: ReactNode;
 }
 
 /** memo：行对象引用没变就不重渲染（store.ts）。 */
-export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender }: RowProps) {
+export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, expanded }: RowProps) {
   onRender?.(row.id);
   return (
-    <li>
+    <li className={active ? "selected" : undefined}>
       <button
         className={active ? "row selected" : "row"}
         onClick={() => onOpen(row.id)}
@@ -64,6 +66,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
         </span>
         <span className="ord muted">{ordinal >= 1 && ordinal <= 9 ? ordinal : ""}</span>
       </button>
+      {active && expanded}
     </li>
   );
 });
@@ -83,6 +86,8 @@ interface SidebarProps {
   onFilterEnter?: () => void;
   /** 过滤前的总数：过滤后要让人看得出"还有多少被藏起来了"。 */
   total: number;
+  /** 选中行的展开区。 */
+  renderExpanded?: (row: SessionRow) => ReactNode;
 }
 
 export function Sidebar({
@@ -96,6 +101,7 @@ export function Sidebar({
   filterRef,
   onFilterEnter,
   total,
+  renderExpanded,
 }: SidebarProps) {
   return (
     <aside className="sidebar">
@@ -136,6 +142,7 @@ export function Sidebar({
             ordinal={i + 1}
             onOpen={onOpen}
             onRender={onRowRender}
+            expanded={r.id === active ? renderExpanded?.(r) : undefined}
           />
         ))}
       </ul>

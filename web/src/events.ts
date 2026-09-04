@@ -33,7 +33,9 @@ export type AgoraEvent =
       source: string;
       reason: string | null;
       alive: boolean;
+      detail?: string | null;
     }
+  | { type: "decision_resolved"; id: string; tool_use_id: string; via: string }
   | { type: "notification"; id: string | null; title: string; body: string }
   | { type: "resync" };
 
@@ -59,6 +61,8 @@ export interface EventsClientOptions {
   /** 视图变了才回调；内容相等不重渲染由调用方比较。 */
   onChange: (sessions: Map<string, SessionRow>) => void;
   onNotification?: (n: { id: string | null; title: string; body: string }) => void;
+  /** 挂起的决定被终端 / 超时 / 退出解除：就地回答的面板据此收起（ADR-002 D5）。 */
+  onDecisionResolved?: (e: { id: string; tool_use_id: string; via: string }) => void;
 }
 
 export function defaultSocket(): SocketLike {
@@ -142,6 +146,10 @@ export class EventsClient {
       this.opts.onNotification?.(e);
       return;
     }
+    if (e.type === "decision_resolved") {
+      this.opts.onDecisionResolved?.(e);
+      return;
+    }
     this.pending.push(e);
     if (!this.flushTimer) {
       this.flushTimer = setTimeout(() => this.flush(), this.opts.coalesceMs ?? 300);
@@ -172,8 +180,10 @@ export class EventsClient {
       case "status_changed": {
         const row = this.sessions.get(e.id);
         if (!row) return false;
-        if (row.status === e.status && row.alive === e.alive && row.reason === e.reason) return false;
-        this.sessions.set(e.id, { ...row, status: e.status, source: e.source, reason: e.reason, alive: e.alive });
+        const detail = e.detail === undefined ? row.detail : e.detail;
+        if (row.status === e.status && row.alive === e.alive && row.reason === e.reason && row.detail === detail)
+          return false;
+        this.sessions.set(e.id, { ...row, status: e.status, source: e.source, reason: e.reason, alive: e.alive, detail });
         return true;
       }
       default:

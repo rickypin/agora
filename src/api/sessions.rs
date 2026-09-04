@@ -335,6 +335,69 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `POST /api/sessions/:id/input`（MISSION §7.3；ADR-002 D5）。
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InputBody {
+    /// 经挂起的 hook 返回给 agent，不注入键击。
+    Decision {
+        decision: DecisionKind,
+        #[serde(default)]
+        message: Option<String>,
+        /// 并行工具时指定答哪一个；缺省最早的。
+        #[serde(default)]
+        tool_use_id: Option<String>,
+    },
+    /// 经 PTY 写入：自由问答、下一条指令、无 hook 的 agent。
+    Text { data: String },
+}
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionKind {
+    Allow,
+    Deny,
+}
+
+pub async fn input(
+    principal: Principal,
+    State(state): State<AppState>,
+    Path(gid): Path<String>,
+    Json(body): Json<InputBody>,
+) -> Result<Json<Value>, ApiError> {
+    let id = local_id(&state, &gid)?;
+    match body {
+        InputBody::Decision {
+            decision,
+            message,
+            tool_use_id,
+        } => {
+            let d = match decision {
+                DecisionKind::Allow => crate::adapter::Decision::Allow,
+                DecisionKind::Deny => crate::adapter::Decision::Deny { message },
+            };
+            let key = state
+                .hooks
+                .as_ref()
+                .ok_or(())
+                .and_then(|h| h.respond(&id, tool_use_id.as_deref(), d).map_err(|_| ()))
+                .map_err(|()| ApiError {
+                    status: StatusCode::CONFLICT,
+                    kind: "no_pending_decision",
+                    message: format!("会话 {id} 没有挂起的决定；在终端回答，或等它再问一次"),
+                })?;
+            tracing::info!(component = "api", principal = %principal.log_id(), session_id = %id, tool_use_id = %key, "decision");
+            Ok(Json(serde_json::json!({ "tool_use_id": key })))
+        }
+        InputBody::Text { data } => {
+            let sid = id.clone();
+            blocking(&state.sessions, move |s| s.send_input(&sid, &data)).await?;
+            tracing::info!(component = "api", principal = %principal.log_id(), session_id = %id, "text");
+            Ok(Json(serde_json::json!({})))
+        }
+    }
+}
+
 fn bad_request(message: &str) -> ApiError {
     ApiError {
         status: StatusCode::BAD_REQUEST,

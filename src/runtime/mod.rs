@@ -186,6 +186,10 @@ pub trait Runtime: Send + Sync {
     fn respawn(&self, r#ref: &RuntimeRef, spec: &LaunchSpec) -> Result<(), RuntimeError>;
     /// 销毁会话；进程仍活着时拒绝（StillAlive）。
     fn remove(&self, r#ref: &RuntimeRef) -> Result<(), RuntimeError>;
+
+    /// 不经终端把字节写进会话的 PTY（MISSION §7.3 respond 的 `text`）：自由问答、下一条指令。
+    /// 尾部的换行按"回车键"发，其余按字面写入。
+    fn send_input(&self, r#ref: &RuntimeRef, data: &str) -> Result<(), RuntimeError>;
 }
 
 /// capture_tail 的整体上限（D6：每次整体替换，不累积）。

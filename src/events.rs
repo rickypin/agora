@@ -43,6 +43,14 @@ pub enum Event {
         source: Source,
         reason: Option<String>,
         alive: bool,
+        /// hook 给的问题 / 最后一条回复；变了也算状态变化（就地回答要显示它）。
+        detail: Option<String>,
+    },
+    /// 挂起的决定被解除（ADR-002 D5）：`via` 是 dashboard / terminal / session / exit / timeout。
+    DecisionResolved {
+        id: String,
+        tool_use_id: String,
+        via: &'static str,
     },
     /// 通知（WAITING 等）在 M1b 的状态层接上；形态先定下来。
     Notification {
@@ -112,6 +120,7 @@ struct Seen {
     source: Source,
     reason: Option<String>,
     alive: bool,
+    detail: Option<String>,
 }
 
 fn seen(v: &SessionView) -> Seen {
@@ -120,6 +129,7 @@ fn seen(v: &SessionView) -> Seen {
         source: v.assessment.source,
         reason: v.assessment.reason.clone(),
         alive: v.alive,
+        detail: v.detail.clone(),
     }
 }
 
@@ -149,6 +159,7 @@ impl Differ {
                     source: s.source,
                     reason: s.reason.clone(),
                     alive: s.alive,
+                    detail: s.detail.clone(),
                 }),
                 _ => {}
             }
@@ -224,6 +235,7 @@ mod tests {
             source: Source::Process,
             reason: None,
             alive: true,
+            detail: None,
         }
     }
 

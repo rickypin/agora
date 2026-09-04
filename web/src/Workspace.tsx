@@ -4,6 +4,7 @@ import { CommandPalette } from "./CommandPalette";
 import { fuzzyFilter } from "./fuzzy";
 import { isDesktop, matchShortcut } from "./keys";
 import { NewAgentDialog } from "./NewAgentDialog";
+import { Respond } from "./Respond";
 import { SessionSettings } from "./SessionSettings";
 import { rowHaystack, rowName, Sidebar } from "./Sidebar";
 import { SessionStore, useSessions } from "./store";
@@ -115,6 +116,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           const first = visible[0];
           if (first) openTab(first.id);
         }}
+        renderExpanded={(r) => <Respond row={r} api={api} onOpenTerminal={openTab} />}
       />
       <section className="main">
         <Tabs

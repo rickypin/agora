@@ -89,6 +89,7 @@ async fn subscriber_gets_created_status_and_removed_in_coalesced_batches() {
             source: Source::Process,
             reason: None,
             alive: true,
+            detail: None,
         });
     }
     bus.publish(Event::SessionRemoved { id: gid.clone() });

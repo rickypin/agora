@@ -41,6 +41,13 @@ select:disabled { opacity: 0.5; }
 .row .meta { display: flex; gap: 6px; color: var(--muted); font-size: 12px; }
 .row .preview { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dot { width: 1em; text-align: center; flex: none; }
+.respond { margin: 2px 6px 6px 28px; padding: 6px 8px; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.respond-question { margin: 0; white-space: pre-wrap; word-break: break-word; }
+.respond-last { margin: 0; white-space: pre-wrap; word-break: break-word; }
+.respond-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.respond-next { display: flex; gap: 6px; }
+.respond-next input { flex: 1; min-width: 0; }
+.respond-error { margin: 0; color: var(--bad); }
 .st-waiting { color: var(--warn); }
 .st-turn_done { color: var(--accent); }
 .st-running, .st-starting { color: var(--ok); }

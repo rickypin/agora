@@ -308,7 +308,7 @@ fn hold_cap() {
     // Dashboard 答 allow：只有 t-3 那个 hook 拿到决定并写回文档形态。
     daemon
         .receiver
-        .respond("s-cap", "t-3", Decision::Allow)
+        .respond("s-cap", Some("t-3"), Decision::Allow)
         .unwrap();
     let (code, out, _) = held.remove(3).wait_within(Duration::from_secs(5));
     assert_eq!(code, 0);
@@ -316,7 +316,9 @@ fn hold_cap() {
         serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("{out:?}"));
     assert_eq!(v["hookSpecificOutput"]["decision"]["behavior"], "allow");
     assert_eq!(
-        daemon.receiver.respond("s-cap", "t-3", Decision::Allow),
+        daemon
+            .receiver
+            .respond("s-cap", Some("t-3"), Decision::Allow),
         Err(agora::hook::RespondError::NoPendingDecision {
             session: "s-cap".into(),
             tool_use_id: "t-3".into()
@@ -349,7 +351,7 @@ fn hold_cap() {
     }
     daemon.wait_holds(1);
     assert_eq!(daemon.receiver.pending("s-other"), vec!["t-x".to_string()]);
-    daemon.receiver.resolve_session("s-other");
+    daemon.receiver.resolve_session("s-other", "exit");
     let (code, out, _) = other.wait_within(Duration::from_secs(5));
     assert_eq!((code, out.as_str()), (0, ""));
     let _ = std::fs::remove_dir_all(&home);

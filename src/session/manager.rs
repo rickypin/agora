@@ -85,6 +85,11 @@ pub struct SessionView {
     pub managed: bool,
     #[serde(flatten)]
     pub assessment: Assessment,
+    /// hook 给的"正在做什么"/ 问题文本 / 最后一条回复（两行预览与就地回答用）。
+    pub detail: Option<String>,
+    /// WAITING(decision) 怎么答："hook"（allow / deny 经挂起的 hook 返回）或 "terminal"
+    /// （agent 的 hook 不能替用户批准，只能打开终端；ADR-002 D2/D5）。
+    pub respond_via: &'static str,
 }
 
 impl SessionView {
@@ -448,7 +453,7 @@ impl SessionManager {
             }
         };
         let now = clock::now_secs();
-        let assessment = {
+        let (assessment, detail) = {
             let mut machines = lock(&self.machines);
             let m = machines.entry(rec.id.clone()).or_insert_with(|| {
                 Machine::new(
@@ -458,14 +463,23 @@ impl SessionManager {
                     now,
                 )
             });
-            m.observe(Observation {
+            let a = m.observe(Observation {
                 process,
                 liveness,
                 text: None,
                 runtime: rt,
                 epoch: rec.epoch,
                 now,
-            })
+            });
+            (a, m.detail().map(str::to_owned))
+        };
+        let respond_via = if adapter::find(&rec.agent_type)
+            .and_then(|a| a.hooks())
+            .is_some_and(|h| h.decision_via_hook())
+        {
+            "hook"
+        } else {
+            "terminal"
         };
         let name = match rt {
             Some(s) if !rec.name_locked && !s.title.trim().is_empty() => s.title.clone(),
@@ -478,8 +492,18 @@ impl SessionManager {
             pid: rt.and_then(|s| s.pid),
             managed: rt.is_some_and(|s| s.managed),
             assessment,
+            detail,
+            respond_via,
             record: rec,
         }
+    }
+
+    /// respond 的 `text`：经运行时写进 PTY。external 会话没有运行时句柄 → NoRuntime。
+    pub fn send_input(&self, id: &str, data: &str) -> Result<(), SessionError> {
+        let rec = self.record(id)?;
+        let r#ref = self.require_ref(&rec)?;
+        self.runtime.send_input(&r#ref, data)?;
+        Ok(())
     }
 
     // ---------- 改名 ----------

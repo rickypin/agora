@@ -33,7 +33,7 @@ DELETE /api/auth/devices/:id       # 吊销一台设备 → 204；即时生效
 
 `GET /api/projects` 每项是 `{ path, name, last_used_at }`，按最近使用排序（未用过的排在后面、按名字）；列表是 `project_roots` 的扫描结果与库里 `projects` 表的并集，目录已不存在的行在读取时删除。`last_used_at` 只在 `POST /api/sessions` 时更新——"最近使用"指的是起过会话。`GET /api/projects/worktrees` 每项是 `{ path, branch, head, main, locked }`，`branch` 去掉 `refs/heads/` 前缀、detached HEAD 为 null，第一项是主 worktree。
 
-每条会话的形态是 `sessions` 行的全部字段 + 运行时实时事实（`name`、`alive`、`exit`、`pid`、`managed`）+ 状态判定（`status`、`source`、`confidence`、`reason`；四层来源仲裁见 ADR-002 D1，`confidence` 0–1 只供排障，UI 不显示）；`id` 是全局 id `<node>:<id>`，本机 id 在 `local_id`，另带 `node`。`unregistered` 的每项是 `{ runtime_ref, name, title, alive, managed, working_directory, node }`。
+每条会话的形态是 `sessions` 行的全部字段 + 运行时实时事实（`name`、`alive`、`exit`、`pid`、`managed`）+ 状态判定（`status`、`source`、`confidence`、`reason`；四层来源仲裁见 ADR-002 D1，`confidence` 0–1 只供排障，UI 不显示）+ `detail`（hook 给的问题文本 / 正在用的工具 / 最后一条回复，就地回答与两行预览用）+ `respond_via`（`hook`：WAITING(decision) 可经 `input` 的 decision 回答；`terminal`：agent 的 hook 不能替用户批准，只能打开终端）；`id` 是全局 id `<node>:<id>`，本机 id 在 `local_id`，另带 `node`。`unregistered` 的每项是 `{ runtime_ref, name, title, alive, managed, working_directory, node }`。
 
 ## 认证（ADR-003）
 
@@ -59,7 +59,7 @@ WS /api/events                   # 全局事件：status change / session create
 
 终端流 Server → Client：`{ "type": "output", "data" }`、`{ "type": "status", "status": "attached" }`、`{ "type": "exit", "exit": { "kind": "code", "value": n } | { "kind": "signal", "value": "hup" } }`（与 `GET /api/sessions` 里 `exit` 字段同一形态，ADR-001 的 `Exit`）、`{ "type": "pong" }`。`exit` 只说明这一条 attach 流结束了，不代表会话或 agent 退出。升级 URL 可带 `?cols=&rows=` 作为初始尺寸（缺省 160×48），之后由 `resize` 消息调整；多客户端同看时由运行时仲裁尺寸。keepalive：服务端每 20 s 发 WS Ping，65 s 内没有任何入站帧就断开这一条 attach（会话不受影响）。断开时给 attach 进程 SIGHUP，确认其退出后才释放 PTY（ADR-001 D5）。
 
-事件流 Server → Client 每帧一个 JSON **数组**（服务端 ~50 ms 合并突发，同一会话的连续状态变化只留最后一条）：`{ "type": "session_created", "id", "session" }`、`{ "type": "session_removed", "id" }`、`{ "type": "session_updated", "id", "session" }`（metadata 改了，如改名；整行重发）、`{ "type": "status_changed", "id", "status", "source", "reason", "alive" }`、`{ "type": "notification", "id", "title", "body" }`（M1b 接上）、`{ "type": "resync" }`（服务端丢过该客户端的事件，必须重拉全量）。Client → Server 只有 `{ "type": "ping" }` → `{ "type": "pong" }`。进程状态的变化由 daemon 按 `status.detector_interval` 轮询 Session Manager 求差发出；API 自己做的增删立即发。两个 WS 升级都先过 principal，再校验 `Origin` 与 `Host` 同源（403 `cross_origin`）。
+事件流 Server → Client 每帧一个 JSON **数组**（服务端 ~50 ms 合并突发，同一会话的连续状态变化只留最后一条）：`{ "type": "session_created", "id", "session" }`、`{ "type": "session_removed", "id" }`、`{ "type": "session_updated", "id", "session" }`（metadata 改了，如改名；整行重发）、`{ "type": "status_changed", "id", "status", "source", "reason", "alive", "detail" }`（`detail` 变了也算状态变化）、`{ "type": "decision_resolved", "id", "tool_use_id", "via": "dashboard" | "terminal" | "session" | "exit" | "timeout" }`（挂起的决定被解除，ADR-002 D5）、`{ "type": "notification", "id", "title", "body" }`（M1b 接上）、`{ "type": "resync" }`（服务端丢过该客户端的事件，必须重拉全量）。Client → Server 只有 `{ "type": "ping" }` → `{ "type": "pong" }`。进程状态的变化由 daemon 按 `status.detector_interval` 轮询 Session Manager 求差发出；API 自己做的增删立即发。两个 WS 升级都先过 principal，再校验 `Origin` 与 `Host` 同源（403 `cross_origin`）。
 
 MVP 用 JSON / Text WebSocket 足够；binary terminal frames 放到 V2。
 
@@ -67,16 +67,16 @@ MVP 用 JSON / Text WebSocket 足够；binary terminal frames 放到 V2。
 
 ## respond 的两种语义（MISSION §7.3）
 
-- `POST /api/sessions/:id/input` 接受 `{ "kind": "decision", "decision": "allow" | "deny", "message"? }` 或 `{ "kind": "text", "data": "..." }`。选择题（AskUserQuestion 类）V1 不经 API：Dashboard 只显示问题与"打开终端"（ADR-002 D5）。
-- `decision` 只对有挂起 hook 决定的会话有效（否则错误类型 `NoPendingDecision`）：agora 的 PermissionRequest hook 挂起等待，答复经 hook 返回给 agent，不注入键击；`decision_via_hook = false` 的 agent（Grok）只提供"打开终端"。挂起上限与超时见下文（ADR-002 D5）。
-- `text` 经 PTY 写入；无 hook 的 agent 与自由问答走这条。
+- `POST /api/sessions/:id/input` 接受 `{ "kind": "decision", "decision": "allow" | "deny", "message"?, "tool_use_id"? }` 或 `{ "kind": "text", "data": "..." }`。选择题（AskUserQuestion 类）V1 不经 API：Dashboard 只显示问题与"打开终端"（ADR-002 D5）。
+- `decision` 只对有挂起 hook 决定的会话有效（否则 409 `no_pending_decision`）：agora 的 PermissionRequest hook 挂起等待，答复经 hook 返回给 agent，不注入键击；`tool_use_id` 缺省答最早登记的那个（Claude 2.1.260 的 PermissionRequest 实测不带 tool_use_id，键是 `tool_name`）；成功返回 `{ "tool_use_id" }`，行立即退出 WAITING，并发 `decision_resolved` via=dashboard。`respond_via = terminal` 的 agent（Grok）只提供"打开终端"。挂起上限与超时见下文（ADR-002 D5）。
+- `text` 经 PTY 写入（运行时的 send-keys：字面文本一次、尾部换行作回车键单独一次——Claude 的 TUI 把两者一起到达当成粘贴不提交）；无 hook 的 agent、自由问答、TURN_DONE 的下一条指令走这条；external 会话没有运行时句柄 → 409 `no_runtime`。
 
 ## hook 投递（ADR-002 D3）
 
 - **没有 HTTP 端点**。agent 的 hook 命令是 `<AGORA_HOME>/bin/agora hook --host <agent> --home <AGORA_HOME>`（安装写入的完整形态见 ADR-002 D4）：payload 落到 `<AGORA_HOME>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`（先 `.part` 再 rename），再经 `<AGORA_HOME>/agora.sock`（unix socket，仅属主可访问 + 对端 uid 校验，ADR-003 D6）唤醒 daemon；daemon 不在时文件留着，启动时按文件名顺序重放（MISSION §3.4）；应用过的文件移到 `<AGORA_HOME>/hooks/done/` 保留 24 h 供排障；信封里 `AGORA_EPOCH` 小于会话当前 epoch 的事件丢弃（Restart 之前那代进程发的）；`hooks/` 下任何一级目录属主不对或 group / other 有位，daemon 拒绝读并记日志（agent 照跑）。
 - 安装：`agora hooks install|uninstall <agent> [--dry-run]` 写用户自己的 agent 配置（Claude `~/.claude/settings.json` 的 `hooks`），装前把 diff 打到 stderr，`--dry-run` 只看不写；条目以 `<AGORA_HOME>/bin/agora hook` 为自己的标记，重复装不重复、卸载只删自己的、别人的条目与其它键原样；`install` 顺手把 `<AGORA_HOME>/bin/agora` 指向当前二进制。每个事件的 timeout 由 Adapter 的 `install_spec` 给（PermissionRequest 3600 s、SessionEnd 1 s、其余 20 s）。信封里的 agent 环境变量只收 `CLAUDE_*` / `CODEX_*` / `GROK_*`，名字含 TOKEN / SECRET 之类的不落盘。
 - 需要答复的事件（Claude Code `PermissionRequest`）由 hook 进程在 socket 上挂起等 daemon 回 allow / deny / none；none、超时、socket 断都是 fail-open（exit 0 不输出，TUI 的提示仍在）。挂起上限每会话 8、节点 256，超时 55 min。
-- `/api/events` 新增 `decision.resolved`（挂起被终端答复、进程退出或超时解除）。
+- `/api/events` 的 `decision_resolved`（挂起被 Dashboard / 终端答复、本轮结束、进程退出或超时解除）形态见上文。
 
 ## Health（MISSION §10.3）
 

@@ -42,6 +42,11 @@ export interface AgentInfo {
   command: string;
 }
 
+/** `POST /api/sessions/:id/input`（MISSION §7.3；ADR-002 D5）。 */
+export type InputBody =
+  | { kind: "decision"; decision: "allow" | "deny"; message?: string; tool_use_id?: string }
+  | { kind: "text"; data: string };
+
 export interface CreateSessionBody {
   display_name: string;
   agent_type: string;
@@ -91,6 +96,8 @@ export function sessionApi(fetchImpl: FetchLike = apiFetch) {
       call(fetchImpl, "POST", `${enc(id)}/restart`, confirmed ? { confirmed: true } : {}),
     /** 只删 metadata，不 kill（DELETE ≠ kill，MISSION §7.3）。 */
     deleteMetadata: (id: string) => call(fetchImpl, "DELETE", enc(id)),
+    /** 就地 respond：decision 经挂起的 hook 返回，text 经 PTY（MISSION §7.3）。 */
+    input: (id: string, body: InputBody) => call(fetchImpl, "POST", `${enc(id)}/input`, body),
     /** New Agent 对话框的创建（§6.4）；201 的响应体就是新会话那一行。 */
     create: (body: CreateSessionBody) =>
       call<{ id: string }>(fetchImpl, "POST", "/api/sessions", body),
