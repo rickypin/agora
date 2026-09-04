@@ -90,9 +90,10 @@ pub fn plan_pin(
     Some((splice_args(command, &pin, &[]), id))
 }
 
-/// 把 adapter 给的参数接到命令尾上；命令里已有同名 flag（连同它的值）先拆掉，免得重复；
-/// `also_strip` 里的 flag 同样拆掉（如 resume 时拆 pin）。
-/// 只处理 `--flag value` 形态：adapter 的 resume / pin 参数就是这个形态。
+/// 把 adapter 给的参数接到命令尾上；命令里已有同名键（连同它的值）先拆掉，免得重复；
+/// `also_strip` 里的键同样拆掉（如 resume 时拆 pin）。
+/// 参数形态是 `键 值` 对：`--resume <id>`（Claude / Grok）或子命令 `resume <id>`（Codex，
+/// 全局 `-c` 之类放在子命令前照样合法，2026-09-05 实测 0.152.1）。
 pub fn splice_args(command: &str, args: &[String], also_strip: &[&str]) -> String {
     let mut flags: Vec<&str> = flags_of(args).collect();
     flags.extend_from_slice(also_strip);
@@ -109,10 +110,9 @@ pub fn splice_args(command: &str, args: &[String], also_strip: &[&str]) -> Strin
     out.join(" ")
 }
 
+/// 参数里的键：偶数位（`--resume`、`resume`、`--session-id`）。
 fn flags_of(args: &[String]) -> impl Iterator<Item = &str> {
-    args.iter()
-        .map(String::as_str)
-        .filter(|a| a.starts_with("--"))
+    args.iter().step_by(2).map(String::as_str)
 }
 
 /// 对话 id 是 uuid，不需要引号；别的形态保守地单引号包住（命令经 `sh -c` 执行）。

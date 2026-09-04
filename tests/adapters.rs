@@ -7,13 +7,17 @@ use agora::hook::HOLD_TIMEOUT;
 
 #[test]
 fn hook_timeouts_outlive_the_daemon_hold() {
-    // 安装的 PermissionRequest timeout 必须大于 daemon 的挂起超时 + 客户端余量（55 min + 30 s），
-    // 否则 agent 先超时，hook 的 allow 会落在一个已经放弃的提示上。
+    // 安装的 PermissionRequest timeout 必须大于该宿主的挂起上限 + 客户端余量（30 s），
+    // 否则 agent 先超时，hook 的 allow 会落在一个已经放弃的提示上。宿主的上限不超过默认值。
     for host in adapter::hosts() {
         let hooks = adapter::for_host(host).unwrap();
+        assert!(hooks.hold_timeout() <= HOLD_TIMEOUT, "{host}");
         for h in hooks.install_spec() {
             if h.event == "PermissionRequest" {
-                assert!(h.timeout > HOLD_TIMEOUT + Duration::from_secs(30), "{host}");
+                assert!(
+                    h.timeout > hooks.hold_timeout() + Duration::from_secs(30),
+                    "{host}"
+                );
             }
             // 所有 hook 的配置文件都相对 HOME，安装器不会写到别处。
             assert!(h.file.is_relative(), "{host}: {}", h.file.display());
@@ -203,4 +207,49 @@ fn grok_is_first_class_but_answers_only_in_the_terminal() {
     assert!(hooks
         .parse(&serde_json::json!({"hookEventName":"stop","reason":"shutdown"}))
         .is_empty());
+}
+
+// ---------- Codex adapter（ADR-002 D2/D4/D5/D7；agora-dvh.7） ----------
+
+#[test]
+fn codex_answers_through_hooks_but_only_for_seconds() {
+    let codex = adapter::find("codex").unwrap();
+    assert_eq!(
+        codex.version("codex-cli 0.152.1"),
+        VersionProbe::Available(Version(0, 152, 1))
+    );
+    // Restart 是子命令 `codex resume <id>`，全局 -c 留在子命令前；再 Restart 不叠加。
+    let avail =
+        |_: &dyn agora::adapter::Adapter, _: &str| VersionProbe::Available(Version(0, 152, 1));
+    let plan = plan_restart(
+        "codex",
+        "codex -c approval_policy=on-request",
+        Some("conv-c"),
+        avail,
+    );
+    assert_eq!(
+        plan.command(),
+        "codex -c approval_policy=on-request resume conv-c"
+    );
+    let again = plan_restart("codex", plan.command(), Some("conv-d"), avail);
+    assert_eq!(
+        again.command(),
+        "codex -c approval_policy=on-request resume conv-d"
+    );
+    // 没有钉 id 的参数：起会话不钉，等自报。
+    assert_eq!(plan_pin("codex", "codex", avail), None);
+    // 实测 2026-09-05：挂起期间 TUI 不显示审批提示，终端答不了——所以上限是秒级，
+    // 超时 fail-open 把提示交回终端；Claude 的并存模型才配得上 55 min。
+    let hooks = codex.hooks().unwrap();
+    assert!(hooks.decision_via_hook());
+    assert!(hooks.hold_timeout() <= Duration::from_secs(60));
+    assert!(adapter::for_host("claude").unwrap().hold_timeout() == HOLD_TIMEOUT);
+    let pr = serde_json::json!({"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"touch x"}});
+    assert_eq!(hooks.hold_key(&pr).as_deref(), Some("Bash"));
+    assert!(hooks
+        .decision_output(&agora::adapter::Decision::Allow)
+        .unwrap()
+        .contains("\"allow\""));
+    // 未信任即静默：装完必须提示用户跑 /hooks。
+    assert!(hooks.install_hint().unwrap().contains("/hooks"));
 }

@@ -1,17 +1,14 @@
 //! 各宿主 `AgentHooks` 实现共用的零件（ADR-002 D2/D3/D5）。
 //!
-//! 决定的形态（[`Decision`]）、解除的形态（[`Release`]）、payload 取键的小工具，以及一张
-//! **通用映射表** [`GenericHooks`]：Codex 在它的 adapter（agora-dvh.7）按实测分叉之前先用它；
-//! Claude（`claude.rs`）与 Grok（`grok.rs`）各有自己的表。键名双写 camel / snake 都认，因为
-//! Grok 双写、Codex 用 snake。注意这张表按 CamelCase 事件名匹配——Grok 实测发的是
-//! `pre_tool_use` 小写蛇形（2026-09-04），所以它**不能**直接给 Grok 用；Codex 0.152.1 实测
-//! （2026-09-05）发的是 `PreToolUse` CamelCase + snake 键，拼法与这张表一致。
+//! 决定的形态（[`Decision`]）、解除的形态（[`Release`]）、payload 取键的小工具与挂起判定。
+//! 三家的表各在自己的文件（`claude.rs` / `codex.rs` / `grok.rs`）：键名双写 camel / snake 都认，
+//! 因为 Grok 双写、Claude 与 Codex 用 snake；事件名 Claude / Codex 是 CamelCase，Grok 实测是
+//! 小写蛇形（2026-09-04），所以没有一张能三家通用的表。
 
 use serde_json::Value;
 
-use crate::status::AgoraEvent;
-
-use super::{AgentHooks, HookInstall};
+/// 默认的挂起上限（ADR-002 D5）：安装的 hook timeout 3600 s 减余量，agora 永远先于 agent 退出。
+pub const DEFAULT_HOLD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(55 * 60);
 
 /// 环境里哪些变量名前缀属于 agent 自己、值得进信封（`CLAUDE_PID`、`GROK_*`、`CODEX_*`）。
 pub fn agent_env_prefixes() -> &'static [&'static str] {
@@ -128,206 +125,31 @@ pub(crate) fn generic_release(payload: &Value) -> Release {
     }
 }
 
-/// 通用映射表（ADR-002 D2）。Stop 按 `reason == end_turn` 过滤（缺 reason 的宿主照常算一轮结束）。
-pub struct GenericHooks {
-    pub host: &'static str,
-    pub decision_via_hook: bool,
-    /// 宿主自认（ADR-002 D4）：`GROK_SESSION_ID` 在环境里的那个才是 Grok。
-    pub is_grok: bool,
-}
-
-impl AgentHooks for GenericHooks {
-    fn host(&self) -> &str {
-        self.host
-    }
-
-    /// 安装规格随各自的 adapter 落地（dvh.6 / dvh.7）：现在没有就写没有。
-    fn install_spec(&self) -> Vec<HookInstall> {
-        Vec::new()
-    }
-
-    fn decision_via_hook(&self) -> bool {
-        self.decision_via_hook
-    }
-
-    /// Grok 默认兼容加载 `~/.claude/settings.json` 里的 hooks，agora 装给 Claude 的条目会被
-    /// Grok 以另一个 `--host` 跑一遍。判定只看环境，不按 payload 键名风格猜。
-    fn host_matches_env(&self, has_grok_session: bool) -> bool {
-        self.is_grok == has_grok_session
-    }
-
-    fn agent_session_id(&self, payload: &Value) -> Option<String> {
-        session_id(payload)
-    }
-
-    fn working_directory(&self, payload: &Value) -> Option<std::path::PathBuf> {
-        cwd(payload)
-    }
-
-    fn parse(&self, payload: &Value) -> Vec<AgoraEvent> {
-        let mut out = Vec::new();
-        let tool = str_of(payload, &["tool_name", "toolName"]).unwrap_or("tool");
-        match event_name(payload) {
-            Some("SessionStart") => {
-                out.push(AgoraEvent::SessionStarted);
-                if let Some(id) = session_id(payload) {
-                    out.push(AgoraEvent::SessionId(id));
-                }
-            }
-            Some("UserPromptSubmit") => out.push(AgoraEvent::PromptSubmitted(
-                str_of(payload, &["prompt"]).unwrap_or_default().to_owned(),
-            )),
-            Some("PreToolUse") => out.push(AgoraEvent::Activity(tool.to_owned())),
-            Some("PostToolUse" | "PostToolUseFailure" | "PermissionDenied") => {
-                out.extend(
-                    release_keys(payload)
-                        .into_iter()
-                        .map(|k| AgoraEvent::DecisionResolved(Some(k))),
-                );
-                out.push(AgoraEvent::Activity(tool.to_owned()));
-            }
-            Some("PermissionRequest") => out.push(AgoraEvent::DecisionNeeded {
-                tool_use_id: decision_key(payload),
-                summary: tool.to_owned(),
-            }),
-            Some("Notification") => {
-                let kind = str_of(
-                    payload,
-                    &["notification_type", "notificationType", "matcher"],
-                );
-                match kind {
-                    Some("idle_prompt") => out.push(AgoraEvent::Idle),
-                    // permission_prompt 只是 PermissionRequest 的确认；能挂起的宿主已经有了，
-                    // 不能的（Grok）它就是 WAITING(decision) 的唯一来源。
-                    Some("permission_prompt") if !self.decision_via_hook => {
-                        out.push(AgoraEvent::DecisionNeeded {
-                            tool_use_id: decision_key(payload),
-                            summary: str_of(payload, &["message"]).unwrap_or(tool).to_owned(),
-                        })
-                    }
-                    _ => {}
-                }
-            }
-            Some("Stop") => {
-                let reason = str_of(payload, &["reason"]);
-                if reason.is_none_or(|r| r == "end_turn") {
-                    out.push(AgoraEvent::TurnEnded(
-                        str_of(payload, &["last_assistant_message", "lastAssistantMessage"])
-                            .map(str::to_owned),
-                    ));
-                }
-            }
-            Some("StopFailure" | "StopCancelled" | "Interrupt") => {
-                out.push(AgoraEvent::TurnFailed(
-                    str_of(payload, &["matcher", "reason", "error_type", "errorType"])
-                        .unwrap_or("failed")
-                        .to_owned(),
-                ))
-            }
-            Some("SessionEnd") => out.push(AgoraEvent::SessionEnded(
-                str_of(payload, &["reason"]).map(str::to_owned),
-            )),
-            _ => {}
-        }
-        out
-    }
-
-    fn hold_key(&self, payload: &Value) -> Option<String> {
-        generic_hold_key(self.decision_via_hook, payload)
-    }
-
-    fn release_for(&self, payload: &Value) -> Release {
-        generic_release(payload)
-    }
-
-    fn decision_output(&self, decision: &Decision) -> Option<String> {
-        if !self.decision_via_hook {
-            return None;
-        }
-        permission_output(decision)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    const CAN: GenericHooks = GenericHooks {
-        host: "can",
-        decision_via_hook: true,
-        is_grok: false,
-    };
-    const CANNOT: GenericHooks = GenericHooks {
-        host: "cannot",
-        decision_via_hook: false,
-        is_grok: true,
-    };
-
-    #[test]
-    fn generic_table_maps_both_key_styles() {
-        assert_eq!(
-            CAN.parse(&json!({"hook_event_name":"SessionStart","session_id":"s1"})),
-            vec![
-                AgoraEvent::SessionStarted,
-                AgoraEvent::SessionId("s1".into())
-            ]
-        );
-        assert_eq!(
-            CAN.parse(&json!({"hookEventName":"PostToolUse","toolUseId":"t","toolName":"Bash"})),
-            vec![
-                AgoraEvent::DecisionResolved(Some("t".into())),
-                AgoraEvent::DecisionResolved(Some("Bash".into())),
-                AgoraEvent::Activity("Bash".into())
-            ]
-        );
-        // session 结束与续跑也 fire Stop 的宿主：只认 end_turn。
-        assert_eq!(
-            CANNOT.parse(&json!({"hookEventName":"Stop","reason":"resume"})),
-            vec![]
-        );
-        assert_eq!(
-            CANNOT.parse(
-                &json!({"hookEventName":"Notification","notificationType":"permission_prompt","message":"needs you"})
-            ),
-            vec![AgoraEvent::DecisionNeeded {
-                tool_use_id: "PermissionRequest".into(),
-                summary: "needs you".into()
-            }]
-        );
-        // 能挂起的宿主：permission_prompt 只是确认。
-        assert_eq!(
-            CAN.parse(
-                &json!({"hook_event_name":"Notification","notification_type":"permission_prompt"})
-            ),
-            vec![]
-        );
-        assert_eq!(CAN.parse(&json!({"hook_event_name":"Nope"})), vec![]);
-    }
-
-    #[test]
-    fn host_self_recognition_follows_grok_env_only() {
-        assert!(CAN.host_matches_env(false));
-        assert!(!CAN.host_matches_env(true));
-        assert!(CANNOT.host_matches_env(true));
-        assert!(!CANNOT.host_matches_env(false));
-    }
-
     #[test]
     fn only_permission_requests_of_capable_hosts_hold() {
         let pr = json!({ "hook_event_name": "PermissionRequest", "tool_use_id": "t1" });
-        assert_eq!(CAN.hold_key(&pr).as_deref(), Some("t1"));
-        assert_eq!(CANNOT.hold_key(&pr), None);
-        assert_eq!(CAN.hold_key(&json!({ "hook_event_name": "Stop" })), None);
+        assert_eq!(generic_hold_key(true, &pr).as_deref(), Some("t1"));
+        assert_eq!(generic_hold_key(false, &pr), None);
+        assert_eq!(
+            generic_hold_key(true, &json!({ "hook_event_name": "Stop" })),
+            None
+        );
         // 2.1.260 实测：没有 tool_use_id，按 tool_name 键；什么都没有才用事件名占位。
         assert_eq!(
-            CAN.hold_key(&json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash" }))
-                .as_deref(),
+            generic_hold_key(
+                true,
+                &json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash" })
+            )
+            .as_deref(),
             Some("Bash")
         );
         assert_eq!(
-            CAN.hold_key(&json!({ "hook_event_name": "PermissionRequest" }))
-                .as_deref(),
+            generic_hold_key(true, &json!({ "hook_event_name": "PermissionRequest" })).as_deref(),
             Some("PermissionRequest")
         );
     }
@@ -360,17 +182,15 @@ mod tests {
 
     #[test]
     fn decision_output_is_the_documented_shape_or_nothing() {
-        let out = CAN.decision_output(&Decision::Allow).unwrap();
+        let out = permission_output(&Decision::Allow).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["hookSpecificOutput"]["decision"]["behavior"], "allow");
-        let out = CAN
-            .decision_output(&Decision::Deny {
-                message: Some("no".into()),
-            })
-            .unwrap();
+        let out = permission_output(&Decision::Deny {
+            message: Some("no".into()),
+        })
+        .unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["hookSpecificOutput"]["decision"]["message"], "no");
-        assert_eq!(CAN.decision_output(&Decision::None), None);
-        assert_eq!(CANNOT.decision_output(&Decision::Allow), None);
+        assert_eq!(permission_output(&Decision::None), None);
     }
 }

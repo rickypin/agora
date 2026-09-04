@@ -24,13 +24,17 @@ fn ours(v: &Value, home: &Path) -> usize {
 
 #[test]
 fn timeout_exceeds_hold() {
-    // 安装到 agent 配置里的每个 timeout 必须大于 hooks.hold_timeout（55 min）加客户端余量，
-    // 至少 PermissionRequest 如此；其余事件不挂起，只要 ≥ 1 s 够落盘。
+    // 安装到 agent 配置里的每个 timeout 必须大于该宿主的挂起上限（默认 55 min，Codex 秒级）加
+    // 客户端余量，至少 PermissionRequest 如此；其余事件不挂起，只要 ≥ 1 s 够落盘。
     for host in adapter::hosts() {
-        let spec = adapter::for_host(host).unwrap().install_spec();
-        for h in spec {
+        let hooks = adapter::for_host(host).unwrap();
+        assert!(hooks.hold_timeout() <= HOLD_TIMEOUT, "{host}");
+        for h in hooks.install_spec() {
             if h.event == "PermissionRequest" {
-                assert!(h.timeout > HOLD_TIMEOUT + Duration::from_secs(30), "{host}");
+                assert!(
+                    h.timeout > hooks.hold_timeout() + Duration::from_secs(30),
+                    "{host}"
+                );
             }
             assert!(h.timeout >= Duration::from_secs(1), "{host} {}", h.event);
         }
@@ -169,6 +173,43 @@ fn grok_installs_into_its_own_global_hooks_file() {
         .contains("exec "));
     assert_eq!(ours(&v, &inst.agora_home), hooks.install_spec().len());
     assert!(inst.plan_install(hooks).unwrap().is_noop());
+    let un = inst.plan_uninstall(hooks).unwrap();
+    inst.write(&un).unwrap();
+    let after: Value = serde_json::from_str(&std::fs::read_to_string(&plan.file).unwrap()).unwrap();
+    assert_eq!(ours(&after, &inst.agora_home), 0);
+}
+
+#[test]
+fn codex_installs_into_hooks_json_with_a_short_hold_and_a_trust_hint() {
+    // ADR-002 D4 + 附录 A（2026-09-05 实测）：Codex 读 ~/.codex/hooks.json，形态与 Claude 相同；
+    // 条目内容（命令、timeout）就是信任哈希的输入，所以重复装必须是 noop——否则用户每次都要重新
+    // /hooks；SessionEnd / Interrupt 超过 3 s 会被 clamp 并每次启动警告。
+    let tmp = tempfile::tempdir().unwrap();
+    let inst = installer(tmp.path());
+    let hooks = adapter::for_host("codex").unwrap();
+    let plan = inst.plan_install(hooks).unwrap();
+    assert_eq!(plan.file, inst.user_home.join(".codex/hooks.json"));
+    inst.write(&plan).unwrap();
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&plan.file).unwrap()).unwrap();
+    let pr = &v["hooks"]["PermissionRequest"][0]["hooks"][0];
+    assert!(pr["command"].as_str().unwrap().contains("exec "));
+    assert!(pr["timeout"].as_u64().unwrap() > hooks.hold_timeout().as_secs() + 30);
+    assert!(
+        v["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"]
+            .as_u64()
+            .unwrap()
+            <= 3
+    );
+    assert!(
+        v["hooks"]["Interrupt"][0]["hooks"][0]["timeout"]
+            .as_u64()
+            .unwrap()
+            <= 3
+    );
+    assert!(v["hooks"].get("Notification").is_none());
+    assert_eq!(ours(&v, &inst.agora_home), hooks.install_spec().len());
+    assert!(inst.plan_install(hooks).unwrap().is_noop());
+    assert!(hooks.install_hint().unwrap().contains("/hooks"));
     let un = inst.plan_uninstall(hooks).unwrap();
     inst.write(&un).unwrap();
     let after: Value = serde_json::from_str(&std::fs::read_to_string(&plan.file).unwrap()).unwrap();

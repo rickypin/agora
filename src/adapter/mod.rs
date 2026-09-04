@@ -133,6 +133,19 @@ pub trait AgentHooks: Send + Sync {
     /// 决定写回 stdout 的形态；None = 不输出（fail-open）。
     fn decision_output(&self, decision: &Decision) -> Option<String>;
 
+    /// 挂起等 Dashboard 决定的上限（ADR-002 D5）。默认 55 min（Claude：挂起期间 TUI 的提示
+    /// 并存，人在终端随时能答）；挂起期间终端答不了的宿主（Codex 0.152.1 实测 2026-09-05：TUI
+    /// 只显示 "Running PermissionRequest hook"，hook 退出后提示才弹）必须给秒级，超时 fail-open
+    /// 把提示交回终端。安装的 PermissionRequest timeout 必须大于它加客户端余量。
+    fn hold_timeout(&self) -> Duration {
+        hooks::DEFAULT_HOLD_TIMEOUT
+    }
+
+    /// 安装后要对用户说的话（stderr）：宿主有额外的信任步骤时给（Codex 的 `/hooks`）。
+    fn install_hint(&self) -> Option<String> {
+        None
+    }
+
     /// payload 里 agent 自报的工作目录：外部会话（无 AGORA_*）登记时的项目与显示名来源。
     fn working_directory(&self, _payload: &serde_json::Value) -> Option<std::path::PathBuf> {
         None

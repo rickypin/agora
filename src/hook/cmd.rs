@@ -14,7 +14,6 @@ use crate::adapter::{self, AgentHooks};
 use crate::local::{self, Request, Response, SOCKET_FILE};
 
 use super::inbox::{self, Delivery, Envelope, Inbox};
-use super::HOLD_TIMEOUT;
 
 fn usage() -> String {
     format!(
@@ -129,9 +128,9 @@ fn is_secret_name(name: &str) -> bool {
 async fn deliver(home: &Path, hooks: &dyn AgentHooks, delivery: &Delivery, path: PathBuf) {
     let socket = home.join(SOCKET_FILE);
     let hold = hooks.hold_key(&delivery.payload).is_some();
-    // daemon 侧 55 min 自己会解除；客户端再宽 30 s 只是防 daemon 卡死。
+    // daemon 侧到宿主的上限自己会解除；客户端再宽 30 s 只是防 daemon 卡死。
     let wait = if hold {
-        HOLD_TIMEOUT + Duration::from_secs(30)
+        hooks.hold_timeout() + Duration::from_secs(30)
     } else {
         ACK_TIMEOUT
     };

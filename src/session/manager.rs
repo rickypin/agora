@@ -117,6 +117,9 @@ pub struct SessionView {
     /// WAITING(decision) 怎么答："hook"（allow / deny 经挂起的 hook 返回）或 "terminal"
     /// （agent 的 hook 不能替用户批准，只能打开终端；ADR-002 D2/D5）。
     pub respond_via: &'static str,
+    /// `respond_via = hook` 时 Dashboard 有多少秒可答（宿主的挂起上限，ADR-002 D5）；超过就
+    /// fail-open 交回终端。Claude 55 min，Codex 秒级——UI 据此提示。
+    pub respond_within_secs: Option<u64>,
     /// 两行预览（MISSION §6.3；ADR-002 D8）：`❯` 用户最后输入 / `↳` agent 正在做或最后说的。
     /// 都来自 hook 事件；没有 hook 的会话两者皆 None。
     pub prompt: Option<String>,
@@ -682,14 +685,15 @@ impl SessionManager {
             (Some(cwd), Some(r)) => self.tasks.get(std::path::Path::new(cwd), r),
             _ => None,
         };
-        let respond_via = if adapter::find(&rec.agent_type)
+        let hook_host = adapter::find(&rec.agent_type)
             .and_then(|a| a.hooks())
-            .is_some_and(|h| h.decision_via_hook())
-        {
+            .filter(|h| h.decision_via_hook());
+        let respond_via = if hook_host.is_some() {
             "hook"
         } else {
             "terminal"
         };
+        let respond_within_secs = hook_host.map(|h| h.hold_timeout().as_secs());
         let name = match rt {
             Some(s) if !rec.name_locked && !s.title.trim().is_empty() => s.title.clone(),
             _ => rec.display_name.clone(),
@@ -703,6 +707,7 @@ impl SessionManager {
             assessment,
             detail,
             respond_via,
+            respond_within_secs,
             prompt,
             progress,
             preview,

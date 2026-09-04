@@ -16,7 +16,10 @@ interface Props {
  * 三种 WAITING：权限且 agent 的 hook 能替用户批准（`respond_via = hook`，reason `permission`）
  * → allow / deny 经挂起的 hook 返回，不注入键击；权限但 hook 不能批准（Grok）→ 只有"打开终端"；
  * 提问（AskUserQuestion 类，reason `question`）→ 选项渲染在 TUI 里，只显示问题文本与"打开终端"。
+ * `respond_within_secs` 是宿主的挂起上限：Codex 挂起期间终端答不了、上限只有几十秒，超时提示
+ * 交回终端——短于 5 分钟就把它写出来，免得人以为 Allow 按钮坏了。
  */
+const SHORT_HOLD_SECS = 300;
 export function Respond({ row, api, onOpenTerminal }: Props) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -30,6 +33,8 @@ export function Respond({ row, api, onOpenTerminal }: Props) {
   const turnDone = row.status === "turn_done";
   if (!waiting && !turnDone) return null;
   const canDecide = waiting && row.reason === "permission" && row.respond_via === "hook";
+  const within = typeof row.respond_within_secs === "number" ? row.respond_within_secs : null;
+  const shortHold = canDecide && within !== null && within < SHORT_HOLD_SECS;
 
   async function decide(decision: "allow" | "deny") {
     setBusy(true);
@@ -56,6 +61,11 @@ export function Respond({ row, api, onOpenTerminal }: Props) {
   return (
     <div className="respond" data-testid={`respond-${row.id}`} onClick={(e) => e.stopPropagation()}>
       {waiting && <p className="respond-question">{detail ?? String(row.reason ?? "等待你")}</p>}
+      {shortHold && (
+        <p className="respond-hint muted" data-testid="respond-within">
+          {within} 秒内没答会交回终端（挂起期间终端看不到提示）
+        </p>
+      )}
       {waiting && (
         <div className="respond-actions">
           {canDecide && (

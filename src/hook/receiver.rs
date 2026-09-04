@@ -22,8 +22,9 @@ use super::HookError;
 
 pub const MAX_HOLDS_PER_SESSION: usize = 8;
 pub const MAX_HOLDS_PER_NODE: usize = 256;
-/// 安装的 hook timeout 是 3600 s（ADR-002 D4）；agora 永远先于 agent 超时退出。
-pub const HOLD_TIMEOUT: Duration = Duration::from_secs(55 * 60);
+/// 默认挂起上限；每个宿主可以更短（`AgentHooks::hold_timeout`，Codex 是秒级），永远先于
+/// agent 的 hook timeout 退出。
+pub const HOLD_TIMEOUT: Duration = crate::adapter::hooks::DEFAULT_HOLD_TIMEOUT;
 
 /// 一条已应用的事件：状态机（agora-dvh.4）的输入，现阶段只进账本。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +46,8 @@ pub enum RespondError {
 struct Hold {
     tx: oneshot::Sender<Decision>,
     since: Instant,
+    /// 这一条的上限：宿主给的与 daemon 配置里较短的那个。
+    timeout: Duration,
 }
 
 pub struct Receiver {
@@ -269,19 +272,22 @@ impl Receiver {
                 };
             }
         };
-        let Some(tool_use_id) = adapter::for_host(&received.delivery.envelope.host)
-            .and_then(|h| h.hold_key(&received.delivery.payload))
+        let Some((tool_use_id, timeout)) = adapter::for_host(&received.delivery.envelope.host)
+            .and_then(|h| {
+                h.hold_key(&received.delivery.payload)
+                    .map(|k| (k, h.hold_timeout().min(self.hold_timeout)))
+            })
         else {
             return Response::Hook {
                 decision: Decision::None,
             };
         };
-        let Some(rx) = self.hold(&received.session_key, &tool_use_id) else {
+        let Some(rx) = self.hold(&received.session_key, &tool_use_id, timeout) else {
             return Response::Hook {
                 decision: Decision::None,
             };
         };
-        let decision = match tokio::time::timeout(self.hold_timeout, rx).await {
+        let decision = match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(d)) => d,
             // 发送端被丢（同键被新挂起接替）：那边已经宣布过了。
             Ok(Err(_)) => Decision::None,
@@ -299,7 +305,12 @@ impl Receiver {
     }
 
     /// 登记一个挂起；超上限返回 None（hook 立即 exit 0）。
-    fn hold(&self, session: &str, tool_use_id: &str) -> Option<oneshot::Receiver<Decision>> {
+    fn hold(
+        &self,
+        session: &str,
+        tool_use_id: &str,
+        timeout: Duration,
+    ) -> Option<oneshot::Receiver<Decision>> {
         let mut holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
         let per_session = holds.keys().filter(|(s, _)| s == session).count();
         if holds.len() >= MAX_HOLDS_PER_NODE || per_session >= MAX_HOLDS_PER_SESSION {
@@ -313,6 +324,7 @@ impl Receiver {
             Hold {
                 tx,
                 since: Instant::now(),
+                timeout,
             },
         );
         Some(rx)
@@ -410,7 +422,7 @@ impl Receiver {
             let holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
             holds
                 .iter()
-                .filter(|(_, h)| h.since.elapsed() >= self.hold_timeout)
+                .filter(|(_, h)| h.since.elapsed() >= h.timeout)
                 .map(|(k, _)| k.clone())
                 .collect()
         };

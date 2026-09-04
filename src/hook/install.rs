@@ -11,8 +11,9 @@
 //! - 装前显示 diff（stderr），`--dry-run` 只看不写；写文件先 `.part` 再 rename。
 //!
 //! 配置文件的形态是三家共同的 `{"hooks": {"<Event>": [{"matcher"?, "hooks": [{"type":
-//! "command", "command", "timeout"}]}]}}`（Claude settings.json、Grok agora.json 文档一致；
-//! Codex 的 hooks.json 若不同在 dvh.7 分叉）。
+//! "command", "command", "timeout"}]}]}}`（Claude settings.json、Grok agora.json、Codex
+//! hooks.json，后者 2026-09-05 实测 0.152.1 照此加载）。装完宿主要用户再做一步的（Codex 的
+//! `/hooks` 信任）由 `AgentHooks::install_hint` 说，这里只负责打印。
 
 use std::path::{Path, PathBuf};
 
@@ -359,6 +360,11 @@ fn run_inner(argv: &[&str]) -> Result<(), InstallError> {
     };
     if plan.is_noop() {
         eprintln!("{} 无需改动", plan.file.display());
+        if args.action == "install" {
+            if let Some(hint) = hooks.install_hint() {
+                eprintln!("{hint}");
+            }
+        }
         return Ok(());
     }
     eprintln!("--- {}", plan.file.display());
@@ -374,6 +380,11 @@ fn run_inner(argv: &[&str]) -> Result<(), InstallError> {
     }
     installer.write(&plan)?;
     eprintln!("已写入 {}", plan.file.display());
+    if args.action == "install" {
+        if let Some(hint) = hooks.install_hint() {
+            eprintln!("{hint}");
+        }
+    }
     Ok(())
 }
 

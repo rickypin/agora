@@ -46,6 +46,17 @@ it("a question or a host that cannot decide via hook only offers the terminal", 
   expect(onOpenTerminal).toHaveBeenCalledWith("mac:s1");
 });
 
+it("a short hold (Codex) says how long the dashboard has before the terminal takes over", () => {
+  // ADR-002 附录 A（Codex 0.152.1 实测）：挂起期间 TUI 不弹审批提示，上限只有几十秒。
+  setup({ reason: "permission", respond_via: "hook", respond_within_secs: 20, detail: "Bash" });
+  expect(screen.getByTestId("respond-within").textContent).toContain("20 秒");
+  expect(screen.getByTestId("allow")).toBeTruthy();
+  cleanup();
+  // Claude 的 55 min 并存模型：不啰嗦。
+  setup({ reason: "permission", respond_via: "hook", respond_within_secs: 3300, detail: "Bash" });
+  expect(screen.queryByTestId("respond-within")).toBeNull();
+});
+
 it("terminal answered first: no_pending_decision is shown, not thrown", async () => {
   const { requests } = setup({ reason: "permission", respond_via: "hook" }, 409, {
     error: "no_pending_decision",

@@ -86,7 +86,7 @@ daemon 侧：启动时按文件名顺序重放 inbox 全部文件（§3.4 的重
 
 - `agora hooks install <agent>`：Claude Code 写 `~/.claude/settings.json`（user 作用域）的 `hooks`，Grok 写 `~/.grok/hooks/agora.json`，Codex 写 `~/.codex/hooks.json`（**Codex 的非托管 hook 必须由用户在 TUI 里 `/hooks` 审阅、按内容哈希信任，改动即失效**——所以 command 里的 agora 路径必须是升级不变的稳定路径，否则每次升级都要重新信任；agora 不用 `--dangerously-bypass-hook-trust`）；装前显示 diff，只增不删别人的条目（hooks 是拼接不是替换，文档确认）；条目里 command 含 agora 二进制路径，是识别自己条目的标记——重复安装不重复，卸载只删自己的。Claude Code 与 Grok 都热加载配置文件（文档：file watcher / Hooks tab reload），装完不用重启 agent。
 - **命令形态**：`if [ -x <AGORA_HOME>/bin/agora ]; then exec <AGORA_HOME>/bin/agora hook --host <agent> --home <AGORA_HOME>; fi`。`exec`（2026-09-04 补）：让 agora 顶替 `sh -c` 那层，hook 进程的 ppid 就是 agent 本体——Grok 的环境里没有进程号变量，外部 Grok 会话的存活只能靠 ppid（实测不带 `exec` 时 ppid 是 sh）。二进制走 `<AGORA_HOME>/bin/agora` 这个稳定路径（安装与升级维护的符号链接，A26 / A39，ADR-003 D6），Codex 的内容哈希信任才不会随升级失效；对 Claude / Grok 则是升级不静默断 hook——二进制位置一变，`if [ -x … ]` 守卫会静默跳过，会话只会经 hook 沉默规则退成 UNKNOWN 而没人知道原因。`--home` 显式给出，因为外部会话的环境里没有 `AGORA_HOME`。三家命令形态一致，宿主自认（下文）与"识别自己的条目"只需一种写法。
-- 每个事件的 `timeout` 显式写死：PermissionRequest 3600 s（挂起上限，D5）；SessionEnd 1 s（Claude 给全部 SessionEnd hook 共 1.5 s 预算，所以 SessionEnd 只落盘不唤醒等待）；其余 20 s。不依赖各家默认值（Claude 600 s、Grok 5 s、UserPromptSubmit 30 s，三处都不一样）。
+- 每个事件的 `timeout` 显式写死：PermissionRequest 3600 s（挂起上限，D5；Codex 60 s，见 D5）；SessionEnd 1 s（Claude 给全部 SessionEnd hook 共 1.5 s 预算，所以 SessionEnd 只落盘不唤醒等待）；其余 20 s。不依赖各家默认值（Claude 600 s、Grok 5 s、UserPromptSubmit 30 s，三处都不一样）。
 - **agora 起的会话不再重复注入**（§5.1）：身份靠 `LaunchSpec.env` 的 `AGORA_SESSION_ID` / `AGORA_EPOCH`，hook 进程继承环境后带回（实测 hook 能看到 agent 进程的全部环境）。
 - **Grok 兼容加载的串扰**：Grok 默认也执行 `~/.claude/settings.json` 里的 hooks，agora 装给 Claude 的条目会被 Grok 以 `--host claude` 跑一遍。对策：`agora hook` 发现 `GROK_SESSION_ID` 存在而 `--host` 不是 grok → exit 0；反之亦然。不靠 payload 键名风格猜宿主。
 - 外部会话（没有 `AGORA_*` 环境）：信封里的 `TMUX` / `TMUX_PANE` 直接指向 pane → 若该 socket 在 ADR-001 的 `adopt_sockets` 里，会话可采纳且有终端（A16 与 A22 合流）；没有 tmux 的（Terminal.app 裸跑）→ `origin = external`：没有终端与文本输入，状态、两行、通知照常，D5 的挂起与 allow / deny 也照常（挂起不依赖终端）；存活靠 `CLAUDE_PID` / hook ppid 的 `kill(pid, 0)`，没有退出码。
@@ -95,7 +95,7 @@ daemon 侧：启动时按文件名顺序重放 inbox 全部文件（§3.4 的重
 
 - **挂起的决定**以 `(session, tool_use_id)` 为键；一个会话可有多个（Claude 并行工具调用会同时 fire 多个 PermissionRequest，文档有 `PostToolBatch` 为证），每会话上限 8，节点上限 256；超限的 hook 立即 exit 0（不输出）。
 - **与终端并存**：实测 Claude Code 在 hook 挂起期间照常显示权限提示——终端里答了，TUI 走自己的路；Dashboard 答了，hook 返回决定。所以不需要"有人 attach 就放弃挂起"的逻辑。挂起在下列任一发生时自动解除（`decision.resolved`）：同 `tool_use_id` 的 PostToolUse / PostToolUseFailure / PermissionDenied 到达（终端答了）、Stop / SessionEnd 到达、进程退出、超时。
-- **超时**：默认 55 min（安装的 hook timeout 3600 s 减余量；Claude 文档没写超时后是 allow 还是 block，所以 agora 永远在 agent 超时前自己退出）。
+- **超时**：默认 55 min（安装的 hook timeout 3600 s 减余量；Claude 文档没写超时后是 allow 还是 block，所以 agora 永远在 agent 超时前自己退出）。宿主可更短（`AgentHooks::hold_timeout`）：Codex 0.152.1 实测挂起期间 TUI 不显示审批提示（附录 A），挂起是独占而非并存，上限 20 s，超时 fail-open 把提示交回终端；API 的 `respond_within_secs` 把它告诉 UI。
 - **Dashboard 上的三个动作**：allow、deny（可带一句 message，走 `decision.message`）、"在终端回答"（解除挂起并打开终端）。`updatedInput`、`permission_suggestions`（如"本会话改为 acceptEdits"）V1 不暴露。
 - **WAITING(question)**：`AskUserQuestion` 类工具的选项渲染在 TUI 里，从 Dashboard 选项等于注入键击 → V1 只显示问题文本（来自 `tool_input`）与"打开终端"；自由问答与下一条指令走 `POST /api/sessions/:id/input` 的 text（PTY）。
 - **respond 路由**：decision 只对有挂起的会话有效，其余返回错误类型 `NoPendingDecision`；text 对任何有终端的会话有效。
@@ -243,7 +243,7 @@ AgentFallback {                      # 所有 agent 都有默认实现
 | ④ `CODEX_*` | hook 子进程环境里**没有** `CODEX_THREAD_ID` / `CODEX_SESSION_ID`（也没有 agent 自己的进程号变量）；ppid 是 codex 本体 | 身份靠 payload `session_id`；进程号靠 `exec` 后的 ppid（同 Grok） |
 | ⑤ `TMUX_PANE` | `TMUX` / `TMUX_PANE` 原样继承 | pane 归属可用 |
 | ⑥ TURN_DONE | 没有 Notification / idle_prompt / StopFailure；每轮以 Stop(`last_assistant_message`) 收尾，Esc 中断以 Interrupt(`turn_id`) 收尾且没有 PostToolUse；被中断的命令转成后台终端继续跑 | Stop + Interrupt 够用；API 错误未触发到，靠沉默规则 |
-| 其他 | `/clear` 只发新 id 的 SessionStart(`source=clear`)，旧会话当时不发 SessionEnd，退出时两个 session 各发一次 SessionEnd(`reason=other`)；SessionEnd / Interrupt 的 hook timeout 上限 3 s（超过自动 clamp 并 stderr 警告）；插件 `codex@openai-codex` 1.0.6 自带 hooks.json 也走同一信任表；沙箱直接拦网络（`curl` 无输出、不问）| SessionEnd 里不能干慢活；testdata/codex/0.152.1/hooks 七场景中五个真录、`api_error` / `parallel_tools` 按键集合合成 |
+| 其他 | SessionStart **在第一条 prompt 提交时**才 fire（与 UserPromptSubmit 相隔几十毫秒；TUI 启动、`/clear`、resume 之后都要等用户先提问），所以自报 id 在首问之前缺席、Restart 只能退化；`/clear` 只发新 id 的 SessionStart(`source=clear`)，旧会话当时不发 SessionEnd，退出时两个 session 各发一次 SessionEnd(`reason=other`)；SessionEnd / Interrupt 的 hook timeout 上限 3 s（超过自动 clamp 并 stderr 警告）；插件 `codex@openai-codex` 1.0.6 自带 hooks.json 也走同一信任表；沙箱直接拦网络（`curl` 无输出、不问）| SessionEnd 里不能干慢活；testdata/codex/0.152.1/hooks 七场景中五个真录、`api_error` / `parallel_tools` 按键集合合成 |
 
 ## 附录 B：事故记录
 
