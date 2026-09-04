@@ -366,3 +366,28 @@ fn user_kill_answered_with_shell_signal_exit_code_counts_as_finished() {
         Status::Failed
     );
 }
+
+#[test]
+fn conversation_id_change_resends_the_row() {
+    // agora-dvh.13：/clear 后 agent 自报新对话 id，是 metadata 不是状态——求差器要整行重发
+    // session_updated，Settings 里"当前对话"才跟着变（2026-09-04 真实 Claude 代验时发现漏掉）。
+    use agora::events::{Differ, Event};
+    let (m, _rt, db) = mgr();
+    let v = m.create(&new_session("c")).unwrap();
+    let mut differ = Differ::default();
+    assert!(
+        differ.step("n", &m.list().unwrap()).is_empty(),
+        "第一轮只建基线"
+    );
+    db.conn()
+        .execute(
+            "UPDATE sessions SET agent_session_id = 'conv-2' WHERE id = ?1",
+            [&v.record.id],
+        )
+        .unwrap();
+    let events = differ.step("n", &m.list().unwrap());
+    assert!(
+        matches!(&events[..], [Event::SessionUpdated { session, .. }] if session["agent_session_id"] == "conv-2"),
+        "{events:?}"
+    );
+}

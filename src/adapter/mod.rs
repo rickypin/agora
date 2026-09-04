@@ -14,6 +14,7 @@ pub mod codex;
 pub mod grok;
 pub mod hooks;
 pub mod replay;
+pub mod resume;
 pub mod shell;
 
 use std::path::{Path, PathBuf};
@@ -23,6 +24,7 @@ use crate::runtime::exec::{exec, ExecError, ExecOptions};
 use crate::status::{AgoraEvent, DetectionResult};
 
 pub use hooks::{Decision, Release};
+pub use resume::{plan_pin, plan_restart, RestartPlan};
 
 /// `x.y.z`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

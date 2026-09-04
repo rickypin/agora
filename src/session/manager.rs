@@ -754,9 +754,19 @@ impl SessionManager {
         self.get(id)
     }
 
-    /// Restart = respawn：同会话同名同 cwd，epoch +1 经 `AGORA_EPOCH` 交给 agent。
-    /// resume 参数由 M1b 的 Adapter 接入，现在先原命令。
+    /// Restart = respawn：同会话同名同 cwd，epoch +1 经 `AGORA_EPOCH` 交给 agent，原命令。
     pub fn restart(&self, id: &str, env: &[(String, String)]) -> Result<SessionView, SessionError> {
+        self.restart_with(id, env, None)
+    }
+
+    /// 带命令覆盖的 Restart：`command` 是这一代真正要跑的命令（API 层按 Adapter 算出的
+    /// resume 命令，ADR-002 D7）；库里的 `command` 不动，它是下次再算的底子。
+    pub fn restart_with(
+        &self,
+        id: &str,
+        env: &[(String, String)],
+        command: Option<&str>,
+    ) -> Result<SessionView, SessionError> {
         let rec = self.record(id)?;
         let r#ref = self.require_ref(&rec)?;
         let epoch = rec.epoch + 1;
@@ -765,7 +775,10 @@ impl SessionManager {
         env.push(("AGORA_EPOCH".into(), epoch.to_string()));
         let spec = LaunchSpec {
             name: runtime_name(&r#ref),
-            command: rec.command.clone().unwrap_or_default(),
+            command: command
+                .map(str::to_owned)
+                .or_else(|| rec.command.clone())
+                .unwrap_or_default(),
             cwd: PathBuf::from(rec.working_directory.clone().unwrap_or_else(|| "/".into())),
             env,
             size: Size::default(),
@@ -786,6 +799,18 @@ impl SessionManager {
             params![id, epoch],
         )?;
         self.get(id)
+    }
+
+    /// 起会话时钉死的对话 id（ADR-002 D7 识别顺序第二位）：只在 agent 还没自报时写，
+    /// 自报的永远赢——hook 的 SessionStart 可能赶在这一步之前到。
+    pub fn set_pinned_agent_session_id(&self, id: &str, pinned: &str) -> Result<(), SessionError> {
+        self.db.conn().execute(
+            "UPDATE sessions SET agent_session_id = ?2,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+             WHERE id = ?1 AND agent_session_id IS NULL",
+            params![id, pinned],
+        )?;
+        Ok(())
     }
 
     /// Delete metadata ≠ kill：活着 → 留在 socket 上成未注册；已死 → 顺手 remove。

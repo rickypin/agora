@@ -10,7 +10,7 @@ POST   /api/sessions               # { display_name, agent_type, working_directo
 GET    /api/sessions/:id
 PATCH  /api/sessions/:id           # { display_name }：改名即落锁（§4.5）；其它 Session Settings 字段随前端落地
 POST   /api/sessions/:id/input     # 不经终端的 respond：文本 / 选项；WAITING 与 TURN_DONE 的主路径（M1b）
-POST   /api/sessions/:id/restart   # body 可选 { confirmed: bool }；会杀且未确认 → 409 needs_confirmation
+POST   /api/sessions/:id/restart   # body 可选 { confirmed: bool }；会杀且未确认 → 409 needs_confirmation；响应多一个 restart 字段（见下）
 POST   /api/sessions/:id/kill      # 同上；确认跟着"杀"走（MISSION §8）：FINISHED / FAILED / 会话已不在 → 直接执行
 POST   /api/sessions/:id/cleanup   # 回收已退出会话保留的运行时会话与输出（ADR-001 D4 清理）；进程还活着 → 错误类型 StillAlive
 DELETE /api/sessions/:id           # 只删 metadata；已退出的顺手清理
@@ -69,6 +69,8 @@ MVP 用 JSON / Text WebSocket 足够；binary terminal frames 放到 V2。
 
 ## respond 的两种语义（MISSION §7.3）
 
+- `POST /api/sessions/:id/restart` 的命令由 Adapter 按 `(agent 版本, agent_session_id)` 生成 resume 参数（ADR-002 D7）：版本来自 `<program> --version` 的探测（缓存：可用记到 daemon 重启，不可用 60 s 后重探）；库里的 `command` 不动，只这一代的启动命令换成 resume 形态，上一代的 resume / pin flag 先拆掉不叠加。响应在会话形态之外多一个 `restart`：`{ "resumed": true, "agent_session_id" }` 或 `{ "resumed": false, "reason" }`（没自报过 id、版本表外不猜参数、没有 Adapter、命令不在 PATH——退化为原命令且说明原因，绝不静默、绝不 `--continue` / `--last`）。
+- `POST /api/sessions` 在 Adapter 支持且版本可解析时给命令加钉 id 的参数（Claude `--session-id <uuid>`），并把它写进 `agent_session_id`；agent 经 hook 自报的 id 每次命中都覆盖它（识别顺序：自报 > 钉死 > 用户挑，D7）。用户命令里已经写了 resume / pin 的 flag 就不钉。
 - `POST /api/sessions/:id/input` 接受 `{ "kind": "decision", "decision": "allow" | "deny", "message"?, "tool_use_id"? }` 或 `{ "kind": "text", "data": "..." }`。选择题（AskUserQuestion 类）V1 不经 API：Dashboard 只显示问题与"打开终端"（ADR-002 D5）。
 - `decision` 只对有挂起 hook 决定的会话有效（否则 409 `no_pending_decision`）：agora 的 PermissionRequest hook 挂起等待，答复经 hook 返回给 agent，不注入键击；`tool_use_id` 缺省答最早登记的那个（Claude 2.1.260 的 PermissionRequest 实测不带 tool_use_id，键是 `tool_name`）；成功返回 `{ "tool_use_id" }`，行立即退出 WAITING，并发 `decision_resolved` via=dashboard。`respond_via = terminal` 的 agent（Grok）只提供"打开终端"。挂起上限与超时见下文（ADR-002 D5）。
 - `text` 经 PTY 写入（运行时的 send-keys：字面文本一次、尾部换行作回车键单独一次——Claude 的 TUI 把两者一起到达当成粘贴不提交）；无 hook 的 agent、自由问答、TURN_DONE 的下一条指令走这条；external 会话没有运行时句柄 → 409 `no_runtime`。

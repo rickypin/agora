@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use agora::adapter::{Version, VersionProbe};
 use agora::api::AppState;
 use agora::auth::{Auth, AuthConfig, PairedVia};
 use agora::runtime::{
@@ -31,6 +32,8 @@ pub struct FakeRuntime {
     pub panes: Mutex<HashMap<String, String>>,
     /// `capture_tail` 的答案：ref → 屏幕文本（dvh.10 pane 预览兜底）。
     pub tails: Mutex<HashMap<String, String>>,
+    /// `respawn` 收到的命令，按顺序（dvh.13：Restart 的 resume 命令要到运行时才算数）。
+    pub respawns: Mutex<Vec<String>>,
 }
 
 impl FakeRuntime {
@@ -121,13 +124,14 @@ impl Runtime for FakeRuntime {
         self.set_dead(&r.0, Exit::Signal("TERM".into()));
         Ok(())
     }
-    fn respawn(&self, r: &RuntimeRef, _spec: &LaunchSpec) -> Result<(), RuntimeError> {
+    fn respawn(&self, r: &RuntimeRef, spec: &LaunchSpec) -> Result<(), RuntimeError> {
         let mut m = self.sessions.lock().unwrap();
         let s = m
             .get_mut(&r.0)
             .ok_or_else(|| RuntimeError::NotFound(r.clone()))?;
         s.alive = true;
         s.exit = None;
+        self.respawns.lock().unwrap().push(spec.command.clone());
         Ok(())
     }
     fn locate(
@@ -181,6 +185,17 @@ impl Fx {
             rt.clone() as Arc<dyn Runtime>,
         ));
         let state = AppState::new(auth.clone(), sessions.clone(), NODE);
+        // 内置 agent 一律当"不在 PATH"：测试不能真跑本机的 claude --version（慢且随机器变）。
+        // 要走 resume / pin 路径的测试用 `probe_available` 显式塞版本。
+        {
+            let mut probes = state.probes.lock().unwrap();
+            for a in agora::adapter::ADAPTERS {
+                probes.insert(
+                    a.default_command().to_owned(),
+                    (VersionProbe::Missing, std::time::Instant::now()),
+                );
+            }
+        }
         Fx {
             state,
             auth,
@@ -188,6 +203,25 @@ impl Fx {
             rt,
             sessions,
         }
+    }
+
+    /// 让 `<program> --version` 探测答"可用 v"（不跑子进程）。
+    pub fn probe_available(&self, program: &str, v: Version) {
+        self.state.probes.lock().unwrap().insert(
+            program.to_owned(),
+            (VersionProbe::Available(v), std::time::Instant::now()),
+        );
+    }
+
+    /// 让探测答"不可解析"。
+    pub fn probe_unparsable(&self, program: &str, why: &str) {
+        self.state.probes.lock().unwrap().insert(
+            program.to_owned(),
+            (
+                VersionProbe::Unparsable(why.to_owned()),
+                std::time::Instant::now(),
+            ),
+        );
     }
 
     pub fn app(&self) -> axum::Router {

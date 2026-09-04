@@ -133,6 +133,8 @@ struct Seen {
     status_since: i64,
     /// 任务标签是异步补齐的（`task/`）：到了要整行重发。
     task: Option<crate::task::TaskInfo>,
+    /// agent 自报的对话 id（`/clear` 后会换）：Settings 里"当前对话"要跟着变（dvh.13）。
+    agent_session_id: Option<String>,
 }
 
 fn seen(v: &SessionView) -> Seen {
@@ -147,6 +149,7 @@ fn seen(v: &SessionView) -> Seen {
         preview: v.preview.clone(),
         status_since: v.status_since,
         task: v.task.clone(),
+        agent_session_id: v.record.agent_session_id.clone(),
     }
 }
 
@@ -171,10 +174,15 @@ impl Differ {
                     session: export(node, v),
                 }),
                 // task_ref 是 metadata，标签又是异步查回来的：整行重发最省事也最不会漏字段。
-                Some(prev) if prev.task != s.task => out.push(Event::SessionUpdated {
-                    id: gid.clone(),
-                    session: export(node, v),
-                }),
+                // 对话 id 同理（metadata 不是状态，/clear 后会换，dvh.13）。
+                Some(prev)
+                    if prev.task != s.task || prev.agent_session_id != s.agent_session_id =>
+                {
+                    out.push(Event::SessionUpdated {
+                        id: gid.clone(),
+                        session: export(node, v),
+                    })
+                }
                 Some(prev) if *prev != s => out.push(Event::StatusChanged {
                     id: gid.clone(),
                     status: s.status,

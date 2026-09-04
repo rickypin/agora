@@ -18,6 +18,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{ApiError, AppState};
+use crate::adapter::RestartPlan;
 use crate::auth::Principal;
 use crate::events::{export, global_id, Event};
 use crate::runtime::Size;
@@ -159,7 +160,25 @@ pub async fn create(
         env: vec![],
         size,
     };
-    let view = blocking(&state.sessions, move |s| s.create(&new)).await?;
+    // 钉死对话 id（D7 识别顺序第二位）：hook 自报会覆盖它；没 hook 的会话靠它 resume。
+    let st = state.clone();
+    let view = blocking(&state.sessions, move |s| {
+        let pin = crate::adapter::plan_pin(&new.agent_type, &new.command, |adapter, program| {
+            st.probe_version(adapter, program)
+        });
+        let mut new = new;
+        let pinned = pin.map(|(command, id)| {
+            new.command = command;
+            id
+        });
+        let view = s.create(&new)?;
+        if let Some(id) = pinned {
+            s.set_pinned_agent_session_id(&view.record.id, &id)?;
+            return s.get(&view.record.id);
+        }
+        Ok(view)
+    })
+    .await?;
     touch_project(&state, working_directory).await;
     tracing::info!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, "创建会话");
     Ok((StatusCode::CREATED, Json(announce_created(&state, &view))))
@@ -303,9 +322,35 @@ pub async fn restart(
 ) -> Result<Json<Value>, ApiError> {
     let id = local_id(&state, &gid)?;
     require_confirmation(&state, &id, confirmed(&body), "Restart").await?;
-    let view = blocking(&state.sessions, move |s| s.restart(&id, &[])).await?;
-    tracing::info!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, epoch = view.record.epoch, "restart");
-    Ok(Json(export(&state.node, &view)))
+    // resume 命令按 Adapter 算（ADR-002 D7）：探版本会跑子进程，整段放 blocking 线程。
+    let st = state.clone();
+    let (view, plan) = blocking(&state.sessions, move |s| {
+        let rec = s.get(&id)?.record;
+        let plan = crate::adapter::plan_restart(
+            &rec.agent_type,
+            rec.command.as_deref().unwrap_or_default(),
+            rec.agent_session_id.as_deref(),
+            |adapter, program| st.probe_version(adapter, program),
+        );
+        let view = s.restart_with(&id, &[], Some(plan.command()))?;
+        Ok((view, plan))
+    })
+    .await?;
+    let resume = match &plan {
+        RestartPlan::Resume {
+            agent_session_id, ..
+        } => {
+            tracing::info!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, epoch = view.record.epoch, agent_session_id = %agent_session_id, "restart, resume");
+            serde_json::json!({ "resumed": true, "agent_session_id": agent_session_id })
+        }
+        RestartPlan::Original { reason, .. } => {
+            tracing::warn!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, epoch = view.record.epoch, %reason, "restart 退化为原命令");
+            serde_json::json!({ "resumed": false, "reason": reason })
+        }
+    };
+    let mut out = export(&state.node, &view);
+    out["restart"] = resume;
+    Ok(Json(out))
 }
 
 /// 回收已退出会话的运行时会话与输出；活着 → 409 `still_alive`。

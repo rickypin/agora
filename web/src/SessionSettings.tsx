@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { SessionApi } from "./api";
+import type { RestartResult, SessionApi } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow } from "./events";
 import { rowName } from "./Sidebar";
@@ -17,6 +17,14 @@ export const KILL_BODY = "The running agent process will be killed. Its output s
 export const RESTART_BODY =
   "The running agent process will be killed and started again in the same session, resuming its conversation.";
 
+/** 节点对 Restart 的交代：resume 了哪个对话，或为什么退化为原命令（ADR-002 D7，绝不静默）。 */
+export function restartNoteOf(v: unknown): string {
+  const r = (v as RestartResult | null | undefined)?.restart;
+  if (!r) return "已 Restart。";
+  if (r.resumed) return `已 Restart，resume 对话 ${r.agent_session_id ?? ""}。`;
+  return `已 Restart，但没有 resume：${r.reason ?? "未知原因"}。`;
+}
+
 /**
  * Screen D：改名、Kill、Restart、Delete metadata（MISSION §4.6）。
  * 改名同名也发（§4.5）；Kill / Restart 先不带 confirmed 发，节点说会杀才弹框（§8）。
@@ -26,6 +34,7 @@ export function SessionSettings({ row, api, onClose }: Props) {
   const [pending, setPending] = useState<Pending>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [restartNote, setRestartNote] = useState<string | null>(null);
 
   useEffect(() => {
     setName(String(row.display_name ?? rowName(row)));
@@ -34,10 +43,12 @@ export function SessionSettings({ row, api, onClose }: Props) {
   async function run(kind: "kill" | "restart", confirmed: boolean) {
     setBusy(true);
     setError(null);
+    setRestartNote(null);
     const r = await (kind === "kill" ? api.kill(row.id, confirmed) : api.restart(row.id, confirmed));
     setBusy(false);
     if (r.ok) {
       setPending(null);
+      if (kind === "restart") setRestartNote(restartNoteOf(r.value));
       return;
     }
     if (r.needsConfirmation) {
@@ -66,6 +77,7 @@ export function SessionSettings({ row, api, onClose }: Props) {
   }
 
   const label = `${rowName(row)} / ${String(row.agent_type ?? "")} @ ${row.node}`;
+  const conversation = typeof row.agent_session_id === "string" ? row.agent_session_id : null;
   return (
     <section className="settings" aria-label="Session Settings">
       <div className="settings-head">
@@ -99,8 +111,11 @@ export function SessionSettings({ row, api, onClose }: Props) {
         </button>
       </div>
       <p className="muted">
-        Restart 在同一运行时会话内重建并 resume 原对话；Delete metadata 不杀进程。
+        Restart 在同一运行时会话内重建并 resume 原对话
+        {conversation ? <>（当前对话 <code>{conversation}</code>）</> : "（agent 还没自报对话 id，Restart 会用原命令）"}
+        ；Delete metadata 不杀进程。
       </p>
+      {restartNote && <p className="muted" data-testid="restart-note">{restartNote}</p>}
       {error && <p className="error">{error}</p>}
       {pending && (
         <ConfirmDialog

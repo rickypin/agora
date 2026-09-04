@@ -92,7 +92,14 @@ pub struct AppState {
     pub runtime_path_source: &'static str,
     /// hook 挂起表：respond 的 `decision` 走它；没接（测试）时一律 `no_pending_decision`。
     pub hooks: Option<Arc<crate::hook::Receiver>>,
+    /// `<program> --version` 的探测缓存（ADR-002 D7 三值），键是程序名。Available 记住到
+    /// daemon 重启；不可用的记 `PROBE_RETRY` 这么久再重探，装好了很快就好。
+    /// 测试预先塞值免得真跑本机的 agent。
+    pub probes: Arc<std::sync::Mutex<BTreeMap<String, (crate::adapter::VersionProbe, Instant)>>>,
 }
+
+/// 不可用的探测结果保留多久再重探。
+pub const PROBE_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl AppState {
     pub fn new(auth: Arc<Auth>, sessions: Arc<SessionManager>, node: &str) -> Self {
@@ -105,7 +112,29 @@ impl AppState {
             projects: Arc::new(Projects::new(sessions.db_handle(), Vec::new())),
             runtime_path_source: "daemon",
             hooks: None,
+            probes: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
         }
+    }
+
+    /// 探 agent 可用性（带缓存）。跑子进程，调用方在 blocking 线程。
+    pub fn probe_version(
+        &self,
+        adapter: &dyn crate::adapter::Adapter,
+        program: &str,
+    ) -> crate::adapter::VersionProbe {
+        use crate::adapter::VersionProbe;
+        if let Ok(cache) = self.probes.lock() {
+            if let Some((p, at)) = cache.get(program) {
+                if matches!(p, VersionProbe::Available(_)) || at.elapsed() < PROBE_RETRY {
+                    return p.clone();
+                }
+            }
+        }
+        let probed = crate::adapter::probe(adapter, program, std::time::Duration::from_secs(10));
+        if let Ok(mut cache) = self.probes.lock() {
+            cache.insert(program.to_owned(), (probed.clone(), Instant::now()));
+        }
+        probed
     }
 }
 

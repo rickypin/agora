@@ -331,3 +331,111 @@ async fn create_falls_back_to_agent_type_as_command_and_validates_body() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(err["error"], "bad_request");
 }
+
+#[tokio::test]
+async fn restart_resumes_self_reported_conversation_and_create_pins_one() {
+    // agora-dvh.13 / A32：Restart 用 agent 自报的对话 id resume；起会话时先钉一个 id 兜底。
+    let fx = Fx::new();
+    let cookie = fx.cookie();
+    fx.probe_available("claude", agora::adapter::Version(2, 1, 260));
+    let (status, created) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        "/api/sessions",
+        Some(json!({ "display_name": "c", "agent_type": "claude", "working_directory": "/tmp" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let pinned = created["agent_session_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        created["command"].as_str().unwrap(),
+        format!("claude --session-id {pinned}")
+    );
+    let gid = created["id"].as_str().unwrap().to_owned();
+    let local = created["local_id"].as_str().unwrap().to_owned();
+    let restart = format!("/api/sessions/{gid}/restart");
+
+    // 没有别的自报 → 用钉的 id resume。
+    let (status, v) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        &restart,
+        Some(json!({ "confirmed": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["restart"]["resumed"], true);
+    assert_eq!(v["restart"]["agent_session_id"], pinned);
+    assert_eq!(
+        fx.rt.respawns.lock().unwrap().last().unwrap(),
+        &format!("claude --resume {pinned}"),
+        "钉的 --session-id 换成 --resume，不叠加"
+    );
+    assert_eq!(
+        v["command"],
+        format!("claude --session-id {pinned}"),
+        "库里的原命令不动"
+    );
+
+    // agent 自报了新对话（/clear 后 SessionStart 带新 id）→ 覆盖，Restart 跟着新 id 走。
+    fx.db
+        .conn()
+        .execute(
+            "UPDATE sessions SET agent_session_id = 'conv-after-clear' WHERE id = ?1",
+            [&local],
+        )
+        .unwrap();
+    let (status, v) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        &restart,
+        Some(json!({ "confirmed": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["restart"]["agent_session_id"], "conv-after-clear");
+    assert_eq!(
+        fx.rt.respawns.lock().unwrap().last().unwrap(),
+        "claude --resume conv-after-clear"
+    );
+
+    // 版本表外：不猜参数，原命令 + 原因。
+    fx.probe_unparsable("claude", "1.0.0 低于版本表首项");
+    let (status, v) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        &restart,
+        Some(json!({ "confirmed": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["restart"]["resumed"], false);
+    assert!(
+        v["restart"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("不可解析"),
+        "{v}"
+    );
+    assert_eq!(
+        fx.rt.respawns.lock().unwrap().last().unwrap(),
+        &format!("claude --session-id {pinned}"),
+        "退化为库里的原命令"
+    );
+
+    // 没有 Adapter 的类型：不钉、不 resume。
+    let (_, custom) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        "/api/sessions",
+        Some(json!({ "display_name": "m", "agent_type": "myagent", "working_directory": "/tmp" })),
+    )
+    .await;
+    assert!(custom["agent_session_id"].is_null(), "{custom}");
+    assert_eq!(custom["command"], "myagent");
+}

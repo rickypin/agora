@@ -64,6 +64,10 @@ export interface CreateSessionBody {
   command?: string;
 }
 
+export interface RestartResult {
+  restart?: { resumed: boolean; agent_session_id?: string; reason?: string };
+}
+
 async function call<T>(
   fetchImpl: FetchLike,
   method: string,
@@ -100,8 +104,9 @@ export function sessionApi(fetchImpl: FetchLike = apiFetch) {
       call(fetchImpl, "PATCH", enc(id), { display_name }),
     kill: (id: string, confirmed = false) =>
       call(fetchImpl, "POST", `${enc(id)}/kill`, confirmed ? { confirmed: true } : {}),
+    /** 响应多一个 `restart`：节点说这次是 resume 了哪个对话，还是退化为原命令与原因（ADR-002 D7）。 */
     restart: (id: string, confirmed = false) =>
-      call(fetchImpl, "POST", `${enc(id)}/restart`, confirmed ? { confirmed: true } : {}),
+      call<RestartResult>(fetchImpl, "POST", `${enc(id)}/restart`, confirmed ? { confirmed: true } : {}),
     /** 只删 metadata，不 kill（DELETE ≠ kill，MISSION §7.3）。 */
     deleteMetadata: (id: string) => call(fetchImpl, "DELETE", enc(id)),
     /** 就地 respond：decision 经挂起的 hook 返回，text 经 PTY（MISSION §7.3）。 */

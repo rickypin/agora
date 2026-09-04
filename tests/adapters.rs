@@ -69,3 +69,92 @@ fn restart_arguments_never_guess_the_conversation() {
         assert!(!a.starts_with("--cont") && !a.starts_with("--la"), "{a}");
     }
 }
+
+// ---------- Restart 的 resume 规划（ADR-002 D7；agora-dvh.13） ----------
+
+use agora::adapter::{plan_pin, plan_restart, resume::splice_args, RestartPlan};
+
+#[test]
+fn restart_plan_resumes_only_with_self_reported_id_and_known_version() {
+    let avail =
+        |_: &dyn agora::adapter::Adapter, _: &str| VersionProbe::Available(Version(2, 1, 260));
+    // 正路：自报 id + 版本表内 → --resume <id>，原有参数保留。
+    let plan = plan_restart(
+        "claude",
+        "claude --permission-mode default",
+        Some("conv-1"),
+        avail,
+    );
+    assert_eq!(
+        plan,
+        RestartPlan::Resume {
+            command: "claude --permission-mode default --resume conv-1".into(),
+            agent_session_id: "conv-1".into(),
+        }
+    );
+    // 没自报过 → 原命令，说明原因。
+    let plan = plan_restart("claude", "claude", None, avail);
+    assert!(
+        matches!(&plan, RestartPlan::Original { command, reason } if command == "claude" && reason.contains("自报")),
+        "{plan:?}"
+    );
+    let plan = plan_restart("claude", "claude", Some("unknown"), avail);
+    assert!(matches!(plan, RestartPlan::Original { .. }));
+    // 版本表外 → 不猜参数。
+    let plan = plan_restart("claude", "claude", Some("conv-1"), |_, _| {
+        VersionProbe::Unparsable("1.0.0 低于版本表首项".into())
+    });
+    assert!(
+        matches!(&plan, RestartPlan::Original { command, reason } if command == "claude" && reason.contains("不可解析")),
+        "{plan:?}"
+    );
+    let plan = plan_restart("claude", "claude", Some("conv-1"), |_, _| {
+        VersionProbe::Missing
+    });
+    assert!(matches!(plan, RestartPlan::Original { .. }));
+    // 没有 Adapter 的类型（custom）与没有对话概念的 shell → 原命令。
+    let plan = plan_restart("myagent", "myagent -x", Some("conv-1"), avail);
+    assert_eq!(plan.command(), "myagent -x");
+    let plan = plan_restart("shell", "bash", Some("conv-1"), avail);
+    assert!(
+        matches!(&plan, RestartPlan::Original { reason, .. } if reason.contains("不支持")),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn restart_plan_replaces_previous_conversation_flags_instead_of_stacking() {
+    // 上一代已经是 --resume old（或起会话时 --session-id 钉的）：换成新 id，不叠加。
+    let avail =
+        |_: &dyn agora::adapter::Adapter, _: &str| VersionProbe::Available(Version(2, 1, 260));
+    let plan = plan_restart(
+        "claude",
+        "claude --session-id pinned-0 --verbose",
+        Some("conv-2"),
+        avail,
+    );
+    assert_eq!(plan.command(), "claude --verbose --resume conv-2");
+    let plan = plan_restart("claude", "claude --resume conv-1", Some("conv-2"), avail);
+    assert_eq!(plan.command(), "claude --resume conv-2");
+    assert_eq!(
+        splice_args("x --a 1 --b", &["--a".into(), "it's".into()], &[]),
+        "x --b --a 'it'\\''s'"
+    );
+}
+
+#[test]
+fn pin_only_when_version_known_and_user_did_not_pick_a_conversation() {
+    let avail =
+        |_: &dyn agora::adapter::Adapter, _: &str| VersionProbe::Available(Version(2, 1, 260));
+    let (cmd, id) = plan_pin("claude", "claude", avail).unwrap();
+    assert_eq!(cmd, format!("claude --session-id {id}"));
+    assert_eq!(id.len(), 36, "uuid v4：{id}");
+    assert_eq!(&id[14..15], "4");
+    // 用户自己写了 --resume / --session-id → 尊重他。
+    assert!(plan_pin("claude", "claude --resume abc", avail).is_none());
+    assert!(plan_pin("claude", "claude --session-id abc", avail).is_none());
+    // 版本不明、无 Adapter、shell → 不钉。
+    assert!(plan_pin("claude", "claude", |_, _| VersionProbe::Missing).is_none());
+    assert!(plan_pin("myagent", "myagent", avail).is_none());
+    assert!(plan_pin("shell", "bash", avail).is_none());
+}

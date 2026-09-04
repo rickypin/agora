@@ -55,3 +55,13 @@ describe("sessionApi", () => {
     expect(calls[1].url).toBe("/api/sessions/n%3Ax");
   });
 });
+
+import { restartNoteOf } from "./SessionSettings";
+
+describe("restartNoteOf", () => {
+  it("说清楚 resume 了谁、或为什么没 resume（ADR-002 D7）", () => {
+    expect(restartNoteOf({ restart: { resumed: true, agent_session_id: "conv-1" } })).toContain("conv-1");
+    expect(restartNoteOf({ restart: { resumed: false, reason: "版本不可解析" } })).toContain("版本不可解析");
+    expect(restartNoteOf({})).toBe("已 Restart。");
+  });
+});
