@@ -1,0 +1,6 @@
+# expect: waiting
+The following packages will be installed:
+  foo bar baz
+Do you want to proceed?
+❯ 1. Yes
+  2. No

@@ -1,0 +1,3 @@
+# expect: waiting
+run: rm -rf ./dist
+Approve

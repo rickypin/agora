@@ -1,0 +1,2 @@
+# expect: waiting secret
+Enter passphrase for key '/Users/ricky/.ssh/id_ed25519':

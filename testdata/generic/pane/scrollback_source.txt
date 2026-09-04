@@ -1,0 +1,13 @@
+# expect: none
+$ cat prompt.sh
+read -p 'Proceed? [y/N] ' ans
+$ cargo build
+   Compiling agora v0.1.0
+line a
+line b
+line c
+line d
+line e
+line f
+    Finished dev profile
+$ 

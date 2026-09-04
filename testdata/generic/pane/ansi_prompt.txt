@@ -1,0 +1,3 @@
+# expect: waiting
+[1;33mWarning[0m: disk almost full
+[32mContinue?[0m

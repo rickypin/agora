@@ -24,3 +24,9 @@ fixture 驱动测试的数据（ADR-002 D10）。
 `permission_dashboard`（其实是终端拒绝路径——Grok 的 Dashboard 答不了，见文件头）、`clear`、`interrupted`
 五个的事件名、键集合、顺序与时间间隔都来自真录；`api_error`、`parallel_tools` 按文档合成。真录证实的反直觉处
 写在 `src/adapter/grok.rs` 模块文档。
+
+## generic/pane
+
+文本兜底（ADR-002 D6）的屏幕 fixture：首行 `# expect: waiting [secret] | none`，其余是屏幕内容
+（可含 ANSI）。每条 WAITING 模式一个文件；`scrollback_source` / `question_in_history` 是 scrollback
+污染反例（devcenter 的教训：`cat` 出来的提示文本把会话钉在 WAITING）。回放测试 `tests/text_layer.rs`。

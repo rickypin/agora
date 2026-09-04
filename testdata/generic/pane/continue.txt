@@ -1,0 +1,3 @@
+# expect: waiting
+Step 2 of 5 done.
+Continue?

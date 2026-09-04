@@ -1,0 +1,3 @@
+# expect: waiting
+Tool wants to write ~/.zshrc
+Allow

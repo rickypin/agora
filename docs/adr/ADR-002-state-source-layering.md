@@ -103,7 +103,7 @@ daemon 侧：启动时按文件名顺序重放 inbox 全部文件（§3.4 的重
 ### D6 文本兜底与活动启发式（只服务 generic shell 与采纳的未知会话）
 
 - 只看 capture 末尾 **8 个非空行**（不是全 tail；devcenter 的反例：scrollback 里 `cat` 出来的源码把会话钉在 WAITING）；ADR-001 的 capture 是 200 行 `-J`，多出来的只喂预览。
-- WAITING 模式（沿用 devcenter v1 启发式，大小写不敏感，行尾锚定）：`[y/N]`、`(y/n)`、`Do you want to proceed?`、`Would you like`、`Approve`、`Allow`、`Continue?`、`Press Enter`、以及以 `?` 结尾且随后无输出 ≥ 2 tick；conf 0.8。密码提示（`password:`）同样是 WAITING，reason 标 `secret`，UI 不回显。
+- WAITING 模式（沿用 devcenter v1 启发式，大小写不敏感，行尾锚定）：`[y/N]`、`(y/n)`、`Do you want to proceed?`、`Would you like`、`Approve`、`Allow`、`Continue?`、`Press Enter`、以及以 `?` 结尾且随后无输出 ≥ 2 tick；conf 0.8（裸 `?` 问句 0.7）。模式行可以不在最后一行，但它下面只能是选项行（`❯ 1. Yes` 之类）——下面已有普通输出或新提示符说明那句早答过了（agora-dvh.8 落地时补，反例 `testdata/generic/pane/question_in_history.txt`）。密码提示（`password:`、`[sudo] password for x:`、`Enter passphrase …:`）同样是 WAITING，reason 标 `secret`，提示行内容不进 reason、UI 不回显。
 - RUNNING：两次 capture 内容哈希不同（排除尺寸变化与 attach 计数变化）；IDLE：`idle_after` 60 s 无变化且无 WAITING 模式；conf 0.6。
 - 有 hook 的 agent 走这条路径的唯一出口是 D1 的"hook 沉默 → UNKNOWN"。
 

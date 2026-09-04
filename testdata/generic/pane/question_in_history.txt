@@ -1,0 +1,6 @@
+# expect: none
+$ echo 'Do you want to proceed?'
+Do you want to proceed?
+$ ls
+src
+$ 

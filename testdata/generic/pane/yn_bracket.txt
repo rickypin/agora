@@ -1,0 +1,3 @@
+# expect: waiting
+$ git clean -fdx
+Remove untracked files? [y/N] 

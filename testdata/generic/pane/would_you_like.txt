@@ -1,0 +1,3 @@
+# expect: waiting
+Build finished.
+Would you like

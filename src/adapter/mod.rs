@@ -16,6 +16,7 @@ pub mod hooks;
 pub mod replay;
 pub mod resume;
 pub mod shell;
+pub mod text;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -150,11 +151,23 @@ pub trait AgentHooks: Send + Sync {
     }
 }
 
-/// 文本兜底（ADR-002 D6）：只服务无 hook 的会话；默认什么都不认。
+/// 文本兜底（ADR-002 D6）：只服务无 hook 的会话；默认是 [`text::detect`] 的通用启发式，
+/// 有自己屏幕形态的 agent 可以覆盖。
 pub trait AgentFallback: Send + Sync {
-    /// `tail` 是屏幕末尾的非空行（已 strip ANSI）。
-    fn detect(&self, _tail: &[&str]) -> Option<DetectionResult> {
-        None
+    /// `tail` 是屏幕末尾 ≤ 8 个非空行（已 strip ANSI，见 [`text::tail_lines`]）。
+    fn detect(&self, tail: &[&str]) -> Option<DetectionResult> {
+        text::detect(tail)
+    }
+}
+
+/// 整屏 → 文本层判定：按 agent 类型找 adapter 的兜底，没有 adapter（custom / unknown / fake）
+/// 用通用启发式。调用方只在无 hook 的会话上调（D6）。
+pub fn detect_screen(agent_type: &str, screen: &str) -> Option<DetectionResult> {
+    let tail = text::tail_lines(screen, text::TAIL_LINES);
+    let refs: Vec<&str> = tail.iter().map(String::as_str).collect();
+    match find(agent_type) {
+        Some(a) => a.detect(&refs),
+        None => text::detect(&refs),
     }
 }
 

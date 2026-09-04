@@ -26,8 +26,9 @@ use crate::task::{TaskIndex, TaskInfo};
 
 /// 首条 prompt 当 task_ref 摘要时最多留多长（ADR-002 D8）。
 pub const TASK_SUMMARY_MAX: usize = 120;
-/// pane 预览兜底读屏幕末尾几行（无 hook 的会话，MISSION §6.3 §6.7）。
-const PREVIEW_TAIL_LINES: u32 = 5;
+/// 无 hook 的会话每 tick 读一次屏幕末尾（MISSION §6.3 §6.7；ADR-002 D6）：文本层要 8 个非空行，
+/// TUI 的空行多，多读一些；预览只取最后一行。
+const PREVIEW_TAIL_LINES: u32 = 40;
 const PREVIEW_MAX: usize = 160;
 
 /// Kill 的宽限：TERM → 5 s → KILL（ADR-001 D2）。
@@ -636,20 +637,29 @@ impl SessionManager {
             }
         };
         let now = clock::now_secs();
+        // 无 hook 的会话：读一次屏幕末尾，文本层与预览共用（MISSION §6.3 "没有 hook 的会话保持
+        // 一行 pane preview"）；读不到（dead pane、运行时降级）就没有，不报错。
+        let hooked = adapter::has_hooks(&rec.agent_type);
+        let screen = match rt {
+            Some(s) if !hooked && s.alive => self
+                .runtime
+                .capture_tail(&s.r#ref, PREVIEW_TAIL_LINES)
+                .ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+            _ => None,
+        };
+        let text = screen
+            .as_deref()
+            .and_then(|scr| adapter::detect_screen(&rec.agent_type, scr));
         let (assessment, detail, prompt, progress, status_since, hooked) = {
             let mut machines = lock(&self.machines);
-            let m = machines.entry(rec.id.clone()).or_insert_with(|| {
-                Machine::new(
-                    self.status_cfg.clone(),
-                    adapter::has_hooks(&rec.agent_type),
-                    rec.epoch,
-                    now,
-                )
-            });
+            let m = machines
+                .entry(rec.id.clone())
+                .or_insert_with(|| Machine::new(self.status_cfg.clone(), hooked, rec.epoch, now));
             let a = m.observe(Observation {
                 process,
                 liveness,
-                text: None,
+                text,
                 runtime: rt,
                 epoch: rec.epoch,
                 now,
@@ -660,19 +670,14 @@ impl SessionManager {
                 m.prompt().map(str::to_owned),
                 m.progress().map(str::to_owned),
                 m.status_since(),
+                // 状态机听到 hook 事件会自己升级（custom agent 也可能装了 hook）：升级后预览归零。
                 m.has_hooks(),
             )
         };
-        // pane 预览只给无 hook 的会话（MISSION §6.3 "没有 hook 的会话保持一行 pane preview"）；
-        // 读不到（dead pane、运行时降级）就没有，不报错。
-        let preview = match rt {
-            Some(s) if !hooked && s.alive => self
-                .runtime
-                .capture_tail(&s.r#ref, PREVIEW_TAIL_LINES)
-                .ok()
-                .and_then(|bytes| last_line(&String::from_utf8_lossy(&bytes), PREVIEW_MAX)),
-            _ => None,
-        };
+        let preview = screen
+            .as_deref()
+            .filter(|_| !hooked)
+            .and_then(|scr| adapter::text::last_line(scr, PREVIEW_MAX));
         let task = match (&rec.working_directory, &rec.task_ref) {
             (Some(cwd), Some(r)) => self.tasks.get(std::path::Path::new(cwd), r),
             _ => None,
@@ -1041,51 +1046,4 @@ pub fn summarize(text: &str, max_chars: usize) -> String {
     line.chars().take(max_chars).collect()
 }
 
-/// 屏幕末尾最后一个非空行，strip ANSI / 控制字符，截断（MISSION §6.7：不显示大段内容）。
-fn last_line(screen: &str, max_chars: usize) -> Option<String> {
-    let clean = strip_ansi(screen);
-    let line = clean.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
-    Some(line.chars().take(max_chars).collect())
-}
-
-/// 去掉 CSI / OSC 序列与其它控制字符。`capture-pane -p` 不带 `-e` 本就不含颜色，这里是
-/// 防御：pane 里 agent 自己打出的裸 ESC（进度条、光标控制）不能进侧栏。
-pub fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            match chars.peek() {
-                Some('[') => {
-                    chars.next();
-                    // CSI：参数 0x30–0x3F，中间 0x20–0x2F，终结 0x40–0x7E。
-                    for t in chars.by_ref() {
-                        if ('\u{40}'..='\u{7e}').contains(&t) {
-                            break;
-                        }
-                    }
-                }
-                Some(']') => {
-                    chars.next();
-                    // OSC：到 BEL 或 ESC \。
-                    let mut prev = '\0';
-                    for t in chars.by_ref() {
-                        if t == '\u{7}' || (prev == '\u{1b}' && t == '\\') {
-                            break;
-                        }
-                        prev = t;
-                    }
-                }
-                Some(_) => {
-                    chars.next();
-                }
-                None => {}
-            }
-            continue;
-        }
-        if c == '\n' || c == '\t' || !c.is_control() {
-            out.push(c);
-        }
-    }
-    out
-}
+pub use crate::adapter::text::strip_ansi;

@@ -1,0 +1,4 @@
+# expect: none
+$ ls
+Cargo.toml src tests
+ricky@mac agora % 
