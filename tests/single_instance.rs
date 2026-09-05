@@ -53,17 +53,19 @@ impl Home {
         self.path.join(SOCKET_FILE)
     }
 
-    fn spawn_serve(&self) -> Child {
-        Command::new(AGORA_BIN)
-            .arg("serve")
-            .env("AGORA_HOME", &self.path)
-            .env("AGORA_LOG", "info")
-            .env_remove("AGORA_LOG_FORMAT")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap()
+    fn spawn_serve(&self) -> Daemon {
+        Daemon(Some(
+            Command::new(AGORA_BIN)
+                .arg("serve")
+                .env("AGORA_HOME", &self.path)
+                .env("AGORA_LOG", "info")
+                .env_remove("AGORA_LOG_FORMAT")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ))
     }
 
     fn url(&self) -> std::process::Output {
@@ -72,6 +74,50 @@ impl Home {
             .env("AGORA_HOME", &self.path)
             .output()
             .unwrap()
+    }
+}
+
+/// 起出去的 daemon：断言失败 panic 时也要收掉，否则留下一个孤儿 daemon 攥着端口与 /tmp 目录
+/// （2026-09-05 关守卫变红那一跑就留了一个，pgrep 才发现）。
+struct Daemon(Option<Child>);
+
+impl Daemon {
+    fn pid(&self) -> u32 {
+        self.0.as_ref().unwrap().id()
+    }
+
+    /// 等它自己退出；超时就 kill 并返回 None。
+    fn wait_exit(&mut self, limit: Duration) -> Option<ExitStatus> {
+        let child = self.0.as_mut().unwrap();
+        let deadline = Instant::now() + limit;
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return Some(status);
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// 收尸并拿 (stdout, stderr)。
+    fn output(mut self) -> (String, String) {
+        let out = self.0.take().unwrap().wait_with_output().unwrap();
+        (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -100,29 +146,6 @@ async fn wait_pong(sock: &std::path::Path) {
     }
 }
 
-fn wait_exit(child: &mut Child, limit: Duration) -> Option<ExitStatus> {
-    let deadline = Instant::now() + limit;
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            return Some(status);
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// 子进程的 (stdout, stderr)。
-fn output(child: Child) -> (String, String) {
-    let out = child.wait_with_output().unwrap();
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
-}
-
 /// 第一行同时含所有 needle 的行在 `log` 里的位置。
 fn line_pos(log: &str, needles: &[&str]) -> Option<usize> {
     let mut pos = 0;
@@ -149,8 +172,8 @@ async fn second_instance_in_same_home_exits_without_touching_the_first() {
 
     // 同一 AGORA_HOME、同一端口再起一个：该在碰运行时之前就死，且说人话。
     let mut b = home.spawn_serve();
-    let status = wait_exit(&mut b, Duration::from_secs(15));
-    let (b_out, b_err) = output(b);
+    let status = b.wait_exit(Duration::from_secs(15));
+    let (b_out, b_err) = b.output();
     let status =
         status.unwrap_or_else(|| panic!("B 15 s 内没退出\nstdout: {b_out}\nstderr: {b_err}"));
     assert!(!status.success(), "B 应以非 0 退出: {status}");
@@ -186,9 +209,9 @@ async fn second_instance_in_same_home_exits_without_touching_the_first() {
 
     // A 自己正常退出（SIGTERM）时删掉的是自己的文件；日志里两个 listening 都在"daemon 就绪"之前。
     // SAFETY: kill 只发信号，pid 是我们自己起的子进程。
-    unsafe { libc::kill(a.id() as libc::pid_t, libc::SIGTERM) };
-    let status = wait_exit(&mut a, Duration::from_secs(15));
-    let (a_out, a_err) = output(a);
+    unsafe { libc::kill(a.pid() as libc::pid_t, libc::SIGTERM) };
+    let status = a.wait_exit(Duration::from_secs(15));
+    let (a_out, a_err) = a.output();
     assert_eq!(
         status.map(|s| s.success()),
         Some(true),
