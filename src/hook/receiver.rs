@@ -404,7 +404,13 @@ impl Receiver {
             })
             .unwrap_or_else(|| tool_use_id.clone());
         let (request_id, rx) = self
-            .hold(&received.session_key, &tool_use_id, &summary, timeout)
+            .hold(
+                &received.session_key,
+                hooks.host(),
+                &tool_use_id,
+                &summary,
+                timeout,
+            )
             .ok_or_else(none)?;
         Ok(HeldWake {
             session: received.session_key,
@@ -419,6 +425,7 @@ impl Receiver {
     fn hold(
         &self,
         session: &str,
+        host: &str,
         tool_use_id: &str,
         summary: &str,
         timeout: Duration,
@@ -452,6 +459,7 @@ impl Receiver {
                 request_id: request_id.clone(),
                 summary: summary.into(),
                 epoch,
+                host: host.into(),
             },
         );
         Some((request_id, rx))

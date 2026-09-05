@@ -38,7 +38,11 @@ select:disabled { opacity: 0.5; }
 .row.selected { background: #1f2a38; }
 .row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.3; }
 .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .meta { display: flex; gap: 6px; color: var(--muted); font-size: 12px; }
+/* meta 一行到底（agora-k9r，2026-09-05 截图：external 行的 "@ local" 折成两行、徽标撑成两行高）：
+   每一项 nowrap、不收缩，放不下时只让第一项（agent 类型）截断，徽标 / 节点 / 状态永远整段可见。 */
+.row .meta { display: flex; gap: 6px; color: var(--muted); font-size: 12px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.row .meta > span { flex: none; }
+.row .meta > span:first-child { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .row .origin { border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
 .unknown .dot { color: var(--muted); }
 .adopt { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px 8px 28px; font-size: 12px; }
@@ -90,6 +94,8 @@ select:disabled { opacity: 0.5; }
 .settings-row label { color: var(--muted); width: 44px; }
 .settings-row input { flex: 1; min-width: 0; }
 .settings-row.actions { flex-wrap: wrap; }
+/* Restart 的交代一行放下：reason 已在 daemon 侧截到首行 120 字符（agora-k9r），全文在 title。 */
+.restart-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 10; }
 .dialog { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 16px; width: 420px; max-width: 90vw; }

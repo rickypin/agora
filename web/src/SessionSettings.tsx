@@ -125,7 +125,11 @@ export function SessionSettings({ row, api, onClose }: Props) {
         {conversation ? <>（当前对话 <code>{conversation}</code>）</> : "（agent 还没自报对话 id，Restart 会用原命令）"}
         ；Delete metadata 不杀进程。
       </p>
-      {restartNote && <p className="muted" data-testid="restart-note">{restartNote}</p>}
+      {restartNote && (
+        <p className="muted restart-note" data-testid="restart-note" title={restartNote}>
+          {restartNote}
+        </p>
+      )}
       {ending && (
         <p className="muted" data-testid="ending-note">
           {ending === "kill" ? "正在结束…" : "正在重启…"}（先请进程退出，最多等 7 秒）

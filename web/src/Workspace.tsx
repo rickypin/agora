@@ -12,6 +12,7 @@ import { SessionSettings } from "./SessionSettings";
 import { rowHaystack, rowName, Sidebar } from "./Sidebar";
 import { SessionStore, useSessions, useUnregistered } from "./store";
 import { Tabs } from "./Tabs";
+import type { TerminalClientOptions } from "./terminal";
 import { TerminalView } from "./TerminalView";
 import { emptyTabs, tabsReducer } from "./tabstate";
 
@@ -25,10 +26,12 @@ interface Props {
   notifyDeps?: NotifierDeps;
   /** 测试注入：`/api/health` 的 runtime 段观察者。 */
   health?: HealthWatcher;
+  /** 测试注入：终端 WS 的建法（透传给 TerminalView）。 */
+  terminalConnect?: TerminalClientOptions["connect"];
 }
 
 /** Screen A 的侧栏（Attention Dashboard）+ Screen B：Tabs + 终端 + Session Settings。 */
-export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender, notifyDeps, health: givenHealth }: Props) {
+export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender, notifyDeps, health: givenHealth, terminalConnect }: Props) {
   const store = useMemo(() => given ?? new SessionStore(), [given]);
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
   const catalog = useMemo(() => givenCatalog ?? catalogApi(), [givenCatalog]);
@@ -80,8 +83,22 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   }, [byId, pendingOpen]);
 
   const active = tabs.active ? byId.get(tabs.active) : undefined;
+  // 点已经打开着的那一行 / 标签页：reducer 是 no-op，TerminalView 不重挂、不会再 focus，焦点就留在
+  // 刚点的按钮上——敲键盘什么都不进 pane，按 Enter 还会再点一次（agora-vcc，2026-09-05 代检）。
+  // 用户的直觉是"点一下这个会话就能打字"，所以命中当前 active 时显式把焦点交回终端。不在按钮的
+  // mousedown 上 preventDefault：那会让侧栏失去键盘可达性。external 会话没有终端，ref 为空、不动。
+  const terminalFocus = useRef<(() => void) | null>(null);
+  const activeRef = useRef<string | null>(null);
+  activeRef.current = tabs.active;
+  const focusTerminal = useCallback(() => terminalFocus.current?.(), []);
   // 回调必须稳定：侧栏行是 memo 的，每次渲染换一个闭包会让所有行跟着重渲染。
-  const openTab = useCallback((id: string) => dispatch({ type: "open", id }), []);
+  const openTab = useCallback(
+    (id: string) => {
+      if (activeRef.current === id) focusTerminal();
+      dispatch({ type: "open", id });
+    },
+    [focusTerminal],
+  );
   const openNewAgent = useCallback(() => setNewAgentOpen(true), []);
   // 采纳成功：会话随 `session_created` 进列表后再开 Tab；未登记列表不走事件流，主动重拉。
   const adopt = useCallback(
@@ -181,7 +198,10 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           open={tabs.open}
           active={tabs.active}
           rows={byId}
-          onActivate={(id) => dispatch({ type: "activate", id })}
+          onActivate={(id) => {
+            if (activeRef.current === id) focusTerminal();
+            dispatch({ type: "activate", id });
+          }}
           onClose={(id) => dispatch({ type: "close", id })}
         />
         {active ? (
@@ -202,7 +222,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
                   external 会话：agora 没有它的终端，只能看状态、经 hook 回答；要操作请去它自己的窗口。
                 </p>
               ) : (
-                <TerminalView key={active.id} sessionId={active.id} />
+                <TerminalView key={active.id} sessionId={active.id} connect={terminalConnect} focusRef={terminalFocus} />
               )}
               {settingsOpen && <SessionSettings row={active} api={api} onClose={() => setSettingsOpen(false)} />}
             </div>

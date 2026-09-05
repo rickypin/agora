@@ -14,13 +14,16 @@ interface Props {
   sessionId: string;
   /** 测试注入：建 WS 的方式；默认同源 `/api/sessions/<id>/terminal`。 */
   connect?: TerminalClientOptions["connect"];
+  /** 挂着的终端的 focus()：Workspace 在点已激活的行 / 标签页时把焦点交回来（agora-vcc）。
+   * 挂载时填、卸载时清空。 */
+  focusRef?: { current: (() => void) | null };
 }
 
 /**
  * 一个会话的终端：xterm.js + FitAddon ↔ TerminalClient。
  * 组件卸载 = detach（MISSION §4.6）：只关 WS，agent 不受影响。
  */
-export function TerminalView({ sessionId, connect }: Props) {
+export function TerminalView({ sessionId, connect, focusRef }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const [link, setLink] = useState<Link>("connecting");
   const [exit, setExit] = useState<ExitInfo | null>(null);
@@ -79,9 +82,11 @@ export function TerminalView({ sessionId, connect }: Props) {
     };
     el.addEventListener("pointerdown", onPointerDown);
     el.addEventListener("mousedown", onMouseDown);
+    if (focusRef) focusRef.current = () => term.focus();
     term.focus();
 
     return () => {
+      if (focusRef) focusRef.current = null;
       el.removeEventListener("pointerdown", onPointerDown);
       el.removeEventListener("mousedown", onMouseDown);
       ro.disconnect();
@@ -91,7 +96,7 @@ export function TerminalView({ sessionId, connect }: Props) {
       term.dispose();
     };
     // connect 是挂载时定死的测试注入，不进依赖：内联闭包每次渲染都是新引用，进了就会
-    // 每 setLink 一次重建终端与 WS。
+    // 每 setLink 一次重建终端与 WS。focusRef 是 Workspace 的 useRef，引用不变，同理不进。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, attempt]);
 

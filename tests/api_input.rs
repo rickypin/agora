@@ -452,3 +452,62 @@ async fn failed_decision_checkpoint_does_not_send_approval_and_can_retry() {
         }
     ));
 }
+
+#[tokio::test]
+async fn a_custom_typed_session_with_a_held_claude_hook_takes_dashboard_decisions() {
+    // agora-1dr：agent_type=fake（用户在 New Agent 里选 custom 填自己的命令）里跑的其实是
+    // claude，它的 hook 挂起了——Dashboard 必须给 Allow / Deny，且答复真能回到那个 hook。
+    let (fx, receiver, home) = with_hooks(Duration::from_secs(30));
+    let cookie = fx.cookie();
+    let (gid, local) = create(&fx, &cookie, "fake").await;
+    let (_, before) = call(
+        &fx,
+        &cookie,
+        Method::GET,
+        &format!("/api/sessions/{gid}"),
+        None,
+    )
+    .await;
+    assert_eq!(before["respond_via"], "terminal");
+    assert!(before["respond_within_secs"].is_null());
+
+    let task = hold(&receiver, home.path(), &local).await;
+    let (_, view) = call(
+        &fx,
+        &cookie,
+        Method::GET,
+        &format!("/api/sessions/{gid}"),
+        None,
+    )
+    .await;
+    assert_eq!(view["respond_via"], "hook", "{view}");
+    assert_eq!(view["respond_within_secs"], 55 * 60);
+    assert_eq!(view["pending_decision"]["host"], "claude");
+    let request_id = view["pending_decision"]["request_id"].as_str().unwrap();
+
+    let (status, body) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        &format!("/api/sessions/{gid}/input"),
+        Some(json!({ "kind": "decision", "decision": "allow", "request_id": request_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(matches!(
+        task.await.unwrap(),
+        Response::Hook {
+            decision: Decision::Allow
+        }
+    ));
+    assert!(fx.rt.inputs.lock().unwrap().is_empty(), "不注入键击");
+    let (_, after) = call(
+        &fx,
+        &cookie,
+        Method::GET,
+        &format!("/api/sessions/{gid}"),
+        None,
+    )
+    .await;
+    assert_eq!(after["respond_via"], "terminal", "挂起解除后退回声明类型");
+}

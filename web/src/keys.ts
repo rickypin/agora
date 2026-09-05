@@ -3,7 +3,12 @@
  *
  * 一层两面，所以放在同一个文件里：
  * - agora-xqa.3：把**终端要的**键从浏览器手里抢回来（Shift+Enter、Cmd+←/→）；
- * - agora-xqa.14：全局快捷键**不许吞掉**终端要的 Ctrl 组合。
+ * - agora-xqa.14：全局快捷键**不许吞掉**终端要的 Ctrl 组合；
+ * - agora-82g：终端聚焦时全局快捷键也得按得动——xterm 处理完 Ctrl+字母、Alt+字母（Linux /
+ *   Windows 发 `ESC x`）会 preventDefault + stopPropagation，window 上的全局层永远收不到。
+ *   所以终端层把 matchShortcut 认的、**不带 Ctrl** 的键（Cmd 系、Alt/Option 系）让给全局层；
+ *   Ctrl 组合一律留给 pane（Ctrl+K 是 kill-line、Ctrl+F 是 vim / less 的翻页），Linux / Windows
+ *   在终端里开面板 / 过滤用 Alt/Option+K / F。
  *
  * 与 DOM 无关：只看事件的形状（`KeyLike`），所以能在 node 环境里直接测；接线在
  * TerminalView.tsx（终端侧）与 Workspace.tsx（全局侧）。
@@ -37,7 +42,11 @@ export type ShortcutAction =
   | { action: "jump"; index: number };
 
 /**
- * 全局快捷键（Cmd/Ctrl+K/F、Alt/Option+1…9、Alt/Option+]/[、Alt/Option+N）。
+ * 全局快捷键（Cmd/Ctrl+K/F、Alt/Option+K/F、Alt/Option+1…9、Alt/Option+]/[、Alt/Option+N）。
+ *
+ * Alt/Option+K / F 是面板与过滤在终端聚焦时的入口（agora-82g）：Ctrl+K / F 那时归 pane，macOS 还有
+ * Cmd 可用，Linux / Windows 只剩 Alt。Alt+F 在 Linux 的 readline 里是 forward-word（Alt+→ 同义，
+ * xterm 照发），macOS 上 Option+F 本来只会打出 `ƒ`，拿走不亏。
  *
  * 除了面板与过滤这两个 Cmd/Ctrl 组合，其余一律走 Alt/Option：Cmd/Ctrl+数字、
  * Cmd/Ctrl+Shift+]/[、Cmd/Ctrl+N 都是浏览器自己的加速键（标签页切换、新窗口），
@@ -62,6 +71,10 @@ export function matchShortcut(ev: KeyLike): ShortcutAction | null {
         return { action: "prev" };
       case "KeyN":
         return { action: "new" };
+      case "KeyK":
+        return { action: "palette" };
+      case "KeyF":
+        return { action: "filter" };
       default:
         return null;
     }
@@ -123,15 +136,22 @@ export interface Preventable extends KeyLike {
 
 /**
  * 终端的自定义 key handler：认识的键自己发字节并 `preventDefault`（否则 Cmd+← 照样让
- * 浏览器后退），其余一律返回 true 交回 xterm——Ctrl+C/D/Z/R/A/E、Option+←/→ 按词跳、
- * 粘贴都走 xterm 原路，这一层不碰。
+ * 浏览器后退）；全局快捷键里不带 Ctrl 的那些返回 false 让 xterm 别碰、事件照常冒泡到 window
+ * 由全局层处理（agora-82g）；其余一律返回 true 交回 xterm——Ctrl+C/D/Z/R/A/E、Ctrl+K/F、
+ * Option+←/→ 按词跳、粘贴都走 xterm 原路，这一层不碰。
  */
 export function handleTerminalKey(ev: Preventable, send: (data: string) => void): boolean {
   const bytes = terminalKey(ev);
-  if (bytes === null) return true;
-  ev.preventDefault();
-  send(bytes);
-  return false;
+  if (bytes !== null) {
+    ev.preventDefault();
+    send(bytes);
+    return false;
+  }
+  // 2026-09-05 agent-browser 实测：焦点在 xterm 时 Ctrl+K 进了 pane 成 ^K、面板没开；xterm 对
+  // Ctrl+字母与（非 mac 的）Alt+字母都会 cancel 事件。这里不 preventDefault：由全局层自己做，
+  // 它没装（手机断点）时键就按浏览器缺省走。Ctrl 组合永远不让——MISSION §6.5 的硬约束。
+  if (!ev.ctrlKey && matchShortcut(ev) !== null) return false;
+  return true;
 }
 
 /** 桌面断点（index.css 的侧栏宽度也是照这个来的）。 */

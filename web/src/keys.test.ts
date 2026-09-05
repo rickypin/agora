@@ -72,6 +72,48 @@ describe("全局快捷键不吞终端的 Ctrl 键（agora-xqa.14 / MISSION §6.5
   });
 });
 
+describe("终端聚焦时全局快捷键也按得动（agora-82g）", () => {
+  it("Alt/Option+K / F 开面板、聚焦过滤，认 code 不认 key", () => {
+    // macOS 上 Option+K 的 key 是 `˚`、Option+F 是 `ƒ`。
+    expect(matchShortcut(key("˚", { altKey: true, code: "KeyK" }))).toEqual({ action: "palette" });
+    expect(matchShortcut(key("ƒ", { altKey: true, code: "KeyF" }))).toEqual({ action: "filter" });
+    expect(matchShortcut(key("k", { altKey: true, code: "KeyK", ctrlKey: true }))).toBeNull();
+  });
+
+  it("终端层把 Cmd 系与 Alt/Option 系的快捷键让给全局层：不发字节、不 preventDefault、返回 false", () => {
+    // xterm 收到 false 就不 cancel 事件，keydown 照常冒泡到 window，全局层自己 preventDefault。
+    const deferred = [
+      evt("k", { metaKey: true }),
+      evt("f", { metaKey: true }),
+      evt("˚", { altKey: true, code: "KeyK" }),
+      evt("ƒ", { altKey: true, code: "KeyF" }),
+      evt("£", { altKey: true, code: "Digit3" }),
+      evt("‘", { altKey: true, code: "BracketRight" }),
+      evt("Dead", { altKey: true, code: "KeyN" }),
+    ];
+    for (const e of deferred) {
+      expect(handleTerminalKey(e, () => expect.unreachable("这一层不该发字节"))).toBe(false);
+      expect(e.prevented).toBe(0);
+    }
+  });
+
+  it("终端聚焦时 Ctrl+K / Ctrl+F 归 pane（kill-line、vim / less 翻页），不进面板", () => {
+    for (const k of ["k", "f"]) {
+      const e = evt(k, { ctrlKey: true });
+      expect(handleTerminalKey(e, () => expect.unreachable("Ctrl 组合原样交给 xterm"))).toBe(true);
+      expect(e.prevented).toBe(0);
+    }
+    // 焦点不在终端时 Ctrl+K / F 仍是面板与过滤（全局层直接收到）。
+    expect(matchShortcut(key("k", { ctrlKey: true }))).toEqual({ action: "palette" });
+  });
+
+  it("不是快捷键的普通键与 Alt+←/→ 仍归 xterm", () => {
+    for (const e of [evt("a"), evt("Enter"), evt("ArrowLeft", { altKey: true }), evt("x", { altKey: true, code: "KeyX" })]) {
+      expect(handleTerminalKey(e, () => expect.unreachable("这一层不该发字节"))).toBe(true);
+    }
+  });
+});
+
 describe("键位表（docs/spec/ux.md）", () => {
   it("Cmd/Ctrl+K / F", () => {
     expect(matchShortcut(key("k", { metaKey: true }))).toEqual({ action: "palette" });

@@ -508,3 +508,48 @@ fn restart_of_an_adopted_session_without_a_command_is_a_typed_error_not_an_empty
     assert!(matches!(err, SessionError::NoCommand(_)), "{err}");
     assert!(rt.respawns.lock().unwrap().is_empty(), "不该有任何 respawn");
 }
+
+#[test]
+fn respond_via_follows_the_held_hook_host_not_the_declared_agent_type() {
+    // agora-1dr：custom / fake 类型的会话里跑着包了 claude 的脚本，hook 照样挂起等答复。
+    // 挂起按收到的事件登记，与声明类型无关；respond_via 有挂起时看挂起那条的宿主。
+    use agora::session::PendingDecision;
+    let (m, _rt, _db) = mgr();
+    let mut spec = new_session("wrapped");
+    spec.agent_type = "fake".into();
+    let v = m.create(&spec).unwrap();
+    assert_eq!(
+        v.respond_via, "terminal",
+        "没有挂起：fake 没有 hook，只能开终端"
+    );
+    assert_eq!(v.respond_within_secs, None);
+
+    m.add_pending_decision(
+        &v.record.id,
+        PendingDecision {
+            request_id: "req-1".into(),
+            summary: "Bash: rm x".into(),
+            epoch: v.record.epoch,
+            host: "claude".into(),
+        },
+    );
+    let held = m.get(&v.record.id).unwrap();
+    assert_eq!(held.respond_via, "hook");
+    assert_eq!(
+        held.respond_within_secs,
+        Some(
+            agora::adapter::for_host("claude")
+                .unwrap()
+                .hold_timeout()
+                .as_secs()
+        ),
+        "挂起上限也取挂起宿主的"
+    );
+    assert_eq!(
+        held.pending_decision.as_ref().map(|p| p.host.as_str()),
+        Some("claude")
+    );
+
+    m.remove_pending_decision(&v.record.id, "req-1");
+    assert_eq!(m.get(&v.record.id).unwrap().respond_via, "terminal");
+}

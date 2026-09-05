@@ -19,6 +19,10 @@ pub enum AgoraEvent {
     /// agent 自报的对话 id，每次命中覆盖 `agent_session_id`（D7）。
     SessionId(String),
     PromptSubmitted(String),
+    /// 宿主自己注入的 prompt（后台任务完成通知、system-reminder、斜杠命令回显……）：一轮照样
+    /// 开始（RUNNING、挂起清空），但它不是人说的话——不进 `❯` 行，不当 task_ref 摘要，
+    /// `↳` 也不动（agora-3s5）。
+    PromptInjected,
     /// RUNNING 行的"正在做什么"。
     Activity(String),
     /// 提问类工具：WAITING(question)，只能在终端答（D5）；同 `tool_use_id` 的解除才算答完。

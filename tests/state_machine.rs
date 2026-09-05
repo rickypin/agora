@@ -484,3 +484,31 @@ fn hooks_never_heard_after_terminal_activity_is_flagged_but_not_at_startup() {
     });
     assert_eq!(m.hooks_unheard(202), None);
 }
+
+#[test]
+fn an_injected_prompt_starts_a_turn_but_leaves_the_two_preview_lines_alone() {
+    // agora-3s5：<task-notification> 之类是宿主注入的，不是人说的话——回 RUNNING、挂起过期，
+    // 但 ❯ 行、↳ 行与 detail 都保持原样。关掉 PromptInjected 分支（当成 PromptSubmitted）会红。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::PromptSubmitted("do x".into()), 1, 1);
+    m.apply(&AgoraEvent::TurnEnded(Some("done x".into())), 1, 2);
+    assert_eq!(m.current().status, Status::TurnDone);
+    m.apply(&AgoraEvent::PromptInjected, 1, 3);
+    assert_eq!(m.current().status, Status::Running);
+    assert_eq!(m.current().source, Source::Hook);
+    assert_eq!(m.prompt(), Some("do x"));
+    assert_eq!(m.progress(), Some("done x"));
+    assert_eq!(m.detail(), Some("done x"));
+    // 挂起的权限随新一轮过期（与人敲的 prompt 同一规则）。
+    m.apply(
+        &AgoraEvent::DecisionNeeded {
+            tool_use_id: "t".into(),
+            summary: "Bash".into(),
+        },
+        1,
+        4,
+    );
+    assert_eq!(m.current().status, Status::Waiting);
+    m.apply(&AgoraEvent::PromptInjected, 1, 5);
+    assert_eq!(m.current().status, Status::Running);
+}

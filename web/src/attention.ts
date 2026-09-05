@@ -82,6 +82,17 @@ export function taskLabel(row: SessionRow): string {
   return String(row.name ?? row.display_name ?? row.id);
 }
 
+/**
+ * `❯` 行与任务标签是同一句话：标签退回了首条 prompt 摘要、而当前 prompt 就是那一条（agora-k9r）。
+ * 连显两行一模一样的字只是噪音。有 beads 任务时标签是 issue 标题，不算。
+ */
+export function promptRepeatsLabel(row: SessionRow): boolean {
+  if (taskOf(row)) return false;
+  const ref = typeof row.task_ref === "string" ? row.task_ref.trim() : "";
+  const prompt = typeof row.prompt === "string" ? row.prompt.trim() : "";
+  return ref !== "" && ref === prompt;
+}
+
 export const STATUS_TEXT: Record<string, string> = {
   waiting: "waiting",
   turn_done: "turn done",

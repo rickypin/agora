@@ -53,7 +53,7 @@ MISSION v0.10 已把"hook-first 是 V1 架构"定为前提（§5.1），依据�
 
 ### D2 事件最小集合与各 agent 映射
 
-agora 内部事件（§5.6 的集合，补两个）：`session.started` / `session.id` / `prompt.submitted` / `activity` / `input.needed` / `decision.needed` / `turn.ended` / `turn.failed` / `session.ended`，新增 `idle`（agent 自报的空闲）与 `decision.resolved`（挂起的决定被终端或 hook 解决）。
+agora 内部事件（§5.6 的集合，补两个）：`session.started` / `session.id` / `prompt.submitted` / `activity` / `input.needed` / `decision.needed` / `turn.ended` / `turn.failed` / `session.ended`，新增 `idle`（agent 自报的空闲）与 `decision.resolved`（挂起的决定被终端或 hook 解决）。上线后再补 `prompt.injected`（附录 B 第 1 条）：宿主自己注入、不是人敲的 prompt——一轮照样开始，但不进 `❯` 行、不当 `task_ref` 摘要。
 
 | agora 事件 → 状态 | Claude Code（文档 + 2.1.258 实测） | Grok（1.0.13 实测） | Codex（0.152.1 文档 + 二进制核对，未实测；附录 A） | generic shell |
 |---|---|---|---|---|
@@ -248,4 +248,4 @@ AgentFallback {                      # 所有 agent 都有默认实现
 
 ## 附录 B：事故记录
 
-（上线后追加）
+1. **2026-09-05，agora-3s5：外部会话的行标题变成 `<task-notification>`。** Claude Code 2.1.261 把后台任务完成通知、`<system-reminder>`、斜杠命令回显等系统注入内容也当 `UserPromptSubmit` 发出（真录 `testdata/claude/2.1.261/hooks/task_notification.jsonl`）；D8 按"首条 `prompt.submitted` 的首行"取 task_ref 摘要，daemon 中途登记的外部会话"第一条"恰好是它。处置：Adapter 把以已知注入标签开头的 prompt 映射成 `prompt.injected`（`src/adapter/hooks.rs` 的 `INJECTED_PROMPT_TAGS`，三家共用）——状态机照常回 RUNNING、挂起过期，但 `❯` / `↳` / detail 不动、task_ref 不补；task_ref 已经是系统消息的库存行，下一条真人 prompt 允许覆盖一次。脱敏器对 `prompt` 键保留开头的标签，fixture 才证明得了"这条不是人敲的"。

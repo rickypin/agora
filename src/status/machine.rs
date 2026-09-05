@@ -318,6 +318,11 @@ impl Machine {
                 self.progress = None;
                 Some(hook(Status::Running, 1.0, Some("prompt submitted")))
             }
+            // 注入的 prompt：轮次语义同上（挂起过期、回 RUNNING），两行预览与 detail 原样保留。
+            AgoraEvent::PromptInjected => {
+                self.pending.clear();
+                Some(hook(Status::Running, 1.0, Some("prompt injected")))
+            }
             // 并行工具：一个在等权限时另一个的 PreToolUse / PostToolUse 照样到，不算"人答了"。
             AgoraEvent::Activity(_) if waiting_on_others(&self.pending, &self.current) => None,
             AgoraEvent::Activity(what) => {

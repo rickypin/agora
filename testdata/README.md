@@ -24,6 +24,11 @@ fixture 驱动测试的数据（ADR-002 D10）。
 串行；manual 模式下 `echo` / `wc` 免审批，要触发 PermissionRequest 得用 `touch` 这类写操作；假模型名不发 StopFailure，
 要 `ANTHROPIC_BASE_URL` 指向拒绝连接的端口、等 10 次重试耗尽（约 3 分钟）才来 `error=server_error`。
 
+`task_notification.jsonl`（agora-3s5，2026-09-05 真录）是第九个场景：`claude -p` 让 Bash 以 run_in_background 起一个
+`sleep`，第一轮 Stop 之后宿主把 `<task-notification>…` 当 **UserPromptSubmit** 发出，agent 再跑一轮。脱敏器对 `prompt`
+键只留开头的注入标签（`<task-notification>\n<prompt>`），正文照抹；`expect.prompt` 断言 `❯` 行没被它改写。另两处实测：
+无头模式 payload 没有 `scratchpad_dir`；Stop 多了 `background_tasks` / `session_crons`。
+
 ## claude/2.1.260
 
 已被 2.1.261 的真录取代，目录保留作对照（合成件的猜测哪几处错了见上一节）。

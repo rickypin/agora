@@ -314,6 +314,9 @@ pub async fn kill(
     Ok(Json(export(&state.node, &view)))
 }
 
+/// Restart 退化原因在 API 响应里的长度上限（字符）；日志不截。
+const RESTART_REASON_MAX: usize = 120;
+
 pub async fn restart(
     principal: Principal,
     State(state): State<AppState>,
@@ -345,7 +348,12 @@ pub async fn restart(
         }
         RestartPlan::Original { reason, .. } => {
             tracing::warn!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, epoch = view.record.epoch, %reason, "restart 退化为原命令");
-            serde_json::json!({ "resumed": false, "reason": reason })
+            // reason 可能带子进程的整段 stderr（fake 命令探版本时吐的 usage）：API 只给首行、截到
+            // 120 字符，Dashboard 一行放得下；全文在上面那条日志里（agora-k9r，2026-09-05）。
+            serde_json::json!({
+                "resumed": false,
+                "reason": crate::adapter::hooks::first_line_capped(reason, RESTART_REASON_MAX)
+            })
         }
     };
     let mut out = export(&state.node, &view);

@@ -184,8 +184,8 @@ impl AgentHooks for Codex {
                     out.push(AgoraEvent::SessionId(id));
                 }
             }
-            Some("UserPromptSubmit") => out.push(AgoraEvent::PromptSubmitted(
-                str_of(payload, &["prompt"]).unwrap_or_default().to_owned(),
+            Some("UserPromptSubmit") => out.push(hooks::prompt_event(
+                str_of(payload, &["prompt"]).unwrap_or_default(),
             )),
             Some("PreToolUse") => out.push(AgoraEvent::Activity(tool.to_owned())),
             // 解除按 id 与工具名两个键：PermissionRequest 只带 tool_name。

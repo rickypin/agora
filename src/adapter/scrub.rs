@@ -138,6 +138,10 @@ fn scrub_str(key: &str, value: &str, salt: &str) -> Value {
         path_placeholder(salt, value)
     } else if ENUM_KEYS.contains(&key) && is_token(value) {
         value.to_owned()
+    } else if let Some(tag) = super::hooks::injected_prompt_tag(value).filter(|_| key == "prompt") {
+        // 宿主注入的 prompt：留下开头的标签（它是宿主的枚举、不是人写的），正文照抹——fixture
+        // 要能证明"这条 UserPromptSubmit 不是人敲的"（agora-3s5）。
+        format!("<{tag}>\n<{key}>")
     } else {
         format!("<{key}>")
     };
@@ -171,6 +175,22 @@ pub fn scrub(payload: &Value, salt: &str) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_injected_prompt_keeps_its_tag_and_loses_its_body() {
+        // agora-3s5：fixture 要能证明"这条 UserPromptSubmit 不是人敲的"，标签是宿主的枚举。
+        let s = scrub(
+            &json!({ "hook_event_name": "UserPromptSubmit", "prompt": "<task-notification>\n<task-id>abc</task-id>\n<summary>done</summary>" }),
+            "t0",
+        );
+        assert_eq!(s["prompt"], "<task-notification>\n<prompt>");
+        // 只有 prompt 键这么处理；别的键里的同样文本照抹。
+        let o = scrub(
+            &json!({ "last_assistant_message": "<task-notification> 已完成" }),
+            "t0",
+        );
+        assert_eq!(o["last_assistant_message"], "<last_assistant_message>");
+    }
 
     #[test]
     fn enums_survive_and_free_text_does_not() {

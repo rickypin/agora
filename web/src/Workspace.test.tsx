@@ -122,6 +122,19 @@ afterEach(() => {
 });
 
 describe("Workspace", () => {
+  it("任务标签退回首条 prompt 摘要、与 ❯ 行一字不差时 ❯ 行省略（agora-k9r）", async () => {
+    const same = { ...row("n:a"), task_ref: "把 config 迁到 yaml 并推上去", prompt: "把 config 迁到 yaml 并推上去", progress: "Edit x" };
+    const differ = { ...row("n:b"), task_ref: "把 config 迁到 yaml 并推上去", prompt: "推上去了吗" };
+    const t = setup([same, differ]);
+    await online(t);
+    expect(screen.getByTestId("label-n:a").textContent).toBe("把 config 迁到 yaml 并推上去");
+    expect(screen.queryByTestId("prompt-n:a")).toBeNull();
+    expect(screen.getByTestId("progress-n:a").textContent).toContain("Edit x");
+    // 后来的 prompt 不同：两行都在。
+    expect(screen.getByTestId("label-n:b").textContent).toBe("把 config 迁到 yaml 并推上去");
+    expect(screen.getByTestId("prompt-n:b").textContent).toContain("推上去了吗");
+  });
+
   it("a notification event pops a browser notification whose click lands on the row's in-place respond (A18)", async () => {
     const n = fakeNotify("granted");
     const t = setup([row("n:a"), row("n:b")], [], n.deps);

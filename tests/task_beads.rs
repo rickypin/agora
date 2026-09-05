@@ -237,3 +237,55 @@ fn two_lines_come_from_hooks_and_pane_preview_only_for_hookless_sessions() {
     let h = m.get(&hooked.record.id).unwrap();
     assert_eq!((h.prompt.as_deref(), h.progress), (Some("push 吧"), None));
 }
+
+#[test]
+fn injected_prompts_never_become_the_task_summary_and_a_stale_one_is_replaced_once() {
+    // agora-3s5：daemon 中途登记的外部会话，"第一条" UserPromptSubmit 常是宿主注入的
+    // <task-notification>；它不能当 task_ref，下一条真人 prompt 才是。已经把系统消息当了标题的
+    // 库存行，真人 prompt 到来时允许覆盖一次，之后照旧不动。
+    let dir = tempfile::tempdir().unwrap();
+    let (m, _rt) = mgr(Arc::new(TaskIndex::new("/nonexistent/bd").synchronous()));
+    let v = m.create(&session("claude", dir.path(), None)).unwrap();
+    m.apply_hook(&v.record.id, v.record.epoch, &[AgoraEvent::PromptInjected])
+        .unwrap();
+    let got = m.get(&v.record.id).unwrap();
+    assert_eq!(got.record.task_ref, None);
+    assert_eq!(got.prompt, None, "❯ 行也不拿注入的 prompt");
+    assert_eq!(got.assessment.status, agora::status::Status::Running);
+    m.apply_hook(
+        &v.record.id,
+        v.record.epoch,
+        &[AgoraEvent::PromptSubmitted("把 config 迁到 yaml".into())],
+    )
+    .unwrap();
+    assert_eq!(
+        m.get(&v.record.id).unwrap().record.task_ref.as_deref(),
+        Some("把 config 迁到 yaml")
+    );
+
+    // 库存行：task_ref 已经是系统消息。
+    let stale = m
+        .create(&session("claude", dir.path(), Some("<task-notification>")))
+        .unwrap();
+    m.apply_hook(
+        &stale.record.id,
+        stale.record.epoch,
+        &[AgoraEvent::PromptSubmitted("真人的第一句".into())],
+    )
+    .unwrap();
+    assert_eq!(
+        m.get(&stale.record.id).unwrap().record.task_ref.as_deref(),
+        Some("真人的第一句")
+    );
+    m.apply_hook(
+        &stale.record.id,
+        stale.record.epoch,
+        &[AgoraEvent::PromptSubmitted("第二句".into())],
+    )
+    .unwrap();
+    assert_eq!(
+        m.get(&stale.record.id).unwrap().record.task_ref.as_deref(),
+        Some("真人的第一句"),
+        "覆盖只有一次"
+    );
+}

@@ -30,11 +30,13 @@
 
 | 快捷键 | 动作 |
 |---|---|
-| Cmd/Ctrl + K | Command Palette |
-| Cmd/Ctrl + F | Filter sidebar（name / node / agent / preview；Enter 打开第一条） |
+| Cmd/Ctrl + K、Alt/Option + K | Command Palette |
+| Cmd/Ctrl + F、Alt/Option + F | Filter sidebar（name / node / agent / preview；Enter 打开第一条） |
 | Alt/Option + 1…9 | 跳到侧栏第 N 条（按当前过滤后的显示顺序） |
 | Alt/Option + ] / [ | Next / Previous Agent |
 | Alt/Option + N | New Agent |
+
+**终端有焦点时 Ctrl 组合一律归 pane**（agora-82g，2026-09-05 代检：Ctrl+K / F 曾被 xterm 吞成 `^K` / `^F`，面板与过滤开不了）：Ctrl+K 是 readline 的 kill-line、Ctrl+F 是 vim / less 的翻页，agora 不抢——§6.5 的硬约束不只那六个键。终端里开面板 / 过滤用 Alt/Option+K / F（macOS 上 Cmd+K / F 也行）；焦点在侧栏、过滤框或 body 上时 Ctrl+K / F 照旧。实现：终端层（`handleTerminalKey`）把 `matchShortcut` 认的、不带 Ctrl 的键返回 false 让 xterm 别碰，事件照常冒泡到 window 由全局层处理——不然 xterm 处理完 Alt+字母（Linux / Windows 发 `ESC x`）也会 stopPropagation，Alt 系键位在终端聚焦时同样按不动。Alt+F 在 Linux 的 readline 里是 forward-word，Alt+→ 同义且照发；macOS 上 Option+F 本来只会打出 `ƒ`。Chrome 在 Windows / Linux 把 Alt+F 当菜单加速键，页面 `preventDefault` 能不能压住它只有人在真浏览器里按过才算数（验证纪律见下）。
 
 浏览器全局快捷键必须避免吞掉终端内 Ctrl+C / Ctrl+D / Ctrl+Z / Ctrl+R / Ctrl+A / Ctrl+E 等常见操作。**能留给 agora 的只有浏览器自己没占的组合**：Cmd/Ctrl+数字（标签页）、Cmd/Ctrl+Shift+] / [（下/上一个标签页）、Cmd/Ctrl+N（新窗口）都在浏览器 UI 层被吃掉，页面连 keydown 都收不到，`preventDefault` 也救不回来（macOS Chrome 人眼实测 2026-09-04，agora-rzn：这三类原先都写在本表里，按下去响应的是 Chrome）。所以除了面板与过滤这两个 Cmd/Ctrl 组合，其余一律走 Alt/Option。**验证纪律**：jsdom 没有保留键这回事，agent-browser 经 CDP 把按键直接注入渲染进程、绕过浏览器的加速键处理——两者对 Cmd/Ctrl 系键位都只会给出假阳性，只有人在真浏览器里按过才算数。
 
@@ -51,7 +53,7 @@ Option+← / → 按词跳、粘贴、resize 重排、滚轮回看都走 xterm.j
 
 ### 终端焦点（agora-p29）
 
-打开一个会话就该能直接打字，不用先点终端。TerminalView 在三处交焦点：① 挂载时 `term.focus()` 一次；② WS 收到 `status: attached` 再一次——新开的浏览器标签页里挂载那一次偶尔不生效（2026-09-03 目检：attach 成功、键入不进 pane、点一下终端才好），但用户这会儿已经在别的文本输入（侧栏过滤、Rename、New Agent 表单）里打字的话不抢；③ `.term-host` 上的 pointerdown 把焦点交回 xterm 的 helper textarea，点在 `.xterm` 之外的 padding 上也算——xterm 自己的 mousedown 只覆盖 `.xterm` 内部，padding 那一圈由 agora 取消浏览器缺省的 mousedown，不然焦点会被挪到 body。不在 pointerdown 上 `preventDefault`：那会连带取消后面的 mousedown / click，xterm 的选区靠它们。守卫 `web/src/TerminalView.test.tsx`。人工复现步骤在 M1a 演示剧本第 4 步（新标签页打开会话 → 直接键入）。
+打开一个会话就该能直接打字，不用先点终端。TerminalView 在三处交焦点：① 挂载时 `term.focus()` 一次；② WS 收到 `status: attached` 再一次——新开的浏览器标签页里挂载那一次偶尔不生效（2026-09-03 目检：attach 成功、键入不进 pane、点一下终端才好），但用户这会儿已经在别的文本输入（侧栏过滤、Rename、New Agent 表单）里打字的话不抢；③ `.term-host` 上的 pointerdown 把焦点交回 xterm 的 helper textarea，点在 `.xterm` 之外的 padding 上也算——xterm 自己的 mousedown 只覆盖 `.xterm` 内部，padding 那一圈由 agora 取消浏览器缺省的 mousedown，不然焦点会被挪到 body。不在 pointerdown 上 `preventDefault`：那会连带取消后面的 mousedown / click，xterm 的选区靠它们。守卫 `web/src/TerminalView.test.tsx`。④ 点**已经激活**的侧栏行或标签页（agora-vcc，2026-09-05 代检）：Tab reducer 对已激活的 id 是 no-op，TerminalView 不重挂也不会再 focus，焦点留在刚点的按钮上——Workspace 在这种命中时显式调用挂着的终端的 `focus()`（TerminalView 经 `focusRef` 暴露），不在行 / 标签按钮的 mousedown 上 `preventDefault`，侧栏的键盘可达性不变。守卫 `web/src/Workspace.focus.test.tsx`。人工复现步骤在 M1a 演示剧本第 4 步（新标签页打开会话 → 直接键入）。
 
 Command Palette 支持 fuzzy search sessions / projects / nodes / actions（`New Claude in agora @ zuan`）。目标是让管理 20–50 个 agent 时仍然高效。手机端没有键盘，快捷键与命令面板只在桌面生效（`isDesktop()`：视口窄于 700 px 就不装 window keydown，命令面板也开不出来）。
 

@@ -228,8 +228,8 @@ impl AgentHooks for Grok {
                     out.push(AgoraEvent::SessionId(id));
                 }
             }
-            Some("userpromptsubmit") => out.push(AgoraEvent::PromptSubmitted(
-                str_of(payload, &["prompt"]).unwrap_or_default().to_owned(),
+            Some("userpromptsubmit") => out.push(hooks::prompt_event(
+                str_of(payload, &["prompt"]).unwrap_or_default(),
             )),
             Some("pretooluse") => out.push(AgoraEvent::Activity(tool.to_owned())),
             // 工具有了结果 / 被拒：权限提示（若有）已在终端答了。

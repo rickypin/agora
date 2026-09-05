@@ -7,6 +7,8 @@
 
 use serde_json::Value;
 
+use crate::status::AgoraEvent;
+
 /// 默认的挂起上限（ADR-002 D5）：安装的 hook timeout 3600 s 减余量，agora 永远先于 agent 退出。
 pub const DEFAULT_HOLD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(55 * 60);
 
@@ -166,6 +168,48 @@ pub(crate) fn first_line_capped(text: &str, max: usize) -> String {
         out.push('…');
     }
     out
+}
+
+/// 宿主自己注入、不是人敲的 prompt 开头的标签。Claude Code 2.1.261 实测（2026-09-05，
+/// agora-3s5）：后台任务完成通知 `<task-notification>`、`<system-reminder>`、斜杠命令的
+/// `<command-name>` / `<command-message>` / `<command-args>` / `<local-command-stdout>`、`!` 直跑
+/// shell 的 `<bash-input>` / `<bash-stdout>`、IDE 上下文 `<ide_opened_file>` 都以 UserPromptSubmit
+/// 发出——按 MISSION §5.6 拿"首条 prompt"当 task_ref 摘要时恰好会取到它们。前缀匹配。
+pub const INJECTED_PROMPT_TAGS: &[&str] = &[
+    "task-notification",
+    "system-reminder",
+    "command-name",
+    "command-message",
+    "command-args",
+    "local-command-",
+    "bash-input",
+    "bash-stdout",
+    "bash-stderr",
+    "ide_",
+];
+
+/// 这条 prompt 是不是宿主注入的（首个非空白字符起是 `<` + 已知标签）；标签本身返回（不带尖括号
+/// 后面的内容），给脱敏与摘要用。人敲的 prompt 极少以这些标签开头。
+pub fn injected_prompt_tag(prompt: &str) -> Option<&'static str> {
+    let rest = prompt.trim_start().strip_prefix('<')?;
+    INJECTED_PROMPT_TAGS
+        .iter()
+        .copied()
+        .find(|tag| rest.starts_with(tag))
+}
+
+pub fn injected_prompt(prompt: &str) -> bool {
+    injected_prompt_tag(prompt).is_some()
+}
+
+/// 三家共用：UserPromptSubmit → 人的 prompt（`prompt.submitted`）或注入的 prompt
+/// （`prompt.injected`：一轮照样开始，但不进 `❯` 行、不当 task_ref 摘要）。
+pub(crate) fn prompt_event(prompt: &str) -> AgoraEvent {
+    if injected_prompt(prompt) {
+        AgoraEvent::PromptInjected
+    } else {
+        AgoraEvent::PromptSubmitted(prompt.to_owned())
+    }
 }
 
 /// 通用的挂起判定：只有能替用户批准的宿主的 `PermissionRequest`。

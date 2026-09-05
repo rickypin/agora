@@ -7,7 +7,8 @@
 //!   ——不是 agent 发的，所以不会出现在录制里，回放时按 `decision.resolved` 应用；
 //! - `at`：相对秒数（缺省沿用上一行）；
 //! - `hold`：这条 payload 该不该挂起（`AgentHooks::hold_key`）；
-//! - `expect`：这一行应用后的 `{"status", "source"?, "min_confidence"?, "detail"?}`。
+//! - `expect`：这一行应用后的 `{"status", "source"?, "min_confidence"?, "detail"?, "prompt"?}`
+//!   （`prompt` 是 `❯` 行，写 `null` 断言它为空）。
 //!
 //! 只走 hook 路径：进程层 / 文本层不在此（那是 `tests/state_machine.rs` 的事）。
 
@@ -45,6 +46,18 @@ pub struct Expect {
     pub min_confidence: Option<f32>,
     #[serde(default)]
     pub detail: Option<String>,
+    /// `❯` 行（`Machine::prompt`）：外层 None = 不检查，`Some(None)` = 必须为空。
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub prompt: Option<Option<String>>,
+}
+
+/// serde 对 `Option<Option<T>>` 的缺省是"缺键与 null 都是 None"；这里要把 `"prompt": null`
+/// 与"没写 prompt"分开，所以只要键在就包一层 Some。
+fn deserialize_some<'de, D>(d: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(d).map(Some)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -133,6 +146,14 @@ pub fn replay(hooks: &dyn AgentHooks, text: &str) -> Result<Vec<Assessment>, Rep
                     return Err(mismatch(
                         "detail",
                         format!("{d:?} (got {:?})", machine.detail()),
+                    ));
+                }
+            }
+            if let Some(p) = &exp.prompt {
+                if machine.prompt() != p.as_deref() {
+                    return Err(mismatch(
+                        "prompt",
+                        format!("{p:?} (got {:?})", machine.prompt()),
                     ));
                 }
             }

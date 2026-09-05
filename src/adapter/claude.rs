@@ -214,8 +214,8 @@ impl AgentHooks for Claude {
                     out.push(AgoraEvent::SessionId(id));
                 }
             }
-            Some("UserPromptSubmit") => out.push(AgoraEvent::PromptSubmitted(
-                str_of(payload, &["prompt"]).unwrap_or_default().to_owned(),
+            Some("UserPromptSubmit") => out.push(hooks::prompt_event(
+                str_of(payload, &["prompt"]).unwrap_or_default(),
             )),
             Some("PreToolUse") if tool == "AskUserQuestion" => out.push(AgoraEvent::InputNeeded {
                 tool_use_id: id().unwrap_or_else(|| tool.to_owned()),
@@ -287,6 +287,34 @@ impl AgentHooks for Claude {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn injected_prompts_are_not_the_users_words() {
+        // agora-3s5：2.1.261 真录（testdata/claude/2.1.261/hooks/task_notification.jsonl）——后台任务
+        // 完成通知以 UserPromptSubmit 发出，prompt 以 <task-notification> 开头；它不是人敲的。
+        let injected = json!({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "<task-notification>\n<task-id>x</task-id>\n</task-notification>"
+        });
+        assert_eq!(CLAUDE.parse(&injected), vec![AgoraEvent::PromptInjected]);
+        let reminder =
+            json!({ "hook_event_name": "UserPromptSubmit", "prompt": "  <system-reminder>\nfoo" });
+        assert_eq!(CLAUDE.parse(&reminder), vec![AgoraEvent::PromptInjected]);
+        let slash = json!({ "hook_event_name": "UserPromptSubmit", "prompt": "<command-name>/clear</command-name>" });
+        assert_eq!(CLAUDE.parse(&slash), vec![AgoraEvent::PromptInjected]);
+        let human =
+            json!({ "hook_event_name": "UserPromptSubmit", "prompt": "把 config 迁到 yaml" });
+        assert_eq!(
+            CLAUDE.parse(&human),
+            vec![AgoraEvent::PromptSubmitted("把 config 迁到 yaml".into())]
+        );
+        // 人贴的 HTML / 尖括号不算：只认已知标签。
+        let html = json!({ "hook_event_name": "UserPromptSubmit", "prompt": "<div> 这个怎么居中" });
+        assert!(matches!(
+            CLAUDE.parse(&html)[0],
+            AgoraEvent::PromptSubmitted(_)
+        ));
+    }
 
     #[test]
     fn version_is_three_valued_and_table_bounded() {

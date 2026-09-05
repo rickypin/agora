@@ -403,7 +403,14 @@ async fn restart_resumes_self_reported_conversation_and_create_pins_one() {
     );
 
     // 版本表外：不猜参数，原命令 + 原因。
-    fx.probe_unparsable("claude", "1.0.0 低于版本表首项");
+    // why 里带整段 stderr（agora-k9r 的现场是 fake 命令的 usage）：API 只给首行、截到 120 字符。
+    fx.probe_unparsable(
+        "claude",
+        &format!(
+            "1.0.0 低于版本表首项{}\n用法: agora [serve | url | open]\n第三行",
+            "x".repeat(200)
+        ),
+    );
     let (status, v) = call(
         &fx,
         &cookie,
@@ -414,12 +421,12 @@ async fn restart_resumes_self_reported_conversation_and_create_pins_one() {
     .await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["restart"]["resumed"], false);
+    let reason = v["restart"]["reason"].as_str().unwrap();
+    assert!(reason.contains("不可解析"), "{v}");
+    assert!(!reason.contains('\n'), "只留首行: {reason}");
     assert!(
-        v["restart"]["reason"]
-            .as_str()
-            .unwrap()
-            .contains("不可解析"),
-        "{v}"
+        reason.chars().count() <= 121 && reason.ends_with('…'),
+        "截到 120 字符加省略号: {reason}"
     );
     assert_eq!(
         fx.rt.respawns.lock().unwrap().last().unwrap(),

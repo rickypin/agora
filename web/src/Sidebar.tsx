@@ -1,6 +1,6 @@
 import { Fragment, memo, useEffect, useState, type ReactNode, type RefObject } from "react";
 import type { AdoptBody } from "./api";
-import { countByStatus, needsAttention, statusLine, taskLabel } from "./attention";
+import { countByStatus, needsAttention, promptRepeatsLabel, statusLine, taskLabel } from "./attention";
 import type { SessionRow, UnregisteredRow } from "./events";
 
 /** 状态符号（docs/spec/ux.md 线框）。 */
@@ -104,7 +104,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
               {statusLine(row, now)}
             </span>
           </span>
-          {prompt && (
+          {prompt && !promptRepeatsLabel(row) && (
             <span className="preview line-prompt" data-testid={`prompt-${row.id}`}>
               <span className="muted">❯ </span>
               {prompt}

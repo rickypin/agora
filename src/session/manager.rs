@@ -111,6 +111,10 @@ pub struct PendingDecision {
     pub request_id: String,
     pub summary: String,
     pub epoch: i64,
+    /// 挂着的是哪个宿主的 hook（信封 `host`）。挂起按收到的事件登记、与会话声明的 agent_type
+    /// 无关：custom 类型跑着包了一等 agent 的启动脚本、或采纳时类型猜错，hook 照样能答——
+    /// `respond_via` 有挂起时看它，不看声明类型（agora-1dr，2026-09-05）。
+    pub host: String,
 }
 
 /// 对外的一条会话：metadata + 运行时实时事实 + 状态判定。
@@ -304,13 +308,22 @@ impl SessionManager {
                     }
                     // 没有任务的会话：首条 prompt 的首行就是它的任务摘要（ADR-002 D8）。只补空的，
                     // 用户在对话框填的 issue id / 一句话永远不被覆盖；只写 agora 自己的库。
-                    AgoraEvent::PromptSubmitted(p) if rec.task_ref.is_none() => {
+                    // 例外：摘要已经是宿主注入的系统消息（agora-3s5 之前的库存行，"<task-notification>"
+                    // 当了标题）——下一条真人 prompt 允许覆盖一次；注入的 prompt 本身不会走到这里
+                    // （adapter 映射成 PromptInjected）。
+                    AgoraEvent::PromptSubmitted(p)
+                        if rec
+                            .task_ref
+                            .as_deref()
+                            .is_none_or(adapter::hooks::injected_prompt) =>
+                    {
                         let summary = summarize(p, TASK_SUMMARY_MAX);
                         if !summary.is_empty() {
                             self.db.conn().execute(
-                            "UPDATE sessions SET task_ref = ?2 WHERE id = ?1 AND task_ref IS NULL",
-                            params![id, summary],
-                        )?;
+                                "UPDATE sessions SET task_ref = ?2 WHERE id = ?1 \
+                                 AND (task_ref IS NULL OR task_ref = ?3)",
+                                params![id, summary, rec.task_ref],
+                            )?;
                         }
                     }
                     _ => {}
@@ -818,8 +831,16 @@ impl SessionManager {
             (Some(cwd), Some(r)) => self.tasks.get(std::path::Path::new(cwd), r),
             _ => None,
         };
-        let hook_host = adapter::find(&rec.agent_type)
-            .and_then(|a| a.hooks())
+        let pending_decision = lock(&self.decisions)
+            .get(&rec.id)
+            .and_then(|v| v.iter().rev().find(|p| p.epoch == rec.epoch))
+            .cloned();
+        // 怎么答：有挂起就按挂起那条的宿主（hook 明明挂着能答，不能因为声明类型是 custom /
+        // fake 就只给"打开终端"，agora-1dr）；没挂起才退回声明类型的能力。
+        let hook_host = pending_decision
+            .as_ref()
+            .and_then(|p| adapter::for_host(&p.host))
+            .or_else(|| adapter::find(&rec.agent_type).and_then(|a| a.hooks()))
             .filter(|h| h.decision_via_hook());
         let respond_via = if hook_host.is_some() {
             "hook"
@@ -831,10 +852,6 @@ impl SessionManager {
             Some(s) if !rec.name_locked && !s.title.trim().is_empty() => s.title.clone(),
             _ => rec.display_name.clone(),
         };
-        let pending_decision = lock(&self.decisions)
-            .get(&rec.id)
-            .and_then(|v| v.iter().rev().find(|p| p.epoch == rec.epoch))
-            .cloned();
         SessionView {
             pending_decision,
             name,
