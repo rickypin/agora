@@ -132,6 +132,12 @@ impl AgentIdentity for Claude {
             .filter(|c| c.pin)
             .map(|_| vec!["--session-id".to_owned(), new_id.to_owned()])
     }
+
+    /// `claude -p <prompt>`：实测 2.1.261（2026-09-05）无头一轮照样 fire SessionStart /
+    /// UserPromptSubmit / Stop / SessionEnd。
+    fn headless_args(&self, prompt: &str) -> Option<Vec<String>> {
+        Some(vec!["-p".to_owned(), prompt.to_owned()])
+    }
 }
 
 impl AgentFallback for Claude {}
@@ -247,8 +253,10 @@ impl AgentHooks for Claude {
             Some("Stop") => out.push(AgoraEvent::TurnEnded(
                 str_of(payload, &["last_assistant_message"]).map(str::to_owned),
             )),
+            // 文档写的是 error_type，2.1.261 实测（2026-09-05，testdata/claude/2.1.261/hooks/
+            // api_error.jsonl）发来的键叫 error（值仍是那 11 个枚举），两个都认。
             Some("StopFailure") => out.push(AgoraEvent::TurnFailed(
-                str_of(payload, &["error_type", "matcher"])
+                str_of(payload, &["error_type", "error", "matcher"])
                     .unwrap_or("unknown")
                     .to_owned(),
             )),
@@ -334,6 +342,11 @@ mod tests {
         assert_eq!(
             CLAUDE.parse(&json!({"hook_event_name":"StopFailure","error_type":"rate_limit"})),
             vec![AgoraEvent::TurnFailed("rate_limit".into())]
+        );
+        // 2.1.261 真录的键名。
+        assert_eq!(
+            CLAUDE.parse(&json!({"hook_event_name":"StopFailure","error":"server_error"})),
+            vec![AgoraEvent::TurnFailed("server_error".into())]
         );
         assert_eq!(STOP_FAILURE_MATCHERS.len(), 11);
     }

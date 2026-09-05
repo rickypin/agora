@@ -8,6 +8,8 @@
 //! - [`Receiver`]：daemon 侧——启动时按文件名顺序重放、运行中被唤醒即读；epoch 小于当前的丢；
 //!   挂起表以 `(session, tool_use_id)` 为键，每会话 8、节点 256，超时 55 min；同 tool_use_id 的
 //!   PostToolUse 等、Stop / SessionEnd、进程退出都解除挂起（`decision.resolved`）。
+//! - [`record`]：`agora hook --record` 的录制器——每条事件脱敏后追加成 `testdata/` 的 fixture 行
+//!   （ADR-002 D10），建 fixture 与版本漂移冒烟（`tests/hook_smoke.rs`）用。
 //!
 //! 本模块只知道"一个宿主、一坨 JSON"；宿主名、payload 键、哪些事件挂起与解除、决定写回的
 //! 形态都问宿主的 `adapter::AgentHooks`（ADR-002 规则 5）；映射成的事件交给状态机（dvh.4）。
@@ -16,6 +18,7 @@ pub mod cmd;
 pub mod inbox;
 pub mod install;
 mod receiver;
+pub mod record;
 
 pub use inbox::{Delivery, Envelope, Inbox};
 pub use receiver::{

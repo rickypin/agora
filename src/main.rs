@@ -6,7 +6,9 @@
 //! agora open                    同上，并用系统默认浏览器打开
 //! agora auth devices            已配对设备列表（直接读 SQLite，不需要 daemon）
 //! agora auth revoke <id>|--all  吊销设备，即时生效
-//! agora hook --host <h> --home <dir>   agent 的 hook 命令：落盘、唤醒、必要时挂起（ADR-002 D3）
+//! agora hook --host <h> --home <dir> [--record <file>]
+//!                               agent 的 hook 命令：落盘、唤醒、必要时挂起（ADR-002 D3）；
+//!                               --record（或 AGORA_HOOK_RECORD）顺手录成脱敏 fixture（D10）
 //! ```
 //!
 //! 配置来自 `AGORA_HOME/config.yaml`（docs/spec/config.md），缺文件全走默认；明文监听器
@@ -27,7 +29,7 @@ use agora::session::{Db, SessionManager};
 /// V1 唯一的运行时；配置里 `runtime.kind` 缺省就是它。
 const RUNTIME_KIND: &str = "tmux";
 
-const USAGE: &str = "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> | hooks install|uninstall <agent> | fake-agent <script>|-e <inline>]";
+const USAGE: &str = "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | fake-agent <script>|-e <inline>]";
 
 #[tokio::main]
 async fn main() {

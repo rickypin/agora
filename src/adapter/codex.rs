@@ -113,6 +113,18 @@ impl AgentIdentity for Codex {
             .filter(|c| c.resume)
             .map(|_| vec!["resume".to_owned(), agent_session_id.to_owned()])
     }
+
+    /// `codex exec <prompt>`。两个 flag 都是为隔离 HOME 里的冒烟准备的：临时目录不是 git 仓库
+    /// （`--skip-git-repo-check`），也没有 `/hooks` 信任状态——信任只能在 TUI 里按，无头没法做，
+    /// 只好 `--dangerously-bypass-hook-trust`；跑的 hook 是冒烟自己刚装进临时 HOME 的，没有别人的。
+    fn headless_args(&self, prompt: &str) -> Option<Vec<String>> {
+        Some(vec![
+            "exec".to_owned(),
+            "--skip-git-repo-check".to_owned(),
+            "--dangerously-bypass-hook-trust".to_owned(),
+            prompt.to_owned(),
+        ])
+    }
 }
 
 impl AgentFallback for Codex {}

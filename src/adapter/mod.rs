@@ -15,6 +15,7 @@ pub mod grok;
 pub mod hooks;
 pub mod replay;
 pub mod resume;
+pub mod scrub;
 pub mod shell;
 pub mod text;
 
@@ -89,6 +90,13 @@ pub trait AgentIdentity: Send + Sync {
 
     /// 起会话时钉死对话 id 的参数（只在自报缺席时用，D7）。
     fn pin_args(&self, _version: Version, _new_id: &str) -> Option<Vec<String>> {
+        None
+    }
+
+    /// 无头单轮的参数："问一句、把回答打到 stdout、退出"。版本漂移冒烟（ADR-002 D10 第 4 条；
+    /// `tests/hook_smoke.rs`）用它在隔离的 HOME 里跑一轮真实 agent，拿 SessionStart / Stop 的键集合
+    /// 与 fixture 比对。None = 这个 agent 没有无头模式（冒烟就跳过它）。
+    fn headless_args(&self, _prompt: &str) -> Option<Vec<String>> {
         None
     }
 }

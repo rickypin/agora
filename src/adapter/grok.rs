@@ -137,6 +137,11 @@ impl AgentIdentity for Grok {
             .filter(|c| c.pin)
             .map(|_| vec!["--session-id".to_owned(), new_id.to_owned()])
     }
+
+    /// `grok -p <prompt>`（`--single`）：1.0.13 实测无头也 fire hook（fixture 里的 `-p` 场景）。
+    fn headless_args(&self, prompt: &str) -> Option<Vec<String>> {
+        Some(vec!["-p".to_owned(), prompt.to_owned()])
+    }
 }
 
 impl AgentFallback for Grok {}

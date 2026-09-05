@@ -62,3 +62,9 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: cargo test
         run: cargo test --all-targets
+      # 真实 agent hook 冒烟（agora-3la.2）：对 runner 上装了的一等 agent 各跑一次 -p 无头最小交互，
+      # SessionStart / Stop 的键集合与 testdata/<agent>/<version>/hooks/headless.jsonl 比对，漂移即红。
+      # 没装的 agent 跳过——GitHub 托管 runner 上一个都没有，真比对发生在本机 / 自托管 runner；
+      # #[ignore] 只是为了不混进上面那条普通 cargo test。
+      - name: hook smoke (installed agents)
+        run: cargo test --test hook_smoke -- --ignored --nocapture

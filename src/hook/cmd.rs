@@ -1,4 +1,6 @@
-//! `agora hook --host <宿主> --home <AGORA_HOME>`（ADR-002 D3/D4/D5）；宿主名单是 `adapter::hosts()`。
+//! `agora hook --host <宿主> --home <AGORA_HOME> [--record <file>]`（ADR-002 D3/D4/D5/D10）；
+//! 宿主名单是 `adapter::hosts()`。`--record`（或环境变量 `AGORA_HOOK_RECORD`）把每条事件追加成
+//! 脱敏的 fixture 行（`super::record`），建 `testdata/` 用。
 //!
 //! 在 agent 进程里跑，stdin 是 agent 的 hook payload。原则是**永远不拖累 agent**：
 //! 任何失败（目录写不了、daemon 不在、socket 断、超时、超上限）都 exit 0 不输出——TUI 的
@@ -14,10 +16,11 @@ use crate::adapter::{self, AgentHooks};
 use crate::local::{self, Request, Response, SOCKET_FILE};
 
 use super::inbox::{self, Delivery, Envelope, Inbox};
+use super::record;
 
 fn usage() -> String {
     format!(
-        "用法: agora hook --host <{}> --home <AGORA_HOME>",
+        "用法: agora hook --host <{}> --home <AGORA_HOME> [--record <file>]",
         adapter::hosts().join("|")
     )
 }
@@ -28,16 +31,20 @@ const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct Args {
     pub host: String,
     pub home: PathBuf,
+    /// 录制文件；None = 不录。
+    pub record: Option<PathBuf>,
 }
 
 pub fn parse_args(argv: &[&str]) -> Result<Args, String> {
     let mut host = None;
     let mut home = None;
+    let mut record = None;
     let mut it = argv.iter();
     while let Some(a) = it.next() {
         match *a {
             "--host" => host = it.next().map(|s| s.to_string()),
             "--home" => home = it.next().map(PathBuf::from),
+            "--record" => record = it.next().map(PathBuf::from),
             other => return Err(format!("未知参数 {other}\n{}", usage())),
         }
     }
@@ -47,7 +54,13 @@ pub fn parse_args(argv: &[&str]) -> Result<Args, String> {
     }
     // --home 缺省用环境变量：外部会话没有 AGORA_HOME，安装写入的命令总是显式带 --home。
     let home = home.unwrap_or_else(local::resolve_home);
-    Ok(Args { host, home })
+    // 安装写死的命令没有 --record；开录用环境变量，agent 会把自己的环境传给 hook 进程。
+    let record = record.or_else(|| {
+        std::env::var_os(record::ENV)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    });
+    Ok(Args { host, home, record })
 }
 
 /// 入口。读 stdin、落盘、唤醒、必要时挂起。
@@ -71,8 +84,15 @@ pub async fn run(argv: &[&str]) -> i32 {
     }
     let payload = serde_json::from_slice(&raw)
         .unwrap_or_else(|_| serde_json::Value::String(String::from_utf8_lossy(&raw).into_owned()));
+    let now_ms = inbox::now_unix_ms();
+    if let Some(path) = &args.record {
+        // 录制先于投递：投递箱写不了时也想留下事件；失败只提一句，不影响投递。
+        if let Err(err) = record::append(path, hooks, &payload, now_ms) {
+            eprintln!("agora hook: 录制 {} 失败: {err}", path.display());
+        }
+    }
     let delivery = Delivery {
-        envelope: envelope(hooks, &payload),
+        envelope: envelope(hooks, &payload, now_ms),
         payload,
     };
     let path = match Inbox::new(&args.home).write(&delivery) {
@@ -86,7 +106,7 @@ pub async fn run(argv: &[&str]) -> i32 {
     0
 }
 
-fn envelope(hooks: &dyn AgentHooks, payload: &serde_json::Value) -> Envelope {
+fn envelope(hooks: &dyn AgentHooks, payload: &serde_json::Value, now_ms: u64) -> Envelope {
     let env = |k: &str| std::env::var(k).ok();
     let agent_env: BTreeMap<String, String> = std::env::vars()
         .filter(|(k, _)| {
@@ -113,7 +133,7 @@ fn envelope(hooks: &dyn AgentHooks, payload: &serde_json::Value) -> Envelope {
         // SAFETY: getppid 没有前置条件、不会失败。
         ppid: unsafe { libc::getppid() } as u32,
         received_at: inbox::local_time_string(),
-        received_unix_ms: inbox::now_unix_ms(),
+        received_unix_ms: now_ms,
     }
 }
 
@@ -156,6 +176,9 @@ mod tests {
         assert!(parse_args(&["--host", "nope"]).is_err());
         assert!(parse_args(&["--home", "/x"]).is_err());
         assert!(parse_args(&["--host", hosts[1], "--bogus"]).is_err());
+        let args =
+            parse_args(&["--host", hosts[0], "--home", "/x", "--record", "/r.jsonl"]).unwrap();
+        assert_eq!(args.record.as_deref(), Some(Path::new("/r.jsonl")));
     }
 
     #[test]
