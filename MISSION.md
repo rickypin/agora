@@ -256,10 +256,10 @@ Session {
 
 | 状态 | UI | 含义 |
 |---|---|---|
-| STARTING | | process created，尚无有效活动 |
+| STARTING | | process created，尚无有效活动。hook 层的 STARTING 最多停 10 s：SessionStart 之后宽限内没有后续事件即归 TURN_DONE（见该行），不许永远钉在这里 |
 | RUNNING | ● | 持续产生 output |
 | WAITING | ⚠ | agent 在**一轮之中**停下来等人：提问、权限确认（hook：权限请求与提问类工具的事件，各 agent 的映射见 ADR-002 D2；兜底：文本匹配） |
-| TURN_DONE | ◆ | agent **一轮做完**、等下一条指令（hook：Stop；进程仍在）。人的动作是看结果 / 给下一步，与 WAITING 的"回答问题"不同 |
+| TURN_DONE | ◆ | agent **一轮做完**、等下一条指令（hook：Stop；进程仍在）。人的动作是看结果 / 给下一步，与 WAITING 的"回答问题"不同。也包括**起好了、还没收到第一条指令**的会话（SessionStart 之后 10 s 内没有后续 hook 事件、进程仍在；reason `awaiting first prompt`；2026-09-05 agora-okr）：人的动作一样是给它指令，startup / resume / clear 三种 SessionStart 都落到提示符等人；compact 发生在一轮中间、紧接着就有 PreToolUse 在宽限内自纠，所以是"宽限后衰减"而不是"SessionStart 直接映射 TURN_DONE" |
 | IDLE | ○ | 长时间无 output 但 process 仍存在，且没有 hook 信息说明原因——只出现在兜底路径（状态从"人要做什么"定义，不从"观察者看见什么"定义） |
 | FINISHED | ✓ | process exit 且 exit code = 0 |
 | FAILED | ✕ | process exit 且 exit code ≠ 0 |
@@ -299,6 +299,8 @@ Session {
                 ▼              ▼
             FINISHED         FAILED
 ```
+
+STARTING 还有一条图上没画的边到 TURN_DONE：SessionStart 之后宽限 10 s 内没有后续 hook 事件（agent 起好了、停在提示符等第一条指令），归属见 §4.3 TURN_DONE 行，裁决细节见 ADR-002 D1。
 
 ### 4.5 Session 命名
 

@@ -322,3 +322,79 @@ fn corrupt_checkpoint_does_not_block_other_sessions_or_new_inbox() {
     assert_eq!(s.get(&good).unwrap().assessment.status, Status::TurnDone);
     assert_eq!(s.get(&bad).unwrap().assessment.status, Status::Running);
 }
+
+#[test]
+fn starting_decays_through_session_manager_and_after_checkpoint_restore() {
+    // agora-okr：起好了、还没给第一条指令的 Claude 会话不能永远 STARTING。从 SessionManager 入口
+    // 覆盖（agora-uez 的教训：只喂 Machine 会漏掉接线错误），再走 agora-9dj 的检查点恢复路径。
+    // 宽限缩到 1 s 好等；检查点只在 hook 事件时写，衰减不写盘，恢复出来的仍是 STARTING。
+    let grace = MachineConfig {
+        startup_grace: Duration::from_secs(1),
+        ..Default::default()
+    };
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let rt = Arc::new(common::FakeRuntime::default());
+    let s = Arc::new(SessionManager::new(db.clone(), rt.clone()).with_status_config(grace.clone()));
+    let id = create(&s, "claude");
+    let r = Receiver::new(home.path(), s.clone());
+    let inbox = Inbox::new(home.path());
+    let started = |id: &str, ms: u64, source: &str| {
+        delivery(
+            id,
+            1,
+            ms,
+            json!({"hook_event_name":"SessionStart", "source": source}),
+        )
+    };
+    r.ingest(&inbox.write(&started(&id, 1, "startup")).unwrap())
+        .unwrap();
+    let v = s.get(&id).unwrap();
+    assert_eq!(
+        (v.assessment.status, v.assessment.source),
+        (Status::Starting, Source::Hook)
+    );
+    std::thread::sleep(Duration::from_millis(1100));
+    let v = s.get(&id).unwrap();
+    assert_eq!(
+        (v.assessment.status, v.assessment.source),
+        (Status::TurnDone, Source::Hook),
+        "{v:?}"
+    );
+    assert!(v
+        .assessment
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("awaiting first prompt"));
+    s.apply_hook(&id, 1, &[AgoraEvent::PromptSubmitted("first".into())])
+        .unwrap();
+    assert_eq!(s.get(&id).unwrap().assessment.status, Status::Running);
+
+    // 重启路径：检查点里是 STARTING，恢复后照样衰减。
+    let id2 = create(&s, "claude");
+    r.ingest(&inbox.write(&started(&id2, 2, "resume")).unwrap())
+        .unwrap();
+    drop(r);
+    drop(s);
+    drop(db);
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let restarted = Arc::new(SessionManager::new(db, rt).with_status_config(grace));
+    restarted.reconcile().unwrap();
+    Receiver::new(home.path(), restarted.clone())
+        .replay()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1100));
+    let v = restarted.get(&id2).unwrap();
+    assert_eq!(
+        (v.assessment.status, v.assessment.source),
+        (Status::TurnDone, Source::Hook),
+        "{v:?}"
+    );
+    assert!(v
+        .assessment
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("awaiting first prompt"));
+}

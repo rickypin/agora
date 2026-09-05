@@ -6,6 +6,8 @@
 //! 1. 进程退出压倒一切：FINISHED / FAILED 之后 hook 事件只当 metadata。
 //! 2. 有 hook 的会话：WAITING / TURN_DONE 只来自 hook；文本层永远抬不上去，活动层不产生 IDLE。
 //!    hook 沉默（`silence_after` 无事件）而屏幕像在等人 → UNKNOWN `hooks silent`，不猜 WAITING。
+//!    hook 层的 STARTING 在 `startup_grace` 内没有后续事件 → TURN_DONE `awaiting first prompt`
+//!    （起好了、等第一条指令；agora-okr）。
 //! 3. 无 hook 的会话：文本 WAITING 要连续 2 tick 一致（conf ≤ 0.8）；`idle_after` 无输出 → IDLE
 //!    （conf 0.6）；输出恢复 → RUNNING。
 //! 4. 驻留：低层来源在 `high_hold`（30 s）内不覆盖高层写入的状态；resize / attach / detach
@@ -39,6 +41,9 @@ pub struct MachineConfig {
     pub text_ticks: u32,
     /// 两次文本观测至少隔多久才算两个 tick（`status.detector_interval`）：同一秒内多次读不算。
     pub tick: Duration,
+    /// 本代起始的启动宽限（默认 [`STARTUP_GRACE_SECS`]）：① "hook 没接上"只认宽限之后的终端
+    /// 输出（dvh.15）；② hook 层的 STARTING 在宽限内没有后续事件即降为 TURN_DONE（agora-okr）。
+    pub startup_grace: Duration,
 }
 
 impl Default for MachineConfig {
@@ -50,13 +55,15 @@ impl Default for MachineConfig {
             high_hold: Duration::from_secs(30),
             text_ticks: 2,
             tick: Duration::from_secs(2),
+            startup_grace: Duration::from_secs(STARTUP_GRACE_SECS as u64),
         }
     }
 }
 
-/// "hook 没接上"的起点不能是 TUI 启动时的那波输出：Codex 的 SessionStart 要到第一条 prompt
-/// 提交才 fire（2026-09-05 实测），起会话后没提问就没有事件，不能算异常。所以只认本代起始
-/// `STARTUP_GRACE_SECS` 之后的真实输出（用户敲了东西、agent 在答）为起点。
+/// 启动宽限的默认值（`MachineConfig::startup_grace`）。"hook 没接上"的起点不能是 TUI 启动时
+/// 的那波输出：Codex 的 SessionStart 要到第一条 prompt 提交才 fire（2026-09-05 实测），起会话后
+/// 没提问就没有事件，不能算异常。所以只认本代起始宽限之后的真实输出（用户敲了东西、agent 在答）
+/// 为起点。hook 层 STARTING 的衰减（agora-okr）共用同一宽限。
 pub const STARTUP_GRACE_SECS: i64 = 10;
 
 /// 进程活着与否的三值：外部会话（无运行时）是 Unknown，只有 hook 能说话。
@@ -269,6 +276,10 @@ impl Machine {
         self.epoch
     }
 
+    fn startup_grace_secs(&self) -> i64 {
+        self.cfg.startup_grace.as_secs() as i64
+    }
+
     /// Restart：新一代进程，旧状态、旧驻留全部作废。
     fn reset(&mut self, epoch: i64, now: i64) {
         let cfg = self.cfg.clone();
@@ -443,7 +454,7 @@ impl Machine {
         // 重绘：看到的时刻记下（免得下一 tick 又当成新活动），但不是活动，IDLE 起点不动。
         if advanced && !redraw {
             self.last_output_at = Some(at);
-            if self.first_activity_at.is_none() && at - self.since >= STARTUP_GRACE_SECS {
+            if self.first_activity_at.is_none() && at - self.since >= self.startup_grace_secs() {
                 self.first_activity_at = Some(at.min(now));
             }
             return true;
@@ -474,6 +485,24 @@ impl Machine {
             return self.current.clone();
         }
         if self.current.source == Source::Hook {
+            // 起好了、还没收到第一条指令（agora-okr，2026-09-05）：SessionStart 写入的 STARTING
+            // 之后，Claude 直到用户提交 prompt 都不再发任何事件，原样返回就永远钉在 STARTING
+            // （唯一出口是 10 min 沉默 → UNKNOWN）。宽限内没有后续事件就降为 TURN_DONE——对人
+            // 来说动作一样是"给它指令"（MISSION §4.3）。不能改成 SessionStart 直接映射 TURN_DONE：
+            // source=compact 发生在一轮中间，紧接着的 PreToolUse 会在宽限内把它纠回 RUNNING。
+            if self.current.status == Status::Starting
+                && now - quiet_since >= self.startup_grace_secs()
+            {
+                self.set(
+                    Assessment::new(
+                        Status::TurnDone,
+                        Source::Hook,
+                        0.9,
+                        Some("session started, awaiting first prompt"),
+                    ),
+                    now,
+                );
+            }
             return self.current.clone();
         }
         // 还没有 hook 事件（或沉默解除）：进程层的 STARTING / RUNNING。

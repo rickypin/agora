@@ -19,6 +19,7 @@ fn cfg() -> MachineConfig {
         high_hold: Duration::from_secs(30),
         text_ticks: 2,
         tick: Duration::from_secs(2),
+        startup_grace: Duration::from_secs(10),
     }
 }
 
@@ -511,4 +512,69 @@ fn an_injected_prompt_starts_a_turn_but_leaves_the_two_preview_lines_alone() {
     assert_eq!(m.current().status, Status::Waiting);
     m.apply(&AgoraEvent::PromptInjected, 1, 5);
     assert_eq!(m.current().status, Status::Running);
+}
+
+#[test]
+fn hook_starting_decays_to_turn_done_awaiting_first_prompt() {
+    // 守卫（agora-okr）：SessionStart 之后 startup_grace 内没有后续 hook 事件、进程活着 → TURN_DONE
+    // `awaiting first prompt`，而不是永远 STARTING。关掉：observe_hooked 去掉衰减分支 → 第二个断言红。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    let r = rt(true, None);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    assert_eq!(m.current().status, Status::Starting);
+    assert_eq!(
+        tick(&mut m, 9, &r, None).status,
+        Status::Starting,
+        "宽限内不动"
+    );
+    let a = tick(&mut m, 10, &r, None);
+    assert_eq!((a.status, a.source), (Status::TurnDone, Source::Hook));
+    assert!(
+        a.reason
+            .as_deref()
+            .unwrap()
+            .contains("awaiting first prompt"),
+        "{a:?}"
+    );
+    assert!(a.confidence < 1.0 && a.confidence >= 0.9);
+    assert_eq!(m.status_since(), 10);
+    // 第一条 prompt 照常开一轮。
+    m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 12);
+    assert_eq!(m.current().status, Status::Running);
+    assert_eq!(tick(&mut m, 30, &r, None).status, Status::Running);
+
+    // compact 一类：SessionStart 之后宽限内就有活动 → RUNNING，中间不出现 TURN_DONE。
+    let mut m = Machine::new(cfg(), true, 1, 100);
+    m.apply(&AgoraEvent::SessionStarted, 1, 100);
+    assert_eq!(tick(&mut m, 101, &r, None).status, Status::Starting);
+    m.apply(&AgoraEvent::Activity("PreToolUse Bash".into()), 1, 102);
+    assert_eq!(m.current().status, Status::Running);
+    assert_eq!(tick(&mut m, 120, &r, None).status, Status::Running);
+
+    // 沉默规则优先：衰减成 TURN_DONE 之后 10 min 没事件且屏幕像在等人 → 仍是 UNKNOWN hooks silent。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    assert_eq!(tick(&mut m, 20, &r, None).status, Status::TurnDone);
+    let a = tick(&mut m, 700, &r, Some(text(Status::Idle, "prompt")));
+    assert_eq!(a.status, Status::Unknown);
+    assert!(a.reason.as_deref().unwrap().contains("hooks silent"));
+}
+
+#[test]
+fn restored_hook_starting_decays_too() {
+    // 守卫（agora-okr；agora-9dj 的恢复路径）：daemon 重启从检查点恢复的 STARTING 在之后的
+    // tick 同样衰减，不会因为"检查点说是 STARTING"就钉住。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    let snapshot = m.hook_snapshot().unwrap().clone();
+    let mut restored = Machine::new(cfg(), true, 1, 50);
+    restored.restore_hook(snapshot);
+    assert_eq!(restored.current().status, Status::Starting);
+    let a = tick(&mut restored, 60, &rt(true, None), None);
+    assert_eq!((a.status, a.source), (Status::TurnDone, Source::Hook));
+    assert!(a
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("awaiting first prompt"));
 }

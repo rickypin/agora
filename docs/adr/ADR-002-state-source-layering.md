@@ -50,6 +50,7 @@ MISSION v0.10 已把"hook-first 是 V1 架构"定为前提（§5.1），依据�
 - **epoch 与顺序**：每个会话有 `epoch`（ADR-001 `create` 为 1，每次 `respawn` +1，经 `LaunchSpec.env` 的 `AGORA_EPOCH` 交给 agent，hook 原样带回）；epoch 小于当前的事件丢弃；同 epoch 内按投递箱文件名（时间戳 + 序号）顺序应用。
 - **驻留时间**：hook 事件立即生效；文本层的 WAITING 需要连续 2 个 tick 证据一致；IDLE 需要 `idle_after`（60 s）无输出；低层来源不得覆盖 30 s 内由高层写入的状态。resize / attach / detach 引起的重绘不算活动（devcenter 的 `(width,height)` 教训，外加 attach 计数变化）。
 - **每个状态值带 `source`（hook / process / text / heuristic）与 `confidence`、`reason`**；UI 不显示 confidence，但 API 返回，日志记录。
+- **起好了、还没收到第一条指令（2026-09-05，agora-okr）**：SessionStart 映射为 hook 层 STARTING（conf 1.0），而 Claude 在用户提交第一条 prompt 之前不再发任何事件，原样保留会永远钉在 STARTING（唯一出口是 10 min 沉默 → UNKNOWN）。所以 hook 层的 STARTING 带衰减：SessionStart 之后 `startup_grace`（10 s，与"hook 没接上"共用同一宽限）内没有后续 hook 事件、进程活着 → TURN_DONE（source=hook，conf 0.9，reason `session started, awaiting first prompt`）；PromptSubmitted / Activity 照常回 RUNNING，STARTING → TURN_DONE 这一步不发浏览器通知（只有 RUNNING / IDLE 出发的转换才通知）。不能改成 SessionStart 直接映射 TURN_DONE：`source=compact` 发生在一轮中间，紧接着就有 PreToolUse 在宽限内自纠。沉默规则优先级更高：10 min 无事件且屏幕像在等人仍是 UNKNOWN。daemon 重启从检查点恢复的 STARTING 在之后的 tick 同样衰减（检查点只在 hook 事件时写，衰减不写盘）。守卫 `tests/state_machine.rs::hook_starting_decays_to_turn_done_awaiting_first_prompt`、`::restored_hook_starting_decays_too`、`tests/hook_recovery.rs::starting_decays_through_session_manager_and_after_checkpoint_restore`。
 
 ### D2 事件最小集合与各 agent 映射
 
