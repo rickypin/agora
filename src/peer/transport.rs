@@ -12,7 +12,8 @@
 //! - [`InProcessTransport`]：同一进程里另一个节点实例的 axum `Router`。HTTP 走 `oneshot`，
 //!   WS 走 `tokio::io::duplex` 上的真握手；不开 socket、不碰 TLS，给 fake 多节点测试用
 //!   （MISSION §2.3 规则 9 "单进程多节点的测试骨架先于真实集成"）。
-//! - 生产实现（TLS + SPKI 指纹钉住 + Bearer）由 agora-7ku.10 按本 trait 填。
+//! - [`HttpsTransport`]：生产实现的桩，只有 `peers[]` 一项的配置与超时；TLS + SPKI 指纹钉住 +
+//!   Bearer 由 agora-7ku.10 在这里填成真的。
 
 use std::future::Future;
 use std::pin::Pin;
@@ -31,6 +32,7 @@ use tokio_tungstenite::WebSocketStream;
 use tower::ServiceExt;
 
 use crate::api::InProcessPeer;
+use crate::config::PeerSection;
 
 pub use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -67,6 +69,9 @@ pub enum TransportError {
     /// 线上的协议错误（HTTP 解析、WS 帧）。
     #[error("协议错误: {0}")]
     Protocol(String),
+    /// 占位：只从 [`HttpsTransport`] 的桩上出来；agora-7ku.10 填上实现后连这个变体一起删。
+    #[error("peer 的 TLS 传输尚未实现（agora-7ku.10）")]
+    Unimplemented,
 }
 
 /// 给 `peers[]` 一项的传输。dyn 兼容（注册表存 `Arc<dyn PeerTransport>`），所以 async 方法
@@ -204,6 +209,51 @@ impl PeerTransport for InProcessTransport {
     }
 }
 
+// ---------- 生产实现的桩 ----------
+
+/// 生产传输的桩：`peers[]` 一项 → TLS（SPKI 指纹钉住，ADR-003 D4）+ Bearer（`token_file`，
+/// ADR-003 D3）。现在只有配置与超时，两个方法都回 `Unimplemented`；agora-7ku.10 在这里填成真的。
+/// 先落一个桩而不是等 7ku.10 一起来，是让 `main.rs` 把 `peers[]` 接进 `PeerRegistry` 的那几行
+/// 今天就能写、编译得过；token 明文按 D3 只在发请求时从 `token_file` 读，不进这个结构体、不进日志。
+pub struct HttpsTransport {
+    peer: PeerSection,
+    timeout: Duration,
+}
+
+impl HttpsTransport {
+    pub fn new(peer: PeerSection, timeout: Duration) -> Self {
+        HttpsTransport { peer, timeout }
+    }
+
+    pub fn peer(&self) -> &PeerSection {
+        &self.peer
+    }
+}
+
+impl PeerTransport for HttpsTransport {
+    fn name(&self) -> &str {
+        &self.peer.name
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    fn request(
+        &self,
+        _req: Request<Body>,
+    ) -> BoxFuture<'_, Result<Response<Body>, TransportError>> {
+        Box::pin(async { Err(TransportError::Unimplemented) })
+    }
+
+    fn connect_ws<'a>(
+        &'a self,
+        _path_and_query: &'a str,
+    ) -> BoxFuture<'a, Result<PeerWs, TransportError>> {
+        Box::pin(async { Err(TransportError::Unimplemented) })
+    }
+}
+
 fn ws_error(e: WsError) -> TransportError {
     match e {
         WsError::Http(resp) => TransportError::WsRejected(resp.status()),
@@ -295,6 +345,25 @@ mod tests {
             t.request(get_req("/ok")).await.unwrap().status(),
             StatusCode::OK
         );
+    }
+
+    #[tokio::test]
+    async fn https_stub_is_named_after_its_peer_and_says_so_when_used() {
+        // 桩能进注册表（名字来自 peers[].name），用起来只会说"未实现"——不是超时也不是不可达，
+        // 别让 7ku.12 的状态模型把"还没写"显示成 peer 离线。
+        let peer = PeerSection {
+            name: "zuan".into(),
+            url: "https://zuan.example:7681".into(),
+            token_file: "/nonexistent/zuan.token".into(),
+            cert_fingerprint: "sha256:00".into(),
+        };
+        let t = HttpsTransport::new(peer, DEFAULT_TIMEOUT);
+        assert_eq!(t.name(), "zuan");
+        assert_eq!(t.peer().url, "https://zuan.example:7681");
+        let err = t.request(get_req("/api/system")).await.unwrap_err();
+        assert!(matches!(err, TransportError::Unimplemented), "{err:?}");
+        let err = t.connect_ws("/api/events").await.unwrap_err();
+        assert!(matches!(err, TransportError::Unimplemented), "{err:?}");
     }
 
     #[tokio::test]
