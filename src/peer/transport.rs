@@ -16,6 +16,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -39,8 +40,9 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// WS 底下的字节流：fake 是 duplex 的一半，生产是 TLS 流；类型擦除后调用方对两者一视同仁。
-pub trait PeerIo: AsyncRead + AsyncWrite + Send + Unpin {}
-impl<T: AsyncRead + AsyncWrite + Send + Unpin + ?Sized> PeerIo for T {}
+/// 带 `Debug` 是让 `PeerWs` 也 `Debug`——不然 `Result<PeerWs, _>` 连 `unwrap_err` 都调不了。
+pub trait PeerIo: AsyncRead + AsyncWrite + Send + Unpin + std::fmt::Debug {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin + std::fmt::Debug + ?Sized> PeerIo for T {}
 
 /// 建好的 WS 连接；帧类型是 [`WsMessage`]。
 pub type PeerWs = WebSocketStream<Box<dyn PeerIo>>;
@@ -53,7 +55,7 @@ pub enum TransportError {
     /// 一次尝试超过 transport 的超时：HTTP 到响应头、WS 到握手完成。
     #[error("{0:?} 内没有应答")]
     Timeout(Duration),
-    /// 连不上：TCP / TLS 建连失败。
+    /// 连不上：TCP / TLS 建连失败；fake 里是对端被 [`InProcessTransport::set_offline`]。
     #[error("peer 不可达: {0}")]
     Unreachable(#[source] std::io::Error),
     /// 对端证书 SPKI 的 SHA-256 与 `peers[].cert_fingerprint` 不符（ADR-003 D4：没有 TOFU）。
@@ -104,6 +106,9 @@ pub struct InProcessTransport {
     name: String,
     timeout: Duration,
     app: Router,
+    /// 测试拨这个开关模拟 peer 断线：置上后每次尝试立即 `Unreachable`，已建好的 WS 不受影响
+    /// （对端真断线时旧连接也是各自死各自的）。
+    offline: AtomicBool,
 }
 
 impl InProcessTransport {
@@ -117,7 +122,24 @@ impl InProcessTransport {
             name: name.to_owned(),
             timeout,
             app,
+            offline: AtomicBool::new(false),
         }
+    }
+
+    /// 模拟 peer 断线 / 恢复（agora-7ku.5 的 stale 行、agora-7ku.6 的重连测试用）。
+    pub fn set_offline(&self, offline: bool) {
+        self.offline.store(offline, Ordering::SeqCst);
+    }
+
+    pub fn is_offline(&self) -> bool {
+        self.offline.load(Ordering::SeqCst)
+    }
+
+    fn refused(&self) -> TransportError {
+        TransportError::Unreachable(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            format!("fake peer {} 处于离线", self.name),
+        ))
     }
 }
 
@@ -132,6 +154,9 @@ impl PeerTransport for InProcessTransport {
 
     fn request(&self, req: Request<Body>) -> BoxFuture<'_, Result<Response<Body>, TransportError>> {
         Box::pin(async move {
+            if self.is_offline() {
+                return Err(self.refused());
+            }
             tokio::time::timeout(self.timeout, self.app.clone().oneshot(req))
                 .await
                 .map_err(|_| TransportError::Timeout(self.timeout))?
@@ -144,6 +169,9 @@ impl PeerTransport for InProcessTransport {
         path_and_query: &'a str,
     ) -> BoxFuture<'a, Result<PeerWs, TransportError>> {
         Box::pin(async move {
+            if self.is_offline() {
+                return Err(self.refused());
+            }
             if !path_and_query.starts_with('/') {
                 return Err(TransportError::Protocol(format!(
                     "WS 路径必须以 / 开头: {path_and_query:?}"
@@ -181,5 +209,98 @@ fn ws_error(e: WsError) -> TransportError {
         WsError::Http(resp) => TransportError::WsRejected(resp.status()),
         WsError::Io(e) => TransportError::Unreachable(e),
         other => TransportError::Protocol(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::ws::WebSocketUpgrade;
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+
+    fn slow_router() -> Router {
+        Router::new()
+            .route(
+                "/slow",
+                get(|| async {
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                    "late"
+                }),
+            )
+            .route(
+                "/ws-slow",
+                get(|ws: WebSocketUpgrade| async move {
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                    ws.on_upgrade(|_| async {})
+                }),
+            )
+            .route(
+                "/ws-401",
+                get(|| async { StatusCode::UNAUTHORIZED.into_response() }),
+            )
+            .route("/ok", get(|| async { "ok" }))
+    }
+
+    fn get_req(path: &str) -> Request<Body> {
+        Request::get(path).body(Body::empty()).unwrap()
+    }
+
+    /// 注入的超时要短到测试不真等、又长到 CI 慢机上 `/ok` 这种空 handler 不会误超。
+    const SHORT: Duration = Duration::from_millis(200);
+
+    #[tokio::test]
+    async fn request_timeout_is_injectable_and_enforced() {
+        let t = InProcessTransport::new("b", "a", slow_router(), SHORT);
+        assert_eq!(t.timeout(), SHORT);
+        let err = t.request(get_req("/slow")).await.unwrap_err();
+        assert!(
+            matches!(err, TransportError::Timeout(d) if d == SHORT),
+            "{err:?}"
+        );
+        // 不慢的路径在同一个超时下正常返回：超时是上限，不是延迟。
+        let resp = t.request(get_req("/ok")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn ws_handshake_timeout_is_enforced() {
+        let t = InProcessTransport::new("b", "a", slow_router(), SHORT);
+        let err = t.connect_ws("/ws-slow").await.unwrap_err();
+        assert!(matches!(err, TransportError::Timeout(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn ws_rejection_carries_the_status_not_a_message() {
+        // 对端以 401 拒绝升级：调用方按 WsRejected(401) 分支，不解析文本（MISSION §2.3 规则 10）。
+        let t = InProcessTransport::new("b", "a", slow_router(), DEFAULT_TIMEOUT);
+        let err = t.connect_ws("/ws-401").await.unwrap_err();
+        assert!(
+            matches!(err, TransportError::WsRejected(StatusCode::UNAUTHORIZED)),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn offline_fake_is_unreachable_immediately_and_recovers() {
+        let t = InProcessTransport::new("b", "a", slow_router(), DEFAULT_TIMEOUT);
+        t.set_offline(true);
+        assert!(t.is_offline());
+        let err = t.request(get_req("/ok")).await.unwrap_err();
+        assert!(matches!(err, TransportError::Unreachable(_)), "{err:?}");
+        let err = t.connect_ws("/ws-401").await.unwrap_err();
+        assert!(matches!(err, TransportError::Unreachable(_)), "{err:?}");
+        t.set_offline(false);
+        assert_eq!(
+            t.request(get_req("/ok")).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_path_must_be_absolute() {
+        let t = InProcessTransport::new("b", "a", slow_router(), DEFAULT_TIMEOUT);
+        let err = t.connect_ws("api/events").await.unwrap_err();
+        assert!(matches!(err, TransportError::Protocol(_)), "{err:?}");
     }
 }

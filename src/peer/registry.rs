@@ -107,3 +107,69 @@ impl PeerRegistry {
         self.peers.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::peer::transport::{BoxFuture, PeerWs, TransportError};
+    use axum::body::Body;
+    use axum::http::{Request, Response};
+    use std::time::Duration;
+
+    /// 只有名字的 transport：注册表只看 `name()`。
+    struct Named(&'static str);
+
+    impl PeerTransport for Named {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn timeout(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn request(
+            &self,
+            _req: Request<Body>,
+        ) -> BoxFuture<'_, Result<Response<Body>, TransportError>> {
+            unreachable!("注册表测试不发请求")
+        }
+        fn connect_ws<'a>(
+            &'a self,
+            _path: &'a str,
+        ) -> BoxFuture<'a, Result<PeerWs, TransportError>> {
+            unreachable!("注册表测试不建 WS")
+        }
+    }
+
+    #[test]
+    fn unknown_node_is_not_found_and_local_is_not_a_peer() {
+        let mut reg = PeerRegistry::new("mac");
+        assert!(reg.is_empty());
+        reg.insert(Arc::new(Named("zuan"))).unwrap();
+
+        assert!(matches!(reg.route("mac"), Route::Local));
+        assert!(matches!(reg.route("zuan"), Route::Peer(t) if t.name() == "zuan"));
+        // 既不是本机也不是 peer：node_unknown 的依据（docs/spec/api.md）。
+        assert!(matches!(reg.route("nobody"), Route::Unknown));
+        assert!(reg.get("nobody").is_none());
+        // `get` 只查 peer：本机名也查不到，区分要用 route。
+        assert!(reg.get("mac").is_none());
+        assert!(reg.is_local("mac") && !reg.is_local("zuan"));
+        assert_eq!(reg.names().collect::<Vec<_>>(), ["zuan"]);
+        assert_eq!(reg.len(), 1);
+    }
+
+    #[test]
+    fn local_name_and_duplicates_are_refused() {
+        let mut reg = PeerRegistry::new("mac");
+        assert_eq!(
+            reg.insert(Arc::new(Named("mac"))).unwrap_err(),
+            RegistryError::LocalName("mac".into())
+        );
+        reg.insert(Arc::new(Named("zuan"))).unwrap();
+        assert_eq!(
+            reg.insert(Arc::new(Named("zuan"))).unwrap_err(),
+            RegistryError::Duplicate("zuan".into())
+        );
+        assert_eq!(reg.len(), 1, "被拒的插入不改表");
+    }
+}
