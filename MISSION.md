@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.15（2026-09-03）；变更历史见 beads `agora-90t.1` 注记 |
+| 版本 | v0.16（2026-09-05）；变更历史见 beads `agora-90t.1` 注记 |
 | 项目类型 | Self-hosted Web Application |
 | 目标平台 | 节点：macOS / Ubuntu Linux / Windows 主机（Windows V1 延期）；客户端：macOS 笔记本、iOS、Android 设备上的现代浏览器（V1 只验收 macOS 笔记本） |
 | 主要用户 | 单用户 |
@@ -626,7 +626,7 @@ RBAC                         Teams                        Cloud service
 
 ## 12. MVP Acceptance Criteria
 
-MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终端底座 → M1b Agent 感知 → M2 peer 与安装运维**；**M3 产出与起会话增强** 在 M1b 之后、与 M2 并行；手机是 V2 首批（§11）。阶段门用 blocks 表达，每个 epic 的 `--acceptance` **引用下列编号**而不复制文本；每个 epic 的演示剧本写在 design 字段（§1.5），在把该 epic 拆成任务时一并写好——拆分是前一阶段的收尾任务（M0 的 `agora-90t.5` 拆 M1a / M1b，M1b 收尾拆 M2 / M3）。
+MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终端底座 → M1b Agent 感知 → M2a peer 核心 / M2b 安装运维与收口**（两者阶段门同为 M1b，M2b 的收口任务以任务级依赖等 M2a；2026-09-05 由 M2 拆出，为的是更早到人眼验收点）；**M3 产出与起会话增强** 在 M1b 之后、与 M2a / M2b 并行；手机是 V2 首批（§11）。阶段门用 blocks 表达，每个 epic 的 `--acceptance` **引用下列编号**而不复制文本；每个 epic 的演示剧本写在 design 字段（§1.5），在把该 epic 拆成任务时一并写好——拆分是前一阶段的收尾任务（M0 的 `agora-90t.5` 拆 M1a / M1b，M1b 收尾拆 M2 / M3）。
 
 - [ ] **A1** 可以通过浏览器查看所有运行时中的 agent session
 - [ ] **A2** 可以创建 Claude Code session

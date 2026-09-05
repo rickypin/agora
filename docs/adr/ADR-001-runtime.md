@@ -198,7 +198,7 @@ Terminal Gateway 的一端是 daemon 自己 open 的 PTY，里面跑 `tmux attac
 
 - `agora-3la` 测试骨架：加注记——每 fake 节点一个 tmux socket；fake-agent 做成 agora 二进制的子命令（跨平台，不依赖 bash）；不变量 1–3 的三个测试形状见守卫。
 - `agora-90t.3` ADR-002：加注记——`Exit::Signal` 的映射、agora 自己 terminate 的会话按什么报；每会话身份走 `LaunchSpec.env`。
-- 新建（均 discovered-from `agora-90t.2`）：`agora-7ku.1` 安装脚本装 tmux ≥ 3.2 并写 `LANG`（M2，A26）；`agora-xqa.4` tmux 版本 / 协议不匹配的 health 降级（M1a）；`agora-fs8` Windows native supervisor 运行时 ADR（backlog）。
+- 新建（均 discovered-from `agora-90t.2`）：`agora-7ku.1` 安装脚本装 tmux ≥ 3.2 并写 `LANG`（M2b，A26）；`agora-xqa.4` tmux 版本 / 协议不匹配的 health 降级（M1a）；`agora-fs8` Windows native supervisor 运行时 ADR（backlog）。
 
 ## 参考
 

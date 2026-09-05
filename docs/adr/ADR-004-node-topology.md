@@ -1,7 +1,7 @@
 # ADR-004: 节点拓扑——互为 peer、一跳转发
 
 - 状态：**Accepted**（2026-09-02；决策随 MISSION v0.5 做出并经用户确认，v0.8 将论证迁入本文）
-- beads：—（决策已定，无决策工作项；实现验收在 M2 epic `agora-7ku`，MISSION §12 A27、A29–A31、A33、A38）
+- beads：—（决策已定，无决策工作项；实现验收在 M2a epic `agora-7ku`（MISSION §12 A27、A30、A31、A33、A38）与 M2b `agora-s4r`（A29））
 
 ## Context
 

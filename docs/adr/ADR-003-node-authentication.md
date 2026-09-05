@@ -185,7 +185,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 
 **MISSION 回写**（v0.13，2026-09-02）：不变量 11"人：TOTP"→"人：已配对设备的 session"；§3.5"也不需要 TOTP"→"也不需要远端配对"；§8 三处（拒绝启动→警告 + 两个监听器、人的凭据小节重写、签发前置条件删除）；§9.1 加 `AGORA_HOME`；§11 手机条目"TOTP 人机认证"→"远端设备配对"；A31 / A34 改写。spec：`config.md`（`server` / `tls` / `auth` 段）、`api.md`（`/api/auth/*`、401、`NeedsConfirmation`、health 公开子集）、`architecture.md` 第二行。
 
-**跟进 issue**（均 discovered-from `agora-90t.4`）：`agora-xqa.5` M1a 配对 + session + `agora open` / `agora url`；`agora-7ku.2` M2 机器 token、自签证书 + SPKI 指纹钉住、两个监听器与启动警告、`external` 续期与热加载；`agora-thc.1` V2-1 远端配对（`agora pair` QR、Dashboard 设备列表与吊销）+ 加固头 + Origin 校验；`agora-thc.2` V2-1 `self-ca` 评估。
+**跟进 issue**（均 discovered-from `agora-90t.4`）：`agora-xqa.5` M1a 配对 + session + `agora open` / `agora url`；`agora-7ku.2` M2a 机器 token、自签证书 + SPKI 指纹钉住、两个监听器与启动警告、`external` 续期与热加载；`agora-thc.1` V2-1 远端配对（`agora pair` QR、Dashboard 设备列表与吊销）+ 加固头 + Origin 校验；`agora-thc.2` V2-1 `self-ca` 评估。
 
 ## 参考
 

@@ -126,7 +126,7 @@ Command:  [ claude ]
 [ Create ]
 ```
 
-V1 的取舍（agora-xqa.12）：Node 只有本机（peer 归 M2），下拉禁用；Project 是可输入的下拉
+V1 的取舍（agora-xqa.12）：Node 只有本机（peer 归 M2a），下拉禁用；Project 是可输入的下拉
 （`<input list>`）——列表来自扫描并按最近使用排序，但 `project_roots` 默认为空，只给下拉的话
 新装的 agora 一个会话都起不了；Worktree 只列现有的（新建归 M3 A44），选主 worktree 等于选仓库
 本身；Task 只有一句话（从 bd 就绪任务选归 M3 A43）；Agent 的名字与默认命令来自 `GET /api/agents`，
