@@ -2,6 +2,7 @@ import { Fragment, memo, useEffect, useState, type ReactNode, type RefObject } f
 import type { AdoptBody } from "./api";
 import { countByStatus, needsAttention, promptRepeatsLabel, statusLine, taskLabel } from "./attention";
 import type { SessionRow, UnregisteredRow } from "./events";
+import { Header } from "./Header";
 
 /** 状态符号（docs/spec/ux.md 线框）。 */
 export function statusSymbol(status: string): string {
@@ -262,10 +263,7 @@ export function Sidebar({
   const hasAttention = rows.length > 0 && needsAttention(rows[0]);
   return (
     <aside className="sidebar">
-      <div className="sidebar-head">
-        <h1>agora</h1>
-        <span className="muted">AGENTS {filter ? `${rows.length}/${total}` : total}</span>
-      </div>
+      <Header agents={filter ? `${rows.length}/${total}` : total} />
       <CountsLine rows={all} />
       <input
         ref={filterRef}
