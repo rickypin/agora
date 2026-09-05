@@ -36,6 +36,7 @@ use crate::events::EventBus;
 use crate::project::Projects;
 use crate::session::SessionManager;
 
+pub use auth::InProcessPeer;
 pub use health::{RuntimeHealth, API_VERSION};
 
 /// 服务器层的错误枚举（ADR-001 D8 施工约束 4：模块边界用枚举，不用万能错误类型）。

@@ -12,9 +12,15 @@ members = ["."]
 
 [dependencies]
 # 唯一的并发模型（ADR-001 D8 施工约束 1）。子进程、PTY 都在它的 blocking 线程里跑。
-tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "io-util"] }
 axum = { version = "0.8", features = ["ws"] }
 tower = { version = "0.5", features = ["util"] }
+# peer 接缝（agora-7ku.11）：进程内 fake 把另一个实例的 Router 架在 tokio::io::duplex 上做真 WS
+# 握手——hyper 直接服务单条连接（with_upgrades），不开 socket、不碰 TLS；两者本就在 axum 的依赖图里。
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+# peer 链路的 WS 客户端（PeerTransport::connect_ws）；版本跟 axum 的 tungstenite 对齐。
+tokio-tungstenite = "0.29"
 rust-embed = { version = "8.12", features = ["include-exclude"] }
 mime_guess = "2.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -41,8 +47,6 @@ serde_yaml_ng = "0.10"
 tokio = { version = "1.53", features = ["full"] }
 http-body-util = "0.1"
 tempfile = "3"
-# 只给 tests/events.rs 当 WS 客户端；版本跟 axum 的 tungstenite 对齐。
-tokio-tungstenite = "0.29"
 # tests/events.rs 收发 WS 帧用。
 futures-util = "0.3"
 

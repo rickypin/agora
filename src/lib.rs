@@ -26,6 +26,7 @@ pub mod fake_agent;
 pub mod gateway;
 pub mod hook;
 pub mod local;
+pub mod peer;
 pub mod project;
 pub mod runtime;
 pub mod session;

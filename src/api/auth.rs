@@ -10,11 +10,31 @@ use serde::{Deserialize, Serialize};
 use super::{ApiError, AppState, ClientAddr};
 use crate::auth::{Auth, AuthConfig, AuthError, Device, PairedVia, Principal, COOKIE_NAME};
 
+/// 进程内 peer 身份：同一进程里另一个节点实例经 `crate::peer::transport::InProcessTransport`
+/// 调本实例的 Router 时，用请求扩展里的它顶替 Bearer——fake 多节点测试不开 socket、不碰 TLS
+/// （agora-7ku.11）。
+///
+/// 为什么这不是 ADR-003 D1 禁止的"例外路由"：请求扩展不是 HTTP 头，线上任何字节都变不成它，
+/// 只有进程内代码写得进去；写它的只有 fake transport（守卫：`tests/peer_fake.rs`）。只带 peer
+/// 名而不带整个 `Principal`，是让这条注入路径连 `Human` 都造不出来。
+#[derive(Debug, Clone)]
+pub struct InProcessPeer {
+    pub name: String,
+}
+
 /// 每个 handler 的签名都要它；缺了就是免认证端点（守卫：tests/auth.rs）。
 impl FromRequestParts<AppState> for Principal {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        // 进程内注入的 peer（见 InProcessPeer）：不是浏览器，没有 cookie 也不做 CSRF 同源校验。
+        if let Some(InProcessPeer { name }) = parts.extensions.get::<InProcessPeer>() {
+            let principal = Principal::Peer { name: name.clone() };
+            tracing::Span::current()
+                .record("principal", tracing::field::display(principal.log_id()));
+            return Ok(principal);
+        }
+
         // Bearer 优先解析；明文监听器上一律拒绝（TLS 监听器与 peer token 随 agora-7ku.2）。
         if parts.headers.contains_key(header::AUTHORIZATION) {
             return Err(AuthError::BearerRequiresTls.into());
