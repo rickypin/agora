@@ -46,7 +46,7 @@ MISSION v0.10 已把"hook-first 是 V1 架构"定为前提（§5.1），依据�
 
 - **进程退出压倒一切**：`Exit::Code(0)` → FINISHED，`Code(n≠0)` → FAILED，`Signal(x)` → FAILED；**agora 自己 `terminate` 的会话**按信号退出、或以壳的 128+signo 码退出（129/130/143，agent 自己捕获 SIGTERM 后以 143 退出，2026-09-04 Claude 2.1.260 实测，agora-3ib）报 FINISHED，reason `killed by user`（Kill 是人的决定，不该拿 attention 100）；其它非零码即使按过 Kill 也是 FAILED。退出后任何 hook 事件只更新 metadata（如 SessionEnd 的 reason），不改状态。
 - **有 hook 的 agent**：文本层永远不能把状态抬到 WAITING / TURN_DONE；活动层不能产生 IDLE。它们只提供 pane preview。
-- **hook 沉默规则**（有 hook 的 agent 的兜底）：进程活着、`hook_silence_after`（默认 10 min）内没有任何 hook 事件、且文本层看见了空闲提示符或权限提示 → **UNKNOWN**，reason `hooks silent`。这是"宁可 UNKNOWN"的落点：hook 没装好、被 `disableAllHooks` 关掉、或 agent 升级改了事件名时，Dashboard 显示"看不清"而不是永远 RUNNING，也不会误报 WAITING。补充（2026-09-05，agora-dvh.15）：沉默规则要等 10 min 且屏幕像在等人，对"hook 从来没接上"太迟钝——Codex 未在 `/hooks` 信任、`disableAllHooks`、二进制路径失效都表现为一条事件都没有。所以另有一条更早的提示：声明了 hook 的会话在本代起始 10 s 宽限之后有过真实终端输出（不算 TUI 启动那波，因为 Codex 的 SessionStart 到第一条 prompt 才 fire）、再过 `hooks.unheard_after`（默认 90 s）仍无任何事件 → `SessionView.hooks_unheard` 带一句指向 `/hooks` 或重装的话（不改状态，状态仍按进程层）；第一条事件到达即撤。守卫 `tests/state_machine.rs::hooks_never_heard_after_terminal_activity_is_flagged_but_not_at_startup`。
+- **hook 沉默规则**（有 hook 的 agent 的兜底）：SessionManager 在达到沉默阈值后才 capture 屏幕并交给 Adapter；hook 健康时不 capture，有 hook 的会话不展示 pane preview。文本结果只能导致 UNKNOWN，绝不能抬到 WAITING / TURN_DONE（agora-uez：守卫须从 SessionManager 入口覆盖，单测直接喂 Machine 文本会漏掉接线错误）。进程活着、`hook_silence_after`（默认 10 min）内没有任何 hook 事件、且文本层看见了空闲提示符或权限提示 → **UNKNOWN**，reason `hooks silent`。这是"宁可 UNKNOWN"的落点：hook 没装好、被 `disableAllHooks` 关掉、或 agent 升级改了事件名时，Dashboard 显示"看不清"而不是永远 RUNNING，也不会误报 WAITING。补充（2026-09-05，agora-dvh.15）：沉默规则要等 10 min 且屏幕像在等人，对"hook 从来没接上"太迟钝——Codex 未在 `/hooks` 信任、`disableAllHooks`、二进制路径失效都表现为一条事件都没有。所以另有一条更早的提示：声明了 hook 的会话在本代起始 10 s 宽限之后有过真实终端输出（不算 TUI 启动那波，因为 Codex 的 SessionStart 到第一条 prompt 才 fire）、再过 `hooks.unheard_after`（默认 90 s）仍无任何事件 → `SessionView.hooks_unheard` 带一句指向 `/hooks` 或重装的话（不改状态，状态仍按进程层）；第一条事件到达即撤。守卫 `tests/state_machine.rs::hooks_never_heard_after_terminal_activity_is_flagged_but_not_at_startup`。
 - **epoch 与顺序**：每个会话有 `epoch`（ADR-001 `create` 为 1，每次 `respawn` +1，经 `LaunchSpec.env` 的 `AGORA_EPOCH` 交给 agent，hook 原样带回）；epoch 小于当前的事件丢弃；同 epoch 内按投递箱文件名（时间戳 + 序号）顺序应用。
 - **驻留时间**：hook 事件立即生效；文本层的 WAITING 需要连续 2 个 tick 证据一致；IDLE 需要 `idle_after`（60 s）无输出；低层来源不得覆盖 30 s 内由高层写入的状态。resize / attach / detach 引起的重绘不算活动（devcenter 的 `(width,height)` 教训，外加 attach 计数变化）。
 - **每个状态值带 `source`（hook / process / text / heuristic）与 `confidence`、`reason`**；UI 不显示 confidence，但 API 返回，日志记录。
@@ -78,7 +78,7 @@ hook 命令统一为 `agora hook --host <claude|grok|codex>`（安装时写成 `
 2. **唤醒**：连 `<state_dir>/agora.sock`，送文件路径；socket 不在（daemon 没起）→ 直接 exit 0。daemon 只读文件，不信 socket 上的内容——单一真相。
 3. **挂起**（仅 `decision_via_hook` 的事件）：连上 socket 后等 daemon 回 allow / deny / none；none、超时、socket 断（daemon 崩）→ exit 0 不输出——**fail-open**，TUI 的提示还在，人照样能在终端答。
 
-daemon 侧：启动时按文件名顺序重放 inbox 全部文件（§3.4 的重放）；应用后移到 `done/`（保留 24 h 供排障后删）；运行中收到唤醒即读。**不再有 `POST /api/hooks/:agent`**：unix socket 仅属主可访问 + 对端 uid 校验（ADR-003 D6）就是"这台机器上的这个用户"，多用户主机上比 loopback 端口 + 一次性 token 更准确（§0.1、ADR-003 少一个要守的端点）。Windows 时代换 named pipe，同属第二运行时（ADR-001 D9）。
+daemon 侧：启动时先恢复 `hooks/state/` 的每会话 hook 观测检查点，再按文件名顺序重放 inbox（§3.4）。检查点格式带 `version = 1`，只含 hook 状态、摘要、待回答工具键、epoch、原观测时间与最后已处理文件名，不含进程存活、退出码或挂起连接，也不进入 SQLite。每次应用 hook 后以 0600 临时文件写入、sync、原子替换检查点，成功后才将投递移到 `done/`（保留 24 h 排障）；重复或更旧的同 epoch 文件不再次应用，旧 epoch 检查点不恢复。运行时退出 / 缺失的事实始终覆盖恢复状态。首次升级尚无检查点的会话从现存 `done/` 按序补建；归档已删除的历史无法凭空恢复，下一条 hook 会建立检查点。检查点不受 24 h 归档清理影响。2026-09-05 review 反例（agora-9dj）：只重放 inbox 会让已消费 Stop 的 TURN_DONE 在重启后永远退回 RUNNING。**不再有 `POST /api/hooks/:agent`**：unix socket 仅属主可访问 + 对端 uid 校验（ADR-003 D6）就是"这台机器上的这个用户"，多用户主机上比 loopback 端口 + 一次性 token 更准确（§0.1、ADR-003 少一个要守的端点）。Windows 时代换 named pipe，同属第二运行时（ADR-001 D9）。
 
 为什么不选 devcenter 的 `--settings` 注入：它只覆盖 agora 起的会话，看不见 Terminal.app 里起的（A16）；而 §5.1 已定 hook 装进用户配置。为什么不选 HTTP hook（Claude / Grok 都支持 `type: http`）：daemon 不在就丢事件，正是 §3.4 禁止的。
 
@@ -93,7 +93,8 @@ daemon 侧：启动时按文件名顺序重放 inbox 全部文件（§3.4 的重
 
 ### D5 respond：挂起、上限、超时、与终端并存
 
-- **挂起的决定**以 `(session, tool_use_id)` 为键；一个会话可有多个（Claude 并行工具调用会同时 fire 多个 PermissionRequest，文档有 `PostToolBatch` 为证），每会话上限 8，节点上限 256；超限的 hook 立即 exit 0（不输出）。
+- **挂起的决定**以 `(session, tool_use_id)` 为键；Dashboard 另用每次挂起随机生成的 `request_id` 绑定实例（不复用工具名），会话返回 `pending_decision = { request_id, summary, epoch }`，显示与提交用同一对象。旧 ID、已超时 ID、旧 epoch ID 一律拒绝，不能回退到另一请求；挂起解除后对象切换到剩余请求或 null。daemon 重启只恢复待回答状态，不恢复挂起连接或批准按钮。2026-09-05 review 反例（agora-9cf）：最后一条 Write 覆盖 detail，但不带 ID 的 Allow 实际批准最早的 Bash。
+- **并行上限**：一个会话可有多个（Claude 并行工具调用会同时 fire 多个 PermissionRequest，文档有 `PostToolBatch` 为证），每会话上限 8，节点上限 256；超限的 hook 立即 exit 0（不输出）。
 - **与终端并存**：实测 Claude Code 在 hook 挂起期间照常显示权限提示——终端里答了，TUI 走自己的路；Dashboard 答了，hook 返回决定。所以不需要"有人 attach 就放弃挂起"的逻辑。挂起在下列任一发生时自动解除（`decision.resolved`）：同 `tool_use_id` 的 PostToolUse / PostToolUseFailure / PermissionDenied 到达（终端答了）、Stop / SessionEnd 到达、进程退出、超时。
 - **超时**：默认 55 min（安装的 hook timeout 3600 s 减余量；Claude 文档没写超时后是 allow 还是 block，所以 agora 永远在 agent 超时前自己退出）。宿主可更短（`AgentHooks::hold_timeout`）：Codex 0.152.1 实测挂起期间 TUI 不显示审批提示（附录 A），挂起是独占而非并存，上限 20 s，超时 fail-open 把提示交回终端；API 的 `respond_within_secs` 把它告诉 UI。
 - **Dashboard 上的三个动作**：allow、deny（可带一句 message，走 `decision.message`）、"在终端回答"（解除挂起并打开终端）。`updatedInput`、`permission_suggestions`（如"本会话改为 acceptEdits"）V1 不暴露。

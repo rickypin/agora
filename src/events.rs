@@ -139,6 +139,7 @@ struct Seen {
     hooks_unheard: Option<String>,
     /// 任务标签是异步补齐的（`task/`）：到了要整行重发。
     task: Option<crate::task::TaskInfo>,
+    pending_decision: Option<crate::session::PendingDecision>,
     /// agent 自报的对话 id（`/clear` 后会换）：Settings 里"当前对话"要跟着变（dvh.13）。
     agent_session_id: Option<String>,
 }
@@ -156,6 +157,7 @@ fn seen(v: &SessionView) -> Seen {
         status_since: v.status_since,
         hooks_unheard: v.hooks_unheard.clone(),
         task: v.task.clone(),
+        pending_decision: v.pending_decision.clone(),
         agent_session_id: v.record.agent_session_id.clone(),
     }
 }
@@ -264,7 +266,9 @@ impl Differ {
                 // task_ref 是 metadata，标签又是异步查回来的：整行重发最省事也最不会漏字段。
                 // 对话 id 同理（metadata 不是状态，/clear 后会换，dvh.13）。
                 Some(prev)
-                    if prev.task != s.task || prev.agent_session_id != s.agent_session_id =>
+                    if prev.task != s.task
+                        || prev.agent_session_id != s.agent_session_id
+                        || prev.pending_decision != s.pending_decision =>
                 {
                     out.push(Event::SessionUpdated {
                         id: gid.clone(),
@@ -285,27 +289,29 @@ impl Differ {
                         status_since: s.status_since,
                         hooks_unheard: s.hooks_unheard.clone(),
                     });
-                    if self.notifications {
-                        // 标题里用用户起的名字而不是 pane title：后者是 agent 随手改的
-                        // （"✳ 创建文件 x.txt"），2026-09-04 实测通知里读起来像任务不像会话。
-                        let name = if v.record.display_name.is_empty() {
-                            v.name.as_str()
-                        } else {
-                            v.record.display_name.as_str()
-                        };
-                        out.extend(notification_for(Transition {
-                            id: &gid,
-                            agent_type: &v.record.agent_type,
-                            name,
-                            node,
-                            prev: prev.status,
-                            next: s.status,
-                            reason: s.reason.as_deref(),
-                            detail: s.detail.as_deref(),
-                        }));
-                    }
                 }
                 _ => {}
+            }
+            if let Some(prev) = self.last.get(&gid) {
+                if self.notifications {
+                    // 标题里用用户起的名字而不是 pane title：后者是 agent 随手改的
+                    // （"✳ 创建文件 x.txt"），2026-09-04 实测通知里读起来像任务不像会话。
+                    let name = if v.record.display_name.is_empty() {
+                        v.name.as_str()
+                    } else {
+                        v.record.display_name.as_str()
+                    };
+                    out.extend(notification_for(Transition {
+                        id: &gid,
+                        agent_type: &v.record.agent_type,
+                        name,
+                        node,
+                        prev: prev.status,
+                        next: s.status,
+                        reason: s.reason.as_deref(),
+                        detail: s.detail.as_deref(),
+                    }));
+                }
             }
             now.insert(gid, s);
         }

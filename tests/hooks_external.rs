@@ -27,6 +27,8 @@ fn delivery(
     agent_env: &[(&str, String)],
     runtime_env: &[(&str, String)],
 ) -> Delivery {
+    // 每条投递须有不同文件名；真实 hook 每进程只写一条，测试用递增时间模拟。
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let to_map = |kv: &[(&str, String)]| -> BTreeMap<String, String> {
         kv.iter()
             .map(|(k, v)| ((*k).to_owned(), v.clone()))
@@ -42,7 +44,7 @@ fn delivery(
             runtime_env: to_map(runtime_env),
             ppid: 1,
             received_at: String::new(),
-            received_unix_ms: 1,
+            received_unix_ms: SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         },
         payload,
     }

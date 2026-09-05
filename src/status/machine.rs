@@ -14,8 +14,9 @@
 //! "有 hook"不只看 Adapter 的声明：只要收到过一条 hook 事件就按有 hook 处理——采纳的
 //! 未知会话装了 hook 的话，事件一到就自动升级，而不是永远靠文本猜。
 //!
-//! 状态不落库（不变量 7）；daemon 重启后从进程层重新长出来，hook 侧靠投递箱重放补上。
+//! 状态不落 SQLite（不变量 7）；daemon 重启先恢复 hook 观测检查点，再由进程事实与新事件裁决。
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::time::Duration;
 
@@ -105,8 +106,25 @@ fn protected(a: &Assessment) -> bool {
     a.source != Source::None && !(a.source == Source::Process && a.status == Status::Running)
 }
 
-#[derive(Debug)]
+/// 仅保存 hook 观测，不保存进程存活、退出码或活动采样；恢复后仍由运行时裁决。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookSnapshot {
+    pub version: u32,
+    pub epoch: i64,
+    #[serde(default)]
+    last_delivery: Option<String>,
+    current: Assessment,
+    set_at: i64,
+    last_hook_at: i64,
+    detail: Option<String>,
+    prompt: Option<String>,
+    progress: Option<String>,
+    pending: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Machine {
+    snapshot: Option<HookSnapshot>,
     cfg: MachineConfig,
     declared_hooks: bool,
     heard_hooks: bool,
@@ -139,6 +157,7 @@ pub struct Machine {
 impl Machine {
     pub fn new(cfg: MachineConfig, declared_hooks: bool, epoch: i64, now: i64) -> Self {
         Machine {
+            snapshot: None,
             cfg,
             declared_hooks,
             heard_hooks: false,
@@ -159,6 +178,49 @@ impl Machine {
             progress: None,
             pending: BTreeSet::new(),
         }
+    }
+
+    pub fn accepts_delivery(&self, name: &str, epoch: i64) -> bool {
+        self.epoch != epoch
+            || self
+                .snapshot
+                .as_ref()
+                .and_then(|s| s.last_delivery.as_deref())
+                .is_none_or(|last| name > last)
+    }
+
+    pub fn note_delivery(&mut self, name: &str) {
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.last_delivery = Some(name.to_owned());
+        }
+    }
+
+    pub fn hook_snapshot(&self) -> Option<&HookSnapshot> {
+        self.snapshot.as_ref()
+    }
+
+    pub fn restore_hook(&mut self, snapshot: HookSnapshot) {
+        if snapshot.version != 1
+            || snapshot.epoch != self.epoch
+            || snapshot.current.source != Source::Hook
+        {
+            return;
+        }
+        self.current = snapshot.current.clone();
+        self.set_at = snapshot.set_at;
+        self.last_hook_at = Some(snapshot.last_hook_at);
+        self.heard_hooks = true;
+        self.detail = snapshot.detail.clone();
+        self.prompt = snapshot.prompt.clone();
+        self.progress = snapshot.progress.clone();
+        self.pending = snapshot.pending.clone();
+        self.snapshot = Some(snapshot);
+    }
+
+    pub fn hooks_silent(&self, now: i64) -> bool {
+        self.has_hooks()
+            && now - self.last_hook_at.unwrap_or(self.since)
+                >= self.cfg.silence_after.as_secs() as i64
     }
 
     pub fn has_hooks(&self) -> bool {
@@ -311,6 +373,20 @@ impl Machine {
         };
         if let Some(a) = next {
             self.set(a, now);
+        }
+        if self.current.source == Source::Hook {
+            self.snapshot = Some(HookSnapshot {
+                version: 1,
+                epoch: self.epoch,
+                last_delivery: self.snapshot.as_ref().and_then(|s| s.last_delivery.clone()),
+                current: self.current.clone(),
+                set_at: self.set_at,
+                last_hook_at: now,
+                detail: self.detail.clone(),
+                prompt: self.prompt.clone(),
+                progress: self.progress.clone(),
+                pending: self.pending.clone(),
+            });
         }
         true
     }

@@ -74,7 +74,7 @@ pub enum Source {
     None,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Assessment {
     pub status: Status,
     pub source: Source,

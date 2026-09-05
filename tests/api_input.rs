@@ -65,6 +65,7 @@ async fn create(fx: &Fx, cookie: &str, agent: &str) -> (String, String) {
 }
 
 fn delivery(session: &str, payload: Value) -> Delivery {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     Delivery {
         envelope: Envelope {
             host: "claude".into(),
@@ -75,7 +76,7 @@ fn delivery(session: &str, payload: Value) -> Delivery {
             runtime_env: BTreeMap::new(),
             ppid: 1,
             received_at: String::new(),
-            received_unix_ms: 1,
+            received_unix_ms: SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         },
         payload,
     }
@@ -294,4 +295,160 @@ async fn text_goes_to_the_pty_and_decisions_need_a_hold() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
+/// 每次挂起生成独立身份：同一个 tool_name 被下一条请求复用也不能串批。
+async fn hold_named(
+    receiver: &Arc<Receiver>,
+    home: &Path,
+    session: &str,
+    tool: &str,
+    ms: u64,
+) -> (String, tokio::task::JoinHandle<Response>) {
+    let mut d = delivery(
+        session,
+        json!({ "hook_event_name": "PermissionRequest", "tool_name": tool }),
+    );
+    d.envelope.received_unix_ms = ms;
+    let path = Inbox::new(home).write(&d).unwrap();
+    let previous = receiver.pending(session);
+    let r = receiver.clone();
+    let task = tokio::spawn(async move { r.wake(&path).await });
+    // 这里用账本证明本条已处理；是否挂起由后面的 API 快照校验。
+    for _ in 0..100 {
+        if receiver
+            .received_for(session)
+            .iter()
+            .any(|r| r.delivery.envelope.received_unix_ms == ms)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(!receiver.pending(session).is_empty(), "{previous:?}");
+    (tool.into(), task)
+}
+
+#[tokio::test]
+async fn parallel_decisions_bind_snapshot_summary_to_request_and_reject_stale_ids() {
+    let (fx, receiver, home) = with_hooks(Duration::from_secs(30));
+    let cookie = fx.cookie();
+    let (gid, local) = create(&fx, &cookie, "claude").await;
+    fx.sessions
+        .apply_hook(
+            &local,
+            1,
+            &[agora::status::AgoraEvent::Activity("working".into())],
+        )
+        .unwrap();
+    let mut differ = agora::events::Differ::default();
+    differ.step("testnode", &fx.sessions.list().unwrap());
+    let (_, bash) = hold_named(&receiver, home.path(), &local, "Bash", 10).await;
+    let changes = differ.step("testnode", &fx.sessions.list().unwrap());
+    assert!(
+        changes
+            .iter()
+            .any(|e| matches!(e, Event::Notification { .. })),
+        "带请求对象的整行事件也须通知"
+    );
+    assert!(changes.iter().any(|e| matches!(e, Event::SessionUpdated { session, .. } if session["pending_decision"]["summary"] == "Bash")));
+    let (_, write) = hold_named(&receiver, home.path(), &local, "Write", 20).await;
+    let endpoint = format!("/api/sessions/{gid}");
+    let (_, row) = call(&fx, &cookie, Method::GET, &endpoint, None).await;
+    assert_eq!(row["pending_decision"]["summary"], "Write");
+    let request_id = row["pending_decision"]["request_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let body = json!({"kind":"decision", "decision":"allow", "request_id":request_id});
+    let (status, result) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        &format!("{endpoint}/input"),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["tool_use_id"], "Write");
+    assert!(matches!(
+        write.await.unwrap(),
+        Response::Hook {
+            decision: Decision::Allow
+        }
+    ));
+    assert!(!bash.is_finished(), "显示 Write 时不能批准 Bash");
+    let (_, row) = call(&fx, &cookie, Method::GET, &endpoint, None).await;
+    assert_eq!(row["pending_decision"]["summary"], "Bash");
+    // 同工具的新一条请求，旧按钮不得放行它。
+    let (_, write2) = hold_named(&receiver, home.path(), &local, "Write", 30).await;
+    let (status, result) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        &format!("{endpoint}/input"),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(result["error"], "no_pending_decision");
+    assert!(!write2.is_finished());
+    assert!(!bash.is_finished());
+    receiver.resolve_session(&local, "test");
+    bash.await.unwrap();
+    write2.await.unwrap();
+    assert!(fx.sessions.get(&local).unwrap().pending_decision.is_none());
+}
+
+#[tokio::test]
+async fn old_epoch_approval_cannot_answer_a_restarted_session() {
+    let (fx, receiver, home) = with_hooks(Duration::from_secs(30));
+    let cookie = fx.cookie();
+    let (_, local) = create(&fx, &cookie, "claude").await;
+    let (_, held) = hold_named(&receiver, home.path(), &local, "Bash", 10).await;
+    let request = fx.sessions.get(&local).unwrap().pending_decision.unwrap();
+    fx.sessions.restart(&local, &[]).unwrap();
+    assert!(receiver
+        .respond_request(&local, &request.request_id, Decision::Allow)
+        .is_err());
+    assert!(fx.sessions.get(&local).unwrap().pending_decision.is_none());
+    receiver.resolve_session(&local, "test");
+    held.await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_decision_checkpoint_does_not_send_approval_and_can_retry() {
+    let (fx, receiver, home) = with_hooks(Duration::from_secs(30));
+    let cookie = fx.cookie();
+    let (gid, local) = create(&fx, &cookie, "claude").await;
+    let (_, held) = hold_named(&receiver, home.path(), &local, "Write", 10).await;
+    let request = fx.sessions.get(&local).unwrap().pending_decision.unwrap();
+    let state_dir = home.path().join("hooks/state");
+    let backup = home.path().join("checkpoint-backup");
+    std::fs::rename(&state_dir, &backup).unwrap();
+    std::fs::write(&state_dir, "blocked").unwrap();
+    let body = json!({"kind":"decision", "decision":"allow", "request_id":request.request_id});
+    let endpoint = format!("/api/sessions/{gid}/input");
+    let (status, result) = call(&fx, &cookie, Method::POST, &endpoint, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(result["error"], "hook_state");
+    assert!(!held.is_finished(), "持久化失败不能把批准交给 agent");
+    assert_eq!(
+        fx.sessions.get(&local).unwrap().assessment.status,
+        agora::status::Status::Waiting
+    );
+    std::fs::rename(&state_dir, home.path().join("obstruction")).unwrap();
+    std::fs::rename(&backup, &state_dir).unwrap();
+    assert_eq!(
+        call(&fx, &cookie, Method::POST, &endpoint, Some(body))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert!(matches!(
+        held.await.unwrap(),
+        Response::Hook {
+            decision: Decision::Allow
+        }
+    ));
 }

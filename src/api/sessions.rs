@@ -394,6 +394,9 @@ pub enum InputBody {
         /// 并行工具时指定答哪一个；缺省最早的。
         #[serde(default)]
         tool_use_id: Option<String>,
+        /// Dashboard 必带展示的挂起实例 ID；工具名可能在下一次请求复用。
+        #[serde(default)]
+        request_id: Option<String>,
     },
     /// 经 PTY 写入：自由问答、下一条指令、无 hook 的 agent。
     Text { data: String },
@@ -418,21 +421,44 @@ pub async fn input(
             decision,
             message,
             tool_use_id,
+            request_id,
         } => {
             let d = match decision {
                 DecisionKind::Allow => crate::adapter::Decision::Allow,
                 DecisionKind::Deny => crate::adapter::Decision::Deny { message },
             };
-            let key = state
-                .hooks
-                .as_ref()
-                .ok_or(())
-                .and_then(|h| h.respond(&id, tool_use_id.as_deref(), d).map_err(|_| ()))
-                .map_err(|()| ApiError {
+            let hooks = state.hooks.clone();
+            let sid = id.clone();
+            let key = tokio::task::spawn_blocking(move || {
+                hooks
+                    .as_ref()
+                    .ok_or_else(|| crate::hook::RespondError::NoPendingDecision {
+                        session: sid.clone(),
+                        tool_use_id: String::new(),
+                    })
+                    .and_then(|h| match request_id.as_deref() {
+                        Some(request_id) => h.respond_request(&sid, request_id, d),
+                        None => h.respond(&sid, tool_use_id.as_deref(), d),
+                    })
+            })
+            .await
+            .map_err(|err| ApiError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                kind: "internal",
+                message: format!("hook worker: {err}"),
+            })?
+            .map_err(|err| match err {
+                crate::hook::RespondError::NoPendingDecision { .. } => ApiError {
                     status: StatusCode::CONFLICT,
                     kind: "no_pending_decision",
                     message: format!("会话 {id} 没有挂起的决定；在终端回答，或等它再问一次"),
-                })?;
+                },
+                crate::hook::RespondError::Checkpoint(message) => ApiError {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    kind: "hook_state",
+                    message,
+                },
+            })?;
             tracing::info!(component = "api", principal = %principal.log_id(), session_id = %id, tool_use_id = %key, "decision");
             Ok(Json(serde_json::json!({ "tool_use_id": key })))
         }
@@ -470,6 +496,7 @@ impl From<SessionError> for ApiError {
             }
             SessionError::Runtime(RuntimeError::ReadOnly(_)) => (StatusCode::CONFLICT, "read_only"),
             SessionError::Runtime(_) => (StatusCode::BAD_GATEWAY, "runtime"),
+            SessionError::HookState(_) => (StatusCode::INTERNAL_SERVER_ERROR, "hook_state"),
             SessionError::Db(_) => (StatusCode::INTERNAL_SERVER_ERROR, "database"),
         };
         if status.is_server_error() {

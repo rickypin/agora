@@ -127,7 +127,7 @@ describe("Workspace", () => {
     // 服务端先改行再通知（同一帧）：行变 WAITING，通知带 status。
     await act(async () => {
       t.sock.send([
-        { type: "status_changed", id: "n:b", status: "waiting", source: "hook", reason: "permission", alive: true, detail: "Bash: rm -rf x" },
+        { type: "session_updated", id: "n:b", session: { ...row("n:b"), status: "waiting", source: "hook", reason: "permission", alive: true, detail: "Bash: rm -rf x", pending_decision: { request_id: "request-b", summary: "Bash: rm -rf x", epoch: 1 } } },
         { type: "notification", id: "n:b", title: "Claude / b @ n needs input", body: "Bash: rm -rf x", status: "waiting" },
       ]);
       await new Promise((r) => setTimeout(r, 5));

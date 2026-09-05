@@ -14,6 +14,7 @@ export interface SessionRow {
   node: string;
   status: string;
   alive: boolean;
+  pending_decision?: { request_id: string; summary: string; epoch: number } | null;
   [key: string]: unknown;
 }
 

@@ -53,6 +53,8 @@ pub enum SessionError {
     /// 空命令会让运行时起一个交互 shell，与"同一会话内重生 agent"的语义不符（agora-vto）。
     #[error("会话没有记下启动命令，无法 Restart（采纳的会话请在终端里自己重启）: {0}")]
     NoCommand(String),
+    #[error("hook 检查点: {0}")]
+    HookState(#[from] std::io::Error),
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
     #[error(transparent)]
@@ -103,6 +105,14 @@ pub struct ExternalSession {
     pub working_directory: Option<PathBuf>,
 }
 
+/// 活着的挂起请求；request_id 每次重新生成，不复用宿主的工具名。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PendingDecision {
+    pub request_id: String,
+    pub summary: String,
+    pub epoch: i64,
+}
+
 /// 对外的一条会话：metadata + 运行时实时事实 + 状态判定。
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionView {
@@ -118,6 +128,7 @@ pub struct SessionView {
     pub assessment: Assessment,
     /// hook 给的"正在做什么"/ 问题文本 / 最后一条回复（两行预览与就地回答用）。
     pub detail: Option<String>,
+    pub pending_decision: Option<PendingDecision>,
     /// WAITING(decision) 怎么答："hook"（allow / deny 经挂起的 hook 返回）或 "terminal"
     /// （agent 的 hook 不能替用户批准，只能打开终端；ADR-002 D2/D5）。
     pub respond_via: &'static str,
@@ -178,6 +189,8 @@ pub struct SessionManager {
     runtime_status: Arc<RuntimeStatus>,
     /// 每个会话一台状态机（ADR-002 D1）；内存态，不落库（不变量 7）。
     machines: Mutex<HashMap<String, Machine>>,
+    hook_state_dir: Mutex<Option<PathBuf>>,
+    decisions: Mutex<HashMap<String, Vec<PendingDecision>>>,
     status_cfg: MachineConfig,
     /// external 会话最近一次 hook 报来的 agent 进程号：`kill(pid, 0)` 判存活（ADR-002 D4）。
     /// 内存态：daemon 重启后要等下一条 hook 才再知道，之前活性 UNKNOWN。
@@ -199,6 +212,8 @@ impl SessionManager {
             prefix: prefix.to_owned(),
             runtime_status: Arc::new(RuntimeStatus::default()),
             machines: Mutex::new(HashMap::new()),
+            hook_state_dir: Mutex::new(None),
+            decisions: Mutex::new(HashMap::new()),
             status_cfg: MachineConfig::default(),
             external_pids: Mutex::new(HashMap::new()),
             tasks: Arc::new(TaskIndex::default()),
@@ -227,11 +242,34 @@ impl SessionManager {
         epoch: i64,
         events: &[AgoraEvent],
     ) -> Result<(), SessionError> {
+        self.apply_hook_inner(id, epoch, events, None).map(|_| ())
+    }
+
+    pub fn apply_delivered_hook(
+        &self,
+        id: &str,
+        epoch: i64,
+        events: &[AgoraEvent],
+        name: &str,
+    ) -> Result<bool, SessionError> {
+        self.apply_hook_inner(id, epoch, events, Some(name))
+    }
+
+    fn apply_hook_inner(
+        &self,
+        id: &str,
+        epoch: i64,
+        events: &[AgoraEvent],
+        delivery: Option<&str>,
+    ) -> Result<bool, SessionError> {
         let rec = self.record(id)?;
+        if epoch < rec.epoch {
+            return Ok(false);
+        }
         let now = clock::now_secs();
         {
             let mut machines = lock(&self.machines);
-            let m = machines.entry(id.to_owned()).or_insert_with(|| {
+            let stored = machines.entry(id.to_owned()).or_insert_with(|| {
                 Machine::new(
                     self.status_cfg.clone(),
                     adapter::has_hooks(&rec.agent_type),
@@ -239,6 +277,11 @@ impl SessionManager {
                     now,
                 )
             });
+            // 先更新副本，落盘失败不能推进去重水位，否则重试会把未保存事件当作已消费。
+            let mut m = stored.clone();
+            if delivery.is_some_and(|name| !m.accepts_delivery(name, epoch)) {
+                return Ok(false);
+            }
             for e in events {
                 if !m.apply(e, epoch, now) {
                     tracing::debug!(
@@ -248,33 +291,94 @@ impl SessionManager {
                         current = rec.epoch,
                         "旧 epoch 的 hook 事件丢弃"
                     );
-                    return Ok(());
+                    return Ok(false);
                 }
             }
-        }
-        for e in events {
-            match e {
-                AgoraEvent::SessionId(sid) => {
-                    self.db.conn().execute(
-                        "UPDATE sessions SET agent_session_id = ?2 WHERE id = ?1",
-                        params![id, sid],
-                    )?;
-                }
-                // 没有任务的会话：首条 prompt 的首行就是它的任务摘要（ADR-002 D8）。只补空的，
-                // 用户在对话框填的 issue id / 一句话永远不被覆盖；只写 agora 自己的库。
-                AgoraEvent::PromptSubmitted(p) if rec.task_ref.is_none() => {
-                    let summary = summarize(p, TASK_SUMMARY_MAX);
-                    if !summary.is_empty() {
+            for e in events {
+                match e {
+                    AgoraEvent::SessionId(sid) => {
                         self.db.conn().execute(
+                            "UPDATE sessions SET agent_session_id = ?2 WHERE id = ?1",
+                            params![id, sid],
+                        )?;
+                    }
+                    // 没有任务的会话：首条 prompt 的首行就是它的任务摘要（ADR-002 D8）。只补空的，
+                    // 用户在对话框填的 issue id / 一句话永远不被覆盖；只写 agora 自己的库。
+                    AgoraEvent::PromptSubmitted(p) if rec.task_ref.is_none() => {
+                        let summary = summarize(p, TASK_SUMMARY_MAX);
+                        if !summary.is_empty() {
+                            self.db.conn().execute(
                             "UPDATE sessions SET task_ref = ?2 WHERE id = ?1 AND task_ref IS NULL",
                             params![id, summary],
                         )?;
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
+            }
+            if let Some(name) = delivery {
+                m.note_delivery(name);
+            }
+            if let (Some(dir), Some(snapshot)) =
+                (lock(&self.hook_state_dir).as_ref(), m.hook_snapshot())
+            {
+                super::hook_state::save(dir, id, snapshot)?;
+            }
+            *stored = m;
+        }
+        Ok(true)
+    }
+
+    pub fn enable_hook_checkpoints(&self, home: &std::path::Path) {
+        *lock(&self.hook_state_dir) = Some(home.join("hooks/state"));
+    }
+
+    pub fn restore_hook_checkpoints(&self) -> Result<(), SessionError> {
+        let Some(dir) = lock(&self.hook_state_dir).clone() else {
+            return Ok(());
+        };
+        let mut machines = lock(&self.machines);
+        for rec in self.all_records()? {
+            let snapshot = match super::hook_state::load(&dir, &rec.id) {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    tracing::warn!(component = "hook", session = %rec.id, %err, "跳过损坏的 hook 检查点");
+                    continue;
+                }
+            };
+            if let Some(snapshot) = snapshot {
+                let m = machines.entry(rec.id.clone()).or_insert_with(|| {
+                    Machine::new(
+                        self.status_cfg.clone(),
+                        adapter::has_hooks(&rec.agent_type),
+                        rec.epoch,
+                        clock::now_secs(),
+                    )
+                });
+                m.restore_hook(snapshot);
             }
         }
         Ok(())
+    }
+
+    pub fn has_hook_checkpoint(&self, id: &str) -> bool {
+        lock(&self.hook_state_dir)
+            .as_ref()
+            .is_some_and(|dir| super::hook_state::exists(dir, id))
+    }
+
+    pub fn add_pending_decision(&self, id: &str, pending: PendingDecision) {
+        lock(&self.decisions)
+            .entry(id.to_owned())
+            .or_default()
+            .push(pending);
+    }
+
+    pub fn remove_pending_decision(&self, id: &str, request_id: &str) {
+        let mut decisions = lock(&self.decisions);
+        if let Some(v) = decisions.get_mut(id) {
+            v.retain(|p| p.request_id != request_id);
+        }
     }
 
     /// 状态机记下的"正在做什么"/ 最后一条回复（两行预览，dvh.10）。
@@ -307,6 +411,10 @@ impl SessionManager {
     /// 先外部资源后 metadata（不变量 7 同构）：写库失败 → remove 运行时会话回滚。
     pub fn create(&self, new: &NewSession) -> Result<SessionView, SessionError> {
         let id = self.fresh_id()?;
+        // 不让已删除会话遗留的文件在 id 被复用时成为新会话的观测。
+        if let Some(dir) = lock(&self.hook_state_dir).as_ref() {
+            super::hook_state::remove(dir, &id)?;
+        }
         let runtime_name = format!("{}{id}", self.prefix);
         let mut env = new.env.clone();
         env.push(("AGORA_SESSION_ID".into(), id.clone()));
@@ -650,8 +758,13 @@ impl SessionManager {
         // 无 hook 的会话：读一次屏幕末尾，文本层与预览共用（MISSION §6.3 "没有 hook 的会话保持
         // 一行 pane preview"）；读不到（dead pane、运行时降级）就没有，不报错。
         let hooked = adapter::has_hooks(&rec.agent_type);
+        // 2026-09-05 agora-uez：只读无 hook 的屏幕会让 hooks silent 分支永远拿到 None。
+        // hook 健康时不 capture，达到沉默阈值才读取，且状态机只允许降为 UNKNOWN。
+        let silent = lock(&self.machines)
+            .get(&rec.id)
+            .is_some_and(|m| m.hooks_silent(now));
         let screen = match rt {
-            Some(s) if !hooked && s.alive => self
+            Some(s) if (!hooked || silent) && s.alive => self
                 .runtime
                 .capture_tail(&s.r#ref, PREVIEW_TAIL_LINES)
                 .ok()
@@ -718,7 +831,12 @@ impl SessionManager {
             Some(s) if !rec.name_locked && !s.title.trim().is_empty() => s.title.clone(),
             _ => rec.display_name.clone(),
         };
+        let pending_decision = lock(&self.decisions)
+            .get(&rec.id)
+            .and_then(|v| v.iter().rev().find(|p| p.epoch == rec.epoch))
+            .cloned();
         SessionView {
+            pending_decision,
             name,
             alive: rt.is_some_and(|s| s.alive) || liveness == Liveness::Alive,
             exit: rt.and_then(|s| s.exit.clone()),
@@ -869,6 +987,13 @@ impl SessionManager {
         self.db
             .conn()
             .execute("DELETE FROM sessions WHERE id = ?1", [id])?;
+        lock(&self.machines).remove(id);
+        lock(&self.decisions).remove(id);
+        if let Some(dir) = lock(&self.hook_state_dir).as_ref() {
+            if let Err(err) = super::hook_state::remove(dir, id) {
+                tracing::warn!(component = "hook", session = id, %err, "清理 hook 检查点失败");
+            }
+        }
         Ok(())
     }
 

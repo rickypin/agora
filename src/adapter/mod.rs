@@ -174,7 +174,7 @@ pub trait AgentFallback: Send + Sync {
 }
 
 /// 整屏 → 文本层判定：按 agent 类型找 adapter 的兜底，没有 adapter（custom / unknown / fake）
-/// 用通用启发式。调用方只在无 hook 的会话上调（D6）。
+/// 用通用启发式。调用方对无 hook 会话常规调用；有 hook 的仅在沉默后调用，裁决只允许 UNKNOWN（D1）。
 pub fn detect_screen(agent_type: &str, screen: &str) -> Option<DetectionResult> {
     let tail = text::tail_lines(screen, text::TAIL_LINES);
     let refs: Vec<&str> = tail.iter().map(String::as_str).collect();

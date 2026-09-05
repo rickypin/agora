@@ -144,8 +144,15 @@ impl Inbox {
 
     /// 待重放的文件，按文件名（= 时间）排序，跨宿主跨会话合在一起。`.part` 跳过。
     pub fn pending(&self) -> Result<Vec<PathBuf>, HookError> {
+        self.files_in(self.inbox_dir())
+    }
+
+    pub fn completed(&self) -> Result<Vec<PathBuf>, HookError> {
+        self.files_in(self.done_dir())
+    }
+
+    fn files_in(&self, root: PathBuf) -> Result<Vec<PathBuf>, HookError> {
         let mut out = Vec::new();
-        let root = self.inbox_dir();
         if !root.exists() {
             return Ok(out);
         }

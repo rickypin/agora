@@ -44,7 +44,7 @@ export interface AgentInfo {
 
 /** `POST /api/sessions/:id/input`（MISSION §7.3；ADR-002 D5）。 */
 export type InputBody =
-  | { kind: "decision"; decision: "allow" | "deny"; message?: string; tool_use_id?: string }
+  | { kind: "decision"; decision: "allow" | "deny"; message?: string; tool_use_id?: string; request_id?: string }
   | { kind: "text"; data: string };
 
 /** `POST /api/sessions/adopt`（MISSION §5.5）：用户填的 agent_type 优先于进程树给的 hint。 */

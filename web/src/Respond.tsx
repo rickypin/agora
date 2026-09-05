@@ -26,20 +26,22 @@ export function Respond({ row, api, onOpenTerminal }: Props) {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     setError(null);
-  }, [row.id, row.status, row.reason]);
+  }, [row.id, row.status, row.reason, row.pending_decision?.request_id]);
 
+  const pending = row.pending_decision;
   const detail = typeof row.detail === "string" && row.detail ? row.detail : null;
   const waiting = row.status === "waiting";
   const turnDone = row.status === "turn_done";
   if (!waiting && !turnDone) return null;
-  const canDecide = waiting && row.reason === "permission" && row.respond_via === "hook";
+  const canDecide = waiting && row.reason === "permission" && row.respond_via === "hook" && !!pending;
   const within = typeof row.respond_within_secs === "number" ? row.respond_within_secs : null;
   const shortHold = canDecide && within !== null && within < SHORT_HOLD_SECS;
 
   async function decide(decision: "allow" | "deny") {
+    if (!pending) return;
     setBusy(true);
     setError(null);
-    const r = await api.input(row.id, { kind: "decision", decision });
+    const r = await api.input(row.id, { kind: "decision", decision, request_id: pending.request_id });
     setBusy(false);
     if (!r.ok && !r.needsConfirmation) {
       // no_pending_decision：终端已经答了或超时了；状态事件马上会把行改掉。
@@ -60,7 +62,7 @@ export function Respond({ row, api, onOpenTerminal }: Props) {
 
   return (
     <div className="respond" data-testid={`respond-${row.id}`} onClick={(e) => e.stopPropagation()}>
-      {waiting && <p className="respond-question">{detail ?? String(row.reason ?? "等待你")}</p>}
+      {waiting && <p className="respond-question">{canDecide ? pending.summary : detail ?? String(row.reason ?? "等待你")}</p>}
       {shortHold && (
         <p className="respond-hint muted" data-testid="respond-within">
           {within} 秒内没答会交回终端（挂起期间终端看不到提示）

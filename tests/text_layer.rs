@@ -76,7 +76,7 @@ fn preview_is_the_last_nonempty_line_stripped_and_clipped() {
 #[test]
 fn hooked_agents_never_get_text_waiting_from_this_path() {
     // 有 hook 的 agent 走文本路径的唯一出口是 hook 沉默 → UNKNOWN（D1）：detect_screen 对它们
-    // 也能算，但 session 层只对无 hook 的会话调它（tests/state_machine.rs::text_cannot_raise_hooked_session）。
+    // 也能算，但 session 层也在 hook 沉默时调它，但裁决只允许 UNKNOWN（tests/state_machine.rs::text_cannot_raise_hooked_session）。
     assert!(adapter::has_hooks("claude"));
     assert!(!adapter::has_hooks("shell") && !adapter::has_hooks("custom"));
 }

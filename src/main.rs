@@ -174,10 +174,14 @@ async fn serve() -> i32 {
     // 投递箱重放（MISSION §3.4）：daemon 不在时落下的 hook 事件在 reconcile 之后补上。
     // 权限过宽是拒绝读而不是退出：agent 照跑，只是状态退成 UNKNOWN，日志说明原因。
     let hooks = Arc::new(agora::hook::Receiver::new(&home, sessions.clone()));
-    match hooks.replay() {
-        Ok(n) if n > 0 => tracing::info!(component = "hook", replayed = n, "投递箱重放完成"),
-        Ok(_) => {}
-        Err(err) => tracing::error!(component = "hook", %err, "投递箱不可用，hook 事件不会被读取"),
+    let replay_hooks = hooks.clone();
+    match tokio::task::spawn_blocking(move || replay_hooks.replay()).await {
+        Ok(Ok(n)) if n > 0 => tracing::info!(component = "hook", replayed = n, "投递箱重放完成"),
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => {
+            tracing::error!(component = "hook", %err, "投递箱不可用，hook 事件不会被读取")
+        }
+        Err(err) => tracing::error!(component = "hook", %err, "投递箱重放任务失败"),
     }
     tokio::spawn(hooks.clone().run_sweeper(std::time::Duration::from_secs(5)));
 

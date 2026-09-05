@@ -5,12 +5,13 @@
 //! 给出的抽象，不得出现任何 agent 的 payload 键（ADR-002 规则 5）。
 
 pub mod db;
+mod hook_state;
 pub mod manager;
 pub mod model;
 
 pub use db::{Db, DbError};
 pub use manager::{
-    AdoptSession, ExternalSession, NewSession, ReconcileReport, SessionError, SessionManager,
-    SessionView, Unregistered,
+    AdoptSession, ExternalSession, NewSession, PendingDecision, ReconcileReport, SessionError,
+    SessionManager, SessionView, Unregistered,
 };
 pub use model::{Origin, SessionRecord};

@@ -4,7 +4,7 @@
 //! - [`cmd`]：agent 进程里跑的 `agora hook --host <h> --home <dir>`——读 stdin 落盘、连 socket
 //!   唤醒、该挂起的挂起等决定；daemon 不在、socket 断、超时一律 exit 0 不输出（fail-open）。
 //! - [`inbox`]：投递箱文件的形态与权限：`<home>/hooks/inbox/<host>/<agent_session_id>/<ts>-<seq>.json`，
-//!   先 `.part` 再 rename；应用后移 `done/`，保留 24 h。
+//!   先 `.part` 再 rename；hook 观测检查点落盘成功后移 `done/`，保留 24 h。
 //! - [`Receiver`]：daemon 侧——启动时按文件名顺序重放、运行中被唤醒即读；epoch 小于当前的丢；
 //!   挂起表以 `(session, tool_use_id)` 为键，每会话 8、节点 256，超时 55 min；同 tool_use_id 的
 //!   PostToolUse 等、Stop / SessionEnd、进程退出都解除挂起（`decision.resolved`）。

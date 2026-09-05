@@ -14,7 +14,7 @@ function setup(row: Partial<SessionRow>, status = 200, body: unknown = {}) {
     return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   };
   const onOpenTerminal = vi.fn();
-  const full: SessionRow = { id: "mac:s1", node: "mac", status: "waiting", alive: true, ...row };
+  const full: SessionRow = { id: "mac:s1", node: "mac", status: "waiting", alive: true, pending_decision: { request_id: "request-1", summary: "Bash", epoch: 1 }, ...row };
   render(<Respond row={full} api={sessionApi(f)} onOpenTerminal={onOpenTerminal} />);
   return { requests, onOpenTerminal };
 }
@@ -30,7 +30,7 @@ it("permission via hook: allow goes to the input endpoint, no terminal involved"
   fireEvent.click(screen.getByTestId("allow"));
   await waitFor(() => expect(requests.length).toBe(1));
   expect(requests[0].url).toBe("/api/sessions/mac%3As1/input");
-  expect(JSON.parse(requests[0].body!)).toEqual({ kind: "decision", decision: "allow" });
+  expect(JSON.parse(requests[0].body!)).toEqual({ kind: "decision", decision: "allow", request_id: "request-1" });
   expect(onOpenTerminal).not.toHaveBeenCalled();
 });
 
@@ -82,4 +82,27 @@ it("turn_done: the next instruction is sent as text with a trailing newline", as
 it("running rows have nothing to answer", () => {
   setup({ status: "running" });
   expect(screen.queryByTestId("respond-mac:s1")).toBeNull();
+});
+
+
+it("binds the visible summary to its request id when parallel requests change", async () => {
+  const input = vi.fn().mockResolvedValue({ ok: true, value: {} });
+  const api = { ...sessionApi(), input };
+  const row: SessionRow = { id: "mac:s1", node: "mac", status: "waiting", alive: true, reason: "permission", respond_via: "hook", detail: "old detail", pending_decision: { request_id: "write-2", summary: "Write file", epoch: 1 } };
+  const { rerender } = render(<Respond row={row} api={api} onOpenTerminal={vi.fn()} />);
+  expect(screen.getByText("Write file")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("allow"));
+  await waitFor(() => expect(input).toHaveBeenCalledWith("mac:s1", { kind: "decision", decision: "allow", request_id: "write-2" }));
+  await waitFor(() => expect((screen.getByTestId("allow") as HTMLButtonElement).disabled).toBe(false));
+  rerender(<Respond row={{ ...row, pending_decision: { request_id: "bash-1", summary: "Bash command", epoch: 1 } }} api={api} onOpenTerminal={vi.fn()} />);
+  expect(screen.getByText("Bash command")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("deny"));
+  await waitFor(() => expect(input).toHaveBeenLastCalledWith("mac:s1", { kind: "decision", decision: "deny", request_id: "bash-1" }));
+});
+
+it("a restored or expired permission has no live approval button", () => {
+  setup({ reason: "permission", respond_via: "hook", detail: "Write", pending_decision: null });
+  expect(screen.getByText("Write")).toBeTruthy();
+  expect(screen.queryByTestId("allow")).toBeNull();
+  expect(screen.getByTestId("open-terminal")).toBeTruthy();
 });

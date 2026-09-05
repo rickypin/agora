@@ -14,7 +14,7 @@ use tokio::sync::oneshot;
 use crate::adapter::{self, AgentHooks, Decision, Release};
 use crate::events::{global_id, Event, EventBus};
 use crate::local::Response;
-use crate::session::{ExternalSession, SessionManager};
+use crate::session::{ExternalSession, PendingDecision, SessionManager};
 use crate::status::AgoraEvent;
 
 use super::inbox::{Delivery, Inbox, DONE_RETENTION};
@@ -36,6 +36,8 @@ pub struct Received {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RespondError {
+    #[error("保存 hook 答复失败: {0}")]
+    Checkpoint(String),
     #[error("会话 {session} 没有挂起的决定 {tool_use_id}")]
     NoPendingDecision {
         session: String,
@@ -44,14 +46,25 @@ pub enum RespondError {
 }
 
 struct Hold {
+    request_id: String,
+    epoch: i64,
     tx: oneshot::Sender<Decision>,
     since: Instant,
     /// 这一条的上限：宿主给的与 daemon 配置里较短的那个。
     timeout: Duration,
 }
 
+struct HeldWake {
+    session: String,
+    tool_use_id: String,
+    request_id: String,
+    timeout: Duration,
+    rx: oneshot::Receiver<Decision>,
+}
+
 pub struct Receiver {
     inbox: Inbox,
+    processing: Mutex<()>,
     sessions: Arc<SessionManager>,
     holds: Mutex<HashMap<(String, String), Hold>>,
     ledger: Mutex<Vec<Received>>,
@@ -78,7 +91,9 @@ pub fn session_key(delivery: &Delivery) -> String {
 
 impl Receiver {
     pub fn new(home: &Path, sessions: Arc<SessionManager>) -> Self {
+        sessions.enable_hook_checkpoints(home);
         Receiver {
+            processing: Mutex::new(()),
             inbox: Inbox::new(home),
             sessions,
             holds: Mutex::new(HashMap::new()),
@@ -118,6 +133,13 @@ impl Receiver {
     /// 重放阶段没有 hook 进程在等，PermissionRequest 也只记账不挂起。返回应用的条数。
     pub fn replay(&self) -> Result<usize, HookError> {
         self.inbox.check_permissions()?;
+        self.sessions
+            .restore_hook_checkpoints()
+            .map_err(|e| HookError::Io {
+                path: "hooks/state".into(),
+                source: std::io::Error::other(e),
+            })?;
+        self.restore_archive()?;
         let mut n = 0;
         for path in self.inbox.pending()? {
             match self.ingest(&path) {
@@ -132,15 +154,65 @@ impl Receiver {
         Ok(n)
     }
 
+    /// 首次升级没有检查点时，利用仍保留的 done 文件补建；之后不依赖这份排障归档。
+    fn restore_archive(&self) -> Result<(), HookError> {
+        let mut restore = HashMap::new();
+        for path in self.inbox.completed()? {
+            let delivery = match self.inbox.read(&path) {
+                Ok(d) => d,
+                Err(err) => {
+                    tracing::warn!(component = "hook", %err, "跳过损坏的归档事件");
+                    continue;
+                }
+            };
+            let env = &delivery.envelope;
+            let Some(hooks) = adapter::for_host(&env.host) else {
+                continue;
+            };
+            let rec = match &env.agora_session_id {
+                Some(id) => self.sessions.record(id).ok(),
+                None => self
+                    .sessions
+                    .find_by_agent_session(&env.host, &env.agent_session_id)
+                    .ok()
+                    .flatten(),
+            };
+            let Some(rec) = rec else {
+                continue;
+            };
+            let selected = *restore
+                .entry(rec.id.clone())
+                .or_insert_with(|| !self.sessions.has_hook_checkpoint(&rec.id));
+            if !selected || env.agora_epoch.is_some_and(|epoch| epoch != rec.epoch) {
+                continue;
+            }
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if let Err(err) = self.sessions.apply_delivered_hook(
+                &rec.id,
+                rec.epoch,
+                &hooks.parse(&delivery.payload),
+                &name,
+            ) {
+                tracing::warn!(component = "hook", %err, "归档恢复失败");
+            }
+        }
+        Ok(())
+    }
+
     /// 读一个文件并应用：epoch 旧的丢弃（返回 None），其余记账、解除挂起、移 done/。
     pub fn ingest(&self, path: &Path) -> Result<Option<Received>, HookError> {
+        let _guard = self.processing.lock().unwrap_or_else(|p| p.into_inner());
+        self.ingest_inner(path)
+    }
+
+    fn ingest_inner(&self, path: &Path) -> Result<Option<Received>, HookError> {
         if !self.inbox.contains(path) {
             return Err(HookError::Outside(path.display().to_string()));
         }
         let delivery = self.inbox.read(path)?;
         let stale = self.is_stale(&delivery);
-        self.inbox.done(path)?;
         if stale {
+            self.inbox.done(path)?;
             tracing::debug!(component = "hook", session = %session_key(&delivery), "旧 epoch 的事件丢弃");
             return Ok(None);
         }
@@ -159,6 +231,33 @@ impl Receiver {
             None => (self.locate_external(hooks, &delivery), 0),
         };
         let key = id.clone().unwrap_or_else(|| session_key(&delivery));
+        if let Some(id) = &id {
+            let events = hooks.parse(&delivery.payload);
+            // 外部会话没有 epoch 概念：按库里那代算，永不因 epoch 被丢。
+            let epoch = if delivery.envelope.agora_session_id.is_some() {
+                epoch
+            } else {
+                self.sessions.record(id).map(|r| r.epoch).unwrap_or(epoch)
+            };
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            let applied = self
+                .sessions
+                .apply_delivered_hook(id, epoch, &events, &name);
+            if matches!(applied, Ok(false)) {
+                self.inbox.done(path)?;
+                return Ok(None);
+            }
+            if let Err(err) = applied {
+                if matches!(err, crate::session::SessionError::NotFound(_)) {
+                    tracing::debug!(component = "hook", session = %id, %err, "hook 事件没有对应会话");
+                } else {
+                    return Err(HookError::Io {
+                        path: path.display().to_string(),
+                        source: std::io::Error::other(err),
+                    });
+                }
+            }
+        }
         match hooks.release_for(&delivery.payload) {
             Release::ToolUse(keys) => {
                 for k in keys {
@@ -168,18 +267,8 @@ impl Receiver {
             Release::Session => self.resolve_session(&key, "session"),
             Release::None => {}
         }
-        if let Some(id) = &id {
-            let events = hooks.parse(&delivery.payload);
-            // 外部会话没有 epoch 概念：按库里那代算，永不因 epoch 被丢。
-            let epoch = if delivery.envelope.agora_session_id.is_some() {
-                epoch
-            } else {
-                self.sessions.record(id).map(|r| r.epoch).unwrap_or(epoch)
-            };
-            if let Err(err) = self.sessions.apply_hook(id, epoch, &events) {
-                tracing::debug!(component = "hook", session = %id, %err, "hook 事件没有对应会话");
-            }
-        }
+        // 2026-09-05 agora-9dj：检查点成功之后才消费文件，写盘失败留在 inbox 供重试。
+        self.inbox.done(path)?;
         let received = Received {
             session_key: key,
             event: event_name(&delivery.payload),
@@ -256,45 +345,27 @@ impl Receiver {
             .unwrap_or(false)
     }
 
-    /// socket 唤醒的处理：应用文件；要挂起的事件等决定直到解除或超时。
+    /// 文件 I/O 与运行时查询在 blocking 线程，挂起等待留在 async 侧。
     pub async fn wake(self: &Arc<Self>, path: &Path) -> Response {
-        let received = match self.ingest(path) {
-            Ok(Some(r)) => r,
-            Ok(None) => {
-                return Response::Hook {
-                    decision: Decision::None,
+        let me = self.clone();
+        let path = path.to_owned();
+        let held = match tokio::task::spawn_blocking(move || me.begin_wake(&path)).await {
+            Ok(Ok(held)) => held,
+            Ok(Err(response)) => return response,
+            Err(err) => {
+                return Response::Error {
+                    message: format!("hook worker: {err}"),
                 }
             }
-            Err(err) => {
-                tracing::warn!(component = "hook", path = %path.display(), %err, "唤醒被拒");
-                return Response::Error {
-                    message: err.to_string(),
-                };
-            }
         };
-        let Some((tool_use_id, timeout)) = adapter::for_host(&received.delivery.envelope.host)
-            .and_then(|h| {
-                h.hold_key(&received.delivery.payload)
-                    .map(|k| (k, h.hold_timeout().min(self.hold_timeout)))
-            })
-        else {
-            return Response::Hook {
-                decision: Decision::None,
-            };
-        };
-        let Some(rx) = self.hold(&received.session_key, &tool_use_id, timeout) else {
-            return Response::Hook {
-                decision: Decision::None,
-            };
-        };
-        let decision = match tokio::time::timeout(timeout, rx).await {
+        let decision = match tokio::time::timeout(held.timeout, held.rx).await {
             Ok(Ok(d)) => d,
-            // 发送端被丢（同键被新挂起接替）：那边已经宣布过了。
             Ok(Err(_)) => Decision::None,
             Err(_) => {
-                self.resolve(
-                    &received.session_key,
-                    &tool_use_id,
+                self.resolve_request(
+                    &held.session,
+                    &held.tool_use_id,
+                    Some(&held.request_id),
                     Decision::None,
                     "timeout",
                 );
@@ -304,13 +375,54 @@ impl Receiver {
         Response::Hook { decision }
     }
 
+    fn begin_wake(&self, path: &Path) -> Result<HeldWake, Response> {
+        // 2026-09-05：应用事件与登记挂起不可被解除事件插入；锁不跨 await。
+        let _guard = self.processing.lock().unwrap_or_else(|p| p.into_inner());
+        let none = || Response::Hook {
+            decision: Decision::None,
+        };
+        let received = self
+            .ingest_inner(path)
+            .map_err(|err| {
+                tracing::warn!(component = "hook", path = %path.display(), %err, "唤醒被拒");
+                Response::Error {
+                    message: err.to_string(),
+                }
+            })?
+            .ok_or_else(none)?;
+        let hooks = adapter::for_host(&received.delivery.envelope.host).ok_or_else(none)?;
+        let tool_use_id = hooks
+            .hold_key(&received.delivery.payload)
+            .ok_or_else(none)?;
+        let timeout = hooks.hold_timeout().min(self.hold_timeout);
+        let summary = hooks
+            .parse(&received.delivery.payload)
+            .into_iter()
+            .find_map(|e| match e {
+                AgoraEvent::DecisionNeeded { summary, .. } => Some(summary),
+                _ => None,
+            })
+            .unwrap_or_else(|| tool_use_id.clone());
+        let (request_id, rx) = self
+            .hold(&received.session_key, &tool_use_id, &summary, timeout)
+            .ok_or_else(none)?;
+        Ok(HeldWake {
+            session: received.session_key,
+            tool_use_id,
+            timeout,
+            request_id,
+            rx,
+        })
+    }
+
     /// 登记一个挂起；超上限返回 None（hook 立即 exit 0）。
     fn hold(
         &self,
         session: &str,
         tool_use_id: &str,
+        summary: &str,
         timeout: Duration,
-    ) -> Option<oneshot::Receiver<Decision>> {
+    ) -> Option<(String, oneshot::Receiver<Decision>)> {
         let mut holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
         let per_session = holds.keys().filter(|(s, _)| s == session).count();
         if holds.len() >= MAX_HOLDS_PER_NODE || per_session >= MAX_HOLDS_PER_SESSION {
@@ -318,16 +430,31 @@ impl Receiver {
             return None;
         }
         let (tx, rx) = oneshot::channel();
+        let request_id = crate::adapter::resume::new_conversation_id();
+        let epoch = self.sessions.record(session).map(|r| r.epoch).unwrap_or(0);
         // 同键重复到达（重试）：旧的那个解除，新的接替。
-        holds.insert(
+        if let Some(old) = holds.insert(
             (session.to_owned(), tool_use_id.to_owned()),
             Hold {
+                request_id: request_id.clone(),
+                epoch,
                 tx,
                 since: Instant::now(),
                 timeout,
             },
+        ) {
+            self.sessions
+                .remove_pending_decision(session, &old.request_id);
+        }
+        self.sessions.add_pending_decision(
+            session,
+            PendingDecision {
+                request_id: request_id.clone(),
+                summary: summary.into(),
+                epoch,
+            },
         );
-        Some(rx)
+        Some((request_id, rx))
     }
 
     fn resolve(
@@ -337,11 +464,30 @@ impl Receiver {
         decision: Decision,
         via: &'static str,
     ) -> bool {
-        let hold = self
-            .holds
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&(session.to_owned(), tool_use_id.to_owned()));
+        self.resolve_request(session, tool_use_id, None, decision, via)
+    }
+
+    fn resolve_request(
+        &self,
+        session: &str,
+        tool_use_id: &str,
+        request_id: Option<&str>,
+        decision: Decision,
+        via: &'static str,
+    ) -> bool {
+        let hold = {
+            let mut holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
+            let key = (session.to_owned(), tool_use_id.to_owned());
+            if request_id.is_some_and(|id| holds.get(&key).is_none_or(|h| h.request_id != id)) {
+                return false;
+            }
+            let hold = holds.remove(&key);
+            if let Some(h) = &hold {
+                self.sessions
+                    .remove_pending_decision(session, &h.request_id);
+            }
+            hold
+        };
         match hold {
             Some(h) => {
                 let _ = h.tx.send(decision);
@@ -366,6 +512,8 @@ impl Receiver {
                 .collect()
         };
         for (tool_use_id, h) in drained {
+            self.sessions
+                .remove_pending_decision(session, &h.request_id);
             let _ = h.tx.send(Decision::None);
             self.announce(session, &tool_use_id, via);
         }
@@ -379,23 +527,77 @@ impl Receiver {
         tool_use_id: Option<&str>,
         decision: Decision,
     ) -> Result<String, RespondError> {
-        let key = match tool_use_id {
-            Some(k) => k.to_owned(),
-            None => self.pending(session).into_iter().next().unwrap_or_default(),
+        self.respond_inner(session, tool_use_id, None, decision)
+    }
+
+    pub fn respond_request(
+        &self,
+        session: &str,
+        request_id: &str,
+        decision: Decision,
+    ) -> Result<String, RespondError> {
+        self.respond_inner(session, None, Some(request_id), decision)
+    }
+
+    fn respond_inner(
+        &self,
+        session: &str,
+        tool_use_id: Option<&str>,
+        request_id: Option<&str>,
+        decision: Decision,
+    ) -> Result<String, RespondError> {
+        let _guard = self.processing.lock().unwrap_or_else(|p| p.into_inner());
+        let epoch = self.sessions.record(session).map(|r| r.epoch).unwrap_or(0);
+        let key = if let Some(request_id) = request_id {
+            self.holds
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .find(|((s, _), h)| s == session && h.request_id == request_id && h.epoch == epoch)
+                .map(|((_, k), _)| k.clone())
+                .ok_or_else(|| RespondError::NoPendingDecision {
+                    session: session.into(),
+                    tool_use_id: request_id.into(),
+                })?
+        } else {
+            match tool_use_id {
+                Some(k) => k.to_owned(),
+                None => self.pending(session).into_iter().next().unwrap_or_default(),
+            }
         };
-        if !self.resolve(session, &key, decision, "dashboard") {
-            return Err(RespondError::NoPendingDecision {
-                session: session.to_owned(),
-                tool_use_id: key,
+        let held = {
+            let mut holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
+            let map_key = (session.to_owned(), key.clone());
+            let valid = holds.get(&map_key).is_some_and(|h| {
+                h.epoch == epoch
+                    && request_id.is_none_or(|r| r == h.request_id)
+                    && h.since.elapsed() < h.timeout
+                    && !h.tx.is_closed()
             });
-        }
-        if let Ok(rec) = self.sessions.record(session) {
-            let _ = self.sessions.apply_hook(
-                session,
-                rec.epoch,
-                &[AgoraEvent::DecisionResolved(Some(key.clone()))],
-            );
-        }
+            if !valid {
+                return Err(RespondError::NoPendingDecision {
+                    session: session.into(),
+                    tool_use_id: key,
+                });
+            }
+            if let Ok(rec) = self.sessions.record(session) {
+                self.sessions
+                    .apply_hook(
+                        session,
+                        rec.epoch,
+                        &[AgoraEvent::DecisionResolved(Some(key.clone()))],
+                    )
+                    .map_err(|e| RespondError::Checkpoint(e.to_string()))?;
+            }
+            let held = holds
+                .remove(&map_key)
+                .expect("validated hold under same lock");
+            self.sessions
+                .remove_pending_decision(session, &held.request_id);
+            held
+        };
+        let _ = held.tx.send(decision);
+        self.announce(session, &key, "dashboard");
         Ok(key)
     }
 
@@ -418,16 +620,16 @@ impl Receiver {
     /// 定期扫：超时的与进程已退出的会话解除挂起。`wake` 自己也有超时，这里是双保险，
     /// 主要为进程退出——没有事件会替死掉的 agent 发 SessionEnd。
     pub fn sweep(&self) {
-        let expired: Vec<(String, String)> = {
+        let expired: Vec<((String, String), String)> = {
             let holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
             holds
                 .iter()
                 .filter(|(_, h)| h.since.elapsed() >= h.timeout)
-                .map(|(k, _)| k.clone())
+                .map(|(k, h)| (k.clone(), h.request_id.clone()))
                 .collect()
         };
-        for (s, t) in expired {
-            self.resolve(&s, &t, Decision::None, "timeout");
+        for ((s, t), request_id) in expired {
+            self.resolve_request(&s, &t, Some(&request_id), Decision::None, "timeout");
         }
         let sessions: Vec<String> = {
             let holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
