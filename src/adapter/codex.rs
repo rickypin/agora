@@ -27,7 +27,7 @@ use crate::status::AgoraEvent;
 
 use super::hooks::{
     self, decision_key, event_name, generic_hold_key, generic_release, permission_output,
-    release_keys, str_of, Decision, Release,
+    permission_summary, release_keys, str_of, Decision, Release,
 };
 use super::{
     program_is, Adapter, AgentFallback, AgentHooks, AgentIdentity, HookInstall, Version,
@@ -197,9 +197,10 @@ impl AgentHooks for Codex {
                 );
                 out.push(AgoraEvent::Activity(tool.to_owned()));
             }
+            // 摘要带 tool_input 主参数（agora-pzi）；0.152.1 真录的载荷键与 Claude 同形。
             Some("PermissionRequest") => out.push(AgoraEvent::DecisionNeeded {
                 tool_use_id: decision_key(payload),
-                summary: tool.to_owned(),
+                summary: permission_summary(payload),
             }),
             Some("Stop") => out.push(AgoraEvent::TurnEnded(
                 str_of(payload, &["last_assistant_message"]).map(str::to_owned),
@@ -275,7 +276,7 @@ mod tests {
             CODEX.parse(&pr),
             vec![AgoraEvent::DecisionNeeded {
                 tool_use_id: "Bash".into(),
-                summary: "Bash".into()
+                summary: "Bash: touch x".into()
             }]
         );
         let post = json!({"hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"exec-1","tool_response":""});

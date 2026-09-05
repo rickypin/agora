@@ -76,7 +76,7 @@ RUNNING
 ● 重构 sglog parser        / Codex @ zuan
 ```
 
-侧栏选中行下方是就地 respond 区（MISSION §6.3 §7.3，`web/src/Respond.tsx`）：WAITING 且 `reason = permission`、`respond_via = hook` → 问题文本（`detail`）+ Allow / Deny / 打开终端，`respond_within_secs` 短于 5 分钟（Codex 20 s）时再加一行"N 秒内没答会交回终端"；WAITING 的其它情形（`question`，或 `respond_via = terminal`）→ 只有问题文本与"打开终端"；TURN_DONE → `↳` 最后一条回复 + "下一条指令"输入框（发 text，尾部带换行）。Allow / Deny 撞上 `no_pending_decision`（终端先答了 / 过期）只显示一行提示，行状态随事件自己变。
+侧栏选中行下方是就地 respond 区（MISSION §6.3 §7.3，`web/src/Respond.tsx`）：WAITING 且 `reason = permission`、`respond_via = hook` → 问题文本（`pending_decision.summary`，形如 `Bash: git push origin main`——工具名 + `tool_input` 主参数的首行，截到 200 字符加 `…`；载荷没带 `tool_input` 才只剩工具名，`src/adapter/hooks.rs permission_summary`）+ Allow / Deny / 打开终端，`respond_within_secs` 短于 5 分钟（Codex 20 s）时再加一行"N 秒内没答会交回终端"；WAITING 的其它情形（`question`，或 `respond_via = terminal`）→ 只有问题文本与"打开终端"；TURN_DONE → `↳` 最后一条回复 + "下一条指令"输入框（发 text，尾部带换行）。Allow / Deny 撞上 `no_pending_decision`（终端先答了 / 过期）只显示一行提示，行状态随事件自己变。
 
 实现（`web/src/attention.ts`，agora-dvh.10）：侧栏就是 Dashboard——行按分数降序 → bd 优先级升序（`task.priority`，无 bd 视为 P2）→ `status_since` 早的在前排好，再把 NEEDS ATTENTION（分数 ≥ FINISHED）整体提到 RUNNING 前面；过滤只删不换序，所以 Alt/Option+N 跳的第 N 条永远等于眼睛看到的第 N 条。第一列 `taskLabel`：`task.id + title` > `task_ref`（issue id 或首条 prompt 摘要）> 名字。header 下一行是各状态计数。
 

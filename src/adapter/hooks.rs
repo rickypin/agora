@@ -93,6 +93,81 @@ pub(crate) fn decision_key(payload: &Value) -> String {
         .unwrap_or_else(|| "PermissionRequest".into())
 }
 
+/// 权限摘要的上限（字符数）：Respond 区一行能读完的量，多的换行也没意义。
+pub(crate) const PERMISSION_SUMMARY_MAX: usize = 200;
+
+/// `tool_input` 里"这次调用到底要干什么"的键，按先后取第一个有字符串值的（agora-pzi）：
+/// Bash / run_terminal_command 是 `command`，Write / Edit / Read / NotebookEdit 是 `file_path`
+/// （Codex 的 apply_patch 只有 `patch`），MCP 与网页类工具通常有 `url` / `pattern` / `prompt`。
+/// `description` 放最后：Bash 同时带 command 与 description，人要看的是命令本身。
+const PRIMARY_INPUT_KEYS: &[&str] = &[
+    "command",
+    "file_path",
+    "notebook_path",
+    "path",
+    "url",
+    "pattern",
+    "patch",
+    "prompt",
+    "query",
+    "description",
+];
+
+/// `PermissionRequest` 给 Dashboard 看的摘要：`<tool>: <主参数首行>`，超长截断加 `…`；没有
+/// `tool_input` 就只剩工具名（agora-pzi，2026-09-05）。只给工具名时用户在 Dashboard 上看不出
+/// agent 要执行什么，只能盲点 Allow 或去开终端，MISSION A15"不打开终端即可回答"就名存实亡。
+/// 主参数取 [`PRIMARY_INPUT_KEYS`]（AskUserQuestion 另取 `questions[0].question`），都没有就
+/// 把整个 `tool_input` 压成紧凑 JSON 再截——总比只剩工具名多一点线索。
+pub(crate) fn permission_summary(payload: &Value) -> String {
+    let tool = str_of(payload, &["tool_name", "toolName"]).unwrap_or("tool");
+    let Some(input) = payload
+        .get("tool_input")
+        .or_else(|| payload.get("toolInput"))
+        .filter(|i| !i.is_null())
+    else {
+        return tool.to_owned();
+    };
+    let raw = primary_input(input).unwrap_or_else(|| input.to_string());
+    let arg = first_line_capped(&raw, PERMISSION_SUMMARY_MAX);
+    if arg.is_empty() {
+        tool.to_owned()
+    } else {
+        format!("{tool}: {arg}")
+    }
+}
+
+fn primary_input(input: &Value) -> Option<String> {
+    if let Some(s) = input.as_str() {
+        return Some(s.to_owned());
+    }
+    let question = input
+        .get("questions")
+        .and_then(|q| q.get(0))
+        .and_then(|q| q.get("question"))
+        .and_then(Value::as_str);
+    question
+        .or_else(|| {
+            PRIMARY_INPUT_KEYS
+                .iter()
+                .find_map(|k| input.get(k).and_then(Value::as_str))
+        })
+        .map(str::to_owned)
+}
+
+/// 第一个非空行，按字符数截到 `max`；被截或还有后续行就在末尾加 `…`，让人知道没看全。
+pub(crate) fn first_line_capped(text: &str, max: usize) -> String {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let Some(first) = lines.next() else {
+        return String::new();
+    };
+    let more_lines = lines.next().is_some();
+    let mut out: String = first.chars().take(max).collect();
+    if more_lines || first.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
 /// 通用的挂起判定：只有能替用户批准的宿主的 `PermissionRequest`。
 pub(crate) fn generic_hold_key(decision_via_hook: bool, payload: &Value) -> Option<String> {
     if !decision_via_hook || event_name(payload) != Some("PermissionRequest") {
@@ -192,5 +267,53 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["hookSpecificOutput"]["decision"]["message"], "no");
         assert_eq!(permission_output(&Decision::None), None);
+    }
+
+    #[test]
+    fn permission_summary_shows_what_the_tool_is_about_to_do() {
+        // Bash：命令本身，不是 description（agora-pzi：只剩 "Bash" 时 Dashboard 上没法判断）。
+        let pr = json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+            "tool_input": { "command": "git push origin main", "description": "Push" } });
+        assert_eq!(permission_summary(&pr), "Bash: git push origin main");
+        // 文件类工具：路径。
+        let pr = json!({ "tool_name": "Write", "tool_input": { "file_path": "/tmp/x", "content": "hi" } });
+        assert_eq!(permission_summary(&pr), "Write: /tmp/x");
+        // AskUserQuestion：问题文本。
+        let pr = json!({ "tool_name": "AskUserQuestion",
+            "tool_input": { "questions": [{ "question": "which?", "header": "h" }] } });
+        assert_eq!(permission_summary(&pr), "AskUserQuestion: which?");
+        // 不认识的键：紧凑 JSON，总比只剩工具名多一点线索。
+        let pr = json!({ "tool_name": "mcp__x__do", "tool_input": { "thing": 1 } });
+        assert_eq!(permission_summary(&pr), "mcp__x__do: {\"thing\":1}");
+        // 没有 tool_input / 空对象也不崩：退回工具名。
+        assert_eq!(permission_summary(&json!({ "tool_name": "Bash" })), "Bash");
+        assert_eq!(
+            permission_summary(
+                &json!({ "tool_name": "Bash", "tool_input": { "command": "  \n" } })
+            ),
+            "Bash"
+        );
+        assert_eq!(permission_summary(&json!({})), "tool");
+        // Grok 风格的 camelCase 键也认。
+        let pr = json!({ "toolName": "run_terminal_command", "toolInput": { "command": "ls" } });
+        assert_eq!(permission_summary(&pr), "run_terminal_command: ls");
+    }
+
+    #[test]
+    fn permission_summary_is_one_line_and_capped() {
+        let pr = json!({ "tool_name": "Bash", "tool_input": { "command": "echo a\necho b" } });
+        assert_eq!(permission_summary(&pr), "Bash: echo a…");
+        let long = "x".repeat(PERMISSION_SUMMARY_MAX + 5);
+        let pr = json!({ "tool_name": "Bash", "tool_input": { "command": long } });
+        let got = permission_summary(&pr);
+        assert_eq!(
+            got.chars().count(),
+            "Bash: ".len() + PERMISSION_SUMMARY_MAX + 1
+        );
+        assert!(got.ends_with('…'));
+        // 刚好到上限不加省略号；按字符不按字节截，多字节不会被劈开。
+        let exact: String = "中".repeat(PERMISSION_SUMMARY_MAX);
+        let pr = json!({ "tool_name": "Bash", "tool_input": { "command": exact } });
+        assert!(!permission_summary(&pr).ends_with('…'));
     }
 }

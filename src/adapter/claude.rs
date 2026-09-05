@@ -14,7 +14,7 @@ use crate::status::AgoraEvent;
 
 use super::hooks::{
     self, decision_key, event_name, generic_hold_key, generic_release, permission_output,
-    release_keys, str_of, tool_use_id, Decision, Release,
+    permission_summary, release_keys, str_of, tool_use_id, Decision, Release,
 };
 use super::{
     program_is, Adapter, AgentFallback, AgentHooks, AgentIdentity, HookInstall, Version,
@@ -239,9 +239,11 @@ impl AgentHooks for Claude {
                 );
                 out.push(AgoraEvent::Activity(tool.to_owned()));
             }
+            // 摘要带 tool_input 的主参数（"Bash: git push"），不是光秃秃的工具名：Dashboard 上
+            // 要看得出 agent 想干什么才能答 Allow / Deny（agora-pzi）。
             Some("PermissionRequest") => out.push(AgoraEvent::DecisionNeeded {
                 tool_use_id: decision_key(payload),
-                summary: tool.to_owned(),
+                summary: permission_summary(payload),
             }),
             // permission_prompt 只是 PermissionRequest 的确认（挂起已经登记）；idle_prompt
             // 是 TURN_DONE 的补漏。
@@ -315,6 +317,39 @@ mod tests {
             vec!["--session-id", "u1"]
         );
         assert_eq!(CLAUDE.resume_args(Version(1, 0, 0), "abc"), None);
+    }
+
+    #[test]
+    fn permission_request_summary_carries_the_tool_input() {
+        // agora-pzi：2.1.260 的 PermissionRequest 没有 tool_use_id 但有 tool_input，摘要要用上。
+        let bash = json!({"hook_event_name":"PermissionRequest","tool_name":"Bash",
+            "tool_input":{"command":"git push origin main"},"permission_suggestions":[]});
+        assert_eq!(
+            CLAUDE.parse(&bash),
+            vec![AgoraEvent::DecisionNeeded {
+                tool_use_id: "Bash".into(),
+                summary: "Bash: git push origin main".into()
+            }]
+        );
+        let write = json!({"hook_event_name":"PermissionRequest","tool_name":"Write",
+            "tool_input":{"file_path":"/work/agora/README.md","content":"..."}});
+        assert_eq!(
+            CLAUDE.parse(&write),
+            vec![AgoraEvent::DecisionNeeded {
+                tool_use_id: "Write".into(),
+                summary: "Write: /work/agora/README.md".into()
+            }]
+        );
+        // 没有 tool_input 退回工具名——挂起键不变，Dashboard 的 respond 仍按 tool_name 对上。
+        let bare = json!({"hook_event_name":"PermissionRequest","tool_name":"Bash"});
+        assert_eq!(
+            CLAUDE.parse(&bare),
+            vec![AgoraEvent::DecisionNeeded {
+                tool_use_id: "Bash".into(),
+                summary: "Bash".into()
+            }]
+        );
+        assert_eq!(CLAUDE.hold_key(&bash).as_deref(), Some("Bash"));
     }
 
     #[test]
