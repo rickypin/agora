@@ -14,7 +14,7 @@
 | M3 | `agora-h1k` | 产出与起会话增强 | `agora-dvh` | MISSION §12：A40–A44。 | open 0/5 |
 | V2-1 | `agora-thc` | 手机客户端与 PWA（iOS / Android） | `agora-7ku`, `agora-s4r` | MISSION §11 手机条目：A13、A19、A28、A35、A37。 | open 0/2 |
 
-## 演示剧本（epic 的 design 字段；人按此关闭 epic，MISSION §1.5）
+## 演示剧本（epic 的 design 字段；agent 先代检，人只看 👁 步骤与代检报告后关闭 epic，MISSION §1.5）
 
 ### M1a `agora-xqa`
 
@@ -50,8 +50,8 @@ CI 绿；A36 不变量 10 的守卫逐条关掉变红。
 
 ### M2a `agora-7ku`
 
-M2a 演示剧本（人按此关闭 epic）
-前置：M1b 剧本通过；zuan（Ubuntu 24.04）可物理登录，Mac 与 zuan 网络可达（同一局域网或 tailnet 均可）；zuan 上有 agora 二进制（Mac 上 cargo zigbuild --target x86_64-unknown-linux-gnu 交叉编译即可，安装脚本归 M2b）与 tmux ≥ 3.2；两边各有 agora 仓库 clone。
+M2a 演示剧本（agent 代检，无 👁 步骤；人看代检报告后关闭 epic，MISSION §1.5）
+前置：M1b 剧本通过；zuan（Ubuntu 24.04）已开 sshd 供 agent 代检，Mac 与 zuan 网络可达（同一局域网或 tailnet 均可）；zuan 上有 agora 二进制（Mac 上 cargo zigbuild --target x86_64-unknown-linux-gnu 交叉编译即可，安装脚本归 M2b）与 tmux ≥ 3.2；两边各有 agora 仓库 clone。
 1. zuan：agora peer token create mac → 得到 apt_ 机器 token；agora tls fingerprint 得到 sha256 指纹。Mac：peers 里写一行 { name: zuan, url, token_file, cert_fingerprint }，Mac 自身仍只听 loopback（A27；agora-7ku.2 token、agora-7ku.10 证书与指纹）。
 2. Mac 打开 127.0.0.1 → 侧栏同列两台节点的会话，每行标节点；zuan 上起一个 Claude 会话，Mac 上几秒内出现（A27 A30；agora-7ku.5）。改错指纹 → Header 显示'指纹不匹配'而非离线；用错 token → zuan 日志 401、Mac 显示该 peer 未授权；一台未配对的笔记本直连 zuan 的 TLS 端口 → 401（A30 A31 A34；agora-7ku.2 / agora-7ku.10 / agora-7ku.12）。
 3. 把 Mac 的前端指向一个报不同 api_version 的 fake 节点（或改 zuan 的版本号）→ 顶部横幅提示版本不一致，peer 显示'版本不兼容'而非离线，没有错读的数据（A33；agora-7ku.4 横幅、agora-7ku.5 客户端比版本、agora-7ku.12 状态模型）。
@@ -61,10 +61,10 @@ M2a 演示剧本（人按此关闭 epic）
 
 ### M2b `agora-s4r`
 
-M2b 演示剧本（人按此关闭 epic；tests/invariants_peer.rs 是不变量 8、11 的机械版）
-前置：M2a 剧本通过；zuan 可物理或 ssh 登录。
+M2b 演示剧本（agent 代检，👁 只有第 2 步的物理变体；tests/invariants_peer.rs 是不变量 8、11 的机械版；人看 👁 与代检报告后关闭 epic，MISSION §1.5）
+前置：M2a 剧本通过；zuan 已开 sshd。
 1. zuan：一条命令安装节点（tmux ≥ 3.2、launchd/systemd 自启、LANG=C.UTF-8、<AGORA_HOME>/bin/agora 链接）；重启 zuan 后 daemon 自起，pane 里 CJK 输出正常（A26；agora-7ku.1）。
-2. 拔掉 zuan 网线或睡眠 Mac 再唤醒：zuan 的会话变 stale 并显示'上次见到 hh:mm'，Mac 本机会话照常操作；恢复后 30 s 内自动重连，行恢复正常，Header 显示每台节点在线 / 上次见到（A29，不变量 8；agora-7ku.6 视图，策略与状态模型在 M2a 的 agora-7ku.12）。
+2. 代检：ssh 在 zuan 上把网络接口 down 60 s 再 up（nohup，或 tailscale down / up）等效断线；👁 一次：真拔 zuan 网线、合盖 Mac 再唤醒——两种情况下 zuan 的会话变 stale 并显示'上次见到 hh:mm'，Mac 本机会话照常操作；恢复后 30 s 内自动重连，行恢复正常，Header 显示每台节点在线 / 上次见到（A29，不变量 8；agora-7ku.6 视图，策略与状态模型在 M2a 的 agora-7ku.12）。
 3. 两台各跑一条命令升级 agora：升级期间 zuan 上一个真实 agent 会话不死、升级后会话列表与名字/任务标签完整、hook 事件在窗口期落箱重放；<AGORA_HOME>/bin/agora 指向新二进制，Codex 不需要重新 /hooks（A39，不变量 3；agora-7ku.8）。
 4. CI 绿；提交信息里有逐条关掉不变量 8、11 守卫、对应测试变红的记录；两个 daemon 实例之间走真 TLS 与 Bearer 的整栈集成测试在此（A36；agora-7ku.9）。
 5. V2-1（agora-thc）已拆任务级 issue 并有演示剧本（agora-7ku.3）。
@@ -72,7 +72,7 @@ M2b 演示剧本（人按此关闭 epic；tests/invariants_peer.rs 是不变量 
 
 ### M3 `agora-h1k`
 
-M3 演示剧本（人按此关闭 epic）
+M3 演示剧本（agent 代检，无 👁 步骤；人看代检报告后关闭 epic，MISSION §1.5）
 前置：M1b 剧本通过；本机 agora 仓库有 beads（bd ready 非空）；config 里 worktree_root 用默认值。
 1. New Agent：Project 选 agora → Task 字段列出 bd ready 的任务，选一个 → Name、Worktree 名（= issue id）、首条 prompt（含 issue id 与 claim 提示）自动填好；Worktree 选'新建…' → 创建后自动选中，git worktree list 里多一行、分支基于主 worktree 当前分支（A43 A44；agora-h1k.2 / agora-h1k.1）。Create 后 bd show 该 issue 仍是 open：agora 没写 beads（不变量 12）。
 2. 会话行展开 → 显示该任务的验收标准全文（与 bd show 一致、可折叠）；在 beads 里改验收标准，几秒后展开区跟着变，agora 的库里没有这段文字（A40；agora-h1k.3）。

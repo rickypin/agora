@@ -42,7 +42,7 @@ doc = f"""# agora — ROADMAP（视图）
 |---|---|---|---|---|---|
 """ + "\n".join(rows) + "\n"
 if scripts:
-    doc += "\n## 演示剧本（epic 的 design 字段；人按此关闭 epic，MISSION §1.5）\n\n" + "\n".join(scripts)
+    doc += "\n## 演示剧本（epic 的 design 字段；agent 先代检，人只看 👁 步骤与代检报告后关闭 epic，MISSION §1.5）\n\n" + "\n".join(scripts)
 open("ROADMAP.md", "w", encoding="utf-8").write(doc)
 print(f"ROADMAP.md regenerated: {len(rows)} epic(s)")
 PY
