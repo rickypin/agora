@@ -476,4 +476,30 @@ describe("Workspace", () => {
     expect(screen.getByTestId("no-terminal")).toBeTruthy();
     expect(mounted).toEqual([]);
   });
+
+  it("the header shows 本机 and every peer from the same health poll, and a peer going stale keeps its last-seen (agora-7ku.12)", async () => {
+    const seen = "2026-09-02T23:10:00Z";
+    let report: unknown = {
+      status: "ok",
+      runtime: { status: "ok", reason: null },
+      peers: { zuan: { online: true, last_seen: seen, retrying: false, last_error: null } },
+    };
+    const health = new HealthWatcher({ fetchHealth: async () => report, okMs: 1e9, degradedMs: 1e9 });
+    const t = setup([row("n:a")], [], undefined, health);
+    await online(t);
+    expect(health.polls).toBe(1); // 节点状态没有自己的轮询
+    expect(screen.getByTestId("node-本机").textContent).toBe("本机●");
+    expect(screen.getByTestId("node-zuan").textContent).toBe("zuan●");
+    // zuan 掉线：还在 header 上，带"上次见到"，不是消失（不变量 8）；横幅不出现。
+    report = {
+      status: "ok",
+      runtime: { status: "ok", reason: null },
+      peers: { zuan: { online: false, last_seen: seen, retrying: true, last_error: "unreachable" } },
+    };
+    await act(async () => {
+      await health.refresh();
+    });
+    expect(screen.getByTestId("node-zuan").textContent).toContain("zuan✗不可达 · 上次见到 ");
+    expect(screen.queryByTestId("runtime-degraded")).toBeNull();
+  });
 });

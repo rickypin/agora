@@ -12,10 +12,56 @@ export interface RuntimeHealth {
   path_source?: string;
 }
 
+/** peers 段里 `last_error` 的四个值（docs/spec/api.md Health；模型 src/peer/state.rs）。按类型不按文本。 */
+export type PeerError = "incompatible_version" | "fingerprint_mismatch" | "unauthorized" | "unreachable";
+
+const PEER_ERRORS: readonly PeerError[] = ["incompatible_version", "fingerprint_mismatch", "unauthorized", "unreachable"];
+
+export function isPeerError(v: unknown): v is PeerError {
+  return typeof v === "string" && (PEER_ERRORS as readonly string[]).includes(v);
+}
+
+/** peers 段里一项：一个 peer 在本节点眼里的状态。 */
+export interface PeerHealth {
+  online: boolean;
+  /** 上次成功交互，本节点时钟打的 UTC 文本；没连上过为 null。离线后保留（不变量 8）。 */
+  last_seen: string | null;
+  /** 下一次重试已排定。 */
+  retrying: boolean;
+  last_error: PeerError | null;
+}
+
 /** 带 principal 才有的完整形态（MISSION §10.3）；未认证只拿到 PublicHealth。 */
 export interface FullHealth extends PublicHealth {
   runtime?: RuntimeHealth;
   database?: boolean;
+  peers?: Record<string, PeerHealth>;
+}
+
+/** 本机 + 每个 peer 的状态快照，Header 的数据源（agora-7ku.12）。 */
+export interface NodesHealth {
+  /** 上一次拉 /api/health 成功了吗（本机的"在线"）；还没拉过为 null。 */
+  reachable: boolean | null;
+  peers: Record<string, PeerHealth>;
+}
+
+/** 把 peers 段整理成形：缺字段补默认、不认识的 last_error 当 null，别让一条坏数据毁掉整个 Header。 */
+export function peersOf(h: unknown): Record<string, PeerHealth> {
+  if (typeof h !== "object" || h === null) return {};
+  const peers = (h as FullHealth).peers;
+  if (typeof peers !== "object" || peers === null) return {};
+  const out: Record<string, PeerHealth> = {};
+  for (const [name, p] of Object.entries(peers)) {
+    if (typeof p !== "object" || p === null) continue;
+    const v = p as Partial<PeerHealth>;
+    out[name] = {
+      online: v.online === true,
+      last_seen: typeof v.last_seen === "string" ? v.last_seen : null,
+      retrying: v.retrying === true,
+      last_error: isPeerError(v.last_error) ? v.last_error : null,
+    };
+  }
+  return out;
 }
 
 export function isHealthy(h: unknown): h is PublicHealth {
@@ -66,7 +112,11 @@ export interface HealthWatcherOptions {
  */
 export class HealthWatcher {
   private degraded: string | null = null;
+  /** 同一次拉取顺手带出的节点状态（不另起轮询，MISSION §10.3）。引用只在内容变了才换：useSyncExternalStore 靠它判等。 */
+  private nodes: NodesHealth = { reachable: null, peers: {} };
   private listeners = new Set<() => void>();
+  /** 节点状态单独一组订阅：peer 上上下下不该让横幅重渲染，反过来也一样。 */
+  private nodeListeners = new Set<() => void>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private stopped = true;
   /** 拉过几次（测试断言用）。 */
@@ -101,17 +151,34 @@ export class HealthWatcher {
   /** degraded 的原因原文；健康为 null。 */
   snapshot = (): string | null => this.degraded;
 
+  /** 订阅节点状态（本机可达性 + 每个 peer）的变化；与 `subscribe`（degraded）各自独立。 */
+  subscribeNodes = (l: () => void): (() => void) => {
+    this.nodeListeners.add(l);
+    return () => this.nodeListeners.delete(l);
+  };
+
+  /** 本机可达性 + 每个 peer 的状态；Header 的数据源。 */
+  nodesSnapshot = (): NodesHealth => this.nodes;
+
   private async poll(): Promise<void> {
     this.polls += 1;
     let next = this.degraded;
+    let nodes = this.nodes;
     try {
-      next = runtimeDegraded(await (this.opts.fetchHealth ?? defaultFetchHealth)());
+      const report = await (this.opts.fetchHealth ?? defaultFetchHealth)();
+      next = runtimeDegraded(report);
+      nodes = { reachable: true, peers: peersOf(report) };
     } catch {
-      /* 拉不到：沿用上一次的结论 */
+      // 拉不到：degraded 沿用上一次的结论（不闪）；本机标不可达，peer 保留最后一眼（不变量 8 的前端半边）。
+      nodes = { reachable: false, peers: this.nodes.peers };
     }
     if (next !== this.degraded) {
       this.degraded = next;
       for (const l of this.listeners) l();
+    }
+    if (JSON.stringify(nodes) !== JSON.stringify(this.nodes)) {
+      this.nodes = nodes;
+      for (const l of this.nodeListeners) l();
     }
     if (this.stopped) return;
     // refresh() 与在途的定时 poll 可能同时收尾：只留一个定时器。

@@ -3,6 +3,7 @@ import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api"
 import { partitionByAttention, sortByAttention } from "./attention";
 import { CommandPalette } from "./CommandPalette";
 import { fuzzyFilter } from "./fuzzy";
+import { nodeStatuses } from "./Header";
 import { HealthWatcher, versionBlocked, VersionWatcher } from "./health";
 import { isDesktop, matchShortcut } from "./keys";
 import { NewAgentDialog } from "./NewAgentDialog";
@@ -43,6 +44,9 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   // 只在配对之后（Workspace 才挂）带 cookie 拉完整报告；未认证的门页只用公开子集。
   const health = useMemo(() => givenHealth ?? new HealthWatcher(), [givenHealth]);
   const degraded = useSyncExternalStore(health.subscribe, health.snapshot, health.snapshot);
+  // Header 的节点状态与 degraded 同一次拉取带出，不另起轮询（MISSION §10.3；agora-7ku.12）。
+  const nodesHealth = useSyncExternalStore(health.subscribeNodes, health.nodesSnapshot, health.nodesSnapshot);
+  const nodes = useMemo(() => nodeStatuses(nodesHealth), [nodesHealth]);
   useEffect(() => {
     health.start();
     return () => health.stop();
@@ -192,6 +196,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     <div className="workspace">
       <Sidebar
         rows={visible}
+        nodes={nodes}
         all={rows}
         total={rows.length}
         active={tabs.active}

@@ -125,3 +125,13 @@ select:disabled { opacity: 0.5; }
 .notify-ask { display: flex; gap: 8px; align-items: center; padding: 4px 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; }
 /* 运行时 degraded 横幅（MISSION §10.3；agora-bgr）：原因原文一行，恢复后自己消失。 */
 .runtime-degraded { padding: 4px 10px; border-bottom: 1px solid var(--border); background: #2a2410; color: var(--warn); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Header 的节点状态（MISSION §10.3；agora-7ku.12）：本机 + 每个 peer 一枚，在线只有名字和点，
+   异常才带原因与"上次见到"。放标题下一行而不挤进标题行：260px 的侧栏放不下 `zuan ✗ 指纹不匹配 · 上次见到 23:10`。 */
+.nodes { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 0 10px 4px; font-size: 12px; color: var(--muted); }
+.node-status { display: inline-flex; gap: 4px; align-items: baseline; white-space: nowrap; }
+.node-status .node-name { color: var(--fg); }
+.node-status.ok .dot { color: var(--ok); }
+.node-status.stale .dot { color: var(--warn); }
+.node-status.bad .dot, .node-status.bad .node-note { color: var(--bad); }
+.node-status.unknown .dot { color: var(--muted); }

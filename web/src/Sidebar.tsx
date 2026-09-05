@@ -2,7 +2,7 @@ import { Fragment, memo, useEffect, useState, type ReactNode, type RefObject } f
 import type { AdoptBody } from "./api";
 import { countByStatus, needsAttention, promptRepeatsLabel, statusLine, taskLabel } from "./attention";
 import type { SessionRow, UnregisteredRow } from "./events";
-import { Header } from "./Header";
+import { Header, type NodeStatus } from "./Header";
 
 /** 状态符号（docs/spec/ux.md 线框）。 */
 export function statusSymbol(status: string): string {
@@ -163,6 +163,8 @@ interface SidebarProps {
   rows: SessionRow[];
   /** 过滤前的全部行：header 计数用。 */
   all?: SessionRow[];
+  /** Header 上本机与每个 peer 的状态（MISSION §10.3）；只透传给 Header。 */
+  nodes?: NodeStatus[];
   active: string | null;
   onOpen: (id: string) => void;
   onNewAgent?: () => void;
@@ -245,6 +247,7 @@ function UnknownRow({ row, onAdopt }: UnknownProps) {
 export function Sidebar({
   rows,
   all = rows,
+  nodes,
   active,
   onOpen,
   onNewAgent,
@@ -263,7 +266,7 @@ export function Sidebar({
   const hasAttention = rows.length > 0 && needsAttention(rows[0]);
   return (
     <aside className="sidebar">
-      <Header agents={filter ? `${rows.length}/${total}` : total} />
+      <Header agents={filter ? `${rows.length}/${total}` : total} nodes={nodes} />
       <CountsLine rows={all} />
       <input
         ref={filterRef}

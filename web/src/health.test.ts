@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { API_VERSION, checkApiVersion, HealthWatcher, isHealthy, runtimeDegraded, versionBlocked, VersionWatcher } from "./health";
+import { API_VERSION, checkApiVersion, HealthWatcher, isHealthy, peersOf, runtimeDegraded, versionBlocked, VersionWatcher } from "./health";
 
 describe("isHealthy", () => {
   it("accepts the public subset", () => {
@@ -104,6 +104,73 @@ describe("HealthWatcher", () => {
     await tick(1_000);
     expect(w.polls).toBe(3);
     w.stop();
+  });
+
+  it("carries the peers section out of the same poll and only notifies when it changes (agora-7ku.12)", async () => {
+    const zuan = { online: true, last_seen: "2026-09-02T23:10:00Z", retrying: false, last_error: null };
+    let report: unknown = { status: "ok", runtime: { status: "ok", reason: null }, peers: { zuan } };
+    let fail = false;
+    const w = new HealthWatcher({
+      fetchHealth: async () => {
+        if (fail) throw new Error("daemon away");
+        return report;
+      },
+      okMs: 60_000,
+      degradedMs: 10_000,
+    });
+    let notified = 0;
+    let bannerNotified = 0;
+    w.subscribeNodes(() => (notified += 1));
+    w.subscribe(() => (bannerNotified += 1));
+    expect(w.nodesSnapshot()).toEqual({ reachable: null, peers: {} });
+    w.start();
+    await tick(0);
+    const first = w.nodesSnapshot();
+    expect(first).toEqual({ reachable: true, peers: { zuan } });
+    expect(notified).toBe(1);
+    expect(w.polls).toBe(1); // 没有第二条轮询
+
+    // 同样的报告：引用不换、不通知（useSyncExternalStore 靠引用判等）。
+    await tick(60_000);
+    expect(w.nodesSnapshot()).toBe(first);
+    expect(notified).toBe(1);
+
+    // peer 掉线：下一次例行重拉带出 stale + 类型化的原因。
+    report = { status: "ok", runtime: { status: "ok", reason: null }, peers: { zuan: { ...zuan, online: false, retrying: true, last_error: "fingerprint_mismatch" } } };
+    await tick(60_000);
+    expect(w.nodesSnapshot().peers.zuan).toMatchObject({ online: false, retrying: true, last_error: "fingerprint_mismatch", last_seen: zuan.last_seen });
+    expect(notified).toBe(2);
+
+    // 本机拉不到：reachable 变 false，peer 的最后一眼保留（不变量 8），degraded 的结论不动。
+    fail = true;
+    await tick(60_000);
+    expect(w.nodesSnapshot()).toEqual({ reachable: false, peers: { zuan: { ...zuan, online: false, retrying: true, last_error: "fingerprint_mismatch" } } });
+    expect(w.snapshot()).toBeNull();
+    expect(notified).toBe(3);
+    // 节点上上下下从不惊动横幅的订阅者（agora-bgr 的"没变就不通知"照旧成立）。
+    expect(bannerNotified).toBe(0);
+    w.stop();
+  });
+});
+
+describe("peersOf", () => {
+  it("normalizes the peers section and never lets one bad entry break the rest", () => {
+    expect(peersOf({ status: "ok" })).toEqual({});
+    expect(peersOf(null)).toEqual({});
+    expect(
+      peersOf({
+        status: "ok",
+        peers: {
+          ok: { online: true, last_seen: "2026-09-02T23:10:00Z", retrying: false, last_error: null },
+          odd: { online: "yes", last_seen: 5, last_error: "something_new" },
+          junk: 42,
+        },
+      }),
+    ).toEqual({
+      ok: { online: true, last_seen: "2026-09-02T23:10:00Z", retrying: false, last_error: null },
+      // 不认识的 last_error 当 null——前端只认四个类型，宁可少说也不瞎说。
+      odd: { online: false, last_seen: null, retrying: false, last_error: null },
+    });
   });
 });
 
