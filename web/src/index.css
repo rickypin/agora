@@ -117,3 +117,5 @@ select:disabled { opacity: 0.5; }
 
 /* 浏览器通知的权限条（MISSION §6.6）：只在权限还是 default 时出现，答过就没了。 */
 .notify-ask { display: flex; gap: 8px; align-items: center; padding: 4px 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+/* 运行时 degraded 横幅（MISSION §10.3；agora-bgr）：原因原文一行，恢复后自己消失。 */
+.runtime-degraded { padding: 4px 10px; border-bottom: 1px solid var(--border); background: #2a2410; color: var(--warn); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

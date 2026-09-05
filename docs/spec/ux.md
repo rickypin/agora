@@ -49,6 +49,10 @@
 
 Option+← / → 按词跳、粘贴、resize 重排、滚轮回看都走 xterm.js 原路，这一层不碰。这些字节进 pane 前还要过一道 `tmux attach` 客户端：它认得的键会按 pane 的终端类型**重新编码**（实测 tmux 3.7c 把 `ESC[H` / `ESC[F` 改发成 `ESC[1~` / `ESC[4~`），键义不变——守卫 `tests/terminal_keys.rs` 因此两种编码都接受。
 
+### 终端焦点（agora-p29）
+
+打开一个会话就该能直接打字，不用先点终端。TerminalView 在三处交焦点：① 挂载时 `term.focus()` 一次；② WS 收到 `status: attached` 再一次——新开的浏览器标签页里挂载那一次偶尔不生效（2026-09-03 目检：attach 成功、键入不进 pane、点一下终端才好），但用户这会儿已经在别的文本输入（侧栏过滤、Rename、New Agent 表单）里打字的话不抢；③ `.term-host` 上的 pointerdown 把焦点交回 xterm 的 helper textarea，点在 `.xterm` 之外的 padding 上也算——xterm 自己的 mousedown 只覆盖 `.xterm` 内部，padding 那一圈由 agora 取消浏览器缺省的 mousedown，不然焦点会被挪到 body。不在 pointerdown 上 `preventDefault`：那会连带取消后面的 mousedown / click，xterm 的选区靠它们。守卫 `web/src/TerminalView.test.tsx`。人工复现步骤在 M1a 演示剧本第 4 步（新标签页打开会话 → 直接键入）。
+
 Command Palette 支持 fuzzy search sessions / projects / nodes / actions（`New Claude in agora @ zuan`）。目标是让管理 20–50 个 agent 时仍然高效。手机端没有键盘，快捷键与命令面板只在桌面生效（`isDesktop()`：视口窄于 700 px 就不装 window keydown，命令面板也开不出来）。
 
 面板里选 `New <agent> in <project> @ <node>` 直接起会话，走的是和 New Agent 对话框同一个 `POST /api/sessions`，字段取默认值（项目名当 display_name、agent 的默认命令）——面板的意义就是不填表；要填 Task / Worktree 的走对话框（面板末尾那条 `New Agent…`）。侧栏过滤与面板共用 `web/src/fuzzy.ts` 的打分（连续命中、词首命中加分，同分保持原顺序），所以 Alt/Option+N 跳的第 N 条永远等于眼睛看到的第 N 条。
@@ -93,6 +97,18 @@ RUNNING
 - 权限问一次：`Notification.permission` 还是 `default` 时主区顶部有一条"agent 需要你时弹浏览器通知？ [允许通知] [以后再说]"，答过（granted / denied）或点了"以后再说"就没了，之后不再弹权限框；denied 时通知静默丢掉。
 - 弹：同一会话在通知中心只占一格（弹新的先 close 旧的；tag 每条唯一——macOS 上同 tag 替换只静默更新不弹横幅，2026-09-04 人眼验收实测）。
 - 点击：窗口拉到前面，该行成为侧栏 active 行——WAITING / TURN_DONE 的就地回答区随行展开（Allow / Deny / 下一条指令），不是把人扔进终端。
+
+## 运行时 degraded 横幅（MISSION §10.3；agora-bgr）
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ ⚠ 运行时 degraded：运行时 server 不可用: protocol version   │
+│   mismatch (client 8, server 7)。会话状态暂不可知，进程没有被杀。 │
+├─────────────────────────────────────────────────────────────┤
+│ [tabs…]                                                     │
+```
+
+主区顶部一行，`--warn` 色、暗黄底，只在 `/api/health` 的 `runtime.status = degraded` 时出现（agora 对 tmux 失明：版本过低、client / server 协议不匹配，ADR-001 D7）。文案 = `reason` 原文 + 固定的后半句；原文太长截断，完整原因放 `title`。没有它，用户看到的是一屋子 UNKNOWN 而不知道为什么。数据源是 `web/src/health.ts` 的 `HealthWatcher`（健康 60 s、degraded 10 s 重拉，见 `docs/spec/api.md` Health 节），运行时恢复后横幅自己消失，不用刷新。未认证门页不拉完整报告、没有这条横幅。守卫 `web/src/Workspace.test.tsx`、`web/src/health.test.ts`。
 
 ## New Agent 对话框线框（MISSION §6.4）
 

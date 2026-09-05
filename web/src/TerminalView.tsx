@@ -3,18 +3,24 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { handleTerminalKey } from "./keys";
-import { TerminalClient, type ExitInfo } from "./terminal";
+import { TerminalClient, type ExitInfo, type TerminalClientOptions } from "./terminal";
 
 /** scrollback 与运行时的 history-limit 对齐（ADR-001 D6）。 */
 export const SCROLLBACK = 10000;
 
 type Link = "connecting" | "attached" | "detached" | "exited";
 
+interface Props {
+  sessionId: string;
+  /** 测试注入：建 WS 的方式；默认同源 `/api/sessions/<id>/terminal`。 */
+  connect?: TerminalClientOptions["connect"];
+}
+
 /**
  * 一个会话的终端：xterm.js + FitAddon ↔ TerminalClient。
  * 组件卸载 = detach（MISSION §4.6）：只关 WS，agent 不受影响。
  */
-export function TerminalView({ sessionId }: { sessionId: string }) {
+export function TerminalView({ sessionId, connect }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const [link, setLink] = useState<Link>("connecting");
   const [exit, setExit] = useState<ExitInfo | null>(null);
@@ -38,9 +44,16 @@ export function TerminalView({ sessionId }: { sessionId: string }) {
     fit.fit();
 
     const client = new TerminalClient({
+      connect,
       onOutput: (data) => term.write(data),
       onStatus: (s) => {
-        if (s === "attached") setLink("attached");
+        if (s === "attached") {
+          setLink("attached");
+          // 挂载时那一次 focus 在新开的浏览器标签页里偶尔不生效（agora-p29，2026-09-03 目检：
+          // attach 成功但键入不进 pane，点一下终端才好）；attached 到达时再交一次焦点。
+          // 用户这会儿已经在别的输入框里打字的话不抢。
+          if (!typingElsewhere(el)) term.focus();
+        }
       },
       onExit: (e) => {
         setExit(e);
@@ -56,15 +69,30 @@ export function TerminalView({ sessionId }: { sessionId: string }) {
     const resize = term.onResize(({ cols, rows }) => client.sendResize(cols, rows));
     const ro = new ResizeObserver(() => fit.fit());
     ro.observe(el);
+    // 点到终端区域任何地方都把焦点交回 xterm 的 helper textarea（agora-p29）。不在 pointerdown 上
+    // preventDefault：取消 pointerdown 会连带取消后面的 mousedown / click，xterm 的选区靠它们。
+    const onPointerDown = () => term.focus();
+    // xterm 自己的 mousedown（preventDefault + focus）只覆盖 .xterm 内部；点在 .term-host 的
+    // padding 上时浏览器缺省会把焦点挪到 body，这里把那一圈也拦住。
+    const onMouseDown = (ev: MouseEvent) => {
+      if (ev.target === el) ev.preventDefault();
+    };
+    el.addEventListener("pointerdown", onPointerDown);
+    el.addEventListener("mousedown", onMouseDown);
     term.focus();
 
     return () => {
+      el.removeEventListener("pointerdown", onPointerDown);
+      el.removeEventListener("mousedown", onMouseDown);
       ro.disconnect();
       input.dispose();
       resize.dispose();
       client.close();
       term.dispose();
     };
+    // connect 是挂载时定死的测试注入，不进依赖：内联闭包每次渲染都是新引用，进了就会
+    // 每 setLink 一次重建终端与 WS。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, attempt]);
 
   return (
@@ -78,6 +106,13 @@ export function TerminalView({ sessionId }: { sessionId: string }) {
       <div className="term-host" ref={host} />
     </div>
   );
+}
+
+/** 焦点在终端之外的某个文本输入上（侧栏过滤、Rename、New Agent 表单…）。 */
+function typingElsewhere(host: HTMLElement): boolean {
+  const a = document.activeElement;
+  if (!a || a === document.body || host.contains(a)) return false;
+  return a instanceof HTMLInputElement || a instanceof HTMLTextAreaElement || a instanceof HTMLSelectElement || (a as HTMLElement).isContentEditable === true;
 }
 
 function linkLabel(link: Link, exit: ExitInfo | null): string {

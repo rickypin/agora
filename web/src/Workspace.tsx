@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
 import { partitionByAttention, sortByAttention } from "./attention";
 import { CommandPalette } from "./CommandPalette";
 import { fuzzyFilter } from "./fuzzy";
+import { HealthWatcher } from "./health";
 import { isDesktop, matchShortcut } from "./keys";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { browserDeps, Notifier, type NotifierDeps, type Permission } from "./notify";
@@ -22,15 +23,25 @@ interface Props {
   onRowRender?: (id: string) => void;
   /** 测试注入：浏览器通知的构造器与权限。 */
   notifyDeps?: NotifierDeps;
+  /** 测试注入：`/api/health` 的 runtime 段观察者。 */
+  health?: HealthWatcher;
 }
 
 /** Screen A 的侧栏（Attention Dashboard）+ Screen B：Tabs + 终端 + Session Settings。 */
-export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender, notifyDeps }: Props) {
+export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender, notifyDeps, health: givenHealth }: Props) {
   const store = useMemo(() => given ?? new SessionStore(), [given]);
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
   const catalog = useMemo(() => givenCatalog ?? catalogApi(), [givenCatalog]);
   const rows = useSessions(store);
   const unregistered = useUnregistered(store);
+  // 运行时 degraded（ADR-001 D7）：没有它，用户看到的是一屋子 UNKNOWN 却不知道是运行时失明（agora-bgr）。
+  // 只在配对之后（Workspace 才挂）带 cookie 拉完整报告；未认证的门页只用公开子集。
+  const health = useMemo(() => givenHealth ?? new HealthWatcher(), [givenHealth]);
+  const degraded = useSyncExternalStore(health.subscribe, health.snapshot, health.snapshot);
+  useEffect(() => {
+    health.start();
+    return () => health.stop();
+  }, [health]);
   const [tabs, dispatch] = useReducer(tabsReducer, emptyTabs);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newAgentOpen, setNewAgentOpen] = useState(false);
@@ -152,6 +163,11 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         onAdopt={adopt}
       />
       <section className="main">
+        {degraded !== null && (
+          <div className="runtime-degraded" data-testid="runtime-degraded" role="status" title={degraded}>
+            ⚠ 运行时 degraded：{degraded}。会话状态暂不可知，进程没有被杀。
+          </div>
+        )}
         {notifyPerm === "default" && (
           <div className="notify-ask" data-testid="notify-ask">
             <span>agent 需要你时弹浏览器通知？</span>

@@ -95,3 +95,5 @@ GET /api/health
     "tls": "external", "push": { "apple": true, "fcm": false },
     "peers": { "mac": { "online": false, "last_seen": "2026-09-02T23:10:00Z" } } }
 ```
+
+前端对 `runtime` 段的消费（agora-bgr）：配对之后 Workspace 带 cookie 拉完整形态（`web/src/health.ts` 的 `HealthWatcher`），`runtime.status = degraded` 时在主区顶部给一条横幅——`reason` 原文 + "会话状态暂不可知，进程没有被杀"——恢复后自动消失。这是前端唯一的一处轮询：degraded 是服务端每次请求现算的结论、没有事件推它，健康时 60 s 一次、degraded 期间 10 s 一次，拉不到就沿用上一次的结论不闪。未认证的门页只用公开子集判在线 / 不可达，公开子集没有 `runtime` 段、也不算 degraded（ADR-003 D1：`tests/health.rs` 守卫公开子集只有 `status` 一个键）。

@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { catalogApi, sessionApi, type FetchLike } from "./api";
 import type { SessionRow, SocketLike, UnregisteredRow } from "./events";
+import { HealthWatcher } from "./health";
 import type { NotificationLike, NotifierDeps, Permission } from "./notify";
 import { KILL_BODY } from "./SessionSettings";
 import { SessionStore } from "./store";
@@ -57,7 +58,7 @@ function fakeNotify(permission: Permission) {
   return { deps, created };
 }
 
-function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?: NotifierDeps) {
+function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?: NotifierDeps, health?: HealthWatcher) {
   const sock = new FakeSocket();
   const store = new SessionStore({
     connect: () => sock,
@@ -92,6 +93,8 @@ function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?
       catalog={catalogApi(f)}
       onRowRender={(id) => renders.push(id)}
       notifyDeps={notify ?? fakeNotify("denied").deps}
+      // 缺省一个健康的运行时；不给的话 Workspace 会去真的 fetch /api/health。
+      health={health ?? new HealthWatcher({ fetchHealth: async () => ({ status: "ok", runtime: { status: "ok", reason: null } }) })}
     />,
   );
   return { ui, store, sock, requests, renders, setKill: (fn: typeof killResponse) => (killResponse = fn) };
@@ -373,6 +376,29 @@ describe("Workspace", () => {
       await new Promise((r) => setTimeout(r, 5));
     });
     expect(screen.queryByTestId("hooks-unheard-n:c")).toBeNull();
+  });
+
+  it("shows the runtime's own degraded reason in a banner and drops it once health is ok again (agora-bgr)", async () => {
+    const reason = "运行时 server 不可用: protocol version mismatch (client 8, server 7)";
+    let report: unknown = { status: "ok", runtime: { status: "degraded", reason, path_source: "shell" } };
+    const health = new HealthWatcher({ fetchHealth: async () => report, okMs: 1e9, degradedMs: 1e9 });
+    const t = setup([{ ...row("n:a", "unknown"), alive: false }], [], undefined, health);
+    await online(t);
+    const banner = screen.getByTestId("runtime-degraded");
+    expect(banner.textContent).toBe(`⚠ 运行时 degraded：${reason}。会话状态暂不可知，进程没有被杀。`);
+    expect(banner.getAttribute("title")).toBe(reason);
+    // 运行时恢复（server 换代 / 升级完成）：下一次重拉转回 ok，横幅自己消失，不用刷新页面。
+    report = { status: "ok", runtime: { status: "ok", reason: null, path_source: "shell" } };
+    await act(async () => {
+      await health.refresh();
+    });
+    expect(screen.queryByTestId("runtime-degraded")).toBeNull();
+    // 公开子集（未认证形态，没有 runtime 段）不算 degraded：不会因此显示任何节点配置（ADR-003 D1）。
+    report = { status: "ok" };
+    await act(async () => {
+      await health.refresh();
+    });
+    expect(screen.queryByTestId("runtime-degraded")).toBeNull();
   });
 
   it("an external session is tagged in the sidebar and opens without a terminal (A16)", async () => {
