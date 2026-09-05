@@ -8,6 +8,9 @@
 //! 不变量 8 的两半：peer 离线后 `last_seen` 保留（stale 不是消失），`retrying` 永远会再变回
 //! true（退避可封顶、不可终止，参数见 `super::backoff`）。
 
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
 use serde::{Deserialize, Serialize, Serializer};
 
 /// 最后一次连接失败的**类型**。四类是 M2a 剧本点名要在 Header 上区分的（agora-7ku 设计字段
@@ -79,6 +82,52 @@ impl Default for PeerState {
     }
 }
 
+/// 全部 peer 的状态表：节点名 → 状态。`AppState` 持有一份，peer 客户端写、`/api/health` 读。
+/// 配置里的每个 peer 启动时先 `register`，还没连上的 peer 也出现在 health 里（离线、没见过），
+/// 而不是等第一次连上才"冒出来"——Header 从第一秒起就能告诉人有几台节点。
+#[derive(Debug, Clone, Default)]
+pub struct PeerStates(Arc<Mutex<BTreeMap<String, PeerState>>>);
+
+impl PeerStates {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 登记一个配置里的 peer；已有的不动（幂等）。
+    pub fn register(&self, name: &str) {
+        lock(&self.0).entry(name.to_owned()).or_default();
+    }
+
+    /// 见 `PeerState::seen`；没登记过的顺手登记。
+    pub fn seen(&self, name: &str, now_secs: i64) {
+        lock(&self.0)
+            .entry(name.to_owned())
+            .or_default()
+            .seen(now_secs);
+    }
+
+    /// 见 `PeerState::failed`；没登记过的顺手登记。
+    pub fn failed(&self, name: &str, err: PeerError) {
+        lock(&self.0)
+            .entry(name.to_owned())
+            .or_default()
+            .failed(err);
+    }
+
+    pub fn get(&self, name: &str) -> Option<PeerState> {
+        lock(&self.0).get(name).cloned()
+    }
+
+    /// 拷一份给 health 序列化（BTreeMap：JSON 键序稳定，测试与人眼都好比）。
+    pub fn snapshot(&self) -> BTreeMap<String, PeerState> {
+        lock(&self.0).clone()
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 fn ser_utc<S: Serializer>(secs: &Option<i64>, s: S) -> Result<S::Ok, S::Error> {
     match secs {
         Some(v) => s.serialize_str(&crate::clock::format_utc_secs(*v)),
@@ -133,6 +182,21 @@ mod tests {
         p.seen(T0 + 5);
         assert!(p.online && !p.retrying && p.last_error.is_none());
         assert_eq!(p.last_seen, Some(T0 + 5));
+    }
+
+    #[test]
+    fn registry_lists_configured_peers_before_first_contact_and_keeps_key_order() {
+        let table = PeerStates::new();
+        table.register("zuan");
+        table.register("mac");
+        table.seen("zuan", T0);
+        table.register("zuan"); // 幂等：不把已连上的打回初始
+        table.failed("mac", PeerError::Unauthorized);
+        let snap = table.snapshot();
+        assert_eq!(snap.keys().collect::<Vec<_>>(), ["mac", "zuan"]);
+        assert!(snap["zuan"].online && snap["zuan"].last_seen == Some(T0));
+        assert_eq!(snap["mac"].last_error, Some(PeerError::Unauthorized));
+        assert!(table.get("nope").is_none());
     }
 
     #[test]

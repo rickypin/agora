@@ -4,6 +4,8 @@
 //! 才是完整报告——这里刻意不让未认证请求看到任何能区分节点配置的字段。
 //! 运行时的 degraded 是**实时**结论：每次读运行时的成败都记进 `RuntimeStatus`，这里现算
 //! （agora-xqa.4）。所以运行时升级导致的失明会在 server 换代后自愈，不必重启 daemon。
+//! peers 段是 `AppState::peers` 的快照（src/peer/state.rs）：peer 客户端在连接成败时写，
+//! 这里只读——health 不去连任何 peer。
 
 use axum::extract::State;
 use axum::Json;
@@ -53,7 +55,9 @@ pub async fn health(principal: Option<Principal>, State(state): State<AppState>)
         "database": database,
         "tls": Value::Null,
         "push": { "apple": false, "fcm": false },
-        "peers": {},
+        // 节点名 → PeerState（src/peer/state.rs）：online / last_seen / retrying / last_error，
+        // 错误按类型；配置了却还没连上的 peer 也在（agora-7ku.12）。
+        "peers": state.peers.snapshot(),
     }))
 }
 

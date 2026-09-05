@@ -251,6 +251,10 @@ async fn serve() -> i32 {
         settings.raw.project_roots.clone(),
     ));
     state.runtime_path_source = path_source;
+    // 配置里的 peer 从第一秒起就在 health / Header 里（离线、没见过），不等连上才出现（MISSION §10.3）。
+    for p in &settings.raw.peers {
+        state.peers.register(&p.name);
+    }
     hooks.attach_events(state.events.clone(), state.node.clone());
     state.hooks = Some(hooks);
     // 状态变化没有人来通知：轮询求差发 /api/events。

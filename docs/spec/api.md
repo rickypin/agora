@@ -123,7 +123,9 @@ GET /api/health
     "runtime": { "status": "ok" | "degraded", "reason": null, "path_source": "shell" | "daemon" },   // ADR-001 D7；status/reason 每次请求现算，运行时恢复后自动转回 ok
     "database": true,
     "tls": "external", "push": { "apple": true, "fcm": false },
-    "peers": { "mac": { "online": false, "last_seen": "2026-09-02T23:10:00Z" } } }
+    "peers": { "mac": { "online": false, "last_seen": "2026-09-02T23:10:00Z", "retrying": true, "last_error": "fingerprint_mismatch" } } }
 ```
+
+`peers`（agora-7ku.12；模型在 `src/peer/state.rs`）：键是 `peers[].name`，配置了的 peer 从启动起就在（还没连上：`online: false`、`last_seen: null`、`retrying: false`、`last_error: null`）。`last_seen` 是上次成功交互的时刻，**本节点时钟**打的 UTC 文本（ADR-004：不信 peer 报的时间），离线后保留——这就是 stale 行的"上次见到"（不变量 8）。`retrying` 表示下一次重试已排定（退避 1 s 起步、30 s 封顶、永不放弃，参数见 `docs/spec/architecture.md`）。`last_error` 是最后一次失败的**类型**，只有四个值：`incompatible_version`（对方 `api_version` 不兼容，A33）、`fingerprint_mismatch`（证书 SPKI 指纹不符）、`unauthorized`（对方 401）、`unreachable`（拒绝 / 5 s 超时 / DNS 失败）；在线时为 `null`。前端只按这四个值渲染原因文案，不解析任何消息文本（MISSION §2.3 规则 10）。守卫 `tests/health.rs::health_peers_section_reports_each_peer_state_by_type`。
 
 前端对 `runtime` 段的消费（agora-bgr）：配对之后 Workspace 带 cookie 拉完整形态（`web/src/health.ts` 的 `HealthWatcher`），`runtime.status = degraded` 时在主区顶部给一条横幅——`reason` 原文 + "会话状态暂不可知，进程没有被杀"——恢复后自动消失。这是前端唯一的一处轮询：degraded 是服务端每次请求现算的结论、没有事件推它，健康时 60 s 一次、degraded 期间 10 s 一次，拉不到就沿用上一次的结论不闪。未认证的门页只用公开子集判在线 / 不可达，公开子集没有 `runtime` 段、也不算 degraded（ADR-003 D1：`tests/health.rs` 守卫公开子集只有 `status` 一个键）。

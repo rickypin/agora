@@ -99,6 +99,8 @@ pub struct AppState {
     /// daemon 重启；不可用的记 `PROBE_RETRY` 这么久再重探，装好了很快就好。
     /// 测试预先塞值免得真跑本机的 agent。
     pub probes: Arc<std::sync::Mutex<BTreeMap<String, (crate::adapter::VersionProbe, Instant)>>>,
+    /// 每个 peer 在本节点眼里的状态（MISSION §10.3）：peer 客户端写，`/api/health` 的 peers 段读。
+    pub peers: crate::peer::state::PeerStates,
 }
 
 /// 不可用的探测结果保留多久再重探。
@@ -116,6 +118,7 @@ impl AppState {
             runtime_path_source: "daemon",
             hooks: None,
             probes: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+            peers: crate::peer::state::PeerStates::new(),
         }
     }
 
