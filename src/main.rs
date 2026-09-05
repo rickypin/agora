@@ -123,6 +123,30 @@ async fn serve() -> i32 {
             }
         };
 
+    // 两个监听器最先绑（agora-apr，2026-09-05）：同一 AGORA_HOME 的第二个实例要在碰运行时 /
+    // 库 / reconcile / 投递箱之前就退出，且不能动活实例的任何东西。TCP 在前——端口占用是最常见
+    // 的死法；unix socket 的 bind 自己会先 connect 探活，活的就报 AlreadyRunning、不 unlink。
+    // 退出时只删自己绑的那个 socket 文件（socket_cleanup 的 Drop 比对 inode），别人的不动。
+    let http = match api::bind(addr).await {
+        Ok(l) => l,
+        Err(err) => {
+            report_bind_failure(&home, addr, &err).await;
+            return 1;
+        }
+    };
+    let socket_path = home.join(SOCKET_FILE);
+    let (sock, socket_cleanup) = match local::bind(&socket_path).await {
+        Ok(b) => b,
+        Err(local::SocketError::AlreadyRunning(path)) => {
+            eprintln!("已有实例在跑：{path} 有 daemon 在监听；要重启请先停掉它");
+            return 1;
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            return 1;
+        }
+    };
+
     let probe = env_probe::probe_path(None, std::time::Duration::from_secs(5));
     tracing::info!(component = "main", source = ?probe.source, reason = ?probe.reason, "PATH 探测");
     let path_source = if probe.source == env_probe::PathSource::Shell {
@@ -196,7 +220,6 @@ async fn serve() -> i32 {
     }
 
     // unix socket：CLI 经它铸造配对链接；origin 是 daemon 自己的监听地址。
-    let socket_path = home.join(SOCKET_FILE);
     let origin = format!("http://{addr}");
     let auth_for_socket = auth.clone();
     let hooks_for_socket = hooks.clone();
@@ -219,7 +242,7 @@ async fn serve() -> i32 {
             }
         })
     });
-    let socket_task = tokio::spawn(async move { local::serve(&socket_path, handler).await });
+    let socket_task = tokio::spawn(sock.serve(handler));
 
     let mut state = AppState::new(auth, sessions.clone(), &settings.node_id);
     state.agents = Arc::new(settings.raw.agents.clone());
@@ -238,23 +261,38 @@ async fn serve() -> i32 {
         settings.detector_interval,
         settings.raw.notifications.enabled,
     ));
+    // 两个 listening 都已打出，这一行才算数（agora-apr 的验收看日志顺序）。
     tracing::info!(component = "main", node = %settings.node_id, "daemon 就绪");
 
     let served = tokio::select! {
-        r = api::serve(addr, state) => r.map_err(|e| e.to_string()),
+        r = api::serve_on(http, state) => r.map_err(|e| e.to_string()),
         r = socket_task => match r {
             Ok(Err(e)) => Err(e.to_string()),
             Ok(Ok(())) => Err("socket 服务意外结束".into()),
             Err(e) => Err(e.to_string()),
         },
     };
-    let _ = std::fs::remove_file(home.join(SOCKET_FILE));
+    // 只删自己绑的那个 socket 文件；路径上若已是别的实例的文件则不动（agora-apr）。
+    drop(socket_cleanup);
     match served {
         Ok(()) => 0,
         Err(err) => {
             tracing::error!(component = "main", %err, "daemon 退出");
             1
         }
+    }
+}
+
+/// TCP 绑不上：先问问自己的 agora.sock 有没有活 daemon——有就是"用户又敲了一次 agora"或
+/// launchd/systemd 与手工各起一份（agora-apr），说人话；没有才是端口被别的程序占了。
+async fn report_bind_failure(home: &Path, addr: std::net::SocketAddr, err: &api::ServeError) {
+    let socket = home.join(SOCKET_FILE);
+    match local::request(&socket, &Request::Ping).await {
+        Ok(Response::Pong) => eprintln!(
+            "已有实例在跑：{} 有 daemon 应答，{addr} 也已被占用；要重启请先停掉它",
+            socket.display()
+        ),
+        _ => eprintln!("{err}；端口被别的程序占用？改 config.yaml 的 server.listen"),
     }
 }
 

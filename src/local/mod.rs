@@ -170,17 +170,46 @@ pub fn sync_handler(f: impl Fn(Request) -> Response + Send + Sync + 'static) -> 
     })
 }
 
-/// 绑定并一直服务。已有活的 daemon → `AlreadyRunning`；只剩下残留文件 → 删掉重绑。
-/// 权限：进程 umask 077 使文件生来 0600，再显式 set_permissions 兜一层。
-pub async fn serve(path: &Path, handler: Handler) -> Result<(), SocketError> {
-    // SAFETY: 同 ensure_home。
-    let me = unsafe { libc::getuid() };
-    serve_for_uid(path, handler, me).await
+/// 绑定好、还没开始 accept 的 socket：daemon 启动时先把它（和 TCP 监听器）绑住，再去碰
+/// 运行时 / 库 / reconcile——同一 AGORA_HOME 的第二个实例在这一步就退出，还什么都没动
+/// （agora-apr）。绑定与 accept 之间来连的 hook 排在内核 backlog 里，accept 开始后照常应答。
+pub struct BoundSocket {
+    listener: UnixListener,
 }
 
-/// 同 [`serve`]，但对端必须是 `uid`。生产永远传自己的 uid；测试用它演"其他用户来连"
-/// （单用户机器上造不出真的第二个 uid，只能把期望值换掉）。
-pub async fn serve_for_uid(path: &Path, handler: Handler, uid: u32) -> Result<(), SocketError> {
+/// 退出时删 socket 文件的句柄，只删自己绑的那一个：记住绑定时的 (dev, inode)，删前比对，
+/// 同路径若已换成别的实例绑的新文件就不动。2026-09-05 agora-apr 实测：第二个实例退出时
+/// 无条件 `remove_file` 把活实例的 socket 删了，`agora url` / hook 唤醒全部失联而 HTTP 照常。
+/// Drop 即删，所以起 daemon 的那一层把它留在自己的作用域里；`process::exit` 跳过 Drop 留下的
+/// 残留文件无害——下次启动 connect 不上就当陈旧文件重绑。
+#[derive(Debug)]
+pub struct SocketCleanup {
+    path: PathBuf,
+    dev: u64,
+    ino: u64,
+}
+
+impl SocketCleanup {
+    /// 路径上还是自己绑的那个文件 → 删掉并返回 true；已经没了或换成别人的 → 不动，false。
+    pub fn remove(&self) -> bool {
+        match std::fs::metadata(&self.path) {
+            Ok(m) if m.dev() == self.dev && m.ino() == self.ino => {
+                std::fs::remove_file(&self.path).is_ok()
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Drop for SocketCleanup {
+    fn drop(&mut self) {
+        self.remove();
+    }
+}
+
+/// 绑定。已有活的 daemon → `AlreadyRunning`，一个字节不动；只剩下残留文件 → 删掉重绑。
+/// 权限：进程 umask 077 使文件生来 0600，再显式 set_permissions 兜一层。
+pub async fn bind(path: &Path) -> Result<(BoundSocket, SocketCleanup), SocketError> {
     let display = path.display().to_string();
     let io = |source| SocketError::Io {
         path: display.clone(),
@@ -194,16 +223,64 @@ pub async fn serve_for_uid(path: &Path, handler: Handler, uid: u32) -> Result<()
     }
     let listener = UnixListener::bind(path).map_err(io)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(io)?;
+    let meta = std::fs::metadata(path).map_err(io)?;
     tracing::info!(component = "local", socket = %path.display(), "listening");
-    loop {
-        let (stream, _) = listener.accept().await.map_err(io)?;
-        let handler = handler.clone();
-        tokio::spawn(async move {
-            if let Err(err) = handle(stream, handler, uid).await {
-                tracing::debug!(component = "local", %err, "连接结束");
-            }
-        });
+    Ok((
+        BoundSocket { listener },
+        SocketCleanup {
+            path: path.to_owned(),
+            dev: meta.dev(),
+            ino: meta.ino(),
+        },
+    ))
+}
+
+impl BoundSocket {
+    /// 一直服务；对端必须是自己的 uid。
+    pub async fn serve(self, handler: Handler) -> Result<(), SocketError> {
+        // SAFETY: 同 ensure_home。
+        let me = unsafe { libc::getuid() };
+        self.serve_for_uid(handler, me).await
     }
+
+    /// 同 [`Self::serve`]，但对端必须是 `uid`。生产永远传自己的 uid；测试用它演"其他用户来连"
+    /// （单用户机器上造不出真的第二个 uid，只能把期望值换掉）。
+    pub async fn serve_for_uid(self, handler: Handler, uid: u32) -> Result<(), SocketError> {
+        loop {
+            let (stream, _) = self
+                .listener
+                .accept()
+                .await
+                .map_err(|source| SocketError::Io {
+                    path: self
+                        .listener
+                        .local_addr()
+                        .ok()
+                        .and_then(|a| a.as_pathname().map(|p| p.display().to_string()))
+                        .unwrap_or_default(),
+                    source,
+                })?;
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                if let Err(err) = handle(stream, handler, uid).await {
+                    tracing::debug!(component = "local", %err, "连接结束");
+                }
+            });
+        }
+    }
+}
+
+/// 绑定并一直服务（[`bind`] + [`BoundSocket::serve`]）；测试用。未来被 drop / abort 时顺手删掉
+/// 自己的 socket 文件。
+pub async fn serve(path: &Path, handler: Handler) -> Result<(), SocketError> {
+    let (sock, _cleanup) = bind(path).await?;
+    sock.serve(handler).await
+}
+
+/// 同 [`serve`]，对端必须是 `uid`。
+pub async fn serve_for_uid(path: &Path, handler: Handler, uid: u32) -> Result<(), SocketError> {
+    let (sock, _cleanup) = bind(path).await?;
+    sock.serve_for_uid(handler, uid).await
 }
 
 async fn handle(stream: UnixStream, handler: Handler, me: u32) -> std::io::Result<()> {

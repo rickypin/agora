@@ -251,13 +251,21 @@ async fn log_request(req: Request, next: Next) -> Response {
     resp
 }
 
-/// 在 `addr` 上跑到 SIGINT / SIGTERM 为止。
-pub async fn serve(addr: SocketAddr, state: AppState) -> Result<(), ServeError> {
+/// 绑定明文监听器。daemon 启动最先做这一步：端口占用是"第二个实例"最常见的死法，
+/// 要在碰运行时 / 库 / reconcile 之前就失败（agora-apr）。
+pub async fn bind(addr: SocketAddr) -> Result<tokio::net::TcpListener, ServeError> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|source| ServeError::Bind { addr, source })?;
     tracing::info!(component = "api", %addr, "listening");
+    Ok(listener)
+}
 
+/// 在已绑定的监听器上跑到 SIGINT / SIGTERM 为止。
+pub async fn serve_on(
+    listener: tokio::net::TcpListener,
+    state: AppState,
+) -> Result<(), ServeError> {
     axum::serve(
         listener,
         router(state).into_make_service_with_connect_info::<SocketAddr>(),

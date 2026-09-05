@@ -82,8 +82,9 @@ async fn socket_answers_same_uid_one_line_per_request() {
         }
     );
     server.abort();
-    // 没有 daemon → NotRunning，而不是挂住。
-    std::fs::remove_file(&path).unwrap();
+    // 没有 daemon → NotRunning，而不是挂住。abort 掉的 serve 会自己删 socket 文件（agora-apr
+    // 的清理守卫随 future 一起 drop），但 abort 是异步的，这里不赌它先到。
+    let _ = std::fs::remove_file(&path);
     assert!(matches!(
         local::request(&path, &Request::Ping).await,
         Err(local::SocketError::NotRunning(_))
@@ -118,4 +119,33 @@ async fn socket_rejects_other_uid() {
         "其他 uid 不该得到应答: {reply:?}"
     );
     server.abort();
+}
+
+/// agora-apr：退出清理只删自己绑的那个文件。同路径被换成别的实例绑的新文件后，旧句柄的
+/// `remove()` 与 Drop 都不动它；活实例在时 `bind` 报 AlreadyRunning，一个字节不动。
+#[tokio::test]
+async fn cleanup_only_removes_the_socket_it_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agora.sock");
+    let (first, first_cleanup) = local::bind(&path).await.unwrap();
+    // 有人在监听（还没 accept 也算：connect 进 backlog 即成功）→ 第二个绑不上、不 unlink。
+    assert!(matches!(
+        local::bind(&path).await,
+        Err(local::SocketError::AlreadyRunning(_))
+    ));
+    assert!(path.exists());
+    // 模拟"路径上换成了别的实例的文件"：把旧文件挪走（保证两个 inode 都活着、绝不复用），
+    // 再在原路径绑一个新的。
+    let moved = dir.path().join("agora.sock.old");
+    std::fs::rename(&path, &moved).unwrap();
+    let (second, second_cleanup) = local::bind(&path).await.unwrap();
+    assert!(!first_cleanup.remove(), "不是自己绑的文件不该删");
+    assert!(path.exists());
+    drop(first_cleanup);
+    assert!(path.exists(), "Drop 也不删别人的");
+    drop(first);
+    drop(second);
+    assert!(second_cleanup.remove(), "自己绑的才删");
+    assert!(!path.exists());
+    assert!(!second_cleanup.remove(), "已经没了 → false");
 }
