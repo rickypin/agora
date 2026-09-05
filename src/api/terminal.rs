@@ -34,7 +34,9 @@ pub async fn upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    if !same_origin(&headers) {
+    // 同源校验挡的是浏览器带 cookie 的跨站升级；peer 不是浏览器，Bearer / 进程内注入的
+    // Peer principal 跳过（ADR-003 D7 "Bearer 跳过"；agora-7ku.11 让 Peer 第一次真的到了这里）。
+    if matches!(principal, Principal::Human { .. }) && !same_origin(&headers) {
         tracing::warn!(component = "api", principal = %principal.log_id(), "拒绝跨站 WS 升级");
         return Err(AuthError::CrossOrigin.into());
     }

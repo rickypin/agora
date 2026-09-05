@@ -9,13 +9,14 @@ use std::sync::Arc;
 use agora::api::{self, AppState};
 use agora::auth::{Auth, AuthConfig, PairedVia, Principal};
 use agora::peer::registry::{PeerRegistry, Route};
-use agora::peer::transport::{InProcessTransport, PeerTransport, DEFAULT_TIMEOUT};
+use agora::peer::transport::{InProcessTransport, PeerTransport, WsMessage, DEFAULT_TIMEOUT};
 use agora::runtime::Runtime;
 use agora::session::{Db, SessionManager};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use axum::routing::get;
 use axum::{Json, Router};
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -150,4 +151,69 @@ async fn callee_sees_the_caller_as_peer_principal() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(json(resp).await, json!({ "kind": "peer", "name": "a" }));
+}
+
+#[tokio::test]
+async fn peer_ws_upgrade_skips_the_browser_origin_check() {
+    // ADR-003 D7 的同源校验是给带 cookie 的浏览器的；peer 不是浏览器，没有 Origin 也要能升级。
+    // 这条 WS 是真握手（duplex 上的 hyper + tungstenite），不是 oneshot 装出来的。
+    let a = Node::new("a");
+    let b = Node::new("b");
+    let to_b = peer(&b, &a);
+    let mut ws = to_b.connect_ws("/api/events").await.unwrap();
+    ws.send(WsMessage::Text("{\"type\":\"ping\"}".into()))
+        .await
+        .unwrap();
+    let reply = ws.next().await.unwrap().unwrap();
+    let text = reply.into_text().unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).unwrap(),
+        json!({ "type": "pong" })
+    );
+    ws.close(None).await.unwrap();
+}
+
+#[tokio::test]
+async fn ws_to_a_peer_that_is_offline_is_unreachable() {
+    let a = Node::new("a");
+    let b = Node::new("b");
+    let to_b = InProcessTransport::new(b.name, a.name, b.router(), DEFAULT_TIMEOUT);
+    to_b.set_offline(true);
+    let err = to_b.connect_ws("/api/events").await.unwrap_err();
+    assert!(
+        matches!(err, agora::peer::transport::TransportError::Unreachable(_)),
+        "{err:?}"
+    );
+}
+
+/// 进程内注入是接缝里唯一绕过 Bearer 的路径，只许出现在定义它、认它、写它的三个文件里。
+/// 有人把它接到网络路径上（比如某个中间件按 header 塞它），这里先红。
+#[test]
+fn in_process_peer_is_only_known_to_the_extractor_and_the_fake_transport() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let allowed = ["src/api/auth.rs", "src/api/mod.rs", "src/peer/transport.rs"];
+    let mut offenders = Vec::new();
+    let mut stack = vec![root.join("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            let body = std::fs::read_to_string(&path).unwrap_or_default();
+            if body.contains("InProcessPeer") && !allowed.contains(&rel.as_str()) {
+                offenders.push(rel);
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "InProcessPeer 只允许出现在 {allowed:?}，越界文件: {offenders:?}"
+    );
 }
