@@ -151,3 +151,23 @@ Kill sglog / Codex @ zuan?
 The running agent process will be killed. Its output stays until you clean it up.
 [Cancel] [Kill]
 ```
+
+## Header 节点状态（MISSION §10.3；agora-7ku.12）
+
+```
+agora                       AGENTS 12
+本机 ●   zuan ✗ 指纹不匹配 · 上次见到 23:10
+Running 5 · Needs Input 2 · …
+```
+
+侧栏就是 Dashboard，header 就是它的首行（上文 Attention Dashboard 线框的 `mac ● zuan ●`）；实现 `web/src/Header.tsx`，节点一行放在 `agora` 标题下面而不挤进标题行——260 px 的侧栏放不下 `zuan ✗ 指纹不匹配 · 上次见到 23:10`。本机排第一（名字固定"本机"：peer 的名字来自 `peers[].name`，本机 id 不在 health 里），peer 按 `/api/health` peers 段的键序。每枚：
+
+| 状态 | 显示 | 依据 |
+|---|---|---|
+| 在线 | `zuan ●`（绿） | `online: true`；在线只有名字和点，title 里有 `上次见到 <UTC>` |
+| stale | `zuan ○ 上次见到 23:10`（黄点） | `online: false`、无 `last_error`、有 `last_seen`——保留最后一眼，绝不消失（不变量 8） |
+| 异常 | `zuan ✗ 指纹不匹配 · 上次见到 23:10`（红） | `last_error` 的四个类型各一句：`incompatible_version` 版本不兼容、`fingerprint_mismatch` 指纹不匹配、`unauthorized` 未授权、`unreachable` 不可达；没见过就没有"上次见到" |
+| 未连接 | `zuan ○ 未连接`（灰） | 配置了、还没试过：`last_seen`、`last_error` 都是 null |
+| 本机 | `本机 ●` / `本机 ✗ 不可达` / `本机 … 探测中` | 上一次拉 `/api/health` 成功 / 失败 / 还没拉过 |
+
+"上次见到"是本节点时钟打的时间（MISSION §3.5，不信 peer 报的），显示本地时区 `HH:MM`，完整 UTC 在 title；`retrying: true` 时 title 尾部加"重试中"。原因文案只按 `last_error` 的类型选（MISSION §2.3 规则 10），不解析任何消息文本；不认识的值当没有错误。数据源是 `HealthWatcher` 同一次拉取带出的 peers 段（`nodesSnapshot` / `subscribeNodes`，与 degraded 横幅各自订阅），没有第二条轮询。守卫 `web/src/Header.test.tsx`（四态各一测）、`web/src/health.test.ts`、`web/src/Workspace.test.tsx`。

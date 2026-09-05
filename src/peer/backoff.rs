@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 /// 每次连接尝试的超时。devcenter 教训：`TcpStream::connect` 不带超时把 plan 拖满 45 s 并泄漏
-/// 120 s 的阻塞线程（docs/analysis/devcenter/appendix-b）。传输层（agora-7ku.11）按它设。
+/// 120 s 的阻塞线程（docs/analysis/devcenter/appendix-b-multihost.md）。传输层（agora-7ku.11）按它设。
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 指数退避的两个参数。没有"最多几次"——不变量 8 排除"重试 N 次后标 dead"，退避只封顶不终止。

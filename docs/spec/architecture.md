@@ -54,3 +54,20 @@ MISSION §3.5 说节点是 peer 的 API 客户端；代码里这条链路切成�
 fake 让对端看到 `Peer { name }` 靠请求扩展 `InProcessPeer`（`src/api/auth.rs`）：`Principal` 提取器在 Bearer 之前先认它。它不是 ADR-003 D1 禁止的例外路由——请求扩展不是 HTTP 头，线上任何字节都变不成它，只带 peer 名连 `Human` 都造不出来；守卫 `tests/peer_fake.rs::in_process_peer_is_only_known_to_the_extractor_and_the_fake_transport` 把它钉在定义、认、写它的三个文件里。Peer principal 不做浏览器的同源校验（ADR-003 D7 "Bearer 跳过"），`/api/events` 与终端的 WS 升级也是。
 
 单进程多节点的骨架就是这三样（MISSION §2.3 规则 9）：`tests/peer_fake.rs::two_in_process_daemons_can_call_each_other_as_peer` 让 A 以 Peer principal 调到 B 的 `GET /api/sessions`，agora-7ku.5 / agora-7ku.7 的 fake 多节点测试都以此为底。
+
+## peer 重连退避与状态模型（agora-7ku.12；A29 的策略半边）
+
+MISSION §3.5 只定行为契约（断线保留最后视图并标记、恢复后自动重连、不变量 8），参数属实现形状，落地在这里：
+
+| 参数 | 值 | 为什么 | 代码 |
+|---|---|---|---|
+| 退避 | 指数，1 s 起步，每次翻倍 | 刚断的多半是瞬断，先快试 | `src/peer/backoff.rs` `BackoffPolicy::PEER` |
+| 封顶 | 30 s | Mac 睡眠是常态场景（MISSION §0.2），醒来后要秒级恢复；上限越高醒来越慢 | 同上 |
+| jitter | 在 [d/2, d] 里**往下**抖，jitter ∈ [0, 1) 由调用方注入 | 只往下抖，带 jitter 也不会超上限；jitter = 0 就是 1, 2, 4, …, 30 的整齐序列，测试好断言 | `BackoffPolicy::delay(failures, jitter)`；生产用 `random_jitter()` |
+| 放弃 | **永不** | 不变量 8 排除"重试 N 次后标 dead"；`Backoff` 作为 `Iterator` 永远给 `Some`，计数饱和不回绕 | `Backoff` |
+| 每次尝试超时 | 5 s | devcenter 教训：`TcpStream::connect` 无超时把 plan 拖满 45 s 并泄漏 120 s 阻塞线程（`docs/analysis/devcenter/appendix-b-multihost.md`） | `CONNECT_TIMEOUT`，传输层（agora-7ku.11）按它设 |
+| 立即重试 | 用户点开 stale peer 的会话时插一次 | 人已经在等了，不该再等退避 | agora-7ku.6 |
+
+全是纯函数：不读时钟、不掷骰子，真正的等待交给调用方的 `tokio::time::sleep`；单测不需要假时钟，直接断言返回值（`src/peer/backoff.rs` 的 5 个单测）。V1 参数写死，不造配置面；要暴露再挂 `peers[]` 或全局 `status` 段。
+
+**每 peer 状态模型**（`src/peer/state.rs`；JSON 形态与字段含义见 `docs/spec/api.md` Health 节）：`PeerState { online, last_seen, retrying, last_error }`，两条转移——`seen(now)` 一次成功交互（在线、刷新 last_seen、清错误、停退避）、`failed(err)` 一次失败（离线、记类型、进入退避，**last_seen 不动**）。`last_seen` 由本节点时钟打（ADR-004），是 stale 行的"上次见到"。`PeerError` 只有四个类型：`IncompatibleVersion` / `FingerprintMismatch` / `Unauthorized` / `Unreachable`——按类型不按文本（MISSION §2.3 规则 10），Header 与 stale 行只据此选文案。`PeerStates` 是节点名 → 状态的表，挂在 `AppState`：`main.rs` 启动时把 `peers[]` 的名字登记进去（还没连上的 peer 从第一秒起就在 health 里），peer 客户端（agora-7ku.5）在成败时写，`/api/health` 只读快照、不去连任何 peer。Header 的渲染见 `docs/spec/ux.md`「Header 节点状态」。
