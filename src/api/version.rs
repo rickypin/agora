@@ -207,6 +207,38 @@ mod tests {
         .is_err());
     }
 
+    /// 页面按哪一版构建就按哪一版比：`web/src/health.ts` 的 `API_VERSION` 字面量必须与这里一致，
+    /// 否则每个浏览器都会对着自己的节点报"不兼容"。守卫读的是源码文本（同 tests/arch_boundary.rs），
+    /// 不是运行时靠文本判断——那条禁令（规则 10）管的是程序逻辑，不管构建期的一致性检查。
+    #[test]
+    fn page_is_built_against_the_same_api_version() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web/src/health.ts"),
+        )
+        .expect("web/src/health.ts 应存在");
+        let line = src
+            .lines()
+            .find(|l| l.starts_with("export const API_VERSION"))
+            .expect("web/src/health.ts 应有 `export const API_VERSION: ApiVersion = { major: N, minor: M };`");
+        let number = |key: &str| -> u32 {
+            let at = line
+                .find(key)
+                .unwrap_or_else(|| panic!("{line:?} 里没有 {key}"));
+            line[at + key.len()..]
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse()
+                .unwrap_or_else(|_| panic!("{line:?} 里 {key} 后面不是整数"))
+        };
+        let page = ApiVersion::new(number("major:"), number("minor:"));
+        assert_eq!(
+            page, API_VERSION,
+            "web/src/health.ts 的 API_VERSION（{page}）与 src/api/version.rs 的（{API_VERSION}）不一致：两边要同一个 commit 里一起改"
+        );
+    }
+
     #[test]
     fn display_is_major_dot_minor() {
         assert_eq!(ApiVersion::new(1, 0).to_string(), "1.0");

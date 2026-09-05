@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { catalogApi, sessionApi, type FetchLike } from "./api";
 import type { SessionRow, SocketLike, UnregisteredRow } from "./events";
-import { HealthWatcher } from "./health";
+import { API_VERSION, HealthWatcher, VersionWatcher } from "./health";
 import type { NotificationLike, NotifierDeps, Permission } from "./notify";
 import { KILL_BODY } from "./SessionSettings";
 import { SessionStore } from "./store";
@@ -58,7 +58,7 @@ function fakeNotify(permission: Permission) {
   return { deps, created };
 }
 
-function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?: NotifierDeps, health?: HealthWatcher) {
+function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?: NotifierDeps, health?: HealthWatcher, version?: VersionWatcher) {
   const sock = new FakeSocket();
   const store = new SessionStore({
     connect: () => sock,
@@ -95,6 +95,8 @@ function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?
       notifyDeps={notify ?? fakeNotify("denied").deps}
       // 缺省一个健康的运行时；不给的话 Workspace 会去真的 fetch /api/health。
       health={health ?? new HealthWatcher({ fetchHealth: async () => ({ status: "ok", runtime: { status: "ok", reason: null } }) })}
+      // 缺省一个同版本的节点；不给的话 Workspace 会去真的 fetch /api/system。
+      version={version ?? new VersionWatcher({ fetchSystem: async () => ({ api_version: API_VERSION, version: "test", node: "n" }) })}
     />,
   );
   return { ui, store, sock, requests, renders, setKill: (fn: typeof killResponse) => (killResponse = fn) };
@@ -412,6 +414,58 @@ describe("Workspace", () => {
       await health.refresh();
     });
     expect(screen.queryByTestId("runtime-degraded")).toBeNull();
+  });
+
+  it("shows the api_version banner and renders no session data when the node speaks another major; re-checks on WS reconnect and comes back once compatible (agora-7ku.4)", async () => {
+    let system: unknown = { api_version: { major: 2, minor: 0 }, version: "0.9.0", node: "n" };
+    const version = new VersionWatcher({ fetchSystem: async () => system, page: { major: 1, minor: 0 } });
+    const t = setup([row("n:a"), row("n:b", "waiting")], [], undefined, undefined, version);
+    // 首连：WS 连上的那一刻比一次。
+    await online(t);
+    expect(version.checks).toBe(1);
+    const banner = screen.getByTestId("api-version-mismatch");
+    expect(banner.textContent).toBe("⚠ 节点 API 版本 2.0，页面按 1.0 构建，请刷新页面");
+    expect(banner.getAttribute("title")).toBe("节点 API 版本 2.0，页面按 1.0 构建，请刷新页面");
+    // 会话区一个字不渲染：侧栏行、Tabs、终端都不在——快照已经到了 store 里，但形态可能变了，渲染就是错读。
+    expect(t.store.snapshot()).toHaveLength(2);
+    expect(screen.queryByTestId("row-n:a")).toBeNull();
+    expect(screen.queryByTestId("row-n:b")).toBeNull();
+    expect(screen.queryByText("从左侧选一个 agent。")).toBeNull();
+    expect(mounted).toEqual([]);
+    // 横幅在 runtime-degraded 那一条的位置与样式上，不是第二套。
+    expect(banner.className).toBe("runtime-degraded");
+
+    // 读不出版本（旧二进制的裸整数）同样是不兼容，文案指向升级节点。
+    system = { api_version: 1, version: "0.0.1", node: "n" };
+    await act(async () => {
+      t.sock.onopen?.({});
+    });
+    await flush();
+    expect(version.checks).toBe(2);
+    expect(screen.getByTestId("api-version-mismatch").textContent).toBe("⚠ 节点没有报告可识别的 API 版本，页面按 1.0 构建，请升级节点后刷新页面");
+
+    // 节点升级完成、WS 重连：版本对上了，页面自己回来，不用用户做什么。
+    system = { api_version: { major: 1, minor: 3 }, version: "1.3.0", node: "n" };
+    await act(async () => {
+      t.sock.onopen?.({});
+    });
+    await flush();
+    expect(version.checks).toBe(3);
+    expect(screen.queryByTestId("api-version-mismatch")).toBeNull();
+    expect(screen.getByTestId("row-n:a")).toBeTruthy();
+    expect(screen.getByTestId("row-n:b")).toBeTruthy();
+  });
+
+  it("a compatible node shows no api_version banner, minor differences included (agora-7ku.4)", async () => {
+    const version = new VersionWatcher({
+      fetchSystem: async () => ({ api_version: { major: 1, minor: 9 }, version: "1.9.0", node: "n" }),
+      page: { major: 1, minor: 0 },
+    });
+    const t = setup([row("n:a")], [], undefined, undefined, version);
+    await online(t);
+    expect(version.snapshot()?.kind).toBe("compatible");
+    expect(screen.queryByTestId("api-version-mismatch")).toBeNull();
+    expect(screen.getByTestId("row-n:a")).toBeTruthy();
   });
 
   it("an external session is tagged in the sidebar and opens without a terminal (A16)", async () => {

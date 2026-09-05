@@ -85,6 +85,11 @@ export interface EventsClientOptions {
   onDecisionResolved?: (e: { id: string; tool_use_id: string; via: string }) => void;
   /** 未登记会话只随全量快照来（事件流不推它们）；每次 resync 后回调。 */
   onUnregistered?: (rows: UnregisteredRow[]) => void;
+  /**
+   * WS 每次连上（启动的首连、断流后的重连）时回调，在重拉全量之前。节点的 api_version 比对
+   * 挂这里（agora-7ku.4）：升级节点必然重启 daemon、WS 必然断一次，所以换代总能在这一刻被看见。
+   */
+  onOpen?: () => void;
 }
 
 export function defaultSocket(): SocketLike {
@@ -132,6 +137,7 @@ export class EventsClient {
     this.socket = sock;
     sock.onopen = () => {
       this.backoff = this.opts.reconnectMinMs ?? 1000;
+      this.opts.onOpen?.();
       // 连上（含重连）先对齐全量：断流期间丢掉的事件不可能补回来。
       void this.resync();
     };

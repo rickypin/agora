@@ -16,11 +16,14 @@ export class SessionStore {
   changes = 0;
   /** `notification` 事件的出口；Workspace 装上 Notifier（web/src/notify.ts）。 */
   onNotification: ((n: Incoming) => void) | null = null;
+  /** WS 每次连上的出口；Workspace 挂 api_version 比对（web/src/health.ts 的 VersionWatcher）。 */
+  onOpen: (() => void) | null = null;
 
-  constructor(opts: Omit<EventsClientOptions, "onChange" | "onUnregistered" | "onNotification"> = {}) {
+  constructor(opts: Omit<EventsClientOptions, "onChange" | "onUnregistered" | "onNotification" | "onOpen"> = {}) {
     this.client = new EventsClient({
       ...opts,
       onNotification: (n) => this.onNotification?.(n),
+      onOpen: () => this.onOpen?.(),
       onChange: (map) => {
         this.changes += 1;
         this.rows = [...map.values()];

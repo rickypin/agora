@@ -120,3 +120,124 @@ export class HealthWatcher {
     this.timer = setTimeout(() => void this.poll(), delay);
   }
 }
+
+// ---------- API 版本（docs/spec/api.md「api_version 兼容规则」；MISSION §7.3；agora-7ku.4） ----------
+
+/** `GET /api/system` 里的 `api_version`：`{ major, minor }`。 */
+export interface ApiVersion {
+  major: number;
+  minor: number;
+}
+
+/**
+ * 页面构建时对着的 API 版本。与 src/api/version.rs 的 `API_VERSION` 同步改——
+ * Rust 单测 `page_is_built_against_the_same_api_version` 读这一行钉住两边一致，
+ * 所以这行的写法（`{ major: N, minor: M }` 字面量）别改成别的形态。
+ */
+export const API_VERSION: ApiVersion = { major: 1, minor: 0 };
+
+/**
+ * 版本比对的结论，按类型分类（MISSION §2.3 规则 10）：
+ * - compatible：同 major，minor 谁大谁小都能对话；
+ * - major_mismatch：形态可能变了，读了就是错读；
+ * - unreadable：`api_version` 缺失或不是 `{ major, minor }`——旧二进制的裸整数也算，不猜成 1.0。
+ */
+export type VersionVerdict =
+  | { kind: "compatible"; node: ApiVersion; page: ApiVersion }
+  | { kind: "major_mismatch"; node: ApiVersion; page: ApiVersion }
+  | { kind: "unreadable"; page: ApiVersion };
+
+function isVersionNumber(n: unknown): n is number {
+  return typeof n === "number" && Number.isInteger(n) && n >= 0;
+}
+
+/** 读 `api_version` 的值；不是两个非负整数的对象就是 null。 */
+export function parseApiVersion(v: unknown): ApiVersion | null {
+  if (typeof v !== "object" || v === null) return null;
+  const { major, minor } = v as Partial<Record<"major" | "minor", unknown>>;
+  if (!isVersionNumber(major) || !isVersionNumber(minor)) return null;
+  return { major, minor };
+}
+
+/** 对 `GET /api/system` 的原始响应体下结论；`page` 缺省是本页面构建时的版本。 */
+export function checkApiVersion(system: unknown, page: ApiVersion = API_VERSION): VersionVerdict {
+  const raw = typeof system === "object" && system !== null ? (system as { api_version?: unknown }).api_version : undefined;
+  const node = parseApiVersion(raw);
+  if (node === null) return { kind: "unreadable", page };
+  if (node.major !== page.major) return { kind: "major_mismatch", node, page };
+  return { kind: "compatible", node, page };
+}
+
+export function formatApiVersion(v: ApiVersion): string {
+  return `${v.major}.${v.minor}`;
+}
+
+/**
+ * 不兼容时横幅的文案；兼容或还没有结论 → null（什么都不显示）。
+ * 刷新还是升级按数字判：节点比页面新，页面是升级前留下的旧标签页，刷新就好；
+ * 节点比页面旧（或读不出版本），刷新只会拿到同样旧的节点，得升级节点。
+ */
+export function versionBlocked(v: VersionVerdict | null): string | null {
+  if (v === null || v.kind === "compatible") return null;
+  const page = formatApiVersion(v.page);
+  if (v.kind === "unreadable") {
+    return `节点没有报告可识别的 API 版本，页面按 ${page} 构建，请升级节点后刷新页面`;
+  }
+  const hint = v.node.major > v.page.major ? "请刷新页面" : "请升级节点后刷新页面";
+  return `节点 API 版本 ${formatApiVersion(v.node)}，页面按 ${page} 构建，${hint}`;
+}
+
+async function defaultFetchSystem(): Promise<unknown> {
+  const resp = await apiFetch("/api/system");
+  if (!resp.ok) throw new Error(`GET /api/system ${resp.status}`);
+  try {
+    return await resp.json();
+  } catch {
+    // 200 却不是 JSON：这是节点在说别的协议，不是网络抖动——交给 checkApiVersion 判成 unreadable。
+    return undefined;
+  }
+}
+
+export interface VersionWatcherOptions {
+  /** 拉一次 `/api/system`；默认 `apiFetch("/api/system")`。 */
+  fetchSystem?: () => Promise<unknown>;
+  /** 页面自己的版本；默认 `API_VERSION`，测试用来造不兼容。 */
+  page?: ApiVersion;
+}
+
+/**
+ * 盯着节点的 `api_version`（agora-7ku.4）。
+ *
+ * 不轮询：`check()` 由 Workspace 在 `/api/events` 每次连上时调一次（启动的首连、断流后的重连）——
+ * 升级节点必然重启 daemon、WS 必然断一次，换代总能在重连时被看见。拉不到（daemon 正在重启 /
+ * 5xx / 401）沿用上一次结论，不在"不兼容"与"正常"之间闪；一次都没成功过就是 null（无结论，
+ * 页面照常渲染——没有结论不等于不兼容，而且拉不到 /api/system 时会话也拉不到，无所谓错读）。
+ */
+export class VersionWatcher {
+  private verdict: VersionVerdict | null = null;
+  private listeners = new Set<() => void>();
+  /** 查过几次（测试断言用）。 */
+  checks = 0;
+
+  constructor(private readonly opts: VersionWatcherOptions = {}) {}
+
+  subscribe = (l: () => void): (() => void) => {
+    this.listeners.add(l);
+    return () => this.listeners.delete(l);
+  };
+
+  snapshot = (): VersionVerdict | null => this.verdict;
+
+  async check(): Promise<void> {
+    this.checks += 1;
+    let next = this.verdict;
+    try {
+      next = checkApiVersion(await (this.opts.fetchSystem ?? defaultFetchSystem)(), this.opts.page ?? API_VERSION);
+    } catch {
+      /* 拉不到：沿用上一次的结论 */
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.verdict)) return;
+    this.verdict = next;
+    for (const l of this.listeners) l();
+  }
+}

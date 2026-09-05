@@ -3,7 +3,7 @@ import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api"
 import { partitionByAttention, sortByAttention } from "./attention";
 import { CommandPalette } from "./CommandPalette";
 import { fuzzyFilter } from "./fuzzy";
-import { HealthWatcher } from "./health";
+import { HealthWatcher, versionBlocked, VersionWatcher } from "./health";
 import { isDesktop, matchShortcut } from "./keys";
 import { NewAgentDialog } from "./NewAgentDialog";
 import { browserDeps, Notifier, type NotifierDeps, type Permission } from "./notify";
@@ -26,12 +26,14 @@ interface Props {
   notifyDeps?: NotifierDeps;
   /** 测试注入：`/api/health` 的 runtime 段观察者。 */
   health?: HealthWatcher;
+  /** 测试注入：`/api/system` 的 api_version 比对。 */
+  version?: VersionWatcher;
   /** 测试注入：终端 WS 的建法（透传给 TerminalView）。 */
   terminalConnect?: TerminalClientOptions["connect"];
 }
 
 /** Screen A 的侧栏（Attention Dashboard）+ Screen B：Tabs + 终端 + Session Settings。 */
-export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender, notifyDeps, health: givenHealth, terminalConnect }: Props) {
+export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender, notifyDeps, health: givenHealth, version: givenVersion, terminalConnect }: Props) {
   const store = useMemo(() => given ?? new SessionStore(), [given]);
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
   const catalog = useMemo(() => givenCatalog ?? catalogApi(), [givenCatalog]);
@@ -45,6 +47,18 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     health.start();
     return () => health.stop();
   }, [health]);
+  // API 版本（MISSION §7.3；agora-7ku.4）：节点各自原地升级，这个标签页可能是升级前留下的旧页面。
+  // 不轮询——挂在 /api/events 每次连上的那一刻比一次（升级必然重启 daemon、WS 必然断一次）。
+  // 这个 effect 要排在 store.start() 的那个之前：onOpen 得在首连之前装好。
+  const version = useMemo(() => givenVersion ?? new VersionWatcher(), [givenVersion]);
+  const verdict = useSyncExternalStore(version.subscribe, version.snapshot, version.snapshot);
+  const blocked = versionBlocked(verdict);
+  useEffect(() => {
+    store.onOpen = () => void version.check();
+    return () => {
+      store.onOpen = null;
+    };
+  }, [store, version]);
   const [tabs, dispatch] = useReducer(tabsReducer, emptyTabs);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newAgentOpen, setNewAgentOpen] = useState(false);
@@ -157,6 +171,22 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [paletteOpen, newAgentOpen, visible, tabs.active, openTab]);
+
+  if (blocked !== null) {
+    // 节点与页面不是同一个 API major（或读不出版本）：只留横幅，侧栏 / Tabs / 终端一概不挂——
+    // 形态可能已经变了，渲染出来的每个字段都可能是错读，空白比错读诚实（MISSION §7.3）。
+    // 横幅就是 agora-bgr 的 runtime-degraded 那一条的位置与样式，不做第二套。store 与 health
+    // 照常跑着：下一次 WS 重连再比一次，版本对上了页面自己回来，不需要用户做什么。
+    return (
+      <div className="workspace">
+        <section className="main">
+          <div className="runtime-degraded" data-testid="api-version-mismatch" role="alert" title={blocked}>
+            ⚠ {blocked}
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="workspace">
