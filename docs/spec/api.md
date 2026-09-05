@@ -50,6 +50,35 @@ agora 没起过的会话经 hook 自己出现（§5.4，A16 / A22 合流）：�
 
 每条 `/api/` 请求写一行结构化日志：方法、路径、状态、耗时、principal（未认证请求该栏为空）；不记请求体（MISSION §10.2）。
 
+## api_version 兼容规则（MISSION §7.3）
+
+```
+GET /api/system
+→ { "api_version": { "major": 1, "minor": 0 },   // API 形态的版本；与二进制版本无关
+    "version": "0.1.0",                          // 二进制（crate）版本，只给人看，程序不据此判断
+    "node": "mac" }
+```
+
+每个节点各自原地升级，N 个节点的 `api_version` 会不一致（MISSION §2.3 规则 10）；节点的 API 有两种调用方——浏览器页面与 peer 节点——两者都在读任何业务数据之前先比版本，不兼容就提示或降级，**绝不静默错读**。
+
+**递增规则**（改形态与改版本号在同一个 commit；形态变更记在本文对应端点的小节）：
+
+- **major +1**（minor 归 0）：任何会让老调用方错读的改动——删字段、改字段类型或语义、改端点路径 / 方法 / 状态码、改错误类型名、改 WS 消息形态、改会话 id 形态。
+- **minor +1**：只增不删——新字段、新端点、新错误类型、新 WS 消息类型、新的可选请求参数。老调用方忽略不认识的字段与消息类型照常工作；新调用方对老节点缺失的字段按"没有"处理，不按错误。
+- 首个版本 `1.0`；`api_version` 从这条规则落地起就是 `{ major, minor }` 对象，此前二进制回的裸整数 `1` 不再被任何调用方接受。
+
+**兼容判定**（`agora::api::version`，`check(ours, theirs)`；结论是枚举，按类型分类、不做字符串匹配）：
+
+- major 相同 → **兼容**：`Compatibility::Same` / `PeerNewer` / `PeerOlder` 三档只区分 minor 的高低，用于日志与提示——对方 minor 更大，多出来的字段本方看不懂、忽略；对方 minor 更小，本方要的字段可能缺、按缺省处理。**不得因为 minor 不同拒绝对话**，否则滚动升级期间整个集群互相看不见。
+- major 不同 → **不兼容** `Incompatible::MajorMismatch { ours, theirs }`：不读对方任何业务数据。
+- `api_version` 缺失、不是 `{ major, minor }` 两个非负整数（含旧二进制的裸整数） → **不兼容** `Incompatible::Unreadable`：对方不是本协议的节点或早于本规则，同样不读。`negotiate(ours, body)` 从 `GET /api/system` 的原始 JSON 一步得到上面两类结论。
+
+**调用方的义务**：
+
+- 浏览器（`web/src/health.ts`）：页面带着构建时的 `API_VERSION`（与 `agora::api::version::API_VERSION` 同步改，单测钉住两边一致），在 `/api/events` 每次连上（启动的首连、断流后的重连）时读一次 `/api/system`——升级节点必然重启 daemon、WS 必然断一次，所以换代总能在重连时被看见，不必轮询。不兼容 → 主区顶部横幅「节点 API 版本 X，页面按 Y 构建，请刷新页面 / 升级节点」（复用 agora-bgr 的 runtime-degraded 横幅位置与样式，不做第二套），侧栏、Tabs、终端一概不渲染；事件流照常保持连接，下一次重连版本对上了页面自己恢复。拉不到 `/api/system`（网络 / 5xx / 401）沿用上一次结论，不在"不兼容"与"正常"之间闪。
+- peer 客户端（agora-7ku.5）：连 peer 的第一步就是 `GET /api/system` 过 `negotiate`；不兼容 → 该 peer 标 `incompatible_version`（每 peer 状态模型见 agora-7ku.12），不拉 `/api/sessions`、不并入视图、不转发写操作，按退避照常重试——对方升级到同 major 后自愈，不需要人干预。
+- 两边都只按 major 决定"读不读"，minor 只影响提示。
+
 ## WebSocket
 
 ```
