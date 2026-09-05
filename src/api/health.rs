@@ -10,6 +10,7 @@ use axum::Json;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use super::version::{SystemInfo, API_VERSION};
 use super::AppState;
 use crate::auth::Principal;
 
@@ -56,13 +57,13 @@ pub async fn health(principal: Option<Principal>, State(state): State<AppState>)
     }))
 }
 
-/// 调用方版本不一致时必须识别并降级或提示，不得静默错读（MISSION §7.3）。
-pub const API_VERSION: u32 = 1;
-
-pub async fn system(_principal: Principal, State(state): State<AppState>) -> Json<Value> {
-    Json(json!({
-        "api_version": API_VERSION,
-        "version": env!("CARGO_PKG_VERSION"),
-        "node": &*state.node,
-    }))
+/// `GET /api/system`：调用方读任何业务数据之前先拿这个比版本（MISSION §7.3；
+/// 规则与判定在 `super::version`，docs/spec/api.md「api_version 兼容规则」）。
+/// 响应是有类型的 [`SystemInfo`]，peer 客户端用同一个类型反序列化，形态只在一处定义。
+pub async fn system(_principal: Principal, State(state): State<AppState>) -> Json<SystemInfo> {
+    Json(SystemInfo {
+        api_version: API_VERSION,
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        node: state.node.to_string(),
+    })
 }

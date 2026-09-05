@@ -83,8 +83,22 @@ async fn system_reports_api_version_and_node() {
     assert_eq!(resp.status(), StatusCode::OK);
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["api_version"], agora::api::API_VERSION);
+    // api_version 是 { major, minor } 对象（docs/spec/api.md「api_version 兼容规则」）；
+    // peer 客户端拿同一个 SystemInfo 类型反序列化，所以这里也走一遍。
+    assert_eq!(
+        json["api_version"],
+        serde_json::json!({ "major": agora::api::API_VERSION.major, "minor": agora::api::API_VERSION.minor })
+    );
     assert_eq!(json["node"], common::NODE);
+    let info: agora::api::SystemInfo = serde_json::from_value(json).unwrap();
+    assert_eq!(info.api_version, agora::api::API_VERSION);
+    assert_eq!(
+        agora::api::version::negotiate(
+            agora::api::API_VERSION,
+            &serde_json::to_value(&info).unwrap()
+        ),
+        Ok(agora::api::Compatibility::Same)
+    );
 }
 
 #[tokio::test]
