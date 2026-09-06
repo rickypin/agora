@@ -25,6 +25,10 @@ pub const MAX_HOLDS_PER_NODE: usize = 256;
 /// 默认挂起上限；每个宿主可以更短（`AgentHooks::hold_timeout`，Codex 是秒级），永远先于
 /// agent 的 hook timeout 退出。
 pub const HOLD_TIMEOUT: Duration = crate::adapter::hooks::DEFAULT_HOLD_TIMEOUT;
+/// hold 登记后多久内 sweep 不拿"状态机里没这个键"当解除依据（agora-9cd）。`begin_wake` 先 ingest
+/// （事件进状态机、`pending` 插入键）再 hold，正常顺序下 hold 一登记状态机里就有键；这 2 s 只是保险，
+/// 免得把刚登记、状态机那边还没来得及看见的 hold 当孤儿放掉。
+pub const HOLD_SETTLE: Duration = Duration::from_secs(2);
 
 /// 一条已应用的事件：状态机（agora-dvh.4）的输入，现阶段只进账本。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -672,6 +676,34 @@ impl Receiver {
                 if !view.alive {
                     self.resolve_session(&s, "exit");
                 }
+            }
+        }
+        // 状态机已经没有这个挂起、hook 进程却还在 socket 上等（agora-9cd，2026-09-06）：终端里放行后
+        // 按 Esc，Claude 2.1.261 一个事件都不发，状态机靠"屏幕上的提示消失"清掉挂起（machine.rs
+        // observe_hooked）；下一条 prompt 的 PromptSubmitted 也会清挂起而 `release_for` 不解 hold。
+        // 两种情况下 hold 都会挂到 55 min 超时，Dashboard 的 Allow / Deny 按钮一直在。这里以
+        // `Decision::None` 放掉：hook fail-open 退出（Claude 早已走自己的路，无害）、`pending_decision`
+        // 移除、`decision_resolved` via=terminal——人是在终端动的手。只看同一 epoch 的 hold：Restart
+        // 之后旧代的 hold 本来就答不了（`respond_inner` 按 epoch 拒），交给超时，不冒充"终端答了"。
+        // 带 request_id 解除：sweep 读到的快照与解除之间若同键被新请求接替，不误放新的那个。
+        let settled: Vec<((String, String), String, i64)> = {
+            let holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
+            holds
+                .iter()
+                .filter(|(_, h)| h.since.elapsed() >= HOLD_SETTLE)
+                .map(|(k, h)| (k.clone(), h.request_id.clone(), h.epoch))
+                .collect()
+        };
+        for ((s, t), request_id, epoch) in settled {
+            let Ok(rec) = self.sessions.record(&s) else {
+                continue;
+            };
+            if rec.epoch != epoch || self.sessions.pending_hook_keys(&s).contains(&t) {
+                continue;
+            }
+            if self.resolve_request(&s, &t, Some(&request_id), Decision::None, "terminal") {
+                tracing::info!(component = "hook", session = %s, tool_use_id = %t,
+                    "状态机已无此挂起（终端里答过或中断了），放掉还在等的 hook");
             }
         }
     }

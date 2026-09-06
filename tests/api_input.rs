@@ -515,3 +515,88 @@ async fn a_custom_typed_session_with_a_held_claude_hook_takes_dashboard_decision
     .await;
     assert_eq!(after["respond_via"], "terminal", "挂起解除后退回声明类型");
 }
+
+#[tokio::test]
+async fn an_interrupted_permission_is_released_via_terminal_when_the_prompt_disappears() {
+    // agora-9cd：PermissionRequest 挂起 → 终端按 1 放行 → 按 Esc，Claude 2.1.261 一个事件都不发
+    // （testdata/claude/2.1.261/hooks/interrupted.jsonl）。唯一可观测的事实是屏幕上的权限提示没了：
+    // 状态机见过提示、之后连续 text_ticks 个 tick 见不到 → 清挂起、UNKNOWN(text)；receiver 的 sweep 把还在
+    // socket 上等的 hook 以 none 放掉（fail-open）、pending_decision 移除、decision_resolved via=terminal。
+    // 守卫：从 SessionManager / API 入口覆盖接线（ADR-002 D1 例外——有挂起时 hooked 会话也 capture）。
+    // 关掉：manager 的 capture 条件去掉 `|| pending` → 一直 waiting，第一处 unknown 断言超时红；
+    //       sweep 去掉孤儿 hold 那段 → pending 不空、hold 不返回，红。
+    let (fx, receiver, home) = with_hooks(Duration::from_secs(30));
+    let cookie = fx.cookie();
+    let (gid, local) = create(&fx, &cookie, "claude").await;
+    let mut events = fx.state.events.subscribe();
+    let reference = fx.sessions.record(&local).unwrap().runtime_ref.unwrap();
+    let task = hold(&receiver, home.path(), &local).await;
+    let endpoint = format!("/api/sessions/{gid}");
+
+    // 对照：提示一直在屏幕上（跨过至少两个 tick，默认 tick = 2 s）→ 一直 waiting、hold 仍在。
+    fx.rt.tails.lock().unwrap().insert(
+        reference.clone(),
+        "Do you want to proceed?\n❯ 1. Yes\n  2. No".into(),
+    );
+    for i in 0..3 {
+        let (_, row) = call(&fx, &cookie, Method::GET, &endpoint, None).await;
+        assert_eq!(row["status"], "waiting", "{i}: {row}");
+        assert!(row["pending_decision"].is_object(), "{i}: {row}");
+        assert!(
+            row["preview"].is_null(),
+            "hooked 会话的 preview 仍为 null：{row}"
+        );
+        receiver.sweep();
+        assert_eq!(receiver.pending(&local), vec!["Bash".to_owned()], "{i}");
+        if i < 2 {
+            tokio::time::sleep(Duration::from_millis(1100)).await;
+        }
+    }
+
+    // 终端放行 / Esc：提示消失，屏幕只剩空提示符。连续 GET（每次都是一次 observe）直到翻 unknown。
+    fx.rt.tails.lock().unwrap().insert(reference, "❯ ".into());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut row = Value::Null;
+    while Instant::now() < deadline {
+        row = call(&fx, &cookie, Method::GET, &endpoint, None).await.1;
+        if row["status"] == "unknown" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(row["status"], "unknown", "{row}");
+    assert_eq!(row["source"], "text", "{row}");
+    assert!(
+        row["reason"].as_str().unwrap().contains("prompt gone"),
+        "{row}"
+    );
+
+    // sweep 放掉还在等的 hook（生产里每 5 s 一次；hold 登记 ≥ 2 s 后才算，所以这里重试到它放）。
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !receiver.pending(&local).is_empty() && Instant::now() < deadline {
+        receiver.sweep();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(receiver.pending(&local).is_empty());
+    assert!(matches!(
+        task.await.unwrap(),
+        Response::Hook {
+            decision: Decision::None
+        }
+    ));
+    assert_eq!(next_resolved(&mut events).await, (gid.clone(), "terminal"));
+    let (_, row) = call(&fx, &cookie, Method::GET, &endpoint, None).await;
+    assert!(row["pending_decision"].is_null(), "{row}");
+    assert_eq!(row["status"], "unknown", "放 hold 不改状态：{row}");
+    assert!(fx.rt.inputs.lock().unwrap().is_empty(), "不注入键击");
+    let (status, body) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        &format!("{endpoint}/input"),
+        Some(json!({ "kind": "decision", "decision": "allow" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "no_pending_decision");
+}
