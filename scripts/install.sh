@@ -255,6 +255,10 @@ else
             say "端口 $DEFAULT_PORT 已被占用，server.listen 改用 ${LISTEN}（agora url 会跟着它）"
         fi
     fi
+    # 两个监听器必须不同端口（src/config.rs 会拒绝）；写进文件之前就拦下，别让人装完才发现起不来。
+    if [ -n "$TLS_LISTEN" ] && [ "${LISTEN##*:}" = "${TLS_LISTEN##*:}" ]; then
+        die "--listen 与 --tls-listen 端口相同（${LISTEN##*:}）：两个监听器必须不同端口"
+    fi
     tls_line=
     [ -z "$TLS_LISTEN" ] || tls_line=$(printf '  tls_listen: "%s"\n' "$TLS_LISTEN")
     runtime_block=

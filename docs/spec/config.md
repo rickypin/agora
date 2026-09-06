@@ -144,7 +144,7 @@ scripts/install.sh --binary <path> [--home <dir>] [--node-id <id>] [--listen <ad
 | `--home <dir>` | `$AGORA_HOME`，再默认 `~/.agora` | AGORA_HOME（ADR-003 D6） |
 | `--node-id <id>` | 短主机名（`hostname -s`，去掉域名，非法字符换成 `-`） | `node.id`。`--home` 不是默认路径（同机第二个实例）时默认 `<主机名>-<用户名>`，让 `<node>:<id>` 在 peer 眼里不撞；同机多个 OS 用户各装各的时请显式给 `--node-id` |
 | `--listen <addr>` | `127.0.0.1:7680` | `server.listen`。未指定且 7680 已被占（`nc -z` / `ss` / `lsof` / bash `/dev/tcp` 探测，都没有就当空闲）→ 从 7681 起顺延到第一个空闲端口并在 stderr 说明；这只发生在**首次写 config.yaml** 时，daemon 自己仍是"端口被占就报错退出"（ADR-003 D6） |
-| `--tls-listen <addr>` | 不写 | `server.tls_listen`（例 `0.0.0.0:7681`）；被 peer / 手机访问的节点才开 |
+| `--tls-listen <addr>` | 不写 | `server.tls_listen`（例 `0.0.0.0:7681`）；被 peer / 手机访问的节点才开。与 `--listen` 同端口在写文件之前就拒绝 |
 | `--tmux-socket <name>` | 不写 | 写 `runtime.tmux.socket` 并把 `adopt_sockets` 置空——开发机上起第二个实例验证用（AGENTS.md「并行施工」的隔离规矩），正常安装不用 |
 | `--unit-dir <dir>` | `~/.config/systemd/user` / `~/Library/LaunchAgents` | 单元文件目录；测试与开发机验证指到临时目录 |
 | `--no-service` | | 只写单元文件，不 `enable` / `bootstrap` |
