@@ -26,6 +26,8 @@ export interface TaskInfo {
   title: string;
   priority: number;
   status?: string;
+  /** beads 里的验收标准全文（`bd show --json` 的 acceptance_criteria），没写就是 null（agora-h1k.3）。 */
+  acceptance?: string | null;
 }
 
 export function attentionScore(status: string): number {

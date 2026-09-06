@@ -1,5 +1,5 @@
-import { memo, type ReactNode } from "react";
-import { promptRepeatsLabel, statusLine, taskLabel } from "./attention";
+import { memo, useState, type ReactNode } from "react";
+import { promptRepeatsLabel, statusLine, taskLabel, taskOf } from "./attention";
 import type { SessionRow } from "./events";
 
 /**
@@ -38,6 +38,38 @@ export function rowName(s: SessionRow): string {
 
 export function str(v: unknown): string {
   return typeof v === "string" ? v : "";
+}
+
+/**
+ * 展开区里的验收标准（MISSION §6.3「看结果」；A40；agora-h1k.3）：`task.acceptance` 是 `bd show`
+ * 的 acceptance_criteria 全文，读自 beads、不复制进 agora 的库（不变量 12）。位置在就地 respond
+ * 之下（docs/spec/ux.md）：回答问题 / 给下一条指令是先做的事，对照验收是看结果时的事。
+ * 默认展开——行展开就是为了看"做完算什么"；一行 summary 可折叠。没有任务或没写验收标准不占位。
+ * 折叠状态自己管而不用 <details>：内容折起来就真的不在 DOM 里，测试与读屏都不用猜 open 属性。
+ */
+function Acceptance({ row }: { row: SessionRow }) {
+  const [open, setOpen] = useState(true);
+  const task = taskOf(row);
+  const text = typeof task?.acceptance === "string" ? task.acceptance.trim() : "";
+  if (!task || !text) return null;
+  return (
+    <div className="acceptance" data-testid={`acceptance-${row.id}`} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className="acceptance-toggle muted"
+        aria-expanded={open}
+        data-testid={`acceptance-toggle-${row.id}`}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? "▾" : "▸"} 验收标准 · {task.id}
+      </button>
+      {open && (
+        <pre className="acceptance-body" data-testid={`acceptance-body-${row.id}`}>
+          {text}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 interface RowProps {
@@ -113,6 +145,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
         <span className="ord muted">{ordinal >= 1 && ordinal <= 9 ? ordinal : ""}</span>
       </button>
       {active && expanded}
+      {active && <Acceptance row={row} />}
     </li>
   );
 });

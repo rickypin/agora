@@ -64,6 +64,11 @@ select:disabled { opacity: 0.5; }
 .respond-next { display: flex; gap: 6px; }
 .respond-next input { flex: 1; min-width: 0; }
 .respond-error { margin: 0; color: var(--bad); }
+/* 展开区的验收标准折叠块（agora-h1k.3）：与 .respond 同一条左边线、同一缩进，接在它下面。 */
+.acceptance { margin: 2px 6px 6px 28px; padding: 4px 8px; border-left: 2px solid var(--border); font-size: 12px; }
+.acceptance-toggle { background: none; border: 0; padding: 0; cursor: pointer; font-size: 12px; text-align: left; }
+.acceptance-toggle:hover { color: var(--fg); }
+.acceptance-body { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font: inherit; color: var(--fg); opacity: 0.85; }
 .st-waiting { color: var(--warn); }
 .st-turn_done { color: var(--accent); }
 .st-running, .st-starting { color: var(--ok); }

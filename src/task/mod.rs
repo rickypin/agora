@@ -23,7 +23,8 @@ use crate::runtime::exec::{exec, ExecOptions};
 /// 允许对 beads 执行的子命令。改这里等于改不变量 12，先改 MISSION。
 pub const READ_ONLY: &[&str] = &["show"];
 
-/// `bd show --json` 里我们用的那几个字段。
+/// `bd show --json` 里我们用的那几个字段。只在内存缓存里活着，随 `TaskIndex::ttl` 过期重查；
+/// 一个字都不进 SQLite（不变量 12；`tests/task_info.rs::acceptance_is_read_not_stored`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TaskInfo {
     pub id: String,
@@ -31,6 +32,9 @@ pub struct TaskInfo {
     /// bd 的 P0–P4。
     pub priority: u8,
     pub status: String,
+    /// `acceptance_criteria` 全文——人看一行时要知道"做完算什么"（MISSION §6.3 看结果；A40；
+    /// agora-h1k.3）。beads 里没写或只有空白 → None，前端不占位。
+    pub acceptance: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +190,12 @@ fn parse_show(stdout: &[u8], id: &str) -> Option<TaskInfo> {
             .and_then(|s| s.as_str())
             .unwrap_or_default()
             .to_owned(),
+        acceptance: item
+            .get("acceptance_criteria")
+            .and_then(|a| a.as_str())
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned),
     })
 }
 
@@ -224,13 +234,21 @@ mod tests {
 
     #[test]
     fn parse_show_picks_the_matching_item_and_clamps_priority() {
-        let body = br#"[{"id":"x-1","title":"one","priority":9,"status":"open"},{"id":"x-2","title":"two","priority":1,"status":"closed"}]"#;
+        // 字节串字面量不许非 ASCII：先写成 str 再取字节。
+        let body = r#"[{"id":"x-1","title":"one","priority":9,"status":"open","acceptance_criteria":"  "},{"id":"x-2","title":"two","priority":1,"status":"closed","acceptance_criteria":"tests/x.rs::guard 绿\n第二行"}]"#.as_bytes();
         let two = parse_show(body, "x-2").unwrap();
         assert_eq!(
             (two.title.as_str(), two.priority, two.status.as_str()),
             ("two", 1, "closed")
         );
-        assert_eq!(parse_show(body, "x-1").unwrap().priority, 4);
+        assert_eq!(
+            two.acceptance.as_deref(),
+            Some("tests/x.rs::guard 绿\n第二行"),
+            "验收标准全文原样，多行保留"
+        );
+        let one = parse_show(body, "x-1").unwrap();
+        assert_eq!(one.priority, 4);
+        assert_eq!(one.acceptance, None, "只有空白 = 没写");
         assert!(parse_show(b"Error: no beads database found", "x-1").is_none());
         assert!(parse_show(br#"{"error":"nope"}"#, "x-1").is_none());
     }
