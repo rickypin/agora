@@ -100,3 +100,18 @@ MISSION §3.5 "写操作与终端流按会话所属节点路由：本机直达�
 | 终端流端到端（MISSION §3.2 的链路多一段 WS，不多一个解释者） | 先 `connect_ws` 到所属节点再升级浏览器；桥只搬帧——文本帧、Ping / Pong、Close 原样过，`exit` 转完主动关两边；本节点不 attach、不开 PTY、不做 keepalive | `terminal_ws_forwarded_bidirectionally` |
 
 传输层失败按 `TransportError` 的类型映射成 `peer_unreachable` / `peer_fingerprint_mismatch` / `peer_config` / `peer_rejected`（表见 `docs/spec/api.md`「一跳转发」），指纹不匹配独立成类（ADR-003 D4）。转发不写 `PeerStates`（`/api/health` 的 peers 段）：那是 peer 客户端（agora-7ku.5）的事件流连接说了算的，一次转发的成败不该让 Header 上的 peer 状态闪。
+
+## hook 接收与外部会话的登记 / 结束（agora-dvh.12；agora-vfi）
+
+MISSION §5.5 说 hook 是手动起的 agent 被管起来的唯一途径；代码里这条链路是 `src/hook/receiver.rs` 的 `ingest_inner`，投递件（形态见 `docs/spec/api.md` hooks 节）到这里先 `hooks.parse` 一次成 `AgoraEvent`，然后找会话、应用、解挂起、进 done、记账本：
+
+| 步骤 | 规则 | 为什么 |
+|---|---|---|
+| 找会话 | 信封带 `AGORA_SESSION_ID` 的直达；没有的走 `locate_external`：按 `(host, agent_session_id)` 查库，找到就复用 | agora 起的会话与外部会话的 allow / deny 走同一条路 |
+| 登记 | 库里没有时，**先看事件**：`parse` 出来为空、或只有 `SessionEnded` 的**不登记**（debug 日志"没见过的会话的 SessionEnd，不登记"），返回 None；其余按信封里的运行时环境定位 pane → 定位到可采纳 socket 的以 `adopted` 登记（有终端），否则 `external`（无句柄）。agent 没自报 id（`unknown`）的照旧不登记。三家宿主同一规则 | 只送来 SessionEnd 的会话是 agora 没见过的会话在结束——hook 装好之前起的会话退出、Codex Desktop 结束一个线程；登记只会造一行永远没有后续事件的僵尸（2026-09-05 侧栏那行 devcenter，agora-vfi） |
+| 不登记之后 | 流程不变：id 为 None 就不 apply，`release_for` 仍按 `<host>:<agent_session_id>` 解挂起，文件进 done，账本记一条 `received` | 排障看得见它来过 |
+| 活性 | external 行的存活看 `AgentHooks::agent_pid` 给的进程号 `kill(pid, 0)`：Claude 用信封里的 `CLAUDE_PID`，Codex / Grok 用 hook 的 ppid（安装命令 `exec` 进 agora）。**Codex Desktop 的 ppid 不可信**——信封 `agent_env` 带 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`（真投递件的值是 `Codex Desktop`；CLI 不设它）时 `agent_pid` 返回 None → `Liveness::Unknown`，行只跟 hook 走 | Desktop 线程的父进程是所有线程共用的常驻 `codex app-server`，探活永远为真；宁可不知道活不活，不要拿一个永远活着的进程当会话活着 |
+
+状态机（`src/status/machine.rs`）对 `SessionEnded(reason)`：清挂起；`reason = clear`（Claude 的 /clear：进程活着，同一秒紧接着新 id 的 `SessionStart(source=clear)`）**不改状态**；其余 reason（Claude resume / logout / prompt_input_exit / other、Codex other、Grok shutdown、没有 reason）→ **FINISHED**（source hook、conf 0.8、reason `session ended (hook)`）。进程退出的事实照旧以 1.0 覆盖（observe 第 1 步），所以 agora 起的会话不受影响；没有进程事实的 external 会话则靠这一条结束，下一 tick 就是 ✓。FINISHED(hook) 不是终态：之后的 `SessionStart` 回 STARTING（Codex TUI 的 /new、Claude 的 /resume），只有进程层的 FINISHED / FAILED 才压倒一切。fixture 的 `expect` 随之改（`testdata/*/*/hooks/*.jsonl` 里 SessionEnd 之后的行是 `finished` / `hook`）。
+
+守卫：`tests/hooks_external.rs::session_end_for_an_unseen_session_registers_nothing`、`::external_session_ends_on_session_end_hook`；`tests/state_machine.rs::external_session_ended_by_hook_is_finished_not_unknown`、`::session_end_reason_clear_keeps_the_session_alive`、`::session_start_after_session_end_restarts`；`src/adapter/codex.rs` 单测 `codex_desktop_parent_is_not_the_agent_pid`。
