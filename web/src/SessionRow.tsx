@@ -8,6 +8,10 @@ import type { SessionRow } from "./events";
  * 2026-09-06 从 Sidebar.tsx 原样抽出（agora-h1k.3 的接缝 commit，不改行为、DOM 不变）：
  * 后续往行上加东西——验收标准折叠块（h1k.3）、node 标签（7ku.5）、stale「上次见到」（7ku.6）——
  * 都只改这个文件，Sidebar.tsx 只管列表、分区标题与未注册段。
+ *
+ * node 标签（MISSION §3.5 "每行标明节点"；agora-7ku.5）：只给 `node !== localNode` 的行——本机的
+ * 行一律不标，满屏 `@ mac` 是噪音；`localNode` 是 `/api/system` 报的本机 node.id，还没拉到时谁都不
+ * 标（先满屏 @ 再消失更难看）。`stale` 行的「上次见到」归 7ku.6。
  */
 
 /** 状态符号（docs/spec/ux.md 线框）。 */
@@ -84,10 +88,12 @@ interface RowProps {
   expanded?: ReactNode;
   /** unix 秒；"waiting 3m"的基准。 */
   now: number;
+  /** 本机 node.id（`/api/system` 的 node）：node 标签只给不是本机的行；undefined = 还不知道，谁都不标。 */
+  localNode?: string;
 }
 
 /** memo：行对象引用没变就不重渲染（store.ts）。 */
-export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, expanded, now }: RowProps) {
+export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, expanded, now, localNode }: RowProps) {
   onRender?.(row.id);
   const prompt = str(row.prompt);
   const progress = str(row.progress);
@@ -114,7 +120,11 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
           <span className="meta">
             <span>{String(row.agent_type ?? "")}</span>
             {row.origin === "external" && <span className="origin">external</span>}
-            <span className="node">@ {row.node}</span>
+            {localNode !== undefined && row.node !== localNode && (
+              <span className="node" data-testid={`row-node-${row.id}`}>
+                @ {row.node}
+              </span>
+            )}
             <span className={`state st-${row.status}`} data-testid={`state-${row.id}`}>
               {statusLine(row, now)}
             </span>

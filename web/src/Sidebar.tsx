@@ -63,6 +63,8 @@ interface SidebarProps {
   all?: SessionRow[];
   /** Header 上本机与每个 peer 的状态（MISSION §10.3）；只透传给 Header。 */
   nodes?: NodeStatus[];
+  /** 本机 node.id（`/api/system` 的 node）；只透传给每一行，行据此决定标不标 `@ node`（agora-7ku.5）。 */
+  localNode?: string;
   active: string | null;
   onOpen: (id: string) => void;
   onNewAgent?: () => void;
@@ -146,6 +148,7 @@ export function Sidebar({
   rows,
   all = rows,
   nodes,
+  localNode,
   active,
   onOpen,
   onNewAgent,
@@ -211,6 +214,7 @@ export function Sidebar({
               onRender={onRowRender}
               expanded={r.id === active ? renderExpanded?.(r) : undefined}
               now={now}
+              localNode={localNode}
             />
           </Fragment>
         ))}

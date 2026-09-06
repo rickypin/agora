@@ -90,6 +90,17 @@ describe("Header 节点状态", () => {
     expect(chip("本机").textContent).toBe("本机✗不可达");
   });
 
+  it("names the local chip after /api/system's node once known, 本机 until then (agora-7ku.5)", () => {
+    // MISSION §3.5 线框 `mac ● zuan ●`：两枚都是节点名，与侧栏行上的 `@ zuan` 对得上。
+    const peers = { zuan: { online: true, last_seen: SEEN, retrying: false, last_error: null } };
+    expect(nodeStatuses({ reachable: true, peers }, "mac").map((n) => n.name)).toEqual(["mac", "zuan"]);
+    expect(nodeStatuses({ reachable: true, peers }, null).map((n) => n.name)).toEqual(["本机", "zuan"]);
+    render(<Header agents={0} nodes={nodeStatuses({ reachable: true, peers }, "mac")} />);
+    expect(chip("mac").textContent).toBe("mac●");
+    expect(chip("mac").className).toContain("ok");
+    expect(screen.queryByTestId("node-本机")).toBeNull();
+  });
+
   it("renders no node row at all when nodes are not given (the pre-7ku.12 shape)", () => {
     render(<Header agents="2/5" />);
     expect(screen.queryByTestId("nodes")).toBeNull();

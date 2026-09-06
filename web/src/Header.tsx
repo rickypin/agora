@@ -6,7 +6,9 @@ import type { NodesHealth, PeerError, PeerHealth } from "./health";
  * Dashboard 线框首行 `mac ● zuan ●   Agents: 12`），所以 header 也就是侧栏的首行。
  *
  * 数据源是 HealthWatcher 同一次拉取带出的 peers 段（agora-7ku.12），不另起轮询。异常原因只按
- * `last_error` 的四个类型选文案，从不解析任何消息文本（MISSION §2.3 规则 10）。
+ * `last_error` 的四个类型选文案，从不解析任何消息文本（MISSION §2.3 规则 10）。本机那一枚的名字是
+ * `/api/system` 报的 node.id（VersionWatcher 同一次拉取带出，agora-7ku.5）：`mac ● zuan ●` 里两枚都是
+ * 节点名，与侧栏行上的 `@ zuan` 对得上；还没拉到之前先叫"本机"。
  */
 
 /** Header 上一枚节点状态：本机一枚（`local`），每个 peer 一枚。 */
@@ -15,10 +17,10 @@ export interface NodeStatus extends PeerHealth {
   local?: boolean;
 }
 
-/** 本机排第一（名字固定"本机"：peer 名字来自配置，本机 id 不在 health 里），peer 按 health 的键序。 */
-export function nodeStatuses(h: NodesHealth): NodeStatus[] {
+/** 本机排第一，名字是 `localName`（`/api/system` 的 node；还没拉到时"本机"），peer 按 health 的键序。 */
+export function nodeStatuses(h: NodesHealth, localName?: string | null): NodeStatus[] {
   const local: NodeStatus = {
-    name: "本机",
+    name: localName ?? "本机",
     local: true,
     // reachable 还是 null（没拉过）当"不在线但也没错"，渲染成探测中。
     online: h.reachable === true,

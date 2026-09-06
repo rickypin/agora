@@ -477,7 +477,15 @@ describe("Workspace", () => {
     expect(mounted).toEqual([]);
   });
 
-  it("the header shows 本机 and every peer from the same health poll, and a peer going stale keeps its last-seen (agora-7ku.12)", async () => {
+  it("rows from a peer carry a node label, the local node's rows do not (agora-7ku.5)", async () => {
+    // MISSION §3.5 每行标明节点；本机 id 来自 /api/system（setup 里是 "n"），peer 行 stale 与否都标。
+    const t = setup([row("n:a"), { ...row("zuan:7"), node: "zuan", stale: true }]);
+    await online(t);
+    expect(screen.queryByTestId("row-node-n:a")).toBeNull();
+    expect(screen.getByTestId("row-node-zuan:7").textContent).toBe("@ zuan");
+  });
+
+  it("the header names 本机 after /api/system's node and shows every peer from the same health poll, and a peer going stale keeps its last-seen (agora-7ku.12, 7ku.5)", async () => {
     const seen = "2026-09-02T23:10:00Z";
     let report: unknown = {
       status: "ok",
@@ -488,7 +496,9 @@ describe("Workspace", () => {
     const t = setup([row("n:a")], [], undefined, health);
     await online(t);
     expect(health.polls).toBe(1); // 节点状态没有自己的轮询
-    expect(screen.getByTestId("node-本机").textContent).toBe("本机●");
+    // 本机那一枚叫 /api/system 报的 node id（setup 里是 "n"），不是写死的"本机"。
+    expect(screen.getByTestId("node-n").textContent).toBe("n●");
+    expect(screen.queryByTestId("node-本机")).toBeNull();
     expect(screen.getByTestId("node-zuan").textContent).toBe("zuan●");
     // zuan 掉线：还在 header 上，带"上次见到"，不是消失（不变量 8）；横幅不出现。
     report = {

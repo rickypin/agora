@@ -46,7 +46,6 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   const degraded = useSyncExternalStore(health.subscribe, health.snapshot, health.snapshot);
   // Header 的节点状态与 degraded 同一次拉取带出，不另起轮询（MISSION §10.3；agora-7ku.12）。
   const nodesHealth = useSyncExternalStore(health.subscribeNodes, health.nodesSnapshot, health.nodesSnapshot);
-  const nodes = useMemo(() => nodeStatuses(nodesHealth), [nodesHealth]);
   useEffect(() => {
     health.start();
     return () => health.stop();
@@ -57,6 +56,9 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   const version = useMemo(() => givenVersion ?? new VersionWatcher(), [givenVersion]);
   const verdict = useSyncExternalStore(version.subscribe, version.snapshot, version.snapshot);
   const blocked = versionBlocked(verdict);
+  // 本机 node.id 随同一次 /api/system 来（agora-7ku.5）：Header 本机那一枚的名字、侧栏行标不标 `@ node` 都看它。
+  const localNode = useSyncExternalStore(version.subscribe, version.nodeSnapshot, version.nodeSnapshot);
+  const nodes = useMemo(() => nodeStatuses(nodesHealth, localNode), [nodesHealth, localNode]);
   useEffect(() => {
     store.onOpen = () => void version.check();
     return () => {
@@ -197,6 +199,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
       <Sidebar
         rows={visible}
         nodes={nodes}
+        localNode={localNode ?? undefined}
         all={rows}
         total={rows.length}
         active={tabs.active}

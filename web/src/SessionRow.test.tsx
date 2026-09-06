@@ -12,15 +12,36 @@ function row(extra: Partial<SessionRow> = {}): SessionRow {
 
 const ACCEPTANCE = "tests/task_info.rs::acceptance_is_read_not_stored（库里无该字段、API 有）；\n前端 vitest：展开显示与折叠。";
 
-function mount(r: SessionRow, active = true) {
+function mount(r: SessionRow, active = true, localNode?: string) {
   const onOpen = vi.fn();
   render(
     <ul>
-      <SidebarRow row={r} active={active} ordinal={1} onOpen={onOpen} now={0} expanded={<div data-testid="respond-n:a">respond</div>} />
+      <SidebarRow
+        row={r}
+        active={active}
+        ordinal={1}
+        onOpen={onOpen}
+        now={0}
+        localNode={localNode}
+        expanded={<div data-testid="respond-n:a">respond</div>}
+      />
     </ul>,
   );
   return { onOpen };
 }
+
+it("labels the node only on rows from another node, and only once the local node is known (agora-7ku.5)", () => {
+  // MISSION §3.5 每行标明节点：本机的行不标（满屏 @ mac 是噪音），peer 的行标 @ zuan。
+  mount(row(), true, "n");
+  expect(screen.queryByTestId("row-node-n:a")).toBeNull();
+  cleanup();
+  mount(row({ id: "zuan:7", node: "zuan" }), true, "n");
+  expect(screen.getByTestId("row-node-zuan:7").textContent).toBe("@ zuan");
+  cleanup();
+  // 还不知道本机是谁（/api/system 没回）：谁都不标，免得先满屏 @ 再消失。
+  mount(row({ id: "zuan:7", node: "zuan" }), true);
+  expect(screen.queryByTestId("row-node-zuan:7")).toBeNull();
+});
 
 it("an active row shows the task's acceptance criteria in full, below the respond area (A40)", () => {
   // MISSION §6.3 看结果：展开一行就该看到"做完算什么"，全文、多行原样，读自 beads。

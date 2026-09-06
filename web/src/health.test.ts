@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { API_VERSION, checkApiVersion, HealthWatcher, isHealthy, peersOf, runtimeDegraded, versionBlocked, VersionWatcher } from "./health";
+import { API_VERSION, checkApiVersion, HealthWatcher, isHealthy, localNodeOf, peersOf, runtimeDegraded, versionBlocked, VersionWatcher } from "./health";
 
 describe("isHealthy", () => {
   it("accepts the public subset", () => {
@@ -219,6 +219,32 @@ describe("versionBlocked", () => {
 });
 
 describe("VersionWatcher", () => {
+  it("carries the node's own id out of the same /api/system fetch and keeps it when a later fetch fails (agora-7ku.5)", async () => {
+    let report: () => unknown = () => ({ api_version: API_VERSION, version: "x", node: "mac" });
+    const w = new VersionWatcher({ fetchSystem: async () => report() });
+    let notified = 0;
+    w.subscribe(() => (notified += 1));
+    expect(w.nodeSnapshot()).toBeNull();
+    await w.check();
+    expect(w.nodeSnapshot()).toBe("mac");
+    expect(notified).toBe(1);
+    // 拉不到：沿用；同样的结论：不通知。
+    report = () => {
+      throw new Error("down");
+    };
+    await w.check();
+    expect(w.nodeSnapshot()).toBe("mac");
+    await w.check();
+    expect(notified).toBe(1);
+    // node 不是非空字符串当没报，沿用上一次。
+    report = () => ({ api_version: API_VERSION, version: "x", node: 7 });
+    await w.check();
+    expect(w.nodeSnapshot()).toBe("mac");
+    expect(localNodeOf({ node: "" })).toBeNull();
+    expect(localNodeOf(null)).toBeNull();
+    expect(localNodeOf({ node: "zuan" })).toBe("zuan");
+  });
+
   it("has no verdict until a fetch succeeds, then keeps the last verdict when the node cannot be reached", async () => {
     let report: () => unknown = () => {
       throw new Error("daemon away");

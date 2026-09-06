@@ -282,6 +282,8 @@ export interface VersionWatcherOptions {
  */
 export class VersionWatcher {
   private verdict: VersionVerdict | null = null;
+  /** 节点自报的本机 `node`（agora-7ku.5）：Header 本机那一枚的名字、侧栏行"是不是本机"都看它；一次都没拉到为 null。 */
+  private node: string | null = null;
   private listeners = new Set<() => void>();
   /** 查过几次（测试断言用）。 */
   checks = 0;
@@ -295,16 +297,30 @@ export class VersionWatcher {
 
   snapshot = (): VersionVerdict | null => this.verdict;
 
+  /** 本机 node.id（`/api/system` 的 `node`）；与 `snapshot` 共用 `subscribe`，同一次拉取带出，不另起轮询。 */
+  nodeSnapshot = (): string | null => this.node;
+
   async check(): Promise<void> {
     this.checks += 1;
     let next = this.verdict;
+    let node = this.node;
     try {
-      next = checkApiVersion(await (this.opts.fetchSystem ?? defaultFetchSystem)(), this.opts.page ?? API_VERSION);
+      const system = await (this.opts.fetchSystem ?? defaultFetchSystem)();
+      next = checkApiVersion(system, this.opts.page ?? API_VERSION);
+      node = localNodeOf(system) ?? node;
     } catch {
       /* 拉不到：沿用上一次的结论 */
     }
-    if (JSON.stringify(next) === JSON.stringify(this.verdict)) return;
+    if (JSON.stringify(next) === JSON.stringify(this.verdict) && node === this.node) return;
     this.verdict = next;
+    this.node = node;
     for (const l of this.listeners) l();
   }
+}
+
+/** `/api/system` 里的 `node`（本机 node.id）；不是非空字符串就是 null。 */
+export function localNodeOf(system: unknown): string | null {
+  if (typeof system !== "object" || system === null) return null;
+  const node = (system as { node?: unknown }).node;
+  return typeof node === "string" && node !== "" ? node : null;
 }
