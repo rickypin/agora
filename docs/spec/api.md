@@ -73,6 +73,7 @@ GET /api/system
 - `1.1`（2026-09-06，第一波第二批合入时集成者统一 bump 一次）：只增字段——session 形态加 `ended_at_approximate`（agora-h1k.4）、task 形态加 `acceptance`（agora-h1k.3）、health 加 `peers` 段（agora-7ku.12）；`/api/system` 本身不变。多条分支同时改字段时不各自 bump，合入一批后由集成者统一加一次 minor，避免撞车。
 - `1.2`（2026-09-06，第三批合入时集成者统一 bump 一次）：只增——peer 会话行加 `stale`（agora-7ku.5，本机行没有此键）；新端点 `POST /api/projects/worktrees` 与错误类型 `worktree_exists` / `branch_exists` / `path_exists`（agora-h1k.1）；错误类型 `peer_forbidden`（agora-0df）与一跳转发的 `peer_unreachable` / `peer_fingerprint_mismatch` / `peer_config` / `peer_rejected`（agora-7ku.7）；`/api/system` 本身不变。
 - `1.3`（2026-09-06，第四批合入时集成者统一 bump 一次）：只增——stale 的 peer 行加 `last_seen`（agora-7ku.6，只在 `stale: true` 的 peer 行出现）；新端点 `GET /api/projects/tasks`、`POST /api/sessions` 加可选 `prompt`、`GET /api/agents` 每项加 `prompt: bool`（agora-h1k.2）；新端点 `GET /api/sessions/:id/changes` 与 `WS /api/sessions/:id/diff`（终端流新状态帧 `read_only`）、错误类型 `no_directory`（agora-h1k.5）；`/api/system` 本身不变。
+- `1.4`（2026-09-06，第五批合入时集成者统一 bump 一次）：只增——`GET /api/health` 的 `peers[].last_error` 加第五个值 `misconfigured`（agora-41e；ADR-003 D3：本节点这一行 `peers[]` 字面上就用不了——token_file 权限 / 属主 / 内容、url 不是 https、指纹不合法；该值下 `retrying` 恒 false，daemon 每 10 s 重读配置，改好即恢复），老页面把不认识的值当 `null`、显示成离线而不会错读；同批的 agora-vfi（SessionEnd → hook 层 FINISHED、无可信 pid 的 external 行 `alive: false`）与 agora-vkt（`hooks install` 补建链接）不改形态；`/api/system` 本身不变。
 
 **兼容判定**（`agora::api::version`，`check(ours, theirs)`；结论是枚举，按类型分类、不做字符串匹配）：
 
