@@ -32,6 +32,11 @@ use tokio::sync::broadcast;
 
 const NOW: i64 = 1_788_652_800; // 2026-09-06T00:00:00Z
 
+/// 形态合法的机器 token：`apt_<name>_<43 字符>`。2026-09-06（agora-41e）起 `HttpsTransport` 读
+/// token_file 走 `auth::peer_token::load_token_file`，内容不合形态是配置错误、连都不连——此前
+/// 这里写的 `apt_zuan_abc` 会在拨号之前就被拒掉。
+const TOKEN: &str = "apt_zuan_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+
 /// 0600 的 token 文件（D3 的持有方形态）。
 fn write_token(dir: &Path, token: &str) -> PathBuf {
     let p = dir.join("zuan.token");
@@ -117,7 +122,7 @@ async fn fingerprint_mismatch_is_refused_not_stale() {
         .unwrap()
         .fingerprint();
     assert_ne!(other, real);
-    let token = write_token(home.path(), "apt_zuan_abc");
+    let token = write_token(home.path(), TOKEN);
 
     let wrong = HttpsTransport::new(section(port, &other.to_string(), &token), DEFAULT_TIMEOUT);
     let err = wrong
@@ -166,7 +171,7 @@ async fn no_pin_no_connect() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let dir = tempfile::tempdir().unwrap();
-    let token = write_token(dir.path(), "apt_zuan_abc");
+    let token = write_token(dir.path(), TOKEN);
 
     for pin in ["", "sha256:", "sha256:abc", "md5:00"] {
         let t = HttpsTransport::new(section(port, pin, &token), DEFAULT_TIMEOUT);
@@ -247,7 +252,7 @@ async fn self_signed_generated_once_and_reused() {
     // 用它起监听器、用生产传输按这个指纹连上：证明磁盘上的那对文件就是对外出示的那张证书。
     let (port, served, _acceptor) = tls_server(home.path(), echo_router()).await;
     assert_eq!(served, first.fingerprint());
-    let token = write_token(home.path(), "apt_zuan_abc");
+    let token = write_token(home.path(), TOKEN);
     let t = HttpsTransport::new(section(port, &served.to_string(), &token), DEFAULT_TIMEOUT);
     let resp = t
         .request(Request::get("/echo").body(Body::empty()).unwrap())
@@ -269,7 +274,7 @@ async fn pinned_transport_carries_bearer_and_serves_ws_over_tls() {
     // （7ku.2 的 Bearer 校验据此分支）。WS 走同一条 TLS 建连路径，Bearer 也在握手请求上。
     let home = tempfile::tempdir().unwrap();
     let (port, pin, _acceptor) = tls_server(home.path(), echo_router()).await;
-    let token = write_token(home.path(), "apt_zuan_s3cr3t");
+    let token = write_token(home.path(), TOKEN);
     let t = HttpsTransport::new(section(port, &pin.to_string(), &token), DEFAULT_TIMEOUT);
     assert_eq!(t.name(), "zuan");
     assert_eq!(t.timeout(), DEFAULT_TIMEOUT);
@@ -280,7 +285,7 @@ async fn pinned_transport_carries_bearer_and_serves_ws_over_tls() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["authorization"], "Bearer apt_zuan_s3cr3t");
+    assert_eq!(body["authorization"], format!("Bearer {TOKEN}"));
     assert_eq!(body["host"], format!("127.0.0.1:{port}"));
     assert_eq!(
         body["over_tls"], true,
@@ -352,7 +357,7 @@ async fn external_cert_hot_reload_warns_on_spki_change() {
             renew: None,
         },
     );
-    let token = write_token(dir.path(), "apt_zuan_abc");
+    let token = write_token(dir.path(), TOKEN);
     let transport = |pin: &Fingerprint| {
         HttpsTransport::new(section(port, &pin.to_string(), &token), DEFAULT_TIMEOUT)
     };

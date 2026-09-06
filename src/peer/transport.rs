@@ -18,7 +18,7 @@
 //!   都不往网上发。
 
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -36,6 +36,7 @@ use tokio_tungstenite::WebSocketStream;
 use tower::ServiceExt;
 
 use crate::api::InProcessPeer;
+use crate::auth::peer_token::{load_token_file, TokenFileError};
 use crate::config::PeerSection;
 use crate::tls::client::{self as tls_client, Mismatch};
 use crate::tls::{Fingerprint, FingerprintError, TlsError};
@@ -96,17 +97,13 @@ pub enum PeerConfigError {
     /// 没有指纹就没有信任锚（无 TOFU）：空串、不是 `sha256:<64 hex>` 都在这里拒绝。
     #[error("peers[].cert_fingerprint: {0}")]
     Pin(#[from] FingerprintError),
-    #[error("读取 token_file {} 失败: {source}", path.display())]
-    TokenFile {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    /// D3：token_file 明文、0600；group / other 有位就是配置错误——别人读得到它就等于能控制那台 peer。
-    #[error("token_file {} 权限 {mode:03o} 过宽：必须 0600（chmod 600 {}）", path.display(), path.display())]
-    TokenFileTooOpen { path: PathBuf, mode: u32 },
-    #[error("token_file {} 的内容不是一个 token（空、多行或含非 ASCII）", path.display())]
-    TokenFileContent { path: PathBuf },
+    /// D3：token_file 读不到 / 不属于自己 / 权限过宽 / 内容不是 token——持有方那一半的判定只有一份，
+    /// 在 [`crate::auth::peer_token::load_token_file`]（agora-7ku.2）；这里透传它的类型与文案
+    /// （文案带 `chmod 600 <path>` 提示，peer 客户端转入「配置错误」时原样进 warn 日志）。
+    /// 2026-09-06（agora-41e）之前本模块另有一份更松的检查（不看属主、内容只查 ASCII），两份判定
+    /// 会让同一个文件在 CLI 与 daemon 眼里一好一坏——别再加回来。
+    #[error(transparent)]
+    TokenFile(#[from] TokenFileError),
 }
 
 /// 给 `peers[]` 一项的传输。dyn 兼容（注册表存 `Arc<dyn PeerTransport>`），所以 async 方法
@@ -442,29 +439,10 @@ impl PeerTransport for HttpsTransport {
     }
 }
 
-/// D3：token 明文在 `token_file`，0600；每次发请求读一遍、不缓存。权限过宽是配置错误。
+/// D3：token 明文在 `token_file`，0600、属于自己、形态是 `apt_<name>_<43 字符>`；每次发请求读一遍、
+/// 不缓存（吊销 / 轮换后换文件即生效）。判定全在 `auth::peer_token::load_token_file`，这里只换类型。
 fn read_token(path: &Path) -> Result<String, PeerConfigError> {
-    use std::os::unix::fs::PermissionsExt;
-    let io_err = |source| PeerConfigError::TokenFile {
-        path: path.to_path_buf(),
-        source,
-    };
-    let meta = std::fs::metadata(path).map_err(io_err)?;
-    let mode = meta.permissions().mode() & 0o777;
-    if mode & 0o077 != 0 {
-        return Err(PeerConfigError::TokenFileTooOpen {
-            path: path.to_path_buf(),
-            mode,
-        });
-    }
-    let text = std::fs::read_to_string(path).map_err(io_err)?;
-    let token = text.trim();
-    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
-        return Err(PeerConfigError::TokenFileContent {
-            path: path.to_path_buf(),
-        });
-    }
-    Ok(token.to_owned())
+    Ok(load_token_file(path)?)
 }
 
 fn header_value(s: &str) -> Result<HeaderValue, TransportError> {
@@ -638,7 +616,9 @@ mod tests {
         // 网络地址可连（url 指向一个不存在的主机名），能立刻返回就说明没去拨号。
         let dir = tempfile::tempdir().unwrap();
         let token = dir.path().join("zuan.token");
-        std::fs::write(&token, "apt_zuan_abc\n").unwrap();
+        // 形态要过 load_token_file 的 parse：apt_<name>_<43 字符>（agora-7ku.2）。
+        let plain = format!("apt_zuan_{}", "x".repeat(43));
+        std::fs::write(&token, format!("{plain}\n")).unwrap();
         std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
         let section = |url: &str, pin: &str, token: &Path| PeerSection {
             name: "zuan".into(),
@@ -682,7 +662,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                TransportError::Config(PeerConfigError::TokenFile { .. })
+                TransportError::Config(PeerConfigError::TokenFile(TokenFileError::Read { .. }))
             ),
             "{err:?}"
         );
@@ -696,19 +676,24 @@ mod tests {
         assert!(
             matches!(
                 err,
-                TransportError::Config(PeerConfigError::TokenFileTooOpen { mode: 0o644, .. })
+                TransportError::Config(PeerConfigError::TokenFile(TokenFileError::TooOpen {
+                    mode: 0o644,
+                    ..
+                }))
             ),
             "{err:?}"
         );
+        // 文案透传自 TokenFileError：带 chmod 600 提示，peer 客户端的 warn 日志就是这一句。
+        assert!(err.to_string().contains("chmod 600"), "{err}");
 
         std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
         std::fs::write(&token, "  \n").unwrap();
         assert!(matches!(
             read_token(&token),
-            Err(PeerConfigError::TokenFileContent { .. })
+            Err(PeerConfigError::TokenFile(TokenFileError::Malformed { .. }))
         ));
-        std::fs::write(&token, "apt_zuan_abc\n").unwrap();
-        assert_eq!(read_token(&token).unwrap(), "apt_zuan_abc");
+        std::fs::write(&token, format!("{plain}\n")).unwrap();
+        assert_eq!(read_token(&token).unwrap(), plain);
     }
 
     #[tokio::test]
