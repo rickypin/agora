@@ -11,7 +11,7 @@
 | M1b | `agora-dvh` | Agent 感知 | `agora-xqa` | MISSION §12：A14–A18、A22、A23、A32；另接过 A1 的未登记会话那一半（Unknown Agent 的侧栏展示与采纳入口，A22 的前置，agora-dvh.12 / agora-7cu），A1 两半都做完才算过；补 A36 中不变量 10 的测试。逐条可打勾；每条对应 epic 内至少一个 issue。 | closed  |
 | M2a | `agora-7ku` | peer 核心 | `agora-dvh` | MISSION §12：A27、A30、A31、A33、A34、A38。（agora-7ku.12 是 A29 的策略半边，A29 本身由 M2b 认领；A36 不变量 8、11 的收口在 M2b。） | open 3/7 |
 | M2b | `agora-s4r` | 安装运维与收口 | `agora-dvh` | MISSION §12：A26、A29、A39；补齐 A36 中不变量 8、11 的测试。 | open 0/5 |
-| M3 | `agora-h1k` | 产出与起会话增强 | `agora-dvh` | MISSION §12：A40–A44。 | open 0/5 |
+| M3 | `agora-h1k` | 产出与起会话增强 | `agora-dvh` | MISSION §12：A40–A44。 | open 2/5 |
 | V2-1 | `agora-thc` | 手机客户端与 PWA（iOS / Android） | `agora-7ku`, `agora-s4r` | MISSION §11 手机条目：A13、A19、A28、A35、A37。 | open 0/2 |
 
 ## 演示剧本（epic 的 design 字段；agent 先代检，人只看 👁 步骤与代检报告后关闭 epic，MISSION §1.5）

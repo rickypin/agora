@@ -67,6 +67,7 @@ GET /api/system
 - **major +1**（minor 归 0）：任何会让老调用方错读的改动——删字段、改字段类型或语义、改端点路径 / 方法 / 状态码、改错误类型名、改 WS 消息形态、改会话 id 形态。
 - **minor +1**：只增不删——新字段、新端点、新错误类型、新 WS 消息类型、新的可选请求参数。老调用方忽略不认识的字段与消息类型照常工作；新调用方对老节点缺失的字段按"没有"处理，不按错误。
 - 首个版本 `1.0`；`api_version` 从这条规则落地起就是 `{ major, minor }` 对象，此前二进制回的裸整数 `1` 不再被任何调用方接受。
+- `1.1`（2026-09-06，第一波第二批合入时集成者统一 bump 一次）：只增字段——session 形态加 `ended_at_approximate`（agora-h1k.4）、task 形态加 `acceptance`（agora-h1k.3）、health 加 `peers` 段（agora-7ku.12）；`/api/system` 本身不变。多条分支同时改字段时不各自 bump，合入一批后由集成者统一加一次 minor，避免撞车。
 
 **兼容判定**（`agora::api::version`，`check(ours, theirs)`；结论是枚举，按类型分类、不做字符串匹配）：
 

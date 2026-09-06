@@ -52,7 +52,7 @@ impl fmt::Display for ApiVersion {
 
 /// 本二进制实现的 API 版本。改形态时按 api.md 的递增规则改这里，并同步
 /// `web/src/health.ts` 的 `API_VERSION`——页面按哪一版构建就按哪一版比。
-pub const API_VERSION: ApiVersion = ApiVersion::new(1, 0);
+pub const API_VERSION: ApiVersion = ApiVersion::new(1, 1);
 
 /// `GET /api/system` 的响应体。peer 客户端用同一个类型反序列化，字段名只在这里出现一次。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,7 +197,12 @@ mod tests {
             node: "mac".into(),
         };
         let v = serde_json::to_value(&info).unwrap();
-        assert_eq!(v["api_version"], json!({ "major": 1, "minor": 0 }));
+        // 用常量推导而不是写死数字：minor 每合入一批只增字段的分支就 +1（api.md「api_version 兼容规则」），
+        // 2026-09-06 第一次 bump 就被写死的 { 1, 0 } 绊了一下。
+        assert_eq!(
+            v["api_version"],
+            json!({ "major": API_VERSION.major, "minor": API_VERSION.minor })
+        );
         let back: SystemInfo = serde_json::from_value(v).unwrap();
         assert_eq!(back, info);
         // 旧形态（裸整数）反序列化必须失败，而不是悄悄变成某个版本。
