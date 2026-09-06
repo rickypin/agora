@@ -141,17 +141,17 @@ GET /api/health
 
 1. 连上先 `GET /api/system` 过 `negotiate`（「api_version 兼容规则」一节）：不兼容 → 该 peer 标 `incompatible_version`，不拉、不并入，退避照常重试；对方 `node` 与 `peers[].name` 不一致只 warn（它的行会被下面的一跳规则全部丢掉——这是配置写错了名字）。
 2. 兼容 → 先建 `WS /api/events`、再 `GET /api/sessions` 全量（先流后快照，与浏览器一样），之后逐帧应用；帧里任一条 `resync` 就整帧应用完再重拉一次全量。keepalive 与终端流同一套数字：每 20 s 发 `{"type":"ping"}`，65 s 没有入站帧当断开。
-3. 断线 → 行**保留**、标 stale，`/api/health` 的 peers 段记类型，1 s 起 30 s 顶永不放弃地重连（`docs/spec/architecture.md`「peer 重连退避」）。
+3. 断线 → 行**保留**、标 stale 并写上"上次见到"，`/api/health` 的 peers 段记类型，1 s 起 30 s 顶永不放弃地重连（`docs/spec/architecture.md`「peer 重连退避」）；人点开 stale 的会话就插一次重试（下面「stale」那条）。
 
-**并入规则**（`src/peer/view.rs` 的 `PeerViews`，挂在 `AppState.peer_views`；每 peer 一份 `{ rows: BTreeMap<全局 id, 行>, stale }`）：
+**并入规则**（`src/peer/view.rs` 的 `PeerViews`，挂在 `AppState.peer_views`；每 peer 一份 `{ rows: BTreeMap<全局 id, 行>, stale, last_seen }`）：
 
 - **一跳**：只收 `node == peers[].name` 且 `id` 以 `<name>:` 开头的行，其它一律丢弃并 warn。本节点回答 Peer principal 的 `GET /api/sessions` 时也只给本机行（`unregistered` 也只有本机的）——两边各守一半，A 经 B 看不到 C，环上也不会滚雪球。守卫 `tests/peer_view.rs::only_local_sessions_are_exported_one_hop`。
 - **时间是本节点时钟**（MISSION §3.5；ADR-004）：peer 行的 `status_since` 改写成**本节点第一次看见该行处于当前状态**的时刻，peer 报的 `(status, status_since)` 只当"状态没变"的 token——重连后同一状态不会重置成 0 分钟；`last_seen` 与它用同一只表。`created_at` / `ended_at` 之类的 metadata 保留 peer 的原值。守卫 `tests/peer_view.rs::peer_timestamps_use_local_clock`（注入固定时钟）。
-- **`stale` 字段只出现在 peer 行**：本机行没有这个键；peer 在线 `false`、断线后 `true`，重连拉到全量即清。断线时每一行发一条 `stale: true` 的 `session_updated`，`/api/health` peers 段的 `last_seen` 就是这些行的"上次见到"。守卫 `tests/peer_view.rs::disconnect_keeps_rows_marked_stale`。
+- **`stale` 字段只出现在 peer 行，`last_seen` 只出现在 stale 的 peer 行**（agora-7ku.6）：本机行两个键都没有；peer 在线 `stale: false`、没有 `last_seen`；断线后每行 `stale: true` 且 `last_seen` 是该 peer 的"上次见到"——与 `/api/health` peers 段的 `last_seen` **同一个值**（`PeerState::last_seen`，本节点时钟打的 `YYYY-MM-DDTHH:MM:SSZ`），不是另一只表；重连拉到全量即两个都清（`last_seen` 键消失）。peer 报的行里就算夹带 `last_seen` 也剥掉。两次翻转都发 `session_updated`（断线时带 `stale: true` + `last_seen`，恢复时 `stale: false`、无 `last_seen`），浏览器不用轮询。**点开即重试**：Human 对 stale peer 的会话做任何事——`GET /api/sessions/:id`（`sessions::get`）、建终端 WS 或六个写操作（都经 `forward::hop`）——节点就调一次 `PeerViews::retry_now(peer)` 缩短客户端这一次退避等待；在线时无事，一次点开只多一次尝试，不是轮询；不加端点、浏览器不用多发请求。守卫 `tests/peer_view.rs::disconnect_keeps_rows_marked_stale`；`tests/peer_stale.rs::offline_peer_is_stale_with_last_seen_not_removed`、`::opening_stale_peer_triggers_immediate_retry`、`::recovery_resyncs_full_snapshot`、`::reconnect_backoff_is_capped_and_never_gives_up`、`::local_sessions_unaffected_by_broken_peer`（不变量 8 的 fake 版，A36）。
 - **事件原样出本机总线**：peer 的 `session_created` / `session_updated` / `session_removed` / `decision_resolved` / `notification` 经视图改写后发进本机 `/api/events`（`status_changed` 以整行 `session_updated` 出去——行上的时间已改写），浏览器只连本机一条流。全量快照与本地视图差分成 created / updated / removed。守卫 `tests/peer_view.rs::peer_sessions_are_merged_with_node_label`、`incompatible_peer_is_flagged_not_merged`。
 - `GET /api/sessions/:id` 的 `<node>` 是已配置 peer → Human 从并入视图读（404 `not_found` 表示视图里没有），Peer principal 问 peer 的会话仍是 `node_unknown`（一跳）。对 peer 会话的写操作与终端流是另一条链路（一跳转发，agora-7ku.7）。
 
-前端：侧栏行的 `@ <node>` 只给 `node ≠ 本机` 的行，本机 id 取 `/api/system` 的 `node`（`web/src/health.ts` 的 `VersionWatcher` 同一次拉取带出，不另起轮询），Header 本机那一枚也叫这个名字（`docs/spec/ux.md`）。stale 行的「上次见到」与"点开 stale 会话立即重试"归 agora-7ku.6（入口 `PeerViews::retry_now(name)`）。`api_version` 因本节的字段新增（`stale`）该 bump minor，由本批集成者统一做，本任务不动它。
+前端：侧栏行的 `@ <node>` 只给 `node ≠ 本机` 的行，本机 id 取 `/api/system` 的 `node`（`web/src/health.ts` 的 `VersionWatcher` 同一次拉取带出，不另起轮询），Header 本机那一枚也叫这个名字（`docs/spec/ux.md`）。stale 行直接读行上的 `last_seen` 显示「○ 上次见到 HH:MM」并整行淡显（`web/src/SessionRow.tsx`，`docs/spec/ux.md`「行上的 `@ <node>`」段）；点开 stale 行前端不做任何事，重试由节点在 `hop` / `get` 里插。`api_version`：`stale`（agora-7ku.5）随 1.2 已 bump；`last_seen`（agora-7ku.6，只增）由本批集成者统一 bump minor，本任务不动它。
 
 ## 一跳转发（ADR-003 D8、ADR-004；agora-7ku.7）
 
