@@ -140,3 +140,9 @@ select:disabled { opacity: 0.5; }
 .node-status.stale .dot { color: var(--warn); }
 .node-status.bad .dot, .node-status.bad .node-note { color: var(--bad); }
 .node-status.unknown .dot { color: var(--muted); }
+
+/* stale 的 peer 行（agora-7ku.6；MISSION §3.5 "上次见到 23:10"；不变量 8）：整行淡显但一条不少，
+   .meta 里「○ 上次见到 HH:MM」与 Header 那枚 stale 节点同一个黄点、同一个 clockText。 */
+li.stale > .row { opacity: 0.55; }
+li.stale > .row:hover, li.stale > .row.selected { opacity: 0.8; }
+.row .meta .stale-seen { color: var(--warn); }

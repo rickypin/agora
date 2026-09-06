@@ -2,9 +2,13 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { SessionRow } from "./events";
-import { SidebarRow } from "./SessionRow";
+import { clockText } from "./Header";
+import { SidebarRow, staleSeen } from "./SessionRow";
 
 afterEach(cleanup);
+
+/** 节点按本机时钟打的 UTC 文本（docs/spec/api.md「peer 视图」的 last_seen 形态）。 */
+const SEEN = "2026-09-02T23:10:00Z";
 
 function row(extra: Partial<SessionRow> = {}): SessionRow {
   return { id: "n:a", node: "n", status: "turn_done", alive: true, agent_type: "claude", ...extra };
@@ -41,6 +45,51 @@ it("labels the node only on rows from another node, and only once the local node
   // 还不知道本机是谁（/api/system 没回）：谁都不标，免得先满屏 @ 再消失。
   mount(row({ id: "zuan:7", node: "zuan" }), true);
   expect(screen.queryByTestId("row-node-zuan:7")).toBeNull();
+});
+
+it("a stale peer row says when the node was last seen, in local HH:MM, and dims the whole row (A29; invariant 8)", () => {
+  // MISSION §3.5 "peer 断线保留最后视图并标记（上次见到 23:10）"：行没消失，.meta 里多一段，
+  // 时间与 Header 那一枚用同一个 clockText（本地时区），完整 UTC 放 title。
+  mount(row({ id: "zuan:7", node: "zuan", stale: true, last_seen: SEEN }), false, "n");
+  const seen = screen.getByTestId("row-stale-zuan:7");
+  expect(seen.textContent).toBe(`○ 上次见到 ${clockText(SEEN)}`);
+  expect(seen.title).toContain(SEEN);
+  // 行还在、能点、整行淡显（li.stale，样式在 index.css）；@ node 照常。
+  expect(screen.getByTestId("row-zuan:7")).toBeTruthy();
+  expect(screen.getByTestId("row-zuan:7").closest("li")?.className).toContain("stale");
+  expect(screen.getByTestId("row-node-zuan:7").textContent).toBe("@ zuan");
+  // 选中与 stale 正交。
+  cleanup();
+  mount(row({ id: "zuan:7", node: "zuan", stale: true, last_seen: SEEN }), true, "n");
+  expect(screen.getByTestId("row-zuan:7").closest("li")?.className).toBe("selected stale");
+});
+
+it("a row that is not stale has no '上次见到' and no stale class", () => {
+  // 在线的 peer 行（stale: false）与本机行（没有 stale 键）都不渲染这一段——它只属于离线的 peer。
+  mount(row({ id: "zuan:7", node: "zuan", stale: false }), false, "n");
+  expect(screen.queryByTestId("row-stale-zuan:7")).toBeNull();
+  expect(screen.getByTestId("row-zuan:7").closest("li")?.className ?? "").not.toContain("stale");
+  cleanup();
+  mount(row(), true, "n");
+  expect(screen.queryByTestId("row-stale-n:a")).toBeNull();
+  expect(screen.getByTestId("row-n:a").closest("li")?.className).toBe("selected");
+  // 只有 last_seen 没有 stale（不该发生）：不当 stale 画。
+  cleanup();
+  mount(row({ id: "zuan:7", node: "zuan", last_seen: SEEN }), false, "n");
+  expect(screen.queryByTestId("row-stale-zuan:7")).toBeNull();
+});
+
+it("a stale row without last_seen still renders (offline, no time) instead of crashing", () => {
+  expect(() => mount(row({ id: "zuan:7", node: "zuan", stale: true }), false, "n")).not.toThrow();
+  expect(screen.getByTestId("row-stale-zuan:7").textContent).toBe("○ 离线");
+  expect(screen.getByTestId("row-zuan:7").closest("li")?.className).toContain("stale");
+  // 解析不了的 last_seen：clockText 原样给回，不抛。
+  cleanup();
+  mount(row({ id: "zuan:7", node: "zuan", stale: true, last_seen: "garbage" }), false, "n");
+  expect(screen.getByTestId("row-stale-zuan:7").textContent).toBe("○ 上次见到 garbage");
+  // 纯函数形态。
+  expect(staleSeen(row())).toBeNull();
+  expect(staleSeen(row({ stale: true, last_seen: SEEN }))?.text).toBe(`○ 上次见到 ${clockText(SEEN)}`);
 });
 
 it("an active row shows the task's acceptance criteria in full, below the respond area (A40)", () => {
