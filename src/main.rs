@@ -274,6 +274,8 @@ async fn serve() -> i32 {
             "还没有已配对设备：在本机运行 `agora open` 打开浏览器"
         );
     }
+    // `/api/health` 的 tls 字段：证书来源，没开 TLS 监听器就是 null（MISSION §10.3；agora-ltb）。
+    let tls_mode = tls.as_ref().map(|setup| setup.mode.as_str());
     let tls_listener = tls.map(|setup| {
         // 零凭据只警告不拒绝（ADR-003 D5）；守卫 tests/listen.rs::tls_listen_with_only_a_machine_token_does_not_warn。
         if let Some(w) = tls::zero_credentials_warning(paired_devices, machine_tokens) {
@@ -334,6 +336,7 @@ async fn serve() -> i32 {
             .with_worktree_root(settings.raw.worktree_root.clone()),
     );
     state.runtime_path_source = path_source;
+    state.tls_mode = tls_mode;
     // 配置里的 peer 从第一秒起就在 health / Header 里（离线、没见过），不等连上才出现（MISSION §10.3）。
     // 同时装节点名 → transport 的表（agora-7ku.11）：peer 客户端（7ku.5）与一跳转发（7ku.7）都从
     // state.registry 查。名字重复或与本机 node.id 同名是配置错误，与其他配置错误一样退出码 2；

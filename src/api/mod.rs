@@ -98,6 +98,9 @@ pub struct AppState {
     pub projects: Arc<Projects>,
     /// 启动时探到的 PATH 来源（"shell" / "daemon"）；运行时好不好是实时的，见 `RuntimeStatus`。
     pub runtime_path_source: &'static str,
+    /// TLS 监听器的证书来源（`tls.mode`，ADR-003 D4）："self-signed" / "external"；没开 `server.tls_listen`
+    /// 就是 None，`/api/health` 的 `tls` 字段照此报（MISSION §10.3；agora-ltb）。`main.rs` 装配时填。
+    pub tls_mode: Option<&'static str>,
     /// hook 挂起表：respond 的 `decision` 走它；没接（测试）时一律 `no_pending_decision`。
     pub hooks: Option<Arc<crate::hook::Receiver>>,
     /// `<program> --version` 的探测缓存（ADR-002 D7 三值），键是程序名。Available 记住到
@@ -128,6 +131,7 @@ impl AppState {
             agents: Arc::new(BTreeMap::new()),
             projects: Arc::new(Projects::new(sessions.db_handle(), Vec::new())),
             runtime_path_source: "daemon",
+            tls_mode: None,
             hooks: None,
             probes: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             peers: crate::peer::state::PeerStates::new(),

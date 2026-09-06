@@ -177,3 +177,43 @@ async fn tls_listen_with_only_a_machine_token_does_not_warn() {
     assert_eq!(active(&db), 0, "已吊销的不算");
     assert!(tls::zero_credentials_warning(0, active(&db)).is_some());
 }
+
+/// 一个带已配对设备的 AppState 与它的 session cookie 行（`Cookie: agora_session=…\r\n`）。
+fn state_with_device(tls_mode: Option<&'static str>) -> (AppState, String) {
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let auth = Arc::new(Auth::new(db.clone(), AuthConfig::default()));
+    let token = auth
+        .mint_pair_token(agora::auth::PairedVia::Socket)
+        .unwrap();
+    let (_device, session) = auth.redeem(&token, None, None).unwrap();
+    let rt = Arc::new(common::FakeRuntime::default());
+    let sessions = Arc::new(SessionManager::new(db, rt as Arc<dyn Runtime>));
+    let mut state = AppState::new(auth, sessions, "n");
+    state.tls_mode = tls_mode;
+    (state, format!("Cookie: agora_session={session}\r\n"))
+}
+
+#[tokio::test]
+async fn health_reports_tls_mode_when_tls_listener_is_on() {
+    // agora-ltb：MISSION §10.3 要已认证的 health 报 TLS 模式，health.rs 原先写死 null。main.rs 装配时按
+    // tls.mode 填 AppState::tls_mode（self-signed / external），没开 server.tls_listen 就留 None → null。
+    // 公开子集（未认证）不带这个字段——那是 ADR-003 D1 的守卫（tests/health.rs），这里只看已认证形态。
+    for mode in ["self-signed", "external"] {
+        let (state, cookie) = state_with_device(Some(mode));
+        let (port, pin) = tls_server(api::router(state)).await;
+        let resp = https_get(port, pin, "/api/health", &cookie).await;
+        assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+        let body: serde_json::Value =
+            serde_json::from_str(resp.rsplit("\r\n\r\n").next().unwrap()).unwrap();
+        assert_eq!(body["tls"], mode, "{body}");
+        assert_eq!(body["status"], "ok");
+    }
+    // 没开 TLS 监听器的节点：null，而不是缺键或某个默认字符串。
+    let (state, cookie) = state_with_device(None);
+    let (port, pin) = tls_server(api::router(state)).await;
+    let resp = https_get(port, pin, "/api/health", &cookie).await;
+    let body: serde_json::Value =
+        serde_json::from_str(resp.rsplit("\r\n\r\n").next().unwrap()).unwrap();
+    assert!(body.get("tls").is_some(), "{body}");
+    assert!(body["tls"].is_null(), "{body}");
+}

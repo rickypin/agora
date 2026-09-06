@@ -131,9 +131,12 @@ GET /api/health
 → { "status": "ok",
     "runtime": { "status": "ok" | "degraded", "reason": null, "path_source": "shell" | "daemon" },   // ADR-001 D7；status/reason 每次请求现算，运行时恢复后自动转回 ok
     "database": true,
-    "tls": "external", "push": { "apple": true, "fcm": false },
+    "tls": "self-signed" | "external" | null,   // 证书来源 tls.mode（ADR-003 D4）；没开 server.tls_listen → null
+    "push": { "apple": true, "fcm": false },
     "peers": { "mac": { "online": false, "last_seen": "2026-09-02T23:10:00Z", "retrying": true, "last_error": "fingerprint_mismatch" } } }
 ```
+
+`tls`（agora-ltb）：三个值——`"self-signed"` / `"external"` 是 `tls.mode`（`docs/spec/config.md`「TLS 证书」），`null` 是没配 `server.tls_listen`、节点上没有 TLS 监听器；daemon 装配时按配置填进 `AppState::tls_mode`，health 只读它。守卫 `tests/listen.rs::health_reports_tls_mode_when_tls_listener_is_on`。
 
 `peers`（agora-7ku.12；模型在 `src/peer/state.rs`）：键是 `peers[].name`，配置了的 peer 从启动起就在（还没连上：`online: false`、`last_seen: null`、`retrying: false`、`last_error: null`）。`last_seen` 是上次成功交互的时刻，**本节点时钟**打的 UTC 文本（ADR-004：不信 peer 报的时间），离线后保留——这就是 stale 行的"上次见到"（不变量 8）。`retrying` 表示下一次**网络重试已排定**（退避 1 s 起步、30 s 封顶、永不放弃，参数见 `docs/spec/architecture.md`）。`last_error` 是最后一次失败的**类型**，只有五个值：`incompatible_version`（对方 `api_version` 不兼容，A33）、`fingerprint_mismatch`（证书 SPKI 指纹不符）、`unauthorized`（对方 401）、`unreachable`（拒绝 / 5 s 超时 / DNS 失败）、`misconfigured`（agora-41e；ADR-003 D3：**本节点这一行 `peers[]` 字面上就用不了**——`token_file` 权限过宽 / 不属于当前用户 / 读不到 / 内容不是 `apt_<name>_<43 字符>`、`url` 不是 `https://`、`cert_fingerprint` 不是 `sha256:<64 hex>`；发生在拨号之前，网上没有任何字节）；在线时为 `null`。`misconfigured` 是唯一 `retrying` **恒为 false** 的离线：重试改不了文件，节点不进退避，而是每 10 s 重读一次配置文件（`BackoffPolicy::misconfigured_recheck`；人点开该 peer 的 stale 会话也会立刻重读），改好即恢复、`last_error` 变回 `null`，不需要重启 daemon；`last_seen` 与 stale 行照旧保留。前端只按这五个值渲染原因文案，不解析任何消息文本（MISSION §2.3 规则 10；人看的细节——含 `chmod 600 <path>` 提示——在节点转入配置错误时的一条 warn 日志里）。守卫 `tests/health.rs::health_peers_section_reports_each_peer_state_by_type`；`misconfigured` 的行为 `tests/peer_misconfig.rs::misconfigured_peer_is_flagged_and_not_retrying`、`::misconfigured_peer_does_not_back_off`、`::fixing_the_config_recovers_without_restart`、`::retry_now_wakes_a_misconfigured_peer`、`::local_sessions_unaffected_by_misconfigured_peer`，真文件经生产传输 `tests/peer_token.rs::https_transport_reports_token_file_problems_as_misconfigured`。
 

@@ -53,7 +53,8 @@ pub async fn health(principal: Option<Principal>, State(state): State<AppState>)
         "status": "ok",
         "runtime": runtime,
         "database": database,
-        "tls": Value::Null,
+        // "self-signed" / "external" / null（没开 TLS 监听器）；`main.rs` 按 tls.mode 填（agora-ltb）。
+        "tls": state.tls_mode,
         "push": { "apple": false, "fcm": false },
         // 节点名 → PeerState（src/peer/state.rs）：online / last_seen / retrying / last_error，
         // 错误按类型；配置了却还没连上的 peer 也在（agora-7ku.12）。
