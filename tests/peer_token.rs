@@ -13,6 +13,11 @@ use std::sync::Arc;
 use agora::api::{self, AppState, TlsListener, PUBLIC_ROUTES, ROUTES};
 use agora::auth::peer_token::{self, PeerTokenError, TokenFileError};
 use agora::auth::{sha256_hex, Auth, AuthConfig, Principal};
+use agora::config::PeerSection;
+use agora::peer::state::PeerError;
+use agora::peer::transport::{
+    HttpsTransport, PeerConfigError, PeerTransport, TransportError, DEFAULT_TIMEOUT,
+};
 use agora::runtime::Runtime;
 use agora::session::{Db, SessionManager};
 use axum::body::Body;
@@ -336,6 +341,95 @@ fn token_file_too_open_is_config_error() {
         peer_token::load_token_file(&dir.path().join("missing")),
         Err(TokenFileError::Read { .. })
     ));
+
+    // 状态模型那头（agora-41e）：每一种 TokenFileError 经 TransportError::Config 都映成
+    // Misconfigured——不是 Unreachable、不是 Unauthorized。
+    for err in [
+        TokenFileError::TooOpen {
+            path: "/x".into(),
+            mode: 0o644,
+        },
+        TokenFileError::Malformed { path: "/x".into() },
+        TokenFileError::WrongOwner {
+            path: "/x".into(),
+            owner: 0,
+            me: 501,
+        },
+        TokenFileError::Read {
+            path: "/x".into(),
+            source: std::io::Error::other("x"),
+        },
+    ] {
+        assert_eq!(
+            PeerError::from(TransportError::Config(PeerConfigError::TokenFile(err))),
+            PeerError::Misconfigured
+        );
+    }
+}
+
+/// 真文件经生产传输（agora-41e；ADR-003 D3）：`HttpsTransport` 指向 0644 的 token_file →
+/// `Config(TokenFile(TooOpen))` 且状态模型映成 `Misconfigured`（Display 带 chmod 600）；内容
+/// "hello" → `Malformed`。两者都发生在拨号之前——url 指向一个不存在的主机名，能立刻返回就说明
+/// 没去拨号。WrongOwner 需要另一个 uid，不测。
+#[tokio::test]
+async fn https_transport_reports_token_file_problems_as_misconfigured() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("zuan.token");
+    let token = format!("apt_zuan_{}", agora::auth::random_token());
+    std::fs::write(&path, format!("{token}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let transport = || {
+        HttpsTransport::new(
+            PeerSection {
+                name: "zuan".into(),
+                url: "https://zuan.invalid:7681".into(),
+                token_file: path.clone(),
+                cert_fingerprint: format!("sha256:{}", "0".repeat(64)),
+            },
+            DEFAULT_TIMEOUT,
+        )
+    };
+    let get = || Request::get("/api/system").body(Body::empty()).unwrap();
+
+    let err = transport().request(get()).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            TransportError::Config(PeerConfigError::TokenFile(TokenFileError::TooOpen {
+                mode: 0o644,
+                ..
+            }))
+        ),
+        "{err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("chmod 600") && msg.contains(path.to_str().unwrap()),
+        "warn 日志的正文就是这一句: {msg}"
+    );
+    assert_eq!(PeerError::from(err), PeerError::Misconfigured);
+    // WS 建连同一条路。
+    let err = transport().connect_ws("/api/events").await.unwrap_err();
+    assert!(matches!(err, TransportError::Config(_)), "{err:?}");
+    assert_eq!(PeerError::from(err), PeerError::Misconfigured);
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::write(&path, "hello\n").unwrap();
+    let err = transport().request(get()).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            TransportError::Config(PeerConfigError::TokenFile(TokenFileError::Malformed { .. }))
+        ),
+        "{err:?}"
+    );
+    assert_eq!(PeerError::from(err), PeerError::Misconfigured);
+
+    // 修好：过了配置检查才去拨号——主机名不存在，这时才是不可达 / 超时，不再是配置错误。
+    std::fs::write(&path, format!("{token}\n")).unwrap();
+    let err = transport().request(get()).await.unwrap_err();
+    assert!(!matches!(err, TransportError::Config(_)), "{err:?}");
+    assert_eq!(PeerError::from(err), PeerError::Unreachable);
 }
 
 /// `agora peer token …` 走真二进制、直接操作 `AGORA_HOME/agora.db`（不起 daemon，ADR-003 D6）：

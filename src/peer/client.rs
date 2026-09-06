@@ -12,6 +12,12 @@
 //!    等待可被 [`Wake`] 打断：`retry_now` 缩短这一次等待（agora-7ku.6 "点开 stale 会话立即重试"：
 //!    `api::forward::hop` 与 `api::sessions::get` 看到 Human 碰 stale peer 的会话就调一次），
 //!    `reconnect` 在线时也强制断开重连。
+//! 4. 配置错误（`TransportError::Config` → [`PeerError::Misconfigured`]，ADR-003 D3；agora-41e）
+//!    **不进退避**：行照样标 stale，但 `retrying: false`，等一个固定的
+//!    `BackoffPolicy::misconfigured_recheck`（生产 10 s）再走一遍 `connected`——`HttpsTransport`
+//!    的三项配置检查在拨号之前，文件没修好就不上网；修好了自然进正常流程、`seen` 清错误。
+//!    `retry_now` / `reconnect` 同样能打断这个等待。转入配置错误时 warn 一条（正文是
+//!    `TokenFileError` 的原话，含 chmod 600 提示），之后每次重读仍失败只 debug，不刷屏。
 //!
 //! 时间一律本节点时钟（`PeerViews::now`）：`last_seen` 与行上的 `status_since` 用同一只表打。
 //! 测试用 `InProcessTransport` 驱动整个循环，退避策略与时钟都可注入，不 sleep 等真实退避。
@@ -26,7 +32,7 @@ use serde_json::Value;
 
 use super::backoff::{random_jitter, Backoff, BackoffPolicy};
 use super::state::{PeerError, PeerStates};
-use super::transport::{PeerTransport, WsMessage};
+use super::transport::{PeerTransport, TransportError, WsMessage};
 use super::view::{Applied, PeerViews, Wake};
 use crate::api::version::{negotiate, ApiVersion, Compatibility, API_VERSION};
 use crate::api::AppState;
@@ -108,15 +114,33 @@ impl PeerClient {
                     // 给 Header 的那个值），一只表、一个数字，侧栏行与 Header 不会各说各话。
                     let last_seen = self.peers.get(&self.name).and_then(|p| p.last_seen);
                     self.publish(self.views.mark_stale(&self.name, last_seen));
-                    let delay = backoff.next_delay(random_jitter());
-                    tracing::warn!(
-                        component = "peer",
-                        peer = %self.name,
-                        error = ?err,
-                        failures = backoff.failures(),
-                        retry_in_ms = delay.as_millis() as u64,
-                        "peer 断开，退避后重试"
-                    );
+                    let delay = if err == PeerError::Misconfigured {
+                        // 配置错误不进退避（ADR-003 D3）：固定间隔重读配置文件，不翻倍、不抖、
+                        // 不累计 failures。计数归零是有意的：配置错误不是网络失败，文件修好后若
+                        // 真的连不上，退避该从 1 s 起步，而不是接着配置错误期间攒下的次数直接
+                        // 跳到 30 s 顶（2026-09-06；反例：不归零时 chmod 600 之后 peer 恰好在
+                        // 重启，人要多等半分钟才看到它回来）。转入时的 warn 在 `classify` 里。
+                        backoff.reset();
+                        let delay = self.policy.misconfigured_recheck;
+                        tracing::debug!(
+                            component = "peer",
+                            peer = %self.name,
+                            recheck_in_ms = delay.as_millis() as u64,
+                            "peer 配置错误，稍后重读配置"
+                        );
+                        delay
+                    } else {
+                        let delay = backoff.next_delay(random_jitter());
+                        tracing::warn!(
+                            component = "peer",
+                            peer = %self.name,
+                            error = ?err,
+                            failures = backoff.failures(),
+                            retry_in_ms = delay.as_millis() as u64,
+                            "peer 断开，退避后重试"
+                        );
+                        delay
+                    };
                     tokio::select! {
                         _ = tokio::time::sleep(delay) => {}
                         _ = self.wake.wait() => {}
@@ -162,7 +186,7 @@ impl PeerClient {
         // ② 先流后快照：与浏览器一样，连上（含重连）先对齐全量。
         let mut ws = match self.transport.connect_ws("/api/events").await {
             Ok(ws) => ws,
-            Err(err) => return Disconnect::Failed(err.into()),
+            Err(err) => return Disconnect::Failed(self.classify(err)),
         };
         if let Err(err) = self.snapshot().await {
             return Disconnect::Failed(err);
@@ -247,14 +271,40 @@ impl PeerClient {
         Ok(())
     }
 
-    /// 发一个 GET：传输错误按类型映射（`From<TransportError>`），401 是未授权，其它非 2xx 当
+    /// 传输错误 → 状态类型（`From<TransportError>`），顺手打配置错误的日志：**转入**「配置错误」
+    /// （前一个状态不是它）warn 一条，正文是 `TransportError` 的 Display——token_file 那类就是
+    /// `TokenFileError` 的原话，含 `chmod 600 <path>`；仍在配置错误里的每次重读只 debug，10 s 一条
+    /// 也不该刷屏。要在 `PeerStates::failed` 之前调，那时 `last_error` 还是前一个状态。
+    fn classify(&self, err: TransportError) -> PeerError {
+        if let TransportError::Config(detail) = &err {
+            let was = self.peers.get(&self.name).and_then(|p| p.last_error);
+            if was == Some(PeerError::Misconfigured) {
+                tracing::debug!(component = "peer", peer = %self.name, %detail, "peer 配置仍然错误");
+            } else {
+                tracing::warn!(
+                    component = "peer",
+                    peer = %self.name,
+                    %detail,
+                    recheck_secs = self.policy.misconfigured_recheck.as_secs_f64(),
+                    "peer 配置错误：不重试，改好文件后按固定间隔重读即恢复，不需要重启"
+                );
+            }
+        }
+        err.into()
+    }
+
+    /// 发一个 GET：传输错误按类型映射（`classify`），401 是未授权，其它非 2xx 当
     /// 不可达；200 但不是 JSON 给 `Null`，让调用方按自己的语义判（`/api/system` 不是 JSON 就是
     /// "不是本协议的节点" → 不兼容；`/api/sessions` 不是 JSON → 不可达，保留旧视图）。
     async fn get_json(&self, path: &str) -> Result<Value, PeerError> {
         let req = Request::get(path)
             .body(Body::empty())
             .map_err(|_| PeerError::Unreachable)?;
-        let resp = self.transport.request(req).await?;
+        let resp = self
+            .transport
+            .request(req)
+            .await
+            .map_err(|e| self.classify(e))?;
         let status = resp.status();
         if status == StatusCode::UNAUTHORIZED {
             return Err(PeerError::Unauthorized);

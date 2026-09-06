@@ -13,24 +13,46 @@ use std::time::Duration;
 /// 120 s 的阻塞线程（docs/analysis/devcenter/appendix-b-multihost.md）。传输层（agora-7ku.11）按它设。
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// 指数退避的两个参数。没有"最多几次"——不变量 8 排除"重试 N 次后标 dead"，退避只封顶不终止。
+/// 「配置错误」（`PeerError::Misconfigured`，ADR-003 D3）时多久重读一次配置文件。不是退避：
+/// 重试改不了 token_file 的权限，等多久都一样，所以是固定间隔、不翻倍、不抖。10 s 与 health
+/// degraded 期间前端的重拉间隔同一个数——人 chmod 600 之后十几秒内 Header 就变绿，又不至于
+/// 一个坏掉的 peer 让 daemon 每秒去 stat 文件。仓库没有配置热加载，这个定时重读就是"改文件
+/// 后 reload 才恢复"的落地形态（agora-41e）。
+pub const MISCONFIGURED_RECHECK: Duration = Duration::from_secs(10);
+
+/// 指数退避的两个参数，外加配置错误时的重读间隔。没有"最多几次"——不变量 8 排除"重试 N 次后
+/// 标 dead"，退避只封顶不终止。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackoffPolicy {
     /// 第一次失败后等多久，之后每次翻倍。
     pub base: Duration,
     /// 上限。要低：Mac 睡眠是常态场景（MISSION §0.2），醒来后应秒级恢复。
     pub cap: Duration,
+    /// 配置错误时重读配置文件的固定间隔（见 [`MISCONFIGURED_RECHECK`]）；不走 `delay`、不抖。
+    pub misconfigured_recheck: Duration,
 }
 
 impl BackoffPolicy {
-    /// peer 重连的默认：1 s 起步、30 s 封顶。
+    /// peer 重连的默认：1 s 起步、30 s 封顶；配置错误每 10 s 重读。
     pub const PEER: BackoffPolicy = BackoffPolicy {
         base: Duration::from_secs(1),
         cap: Duration::from_secs(30),
+        misconfigured_recheck: MISCONFIGURED_RECHECK,
     };
 
+    /// 自定义退避；重读间隔取生产值，要改用 [`with_recheck`](Self::with_recheck)。
     pub const fn new(base: Duration, cap: Duration) -> Self {
-        BackoffPolicy { base, cap }
+        BackoffPolicy {
+            base,
+            cap,
+            misconfigured_recheck: MISCONFIGURED_RECHECK,
+        }
+    }
+
+    /// 换配置错误的重读间隔（测试给毫秒级）。
+    pub const fn with_recheck(mut self, recheck: Duration) -> Self {
+        self.misconfigured_recheck = recheck;
+        self
     }
 
     /// 连续失败 `failures` 次之后（0 起）等多久：d = min(base · 2^failures, cap)，再按
@@ -184,6 +206,25 @@ mod tests {
         b.reset();
         assert_eq!(b.failures(), 0);
         assert_eq!(b.next_delay(0.0), S(1));
+    }
+
+    #[test]
+    fn misconfigured_recheck_is_a_fixed_ten_seconds_not_a_backoff() {
+        // ADR-003 D3 / agora-41e：配置错误不进退避——间隔固定、不翻倍、不抖；10 s 是与前端 health
+        // degraded 重拉同一个数。谁要改它先来这里说清为什么。
+        assert_eq!(MISCONFIGURED_RECHECK, S(10));
+        assert_eq!(BackoffPolicy::PEER.misconfigured_recheck, S(10));
+        assert_eq!(
+            BackoffPolicy::new(S(1), S(30)),
+            BackoffPolicy::PEER,
+            "new 的重读间隔缺省就是生产值"
+        );
+        let fast = BackoffPolicy::new(S(1), S(30)).with_recheck(Duration::from_millis(100));
+        assert_eq!(fast.misconfigured_recheck, Duration::from_millis(100));
+        assert_eq!((fast.base, fast.cap), (S(1), S(30)), "只换重读间隔");
+        // 重读间隔不参与 delay：退避序列与没有它时一字不差。
+        assert_eq!(fast.delay(0, 0.0), S(1));
+        assert_eq!(fast.delay(5, 0.0), S(30));
     }
 
     #[test]

@@ -149,6 +149,10 @@ pub struct InProcessTransport {
     /// 测试开关（agora-7ku.6）：对端进程活着但坏了——每个 HTTP 请求 500、WS 握手被 502 拒。
     /// 与 `offline` 是不变量 8 要挡的两种坏 peer：连不上的，和连得上却答非所问的。
     broken: AtomicBool,
+    /// 测试开关（agora-41e）：本机这一行 `peers[]` 配置错了——每次 `request` / `connect_ws` 立即
+    /// `TransportError::Config`（生产里是 token_file 权限过宽这类，发生在拨号之前）。与前两个
+    /// 开关的区别在状态模型那边：这是 `Misconfigured`、不进退避，前两个都是 `Unreachable`。
+    misconfigured: AtomicBool,
     /// 测试观测口（agora-7ku.6）：连接尝试计数，`request` 与 `connect_ws` 各算一次，被
     /// `offline` / `broken` 挡掉的也算——"退避封顶、永不放弃"的集成版就是数它涨了多少。
     attempts: AtomicUsize,
@@ -167,6 +171,7 @@ impl InProcessTransport {
             app,
             offline: AtomicBool::new(false),
             broken: AtomicBool::new(false),
+            misconfigured: AtomicBool::new(false),
             attempts: AtomicUsize::new(0),
         }
     }
@@ -187,6 +192,25 @@ impl InProcessTransport {
 
     pub fn is_broken(&self) -> bool {
         self.broken.load(Ordering::SeqCst)
+    }
+
+    /// 模拟本机这一行 `peers[]` 配置错了 / 修好了（agora-41e）：置上后每次尝试立即返回
+    /// `TransportError::Config`，形态取"token_file 0644"——生产里最常见的那种，Display 带
+    /// chmod 600 提示，客户端的 warn 日志与真的一模一样。尝试照样计入 `attempts`（数它涨了多少
+    /// 就是"不退避、按固定间隔重读"的集成版证据）。
+    pub fn set_misconfigured(&self, misconfigured: bool) {
+        self.misconfigured.store(misconfigured, Ordering::SeqCst);
+    }
+
+    pub fn is_misconfigured(&self) -> bool {
+        self.misconfigured.load(Ordering::SeqCst)
+    }
+
+    fn config_error(&self) -> TransportError {
+        TransportError::Config(PeerConfigError::TokenFile(TokenFileError::TooOpen {
+            path: format!("/fake/{}.token", self.name),
+            mode: 0o644,
+        }))
     }
 
     /// 到现在为止的连接尝试次数（含被挡掉的）。
@@ -222,6 +246,9 @@ impl PeerTransport for InProcessTransport {
     fn request(&self, req: Request<Body>) -> BoxFuture<'_, Result<Response<Body>, TransportError>> {
         Box::pin(async move {
             self.attempts.fetch_add(1, Ordering::SeqCst);
+            if self.is_misconfigured() {
+                return Err(self.config_error());
+            }
             if self.is_offline() {
                 return Err(self.refused());
             }
@@ -241,6 +268,9 @@ impl PeerTransport for InProcessTransport {
     ) -> BoxFuture<'a, Result<PeerWs, TransportError>> {
         Box::pin(async move {
             self.attempts.fetch_add(1, Ordering::SeqCst);
+            if self.is_misconfigured() {
+                return Err(self.config_error());
+            }
             if self.is_offline() {
                 return Err(self.refused());
             }
@@ -576,6 +606,36 @@ mod tests {
             "{err:?}"
         );
         t.set_broken(false);
+        assert_eq!(
+            t.request(get_req("/ok")).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(t.attempts(), 3);
+    }
+
+    #[tokio::test]
+    async fn misconfigured_fake_returns_config_error_and_still_counts_attempts() {
+        // agora-41e：配置错误的 fake 在拨号之前就返回 Config（与 HttpsTransport 一致），文案是
+        // TokenFileError 的原话（带 chmod 600）；尝试计数照涨，集成测试靠它数"重读了几次"。
+        let t = InProcessTransport::new("b", "a", slow_router(), DEFAULT_TIMEOUT);
+        t.set_misconfigured(true);
+        assert!(t.is_misconfigured() && !t.is_offline() && !t.is_broken());
+        let err = t.request(get_req("/ok")).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TransportError::Config(PeerConfigError::TokenFile(TokenFileError::TooOpen {
+                    mode: 0o644,
+                    ..
+                }))
+            ),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("chmod 600"), "{err}");
+        let err = t.connect_ws("/ws-401").await.unwrap_err();
+        assert!(matches!(err, TransportError::Config(_)), "{err:?}");
+        assert_eq!(t.attempts(), 2);
+        t.set_misconfigured(false);
         assert_eq!(
             t.request(get_req("/ok")).await.unwrap().status(),
             StatusCode::OK

@@ -130,13 +130,16 @@ async fn root_serves_html_or_not_built_notice() {
 async fn health_peers_section_reports_each_peer_state_by_type() {
     // MISSION §10.3 / agora-7ku.12：每个 peer 一项，字段齐——online、last_seen（本节点时钟的
     // UTC 文本）、retrying、last_error（按类型不按文本）。配置了却还没连上的也在（离线、没见过）。
+    // agora-41e：第五个类型 misconfigured（ADR-003 D3）——retrying 必须是 false（重试改不了
+    // 文件），last_seen 照样保留。
+    use agora::peer::state::PeerError;
     let fx = common::Fx::new();
     fx.state.peers.register("fresh");
     fx.state.peers.seen("zuan", 1_788_393_600); // 2026-09-03T00:00:00Z
     fx.state.peers.seen("mac", 1_788_393_600);
-    fx.state
-        .peers
-        .failed("mac", agora::peer::state::PeerError::FingerprintMismatch);
+    fx.state.peers.failed("mac", PeerError::FingerprintMismatch);
+    fx.state.peers.seen("pi", 1_788_393_600);
+    fx.state.peers.failed("pi", PeerError::Misconfigured);
     let cookie = fx.cookie();
     let resp = fx
         .app()
@@ -161,6 +164,12 @@ async fn health_peers_section_reports_each_peer_state_by_type() {
                 "last_seen": "2026-09-03T00:00:00Z",
                 "retrying": true,
                 "last_error": "fingerprint_mismatch",
+            },
+            "pi": {
+                "online": false,
+                "last_seen": "2026-09-03T00:00:00Z",
+                "retrying": false,
+                "last_error": "misconfigured",
             },
             "zuan": { "online": true, "last_seen": "2026-09-03T00:00:00Z", "retrying": false, "last_error": null },
         })

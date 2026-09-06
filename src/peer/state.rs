@@ -6,15 +6,18 @@
 //! 谁也不解析消息字符串；人看的细节走日志。
 //!
 //! 不变量 8 的两半：peer 离线后 `last_seen` 保留（stale 不是消失），`retrying` 永远会再变回
-//! true（退避可封顶、不可终止，参数见 `super::backoff`）。
+//! true（退避可封顶、不可终止，参数见 `super::backoff`）。唯一不 `retrying` 的离线是
+//! [`PeerError::Misconfigured`]（ADR-003 D3）：配置本身就不对，网络重试改不了文件，客户端改为
+//! 定时重读配置（`BackoffPolicy::misconfigured_recheck`），修好即恢复。
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize, Serializer};
 
-/// 最后一次连接失败的**类型**。四类是 M2a 剧本点名要在 Header 上区分的（agora-7ku 设计字段
-/// 第 2、3 步）：指纹不匹配与版本不兼容都必须显示成自己的原因而不是"离线"。
+/// 最后一次连接失败的**类型**。前四类是 M2a 剧本点名要在 Header 上区分的（agora-7ku 设计字段
+/// 第 2、3 步）：指纹不匹配与版本不兼容都必须显示成自己的原因而不是"离线"；第五类
+/// `Misconfigured` 是 ADR-003 D3 点名的「配置错误」（agora-41e）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerError {
@@ -26,6 +29,11 @@ pub enum PeerError {
     Unauthorized,
     /// 连不上：拒绝、每次尝试 5 s 超时、DNS 失败……全归这一类，细节在日志。
     Unreachable,
+    /// 本节点这一行 `peers[]` 字面上就用不了（ADR-003 D3；agora-41e）：`token_file` 权限过宽 /
+    /// 不属于自己 / 读不到 / 内容不是 token、`url` 不是 https、指纹不合法。发生在拨号之前，网上
+    /// 没有任何字节；**不进退避**（`retrying: false`）——重试改不了文件，daemon 每
+    /// `misconfigured_recheck`（生产 10 s）重读一次配置文件，改好即恢复，不需要重启。
+    Misconfigured,
 }
 
 /// 一个 peer 在本节点眼里的状态。JSON 形态见 docs/spec/api.md Health 节。
@@ -37,7 +45,8 @@ pub struct PeerState {
     /// 从没连上过为 None。序列化成 `YYYY-MM-DDTHH:MM:SSZ`，与会话时间戳同形。
     #[serde(serialize_with = "ser_utc")]
     pub last_seen: Option<i64>,
-    /// 下一次重试已排定（退避中）。离线的 peer 除了"客户端还没起来"这一刻，都应该是 true。
+    /// 下一次**网络**重试已排定（退避中）。离线的 peer 除了"客户端还没起来"这一刻与
+    /// `Misconfigured`（重试改不了配置，客户端只是定时重读文件）之外，都应该是 true。
     pub retrying: bool,
     /// 最后一次失败的类型；在线时 None。
     pub last_error: Option<PeerError>,
@@ -64,9 +73,11 @@ impl PeerState {
     }
 
     /// 一次失败：离线、记类型、进入退避重试。`last_seen` **不动**——那是 stale 行的"上次见到"。
+    /// `Misconfigured` 例外：`retrying = false`——没有网络重试可排，客户端在定时重读配置文件；
+    /// Header 的 title 因此不带"重试中"，人看到的是"去改文件"而不是"等一等"。
     pub fn failed(&mut self, err: PeerError) {
         self.online = false;
-        self.retrying = true;
+        self.retrying = err != PeerError::Misconfigured;
         self.last_error = Some(err);
     }
 
@@ -84,9 +95,9 @@ impl Default for PeerState {
 
 /// 传输层的失败 → 状态模型的类型（agora-7ku.5 接线；MISSION §2.3 规则 10：按类型不按文本）。
 /// `Timeout` / `Unreachable` / `Protocol` / `Tls` 都是"连不上"；`FingerprintMismatch` 保持独立
-/// （ADR-003 D4，绝不并进离线）；`WsRejected(401)` 是未授权、其余状态码当不可达。
-/// `Config(_)`（url / 指纹 / token_file 字面上就用不了）按 ADR-003 D3 该显示为「配置错误」，
-/// 状态模型加这个类型是 agora-41e 的事；在它落地前暂映射为 `Unreachable`，细节在 warn 日志里。
+/// （ADR-003 D4，绝不并进离线）；`WsRejected(401)` 是未授权、其余状态码当不可达；`Config(_)`
+/// （url / 指纹 / token_file 字面上就用不了）是「配置错误」（ADR-003 D3；agora-41e）。日志不在
+/// 这里打——转入 / 仍在配置错误的 warn / debug 分档由 `PeerClient` 看着前一个状态决定。
 impl From<crate::peer::transport::TransportError> for PeerError {
     fn from(e: crate::peer::transport::TransportError) -> Self {
         use crate::peer::transport::TransportError as T;
@@ -95,10 +106,7 @@ impl From<crate::peer::transport::TransportError> for PeerError {
             T::WsRejected(status) if status == axum::http::StatusCode::UNAUTHORIZED => {
                 PeerError::Unauthorized
             }
-            T::Config(err) => {
-                tracing::warn!(component = "peer", %err, "peer 配置错误（agora-41e 落地前显示为不可达）");
-                PeerError::Unreachable
-            }
+            T::Config(_) => PeerError::Misconfigured,
             T::Timeout(_) | T::Unreachable(_) | T::WsRejected(_) | T::Protocol(_) | T::Tls(_) => {
                 PeerError::Unreachable
             }
@@ -200,6 +208,41 @@ mod tests {
     }
 
     #[test]
+    fn misconfigured_is_offline_without_retry_and_keeps_last_seen() {
+        // ADR-003 D3 / agora-41e：配置错误不进退避——retrying 是 false（重试改不了文件），
+        // 但 last_seen 照样保留（stale 行的"上次见到"），修好后 seen 走正常恢复。
+        let mut p = PeerState::new();
+        p.seen(T0);
+        p.failed(PeerError::Misconfigured);
+        assert!(!p.online && !p.retrying, "{p:?}");
+        assert_eq!(p.last_error, Some(PeerError::Misconfigured));
+        assert_eq!(p.last_seen, Some(T0));
+        assert!(p.is_stale());
+        assert_eq!(
+            serde_json::to_value(&p).unwrap(),
+            json!({
+                "online": false,
+                "last_seen": "2026-09-03T00:00:00Z",
+                "retrying": false,
+                "last_error": "misconfigured",
+            })
+        );
+        // 其它四类照旧 retrying。
+        for e in [
+            PeerError::IncompatibleVersion,
+            PeerError::FingerprintMismatch,
+            PeerError::Unauthorized,
+            PeerError::Unreachable,
+        ] {
+            let mut q = PeerState::new();
+            q.failed(e);
+            assert!(q.retrying, "{e:?} 应进退避");
+        }
+        p.seen(T0 + 10);
+        assert!(p.online && !p.retrying && p.last_error.is_none());
+    }
+
+    #[test]
     fn recovery_clears_error_and_stops_retrying() {
         let mut p = PeerState::new();
         p.failed(PeerError::FingerprintMismatch);
@@ -256,21 +299,31 @@ mod tests {
             PeerError::from(T::Protocol("p".into())),
             PeerError::Unreachable
         );
-        // agora-41e 之前配置错误暂归不可达；那条任务落地后这一行要改成 Misconfigured。
+        // ADR-003 D3：配置错误是自己的类型，绝不并进不可达（agora-41e）。
         assert_eq!(
             PeerError::from(T::Config(PeerConfigError::Url("http://x".into()))),
-            PeerError::Unreachable
+            PeerError::Misconfigured
+        );
+        assert_eq!(
+            PeerError::from(T::Config(PeerConfigError::TokenFile(
+                crate::auth::peer_token::TokenFileError::TooOpen {
+                    path: "/x".into(),
+                    mode: 0o644
+                }
+            ))),
+            PeerError::Misconfigured
         );
     }
 
     #[test]
     fn errors_are_typed_and_serialize_snake_case() {
-        // 规则 10：前端只认这四个值，不解析文本。改名就是破坏 API。
+        // 规则 10：前端只认这五个值，不解析文本。改名就是破坏 API；加值随 api_version minor。
         for (e, s) in [
             (PeerError::IncompatibleVersion, "incompatible_version"),
             (PeerError::FingerprintMismatch, "fingerprint_mismatch"),
             (PeerError::Unauthorized, "unauthorized"),
             (PeerError::Unreachable, "unreachable"),
+            (PeerError::Misconfigured, "misconfigured"),
         ] {
             assert_eq!(serde_json::to_value(e).unwrap(), json!(s));
             assert_eq!(serde_json::from_value::<PeerError>(json!(s)).unwrap(), e);
