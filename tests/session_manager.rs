@@ -5,6 +5,7 @@ mod common;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agora::runtime::{Exit, Runtime, RuntimeRef, Size};
 use agora::session::{Db, NewSession, Origin, SessionError, SessionManager};
@@ -316,6 +317,124 @@ fn reconcile_covers_all_six_cases() {
     let back = m2.restart(&missing.record.id, &[]).unwrap();
     assert!(back.alive);
     assert_eq!(back.record.epoch, 2);
+}
+
+/// 把运行时里的会话标成"在 `exited` 那一刻退出了"（FakeRuntime 的 set_dead 不带时刻）。
+fn set_dead_at(rt: &FakeRuntime, r#ref: &str, exit: Exit, exited: SystemTime) {
+    let mut m = rt.sessions.lock().unwrap();
+    let s = m.get_mut(r#ref).unwrap();
+    s.alive = false;
+    s.exit = Some(exit);
+    s.exited_at = Some(exited);
+}
+
+fn utc(t: SystemTime) -> String {
+    agora::clock::format_utc_secs(t.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64)
+}
+
+#[test]
+fn ended_at_from_runtime_exit_time_after_daemon_restart() {
+    // A42（agora-h1k.4；M3 剧本第 4 步）：停 daemon，agent 在 tmux 里退出，一小时后起 daemon →
+    // reconcile 补的 ended_at 是运行时报的退出时刻（pane_dead_time），不是 daemon 起来的"今天"；
+    // 运行时会话已经不在、谁也不知道它何时死的，才记 reconcile 时刻并标 approximate。
+    let (m, rt, db) = mgr();
+    let exact = m.create(&new_session("exact")).unwrap();
+    let gone = m.create(&new_session("gone")).unwrap();
+    assert!(exact.record.ended_at.is_none());
+    drop(m); // daemon 停了
+
+    let exited = SystemTime::now() - Duration::from_secs(3600);
+    set_dead_at(
+        &rt,
+        exact.record.runtime_ref.as_deref().unwrap(),
+        Exit::Code(0),
+        exited,
+    );
+    rt.forget(gone.record.runtime_ref.as_deref().unwrap());
+
+    let m2 = SessionManager::new(db, rt.clone() as Arc<dyn Runtime>);
+    let report = m2.reconcile().unwrap();
+    assert_eq!(report.known_dead, vec![exact.record.id.clone()]);
+    assert_eq!(report.known_missing, vec![gone.record.id.clone()]);
+
+    let e = m2.get(&exact.record.id).unwrap();
+    assert_eq!(e.record.ended_at.as_deref(), Some(utc(exited).as_str()));
+    assert!(!e.record.ended_at_approximate, "运行时报的时刻是准的");
+    assert_eq!(e.assessment.status, Status::Finished);
+
+    let g = m2.get(&gone.record.id).unwrap();
+    let age = agora::clock::age_secs(g.record.ended_at.as_deref().unwrap()).unwrap();
+    assert!(age < 5, "运行时会话不在了：记 reconcile 时刻，age={age}");
+    assert!(g.record.ended_at_approximate, "并且标 approximate");
+
+    // 再重启一次：准确值不动，近似值也不会被又一次 reconcile 刷成更晚的"今天"。
+    let m3 = SessionManager::new(m2.db_handle(), rt.clone() as Arc<dyn Runtime>);
+    m3.reconcile().unwrap();
+    assert_eq!(
+        m3.get(&exact.record.id).unwrap().record.ended_at,
+        e.record.ended_at
+    );
+    assert_eq!(
+        m3.get(&gone.record.id).unwrap().record.ended_at,
+        g.record.ended_at
+    );
+}
+
+#[test]
+fn approximate_ended_at_is_corrected_by_the_runtime_exit_time() {
+    // Kill 那一刻运行时多半还没收集到退出时刻：先记近似的现在；下次 reconcile 拿到 pane_dead_time
+    // 就用准确值覆盖近似值。反过来准确值绝不被近似值覆盖。Restart 把两者一起清掉。
+    let (m, rt, db) = mgr();
+    let v = m.create(&new_session("k")).unwrap();
+    let r = v.record.runtime_ref.clone().unwrap();
+    let killed = m.kill(&v.record.id).unwrap();
+    assert!(killed.record.ended_at.is_some());
+    assert!(
+        killed.record.ended_at_approximate,
+        "FakeRuntime 不报退出时刻 → 近似"
+    );
+    // 运行时随后收集到了退出时刻（比 Kill 早几秒也无妨——它才是事实）。
+    let exited = SystemTime::now() - Duration::from_secs(3);
+    set_dead_at(&rt, &r, Exit::Signal("TERM".into()), exited);
+    let m2 = SessionManager::new(db, rt.clone() as Arc<dyn Runtime>);
+    m2.reconcile().unwrap();
+    let after = m2.get(&v.record.id).unwrap();
+    assert_eq!(after.record.ended_at.as_deref(), Some(utc(exited).as_str()));
+    assert!(!after.record.ended_at_approximate);
+    assert_eq!(
+        after.assessment.status,
+        Status::Finished,
+        "killed by user 不变"
+    );
+
+    // 准确值到手后，cleanup（运行时已无从再报）不把它改回近似的现在。
+    m2.cleanup(&v.record.id).unwrap();
+    let cleaned = m2.get(&v.record.id).unwrap();
+    assert_eq!(cleaned.record.ended_at, after.record.ended_at);
+    assert!(!cleaned.record.ended_at_approximate);
+
+    // Restart：新一代进程，ended_at 与 approximate 一起清空。
+    let restarted = m2.restart(&v.record.id, &[]).unwrap();
+    assert!(restarted.record.ended_at.is_none());
+    assert!(!restarted.record.ended_at_approximate);
+}
+
+#[test]
+fn cleanup_takes_the_exit_time_before_removing_the_runtime_session() {
+    // 会话昨天退出、用户今天才点清理：remove 之后运行时再也不知道它何时死的，所以先看再删。
+    let (m, rt, _db) = mgr();
+    let v = m.create(&new_session("c")).unwrap();
+    let exited = SystemTime::now() - Duration::from_secs(86_400);
+    set_dead_at(
+        &rt,
+        v.record.runtime_ref.as_deref().unwrap(),
+        Exit::Code(0),
+        exited,
+    );
+    m.cleanup(&v.record.id).unwrap();
+    let after = m.get(&v.record.id).unwrap();
+    assert_eq!(after.record.ended_at.as_deref(), Some(utc(exited).as_str()));
+    assert!(!after.record.ended_at_approximate);
 }
 
 #[test]

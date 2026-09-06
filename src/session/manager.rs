@@ -171,9 +171,9 @@ impl SessionView {
 pub struct ReconcileReport {
     /// 已知 ref 活着 → 重建视图。
     pub known_alive: Vec<String>,
-    /// 已知 ref 已死 → 按 exit 报 FINISHED / FAILED，ended_at 补齐。
+    /// 已知 ref 已死 → 按 exit 报 FINISHED / FAILED，ended_at 补运行时报的退出时刻。
     pub known_dead: Vec<String>,
-    /// 已知 ref 不在 → ended_at 补今天、UNKNOWN。
+    /// 已知 ref 不在 → ended_at 补 reconcile 时刻并标 `ended_at_approximate`、UNKNOWN。
     pub known_missing: Vec<String>,
     /// 未知 ref 在 agora socket → 未注册（多半是库丢了）。
     pub unregistered_managed: Vec<RuntimeRef>,
@@ -911,9 +911,10 @@ impl SessionManager {
         let r#ref = self.require_ref(&rec)?;
         // agora-1a0：已经死掉的会话（OOM、用户在终端 kill -9）Kill 是空操作，不能留下 killed_at，
         // 否则一个按信号 FAILED 的会话点一下 Kill 就冒充成 FINISHED "killed by user"。
-        // terminate 对 !alive 直接 Ok，所以只能在这里先看。
-        if !self.runtime.inspect(&r#ref)?.alive {
-            self.mark_ended(id)?;
+        // terminate 对 !alive 直接 Ok，所以只能在这里先看。退出时刻取运行时报的，不是点 Kill 的现在。
+        let before = self.runtime.inspect(&r#ref)?;
+        if !before.alive {
+            self.mark_ended_at(id, before.exited_at)?;
             return self.get(id);
         }
         // 先记事实再动手：terminate 成功即进程已死，若先杀后写，中间那一瞬 get 会报 FAILED。
@@ -923,7 +924,10 @@ impl SessionManager {
             self.set_killed_at(id, false)?;
             return Err(e.into());
         }
-        self.mark_ended(id)?;
+        // 刚 terminate 完运行时多半还没收集到退出时刻（tmux 的 pane_dead_time 要等 SIGCHLD），
+        // 这时先记近似的现在，下次 reconcile 有了准确值再补正。
+        let exited_at = self.runtime.inspect(&r#ref).ok().and_then(|s| s.exited_at);
+        self.mark_ended_at(id, exited_at)?;
         self.get(id)
     }
 
@@ -970,7 +974,8 @@ impl SessionManager {
             Err(e) => return Err(e.into()),
         }
         self.db.conn().execute(
-            "UPDATE sessions SET epoch = ?2, ended_at = NULL, killed_at = NULL,
+            "UPDATE sessions SET epoch = ?2, ended_at = NULL, ended_at_approximate = FALSE,
+                killed_at = NULL,
                 spawned_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
                 updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?1",
             params![id, epoch],
@@ -1025,13 +1030,21 @@ impl SessionManager {
     pub fn cleanup(&self, id: &str) -> Result<(), SessionError> {
         let rec = self.record(id)?;
         let r#ref = self.require_ref(&rec)?;
+        // remove 之前先看一眼退出时刻：会话一旦从运行时删掉就再没人知道它是什么时候死的，
+        // 用户过了一天才点清理，ended_at 不能是清理的那天（A42；agora-h1k.4）。
+        let exited_at = self
+            .runtime
+            .inspect(&r#ref)
+            .ok()
+            .filter(|s| !s.alive)
+            .and_then(|s| s.exited_at);
         match self.runtime.remove(&r#ref) {
             Ok(()) => {}
             Err(RuntimeError::StillAlive(_)) => return Err(SessionError::StillAlive(id.into())),
             Err(RuntimeError::NotFound(_)) => {}
             Err(e) => return Err(e.into()),
         }
-        self.mark_ended(id)?;
+        self.mark_ended_at(id, exited_at)?;
         Ok(())
     }
 
@@ -1053,12 +1066,16 @@ impl SessionManager {
             match live.iter().find(|s| s.r#ref.0 == r) {
                 Some(s) if s.alive => report.known_alive.push(rec.id.clone()),
                 Some(s) => {
-                    if rec.ended_at.is_none() {
+                    // 退出时刻是运行时报的（tmux 3.3+ 的 pane_dead_time）：daemon 停机一小时期间
+                    // 退出的会话，ended_at 是一小时前，不是 daemon 起来的现在。Kill 时留下的近似值
+                    // 也在这里被准确值补正（A42；agora-h1k.4）。
+                    if rec.ended_at.is_none() || rec.ended_at_approximate {
                         self.mark_ended_at(&rec.id, s.exited_at)?;
                     }
                     report.known_dead.push(rec.id.clone());
                 }
                 None => {
+                    // 运行时会话已经不在，谁也不知道它什么时候死的：记 reconcile 时刻并标近似。
                     if rec.ended_at.is_none() {
                         self.mark_ended(&rec.id)?;
                     }
@@ -1113,15 +1130,24 @@ impl SessionManager {
         Ok(())
     }
 
+    /// `at` 是运行时报的退出时刻（准，`ended_at_approximate = FALSE`）；None 表示运行时不知道，
+    /// 只能记 daemon 的当下并标近似。已有的准确值不动；已有的近似值被后来的准确值覆盖——Kill 时
+    /// 运行时往往还没收集到退出时刻，下次 reconcile 拿到 pane_dead_time 再补正（A42；agora-h1k.4）。
+    /// SQL 里 SET 的各表达式都按更新前的行求值，所以 ended_at_approximate 那行看到的是旧 ended_at。
     fn mark_ended_at(&self, id: &str, at: Option<SystemTime>) -> Result<(), SessionError> {
         let secs = at
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64);
         self.db.conn().execute(
             "UPDATE sessions SET
-                ended_at = COALESCE(ended_at, CASE WHEN ?2 IS NULL
-                    THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                    ELSE strftime('%Y-%m-%dT%H:%M:%SZ', ?2, 'unixepoch') END),
+                ended_at_approximate = CASE
+                    WHEN ended_at IS NULL OR ended_at_approximate THEN (?2 IS NULL)
+                    ELSE ended_at_approximate END,
+                ended_at = CASE
+                    WHEN ended_at IS NOT NULL AND NOT (ended_at_approximate AND ?2 IS NOT NULL)
+                        THEN ended_at
+                    WHEN ?2 IS NULL THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                    ELSE strftime('%Y-%m-%dT%H:%M:%SZ', ?2, 'unixepoch') END,
                 updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
              WHERE id = ?1",
             params![id, secs],
@@ -1149,7 +1175,7 @@ impl SessionManager {
 const SELECT: &str =
     "SELECT id, runtime_ref, display_name, name_locked, agent_type, working_directory,
     worktree, task_ref, command, agent_session_id, epoch, transcript_path, created_at, ended_at,
-    updated_at, origin, spawned_at, killed_at FROM sessions";
+    updated_at, origin, spawned_at, killed_at, ended_at_approximate FROM sessions";
 
 fn row_to_record(row: &Row<'_>) -> rusqlite::Result<SessionRecord> {
     let origin: String = row.get(15)?;
@@ -1172,6 +1198,7 @@ fn row_to_record(row: &Row<'_>) -> rusqlite::Result<SessionRecord> {
         origin: Origin::parse(&origin).unwrap_or(Origin::Agora),
         spawned_at: row.get(16)?,
         killed_at: row.get(17)?,
+        ended_at_approximate: row.get(18)?,
     })
 }
 

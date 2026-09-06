@@ -50,7 +50,12 @@ pub struct SessionRecord {
     pub created_at: String,
     /// 本代进程（`epoch`）的起始时刻；create / respawn 时写。v1 库里的旧行为 None。
     pub spawned_at: Option<String>,
+    /// 进程退出时刻（MISSION §4.2；A42）。来源是运行时报的退出时刻（tmux 3.3+ 的 pane_dead_time），
+    /// daemon 停机期间退出、重启后 reconcile 补的也是它；Restart 清空。
     pub ended_at: Option<String>,
+    /// `ended_at` 是 daemon 的时钟补的近似值（运行时会话已经不在、或运行时还没报退出时刻），
+    /// 不是运行时报的退出时刻；`ended_at` 为 None 时无意义（agora-h1k.4）。
+    pub ended_at_approximate: bool,
     /// 用户执行过 Kill 的时刻；Restart 清空。事件而非活性（不变量 7 允许）。
     pub killed_at: Option<String>,
     pub updated_at: String,

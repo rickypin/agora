@@ -78,6 +78,11 @@ const MIGRATIONS: &[&str] = &[
         last_used_at DATETIME,
         revoked_at DATETIME
     );",
+    // v5：ended_at 是谁的时钟（A42；agora-h1k.4，2026-09-06）。运行时报的退出时刻（tmux 3.3+ 的
+    // pane_dead_time）是准的；运行时会话已经不在、只能拿 daemon 当下补的那种是近似——reconcile 时
+    // known_missing、Kill 后运行时还没收集到退出时刻都属此类。近似值可被运行时后来报的准确值覆盖，
+    // 反之不行。旧行留 FALSE：不知道就不标。
+    "ALTER TABLE sessions ADD COLUMN ended_at_approximate BOOLEAN NOT NULL DEFAULT FALSE;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
