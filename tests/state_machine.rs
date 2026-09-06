@@ -603,3 +603,104 @@ fn restored_hook_starting_decays_too() {
         .unwrap()
         .contains("awaiting first prompt"));
 }
+
+#[test]
+fn external_session_ended_by_hook_is_finished_not_unknown() {
+    // 守卫（agora-vfi）：external 会话没有进程事实，SessionEnd 就是它唯一的"结束"——apply 之后下一 tick
+    // 是 FINISHED（source hook、conf 0.8、reason 说明来自 hook），两种活性都一样：Unknown（没有可信
+    // 进程号：Codex Desktop 的 ppid 是共用 app-server）与 Alive（进程号活着但只是宿主）。
+    // 关掉：apply 的 SessionEnded 改回只清 pending → 循环里第一个断言红（停在 UNKNOWN）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    let obs = |liveness, now| Observation {
+        process: Assessment::unknown("external session: hook only"),
+        liveness,
+        text: None,
+        runtime: None,
+        epoch: 1,
+        now,
+    };
+    assert_eq!(m.observe(obs(Liveness::Unknown, 1)).status, Status::Unknown);
+    assert_eq!(m.observe(obs(Liveness::Alive, 2)).status, Status::Unknown);
+    // Codex 退出 / 结束线程时的 reason 是 other（0.152.1 实测）。
+    assert!(m.apply(&AgoraEvent::SessionEnded(Some("other".into())), 1, 3));
+    for (liveness, now) in [(Liveness::Unknown, 4), (Liveness::Alive, 5)] {
+        let a = m.observe(obs(liveness, now));
+        assert_eq!(
+            (a.status, a.source),
+            (Status::Finished, Source::Hook),
+            "{a:?}"
+        );
+        assert!(a.reason.as_deref().unwrap().contains("hook"), "{a:?}");
+        assert!(a.confidence < 1.0, "进程事实到了要能以 1.0 盖过它：{a:?}");
+    }
+    assert_eq!(m.status_since(), 3, "结束的起点是 SessionEnd 那一刻");
+    // 没有 reason 的 SessionEnd 同样算结束；Grok 的 shutdown 也是。
+    for reason in [None, Some("shutdown".to_owned())] {
+        let mut m = Machine::new(cfg(), true, 1, 0);
+        m.apply(&AgoraEvent::TurnEnded(None), 1, 1);
+        m.apply(&AgoraEvent::SessionEnded(reason.clone()), 1, 2);
+        assert_eq!(m.current().status, Status::Finished, "reason={reason:?}");
+    }
+}
+
+#[test]
+fn session_end_reason_clear_keeps_the_session_alive() {
+    // 守卫（agora-vfi）：Claude 的 /clear 发 SessionEnd(reason=clear)，进程活着、同一秒紧接着新 id 的
+    // SessionStart(source=clear)（testdata/claude/2.1.261/hooks/clear.jsonl）。这条 SessionEnd 不改状态，
+    // 只清挂起。关掉例外（一律 FINISHED）→ 第一个断言红。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 1);
+    assert_eq!(m.current().status, Status::Running);
+    assert!(m.apply(&AgoraEvent::SessionEnded(Some("clear".into())), 1, 2));
+    assert_eq!(
+        (m.current().status, m.current().source, m.status_since()),
+        (Status::Running, Source::Hook, 1),
+        "clear 不改状态、不刷新起点"
+    );
+    let r = rt(true, None);
+    assert_eq!(tick(&mut m, 3, &r, None).status, Status::Running);
+    // pending 确实清了：WAITING 里挂着两个决定，clear 之后只解其中一个也能回 RUNNING——
+    // 没清的话 "b" 还在，会停在 WAITING（parallel_tools_stay_waiting_until_every_decision_is_answered）。
+    let need = |id: &str| AgoraEvent::DecisionNeeded {
+        tool_use_id: id.into(),
+        summary: "Bash".into(),
+    };
+    m.apply(&need("a"), 1, 4);
+    m.apply(&need("b"), 1, 4);
+    assert_eq!(m.current().status, Status::Waiting);
+    m.apply(&AgoraEvent::SessionEnded(Some("clear".into())), 1, 5);
+    assert_eq!(m.current().status, Status::Waiting, "状态不动");
+    m.apply(&AgoraEvent::DecisionResolved(Some("a".into())), 1, 6);
+    assert_eq!(
+        m.current().status,
+        Status::Running,
+        "pending 已被 clear 清空"
+    );
+}
+
+#[test]
+fn session_start_after_session_end_restarts() {
+    // 守卫（agora-vfi）：hook 层的 FINISHED 不是终态。Codex TUI 的 /new、Claude 的 /resume 之后同一进程
+    // 再发 SessionStart，行要回到 STARTING（再经宽限衰减成 TURN_DONE），不能钉死在 FINISHED——只有
+    // 进程层的 FINISHED / FAILED 才压倒一切（process_exit_overrides_hooks_and_later_events_are_metadata_only）。
+    // 关掉：apply 开头的 early return 不再看 source == Process → STARTING 断言红。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::TurnEnded(Some("bye".into())), 1, 1);
+    m.apply(&AgoraEvent::SessionEnded(Some("other".into())), 1, 2);
+    assert_eq!(
+        (m.current().status, m.current().source),
+        (Status::Finished, Source::Hook)
+    );
+    // 进程还活着（Claude 收到 SessionEnd 到真正退出有一两秒）：hook 说结束就是结束，进程层的 RUNNING
+    // 不把它顶回去；真退出了由进程层以 1.0 接管（见上面点名的守卫）。
+    let r = rt(true, None);
+    assert_eq!(tick(&mut m, 3, &r, None).status, Status::Finished);
+    assert!(m.apply(&AgoraEvent::SessionStarted, 1, 4));
+    assert_eq!(
+        (m.current().status, m.current().source, m.status_since()),
+        (Status::Starting, Source::Hook, 4)
+    );
+    m.apply(&AgoraEvent::PromptSubmitted("again".into()), 1, 5);
+    assert_eq!(m.current().status, Status::Running);
+    assert_eq!(tick(&mut m, 6, &r, None).status, Status::Running);
+}

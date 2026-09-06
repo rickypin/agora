@@ -170,12 +170,22 @@ impl AgentHooks for Codex {
         hooks::cwd(payload)
     }
 
-    /// 实测 0.152.1：环境里没有 CODEX_* 进程号；安装命令 `exec` 进 agora，ppid 就是 codex。
+    /// 实测 0.152.1：环境里没有 CODEX_* 进程号；安装命令 `exec` 进 agora，ppid 就是 codex——
+    /// **CLI 才是**。Codex Desktop（ChatGPT.app）起的线程，hook 的父进程是所有线程共用的常驻
+    /// `codex app-server`（2026-09-05 真投递件 `~/.agora/hooks/done/codex/01a06f41-…/1788590291834-77036.json`：
+    /// ppid=69509 = `/Applications/ChatGPT.app/Contents/Resources/codex app-server`），探活永远为真，
+    /// 行会永远 UNKNOWN（agora-vfi）。判据是信封 agent_env 里的 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`
+    /// （那份投递件的值是 `Codex Desktop`；CLI 不设它）：有就不信 ppid → None → 活性 UNKNOWN，行只跟
+    /// hook 走（SessionEnd → FINISHED）。按"有这个变量"而不按值全等：任何嵌入 codex 的宿主都共用
+    /// app-server，ppid 同样不可信；宁可不知道活不活，不要拿一个永远活着的进程当会话活着。
     fn agent_pid(
         &self,
-        _env: &std::collections::BTreeMap<String, String>,
+        env: &std::collections::BTreeMap<String, String>,
         ppid: u32,
     ) -> Option<u32> {
+        if env.contains_key("CODEX_INTERNAL_ORIGINATOR_OVERRIDE") {
+            return None;
+        }
         (ppid > 1).then_some(ppid)
     }
 
@@ -319,5 +329,22 @@ mod tests {
         let env = std::collections::BTreeMap::from([("CLAUDE_PID".to_owned(), "42".to_owned())]);
         assert_eq!(CODEX.agent_pid(&env, 777), Some(777));
         assert_eq!(CODEX.agent_pid(&env, 1), None);
+    }
+
+    #[test]
+    fn codex_desktop_parent_is_not_the_agent_pid() {
+        // agora-vfi：Desktop 线程的 ppid 是共用的 app-server，信了它行就永远 UNKNOWN。
+        // 关掉 agent_pid 里的判定 → 第一个断言红。
+        let desktop = std::collections::BTreeMap::from([(
+            "CODEX_INTERNAL_ORIGINATOR_OVERRIDE".to_owned(),
+            "Codex Desktop".to_owned(),
+        )]);
+        assert_eq!(CODEX.agent_pid(&desktop, 69509), None);
+        let cli = std::collections::BTreeMap::from([("CODEX_SHELL".to_owned(), "1".to_owned())]);
+        assert_eq!(
+            CODEX.agent_pid(&cli, 69509),
+            Some(69509),
+            "CLI 的 ppid 照旧可信"
+        );
     }
 }

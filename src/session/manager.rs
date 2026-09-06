@@ -791,6 +791,8 @@ impl SessionManager {
                     Assessment::unknown("external session: process alive, hook only"),
                     Liveness::Alive,
                 ),
+                // 没有可信进程号（Adapter 的 agent_pid 给 None：Codex Desktop 的共用 app-server、
+                // 没有进程号变量的宿主）：状态机只看 hook，SessionEnd 让它 FINISHED（agora-vfi）。
                 None => (
                     Assessment::unknown("external session: no runtime, hook only"),
                     Liveness::Unknown,

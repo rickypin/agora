@@ -176,7 +176,9 @@ pub trait AgentHooks: Send + Sync {
     /// agent 自己的进程号：无运行时句柄的外部会话靠它判断存活（ADR-002 D4）。来源两种：信封
     /// `agent_env` 里 agent 自报的（Claude `CLAUDE_PID`），或 hook 进程的父进程 `ppid`——安装命令
     /// `exec` 进 agora，所以 ppid 就是 agent 本体（Grok 没有进程号变量，只能靠它）。
-    /// 不认识就 None → 活性 UNKNOWN。
+    /// 不认识就 None → 活性 UNKNOWN。父进程明知不是会话本体的也要 None（Codex Desktop 的线程共用
+    /// 一个常驻 app-server，agora-vfi）：这样的行只跟 hook 走，SessionEnd 让它 FINISHED；报一个永远
+    /// 活着的进程号则会让它永远 UNKNOWN。
     fn agent_pid(
         &self,
         _agent_env: &std::collections::BTreeMap<String, String>,

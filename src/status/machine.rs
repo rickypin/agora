@@ -3,7 +3,9 @@
 //! 两个入口：[`Machine::apply`] 吃 hook 事件（立即生效），[`Machine::observe`] 每 tick 吃
 //! 进程事实 + 文本判定 + 活动样本，吐出当前 [`Assessment`]。裁决顺序：
 //!
-//! 1. 进程退出压倒一切：FINISHED / FAILED 之后 hook 事件只当 metadata。
+//! 1. 进程退出压倒一切：FINISHED / FAILED 之后 hook 事件只当 metadata。hook 自己的 SessionEnd 给的是
+//!    低一档的 FINISHED（conf 0.8，`reason=clear` 例外）：进程事实到了盖过它，没有进程事实的外部会话
+//!    靠它结束（agora-vfi）。
 //! 2. 有 hook 的会话：WAITING / TURN_DONE 只来自 hook；文本层永远抬不上去，活动层不产生 IDLE。
 //!    hook 沉默（`silence_after` 无事件）而屏幕像在等人 → UNKNOWN `hooks silent`，不猜 WAITING。
 //!    hook 层的 STARTING 在 `startup_grace` 内没有后续事件 → TURN_DONE `awaiting first prompt`
@@ -396,9 +398,21 @@ impl Machine {
             // 空闲通知只是 TURN_DONE 的确认 / 补漏：RUNNING 里听到它才改，WAITING 不动。
             AgoraEvent::Idle => (self.current.status == Status::Running)
                 .then(|| hook(Status::TurnDone, 0.9, Some("idle"))),
-            AgoraEvent::SessionEnded(_) => {
+            // 会话结束（MISSION §5.6 session.ended）：hook 层的 FINISHED，conf 0.8——进程退出的事实到了
+            // 会以 1.0 覆盖（observe 第 1 步）；没有进程事实的 external 会话则只有这一条能让它离开
+            // UNKNOWN / TURN_DONE：Codex Desktop 的线程里 hook 的 ppid 是所有线程共用的 app-server，
+            // 永远活着，靠探活它永远不会结束（2026-09-05 devcenter 那一行，agora-vfi）。
+            // reason 例外表（2026-09-06）：只有 Claude 的 `clear` 不改状态——/clear 之后进程活着，同一秒
+            // 紧接着新 id 的 SessionStart(source=clear)（testdata/claude/2.1.261/hooks/clear.jsonl）。
+            // 其余都算结束：Claude resume / logout / prompt_input_exit / other（resume 之后同一进程会再发
+            // SessionStart(source=resume)，行随即回 STARTING，所以不必例外）、Codex other（0.152.1 只见过
+            // 这一个值；它的 /clear 根本不发 SessionEnd）、Grok shutdown（/clear 同样不发）、没有 reason。
+            // FINISHED(hook) 不是终态：之后的 SessionStart 照旧回 STARTING（Codex TUI 的 /new），只有
+            // 进程层的 FINISHED / FAILED 才压倒一切（本函数开头那条 early return）。
+            AgoraEvent::SessionEnded(reason) => {
                 self.pending.clear();
-                None
+                (reason.as_deref() != Some("clear"))
+                    .then(|| hook(Status::Finished, 0.8, Some("session ended (hook)")))
             }
         };
         if let Some(a) = next {
