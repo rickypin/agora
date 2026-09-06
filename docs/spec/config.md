@@ -10,7 +10,7 @@ server:                       # ADR-003 D5：两个监听器
   tls_listen: null            # TLS 监听器：非 loopback、永远 TLS；被 peer 或手机访问时才开，例 "0.0.0.0:7681"（端口须不同于 listen）
   public_url: null            # 远端配对链接与 QR 用的对外地址，例 "https://zuan.tail6f613.ts.net:7681"；不自动猜
 node:
-  id: "mac"                   # §3.5：全局会话 id `<node>:<id>` 的前缀，安装时生成，改名需迁移；安装脚本落地前默认 "local"
+  id: "mac"                   # §3.5：全局会话 id `<node>:<id>` 的前缀，安装脚本写短主机名（文末「安装」），改名需迁移；没有 config.yaml 时默认 "local"
 peers: []                     # §3.5：默认空。每项 { name, url, token_file, cert_fingerprint: "sha256:<SPKI hex>" }（ADR-003 D3 / D4）；
                               #   本节点作为这些 peer 的 API 客户端并入其会话
 runtime:                      # ADR-001 D3 / D6 / D7
@@ -128,3 +128,50 @@ agora 永远自己终止 TLS。`server.tls_listen` 一配，监听器上就只�
 - **热加载**：两个模式都由 daemon 每 30 s 比对两个文件**内容**的哈希（不是 mtime），变了就装上新证书，daemon 不重启、已建立的连接不断；半写或钥证不配就拒绝、旧证书继续服务，文件再变再试。SPKI 变了（换钥）打 warn 日志"每个把本节点配成 peer 的节点都要更新 peers[].cert_fingerprint"，只续签不换钥则 peer 不用动（守卫 `tests/peer_tls.rs::external_cert_hot_reload_warns_on_spki_change`）。
 - **零凭据只警告**：开了 `tls_listen` 却既没有机器 token 也没有已配对设备时，daemon 启动打 warn（"没有人能连进来"）而不是拒绝启动——没有直通路由，这个状态只是没用不是漏洞；此时 TLS 端口上是 401（守卫 `tests/listen.rs::tls_listen_without_credentials_warns_not_refuses`）。
 - `self-ca` 未实现；`server.public_url` 不自动猜。
+
+## 安装（`scripts/install.sh`；A26）
+
+一条命令把一台机器装成 agora 节点（macOS 与 Ubuntu 24.04；POSIX sh，`set -eu`）。当前没有发布渠道，二进制由用户拷过去（zuan 是 x86_64：Mac 上 `cargo zigbuild --target x86_64-unknown-linux-gnu`），模板在 `scripts/templates/`，脚本按 `$(dirname "$0")/templates` 找它——所以要把整个 `scripts/` 目录一起拷。守卫 `tests/install_script.rs`（`install_writes_config_link_and_unit_idempotently`、`dry_run_writes_nothing`、`refuses_tmux_below_minimum`；两个 CI OS 都跑，不需要 root）。
+
+```
+scripts/install.sh --binary <path> [--home <dir>] [--node-id <id>] [--listen <addr>] [--tls-listen <addr>]
+                   [--tmux-socket <name>] [--unit-dir <dir>] [--no-service] [--skip-tmux] [--dry-run]
+```
+
+| 旗标 | 默认 | 说明 |
+|---|---|---|
+| `--binary <path>` | 必填 | 要安装的 agora 二进制 |
+| `--home <dir>` | `$AGORA_HOME`，再默认 `~/.agora` | AGORA_HOME（ADR-003 D6） |
+| `--node-id <id>` | 短主机名（`hostname -s`，去掉域名，非法字符换成 `-`） | `node.id`。`--home` 不是默认路径（同机第二个实例）时默认 `<主机名>-<用户名>`，让 `<node>:<id>` 在 peer 眼里不撞；同机多个 OS 用户各装各的时请显式给 `--node-id` |
+| `--listen <addr>` | `127.0.0.1:7680` | `server.listen`。未指定且 7680 已被占（`nc -z` / `ss` / `lsof` / bash `/dev/tcp` 探测，都没有就当空闲）→ 从 7681 起顺延到第一个空闲端口并在 stderr 说明；这只发生在**首次写 config.yaml** 时，daemon 自己仍是"端口被占就报错退出"（ADR-003 D6） |
+| `--tls-listen <addr>` | 不写 | `server.tls_listen`（例 `0.0.0.0:7681`）；被 peer / 手机访问的节点才开 |
+| `--tmux-socket <name>` | 不写 | 写 `runtime.tmux.socket` 并把 `adopt_sockets` 置空——开发机上起第二个实例验证用（AGENTS.md「并行施工」的隔离规矩），正常安装不用 |
+| `--unit-dir <dir>` | `~/.config/systemd/user` / `~/Library/LaunchAgents` | 单元文件目录；测试与开发机验证指到临时目录 |
+| `--no-service` | | 只写单元文件，不 `enable` / `bootstrap` |
+| `--skip-tmux` | | 只校验 tmux 版本，不安装；不满足则退出非零 |
+| `--dry-run` | | 只在 stderr 打印将做的事，什么都不写 |
+
+**步骤**（顺序即脚本顺序）：
+
+1. **tmux ≥ 3.2**（ADR-001 D7）：`tmux -V` 按 major.minor **数值**比（`3.7c`、`3.2a`、`next-3.4` 都能解析，`10.0` 不会被当成比 `3.2` 小）。不满足：macOS `HOMEBREW_NO_AUTO_UPDATE=1 brew install tmux`，Ubuntu `sudo -n apt-get update && sudo -n apt-get install -y tmux`（`-n`：要密码就直接失败），装不了或装完仍旧版就把命令打给人、退出非零。
+2. **`<home>`** 0700（已存在且权限过宽则收紧）；**`config.yaml` 只在不存在时写**（0600）：`server.listen`、可选 `server.tls_listen`、`node.id`、可选 `runtime.tmux`，其余键留默认。已有的配置一个字节都不动——改配置是人的事。
+3. **二进制**：先算 sha256，放到 `<home>/versions/<sha 前 12 位十六进制>/agora`（0755；先写 `.tmp` 再 rename；已存在同 sha 的就复用），再 `ln -sfn` 成 `<home>/bin/agora`（目标写绝对真实路径，`pwd -P` 解析过符号链接）。`bin/agora` 是 hook 命令与 Codex 内容哈希信任依赖的稳定路径（ADR-002 D4、ADR-003 D6）；升级只换链接目标（`agora upgrade`，agora-7ku.8）。链接已指向同一目标就不重做。
+4. **随登录自启**，单元里写 `LANG=C.UTF-8`（devcenter CJK 乱码教训的另一半，ADR-001 D7）、`AGORA_HOME`、够找到 tmux 与二进制的 `PATH`（`~/.local/bin:/usr/local/bin:/usr/bin:/bin`，macOS 多一个 `/opt/homebrew/bin`；tmux 装在这些目录之外就把它所在目录也加上；完整 PATH 由 daemon 启动时自己探测）。内容没变就不重写文件。
+   - Linux：`~/.config/systemd/user/agora.service`（模板 `scripts/templates/agora.service`：`ExecStart=<home>/bin/agora serve`、`Restart=on-failure`、`WantedBy=default.target`），非 `--no-service` 时 `systemctl --user daemon-reload && systemctl --user enable --now agora.service`；没有 `systemctl`（容器）只写文件、说一句、不报错。**linger**：`loginctl show-user $USER -p Linger` 不是 `yes` 就提示 `sudo loginctl enable-linger $USER`（用户单元随登录起、随登出停，不开 linger 重启后要等人登录 daemon 才起）——脚本不自己 sudo，装软件与改系统设置的每一步都由人敲。`/etc/systemd/logind.conf`（含 `logind.conf.d/*.conf`）里 `KillUserProcesses=yes` 时警告：登出会杀掉 daemon 与 tmux server。
+   - macOS：`~/Library/LaunchAgents/dev.agora.daemon.plist`（label `dev.agora.daemon`，模板 `scripts/templates/dev.agora.daemon.plist`：`ProgramArguments <home>/bin/agora serve`、`RunAtLoad`、`KeepAlive` 仅 `SuccessfulExit=false`——非零退出才拉起，等价 `Restart=on-failure`；stdout / stderr 落 `<home>/daemon.log`），非 `--no-service` 时 `launchctl bootstrap gui/$(id -u) <plist>`，已加载则 `launchctl kickstart -k`。
+5. **sshd**（Linux）：`systemctl is-active ssh|sshd` 都不活跃就提示装 `openssh-server`——ADR-003 的兜底是"ssh 上去 `agora pair`"，没有 sshd 就只能物理登录后配对；脚本只提示不装。
+6. 结尾打印下一步：`<home>/bin/agora url`。
+
+**幂等**：重跑退出 0，config.yaml / versions 里的二进制 / 单元文件 mtime 与内容都不变，链接不重做（守卫 `install_writes_config_link_and_unit_idempotently`）。**输出纪律**：给人看的话一律走 stderr，stdout 留给将来机器可读的输出（MISSION §2.3 规则 10）。
+
+目录布局（安装后）：
+
+```
+<AGORA_HOME>/
+  config.yaml                 # 首次安装写；之后人改
+  bin/agora -> versions/<sha12>/agora   # 稳定路径；hook 命令、Codex 哈希信任、升级都指它
+  versions/<sha12>/agora      # 每个装过的版本一份，按内容 sha256 前 12 位命名
+  agora.db / agora.sock / tls/ / hooks/ / tmux.conf   # daemon 运行时自建（ADR-003 D6）
+```
+
+**zuan 实机（用户在场的专场；A26 的实机半边）**：Mac 上 `CARGO_BUILD_JOBS=2 cargo zigbuild --release --target x86_64-unknown-linux-gnu`，`scp -r scripts target/x86_64-unknown-linux-gnu/release/agora zuan:~/agora-install/`；zuan 上 `cd ~/agora-install && ./scripts/install.sh --binary ./agora --tls-listen 0.0.0.0:7681`（tmux 不满足时脚本会 `sudo -n apt-get`，sudo 要密码就按它打印的命令手动装）→ `systemctl --user is-enabled agora.service` 应为 `enabled`、`is-active` 为 `active` → 按提示 `sudo loginctl enable-linger $USER` → `sudo reboot` → 重新 ssh 上去 `~/.agora/bin/agora url` 可达、起一个会话跑 `printf '中文\n'`，`tmux -L agora capture-pane -p` 里是 `中文` 的 UTF-8 字节而不是问号。Mac 与 ubuntu:24.04 容器里的同一套断言已由实施 agent 跑过（2026-09-06，见 agora-7ku.1 notes）。
