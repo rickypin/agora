@@ -297,30 +297,37 @@ impl Installer {
         }
     }
 
-    /// `<AGORA_HOME>/bin/agora` → 当前二进制；指错了就重指。symlink 用 `exe` 原样（[`run`] 已
-    /// canonicalize 过；测试传 tmp 路径并断言 `read_link(link) == exe`）。
+    /// `<AGORA_HOME>/bin/agora` → 当前二进制；指错了就重指。实现是自由函数 [`ensure_bin_link`]
+    /// （`agora upgrade` 也调它，agora-7ku.8），这里只是委托。
     pub fn ensure_bin_link(&self, exe: &Path) -> Result<PathBuf, InstallError> {
-        let link = bin_path(&self.agora_home);
-        // 硬守卫：exe 就是链接本身（原样或真路径相等）→ 什么都不动，直接当"已指向"。任何情况下都
-        // 不能 remove + symlink 造出 link -> link：2026-09-06 开发机上 `~/.agora/bin/agora hooks
-        // install <agent>` 就是这么把链接指成自环、三家 hook 全哑的（agora-78f）。放在 create_dir_all
-        // 之前——exe 是链接本身时目录必然已在，不该有任何副作用。
-        if same_binary(&link, exe) {
+        ensure_bin_link(&self.agora_home, exe)
+    }
+}
+
+/// `<AGORA_HOME>/bin/agora` → `exe`；指错了就重指。symlink 用 `exe` 原样（[`run`] 与 `agora upgrade`
+/// 都已 canonicalize 过；测试传 tmp 路径并断言 `read_link(link) == exe`）。安装（`hooks install`）与
+/// 升级（`agora upgrade`）维护的是同一条链接，所以只有这一个实现（agora-7ku.8）。
+pub fn ensure_bin_link(agora_home: &Path, exe: &Path) -> Result<PathBuf, InstallError> {
+    let link = bin_path(agora_home);
+    // 硬守卫：exe 就是链接本身（原样或真路径相等）→ 什么都不动，直接当"已指向"。任何情况下都
+    // 不能 remove + symlink 造出 link -> link：2026-09-06 开发机上 `~/.agora/bin/agora hooks
+    // install <agent>` 就是这么把链接指成自环、三家 hook 全哑的（agora-78f）。放在 create_dir_all
+    // 之前——exe 是链接本身时目录必然已在，不该有任何副作用。
+    if same_binary(&link, exe) {
+        return Ok(link);
+    }
+    let dir = link.parent().unwrap_or(agora_home);
+    std::fs::create_dir_all(dir).map_err(io(dir))?;
+    if let Ok(target) = std::fs::read_link(&link) {
+        if same_binary(&resolve_link_target(&link, &target), exe) {
             return Ok(link);
         }
-        let dir = link.parent().unwrap_or(&self.agora_home);
-        std::fs::create_dir_all(dir).map_err(io(dir))?;
-        if let Ok(target) = std::fs::read_link(&link) {
-            if same_binary(&resolve_link_target(&link, &target), exe) {
-                return Ok(link);
-            }
-        }
-        if link.symlink_metadata().is_ok() {
-            std::fs::remove_file(&link).map_err(io(&link))?;
-        }
-        std::os::unix::fs::symlink(exe, &link).map_err(io(&link))?;
-        Ok(link)
     }
+    if link.symlink_metadata().is_ok() {
+        std::fs::remove_file(&link).map_err(io(&link))?;
+    }
+    std::os::unix::fs::symlink(exe, &link).map_err(io(&link))?;
+    Ok(link)
 }
 
 fn hooks_table(root: &mut Value) -> &mut Map<String, Value> {
