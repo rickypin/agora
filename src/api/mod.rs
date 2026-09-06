@@ -288,18 +288,23 @@ pub async fn serve_on(
 
 /// 请求经 TLS 监听器进来的标记（请求扩展；与 [`InProcessPeer`] 同一机制：线上的字节变不成它，
 /// 只有 [`serve_tls_router`] 会放）。`Principal` 提取器据此决定接不接 Bearer（ADR-003 D3：Bearer
-/// 只上 TLS 监听器，明文监听器 401 `bearer_requires_tls`；接线随 agora-7ku.2）与发 cookie 要不要
-/// `Secure`（D2；随远端配对 agora-thc.1）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OverTls;
+/// 只上 TLS 监听器，明文监听器 401 `bearer_requires_tls`）与发 cookie 要不要 `Secure`（D2；随远端
+/// 配对 agora-thc.1）。
+///
+/// 合并注意（2026-09-06）：agora-7ku.2 在 `src/api/auth.rs` 里定义了**同名同形**的标记并从这里
+/// `pub use auth::TlsListener` 导出，提取器认的就是它。两条分支各自能编、合到一起会重复定义——
+/// 合并时删掉这一个、保留 auth.rs 的，`serve_tls_router` 盖的自然就是提取器认的那个。名字故意取
+/// 得一样，就是为了让合并错在编译期而不是错在"TLS 监听器上的 Bearer 全部 401"这种运行期。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TlsListener;
 
 /// 已绑定的 TLS 监听器：TCP 监听器 + 可热换证书的 acceptor。
-pub struct TlsListener {
+pub struct BoundTls {
     tcp: tokio::net::TcpListener,
     acceptor: Acceptor,
 }
 
-impl TlsListener {
+impl BoundTls {
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.tcp.local_addr()
     }
@@ -313,16 +318,16 @@ impl TlsListener {
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 绑定 TLS 监听器；与明文监听器一样是 daemon 启动最先做的事之一（agora-apr）。
-pub async fn bind_tls(addr: SocketAddr, acceptor: Acceptor) -> Result<TlsListener, ServeError> {
+pub async fn bind_tls(addr: SocketAddr, acceptor: Acceptor) -> Result<BoundTls, ServeError> {
     let tcp = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|source| ServeError::Bind { addr, source })?;
     tracing::info!(component = "api", %addr, fingerprint = %acceptor.fingerprint(), "listening (tls)");
-    Ok(TlsListener { tcp, acceptor })
+    Ok(BoundTls { tcp, acceptor })
 }
 
 /// 在 TLS 监听器上跑完整的 API 到 SIGINT / SIGTERM 为止。
-pub async fn serve_tls_on(listener: TlsListener, state: AppState) -> Result<(), ServeError> {
+pub async fn serve_tls_on(listener: BoundTls, state: AppState) -> Result<(), ServeError> {
     serve_tls_router(listener, router(state)).await
 }
 
@@ -332,9 +337,9 @@ pub async fn serve_tls_on(listener: TlsListener, state: AppState) -> Result<(), 
 ///
 /// 不用 `axum::serve` 是因为它在 accept 循环里顺序做 `Listener::accept`，TLS 握手放进去会让
 /// 一个慢客户端拖住所有人；这里握手在每条连接自己的任务里。
-pub async fn serve_tls_router(listener: TlsListener, app: Router) -> Result<(), ServeError> {
-    let TlsListener { tcp, acceptor } = listener;
-    let app = app.layer(Extension(OverTls));
+pub async fn serve_tls_router(listener: BoundTls, app: Router) -> Result<(), ServeError> {
+    let BoundTls { tcp, acceptor } = listener;
+    let app = app.layer(Extension(TlsListener));
     let mut shutdown = std::pin::pin!(shutdown_signal());
     loop {
         tokio::select! {

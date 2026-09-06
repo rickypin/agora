@@ -111,4 +111,19 @@ MVP 不需要保存大量 operational telemetry。peer 的最后视图只在内�
 
 - 形态 `apt_<name>_<base64url(32 字节随机)>`（一行，随机段恰好 43 字符）：前缀让日志与 secret scanner 认得出它，`<name>` 是被访问节点眼里这个 peer 的名字（字符集与 `node.id` 相同：字母、数字、`-`、`_`，最长 64）。name 与随机段都可能含 `_`，解析按尾部定长 43 切，不按 `_` 切（`src/auth/peer_token.rs`）。
 - 由被访问的节点签发：`agora peer token create <name>`——stdout **只有 token 一行**（`> mac.token` 直接就是 token_file），提示走 stderr；明文只输出这一次，该节点的 `peer_tokens` 表（schema v4）只存整串的 SHA-256。已有有效 token 的 name 再 `create` 拒绝（退出 1），加 `--rotate` 才换新——同一行换哈希，旧 token 立即失效；已吊销的 name 直接重签、不需要 `--rotate`。`agora peer token list` 列出 name / 签发时刻 / 最近使用 / active|revoked（不显示哈希，更没有明文）；`agora peer token revoke <name>` 即时生效（daemon 每次请求查库、不缓存）。三条命令直接操作 `AGORA_HOME/agora.db`，不需要 daemon 在跑（ADR-003 D6）；库文件若由 CLI 首次创建也只属主可读。签发没有前置条件（ADR-003 D3）；token 只在 TLS 监听器上被接受（`docs/spec/api.md`「认证」）。
-- 持有方写入 `peers[].token_file`：明文、`0600`、不进 git、不进日志（MISSION §8）。读它（`peer_token::load_token_file`）先查权限再读内容：文件必须属于当前 uid、group / other 不得有任何位（与 `AGORA_HOME` 自检同一尺度）、内容去掉首尾空白后必须是上面的形态——任何一条不满足都是**配置错误**（`TokenFileError`），该 peer 应显示为「配置错误」而不是"离线"或"未授权"，也不进退避重试（重试改不了文件权限）。守卫 `tests/peer_token.rs::token_file_too_open_is_config_error`。
+- 持有方写入 `peers[].token_file`：明文、`0600`、不进 git、不进日志（MISSION §8）。读它（`peer_token::load_token_file`）先查权限再读内容：文件必须属于当前 uid、group / other 不得有任何位（与 `AGORA_HOME` 自检同一尺度）、内容去掉首尾空白后必须是上面的形态——任何一条不满足都是**配置错误**（`TokenFileError`），该 peer 应显示为「配置错误」而不是"离线"或"未授权"，也不进退避重试（重试改不了文件权限）。守卫 `tests/peer_token.rs::token_file_too_open_is_config_error`。 peer 客户端每次请求时读它、不缓存（换文件即生效）；配置错误时一个字节都不会发出去。
+
+## TLS 证书（`tls` 段；ADR-003 D4 / D5）
+
+agora 永远自己终止 TLS。`server.tls_listen` 一配，监听器上就只有 TLS，握手不成的连接直接关闭，没有"按明文继续"的分支（守卫 `tests/listen.rs::tls_listener_never_serves_plaintext`）；`server.listen` 反过来只接受 loopback 地址。两个模式最后都归到一对 PEM 文件，daemon 与 `agora tls …` 看到的是同一对：
+
+| `tls.mode` | 证书从哪来 | `agora tls rotate-key` |
+|---|---|---|
+| `self-signed`（默认） | 首次开 `tls_listen`（或首次 `agora tls fingerprint`）时生成 ECDSA P-256 私钥与 10 年自签证书到 `AGORA_HOME/tls/key.pem` / `cert.pem`（0600，目录 0700，先写 `.tmp` 再 rename），之后**复用**——指纹稳定是 peer 配置成立的前提；只剩半对（手动删了一个）当作没有，重新生成一对 | 换钥重签，指纹变，peer 要改 |
+| `external` | `tls.external.cert_file` 与 `key_file` 都必填（PEM；证书可带链，第一张是叶子）。agora 不校验它是谁签的、主机名对不对——peer 只认 SPKI 指纹，浏览器认 CA 是浏览器的事。`renew_command` 是 argv 直传不经 shell，距 notAfter 不到 `renew_before` 时调用（上限 120 s），失败一小时后再试；新文件由热加载装上 | 拒绝：密钥归外部工具管 |
+
+- **指纹**：`sha256:<64 位小写 hex>`，是叶子证书 SubjectPublicKeyInfo（DER）的 SHA-256——同一把钥重签不变，换钥才变。`agora tls fingerprint` 打印它（stdout 只有这一行，能直接粘进对方 YAML；自签模式下证书还没生成就先生成，不必先起 daemon），daemon 启动日志也打。别的节点把本节点配成 peer 时 `peers[].cert_fingerprint` 填它。
+- **peer 客户端只比指纹**：不看 CA、主机名、有效期；没有 TOFU——`cert_fingerprint` 为空或不是 `sha256:<64 hex>` 是配置错误，连 TCP 都不拨；对端指纹对不上是独立的「指纹不匹配」状态，绝不并进"离线"（守卫 `tests/peer_tls.rs::fingerprint_mismatch_is_refused_not_stale`、`::no_pin_no_connect`）。`peers[].url` 必须是 `https://host[:port]`（缺省 443；IPv6 写 `[fd00::1]:7681`），`http://` 是配置错误。
+- **热加载**：两个模式都由 daemon 每 30 s 比对两个文件**内容**的哈希（不是 mtime），变了就装上新证书，daemon 不重启、已建立的连接不断；半写或钥证不配就拒绝、旧证书继续服务，文件再变再试。SPKI 变了（换钥）打 warn 日志"每个把本节点配成 peer 的节点都要更新 peers[].cert_fingerprint"，只续签不换钥则 peer 不用动（守卫 `tests/peer_tls.rs::external_cert_hot_reload_warns_on_spki_change`）。
+- **零凭据只警告**：开了 `tls_listen` 却既没有机器 token 也没有已配对设备时，daemon 启动打 warn（"没有人能连进来"）而不是拒绝启动——没有直通路由，这个状态只是没用不是漏洞；此时 TLS 端口上是 401（守卫 `tests/listen.rs::tls_listen_without_credentials_warns_not_refuses`）。
+- `self-ca` 未实现；`server.public_url` 不自动猜。

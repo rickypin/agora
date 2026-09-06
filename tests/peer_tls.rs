@@ -9,14 +9,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agora::api::{self, AppState, OverTls};
+use agora::api::{self, AppState, TlsListener};
 use agora::auth::{Auth, AuthConfig};
-use agora::config::PeerSection;
+use agora::config::{PeerSection, TlsExternal, TlsSection};
 use agora::peer::transport::{
     HttpsTransport, PeerConfigError, PeerTransport, TransportError, WsMessage, DEFAULT_TIMEOUT,
 };
 use agora::runtime::Runtime;
 use agora::session::{Db, SessionManager};
+use agora::tls::reload::{self, ReloadEvent};
 use agora::tls::{self, Fingerprint, Identity, TlsFiles};
 use axum::body::Body;
 use axum::extract::ws::WebSocketUpgrade;
@@ -27,6 +28,7 @@ use axum::{Extension, Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use tokio::sync::broadcast;
 
 const NOW: i64 = 1_788_652_800; // 2026-09-06T00:00:00Z
 
@@ -70,7 +72,7 @@ fn node_router(name: &str) -> Router {
 
 /// 回显请求头与 TLS 标记的小 Router：验证传输层补了什么、监听器标了什么。
 fn echo_router() -> Router {
-    async fn echo(headers: HeaderMap, tls: Option<Extension<OverTls>>) -> Json<Value> {
+    async fn echo(headers: HeaderMap, tls: Option<Extension<TlsListener>>) -> Json<Value> {
         let h = |n: header::HeaderName| {
             headers
                 .get(n)
@@ -263,7 +265,7 @@ async fn self_signed_generated_once_and_reused() {
 
 #[tokio::test]
 async fn pinned_transport_carries_bearer_and_serves_ws_over_tls() {
-    // 生产传输补的东西：Host、Authorization: Bearer <token_file 内容>；监听器标的东西：OverTls
+    // 生产传输补的东西：Host、Authorization: Bearer <token_file 内容>；监听器标的东西：TlsListener
     // （7ku.2 的 Bearer 校验据此分支）。WS 走同一条 TLS 建连路径，Bearer 也在握手请求上。
     let home = tempfile::tempdir().unwrap();
     let (port, pin, _acceptor) = tls_server(home.path(), echo_router()).await;
@@ -280,7 +282,10 @@ async fn pinned_transport_carries_bearer_and_serves_ws_over_tls() {
     let body = body_json(resp).await;
     assert_eq!(body["authorization"], "Bearer apt_zuan_s3cr3t");
     assert_eq!(body["host"], format!("127.0.0.1:{port}"));
-    assert_eq!(body["over_tls"], true, "TLS 监听器上的请求带 OverTls 标记");
+    assert_eq!(
+        body["over_tls"], true,
+        "TLS 监听器上的请求带 TlsListener 标记"
+    );
 
     let mut ws = t.connect_ws("/ws-echo").await.unwrap();
     ws.send(WsMessage::Text("ping".into())).await.unwrap();
@@ -290,11 +295,257 @@ async fn pinned_transport_carries_bearer_and_serves_ws_over_tls() {
     }
     ws.close(None).await.unwrap();
 
-    // 明文监听器上没有 OverTls：同一个 Router 经 oneshot（等价于明文路径）看不到标记。
+    // 明文监听器上没有 TlsListener：同一个 Router 经 oneshot（等价于明文路径）看不到标记。
     use tower::ServiceExt;
     let resp = echo_router()
         .oneshot(Request::get("/echo").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(body_json(resp).await["over_tls"], false);
+}
+
+/// 等下一个非 `Rejected` 的事件：`write_pair` 先写私钥再写证书，50 ms 的 watcher 有可能在两次写之间
+/// 读到"新钥 + 旧证"而先发一个 `Rejected`（这正是它该做的：旧证书继续服务），下一轮再装上成对的。
+async fn next_accepted(rx: &mut broadcast::Receiver<ReloadEvent>) -> ReloadEvent {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let ev = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("5 s 内没有热加载事件")
+            .unwrap();
+        if ev != ReloadEvent::Rejected {
+            return ev;
+        }
+    }
+}
+
+#[tokio::test]
+async fn external_cert_hot_reload_warns_on_spki_change() {
+    // ADR-003 D4 external："文件变化即热加载；SPKI 变了则日志警告 peer 需更新指纹"。
+    // 证书文件放在 tls.external 指定的任意路径（这里模拟 tailscale cert 的落点），daemon 不重启：
+    // 换钥 → 装上、事件说 spki_changed（日志同时 warn）、旧指纹的 peer 从此是 FingerprintMismatch、
+    // 新指纹的连得上；同钥续签 → 装上、spki_changed=false、peer 不用动；写坏 → Rejected、旧证书继续服务。
+    let dir = tempfile::tempdir().unwrap();
+    let tls_section = TlsSection {
+        mode: "external".into(),
+        external: TlsExternal {
+            cert_file: Some(dir.path().join("zuan.crt")),
+            key_file: Some(dir.path().join("zuan.key")),
+            renew_command: None,
+            renew_before: "720h".into(),
+        },
+    };
+    let (mode, files) = TlsFiles::from_config(dir.path(), &tls_section).unwrap();
+    assert_eq!(mode, tls::Mode::External);
+    let first = tls::generate_self_signed(&files, NOW, 90).unwrap();
+    let acceptor = tls::server::Acceptor::new(&first).unwrap();
+    let listener = api::bind_tls("127.0.0.1:0".parse().unwrap(), acceptor.clone())
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(api::serve_tls_router(listener, echo_router()));
+    let (_watch, mut rx) = reload::spawn(
+        acceptor.clone(),
+        reload::WatchConfig {
+            files: files.clone(),
+            interval: Duration::from_millis(50),
+            renew: None,
+        },
+    );
+    let token = write_token(dir.path(), "apt_zuan_abc");
+    let transport = |pin: &Fingerprint| {
+        HttpsTransport::new(section(port, &pin.to_string(), &token), DEFAULT_TIMEOUT)
+    };
+    async fn get(t: &HttpsTransport) -> Result<StatusCode, TransportError> {
+        let resp = t
+            .request(Request::get("/echo").body(Body::empty()).unwrap())
+            .await?;
+        Ok(resp.status())
+    }
+    let old_pin = first.fingerprint();
+    assert_eq!(get(&transport(&old_pin)).await.unwrap(), StatusCode::OK);
+
+    // ① 换钥（tailscale cert 续期通常不换钥，但 external 不保证；rotate 也走这里）。
+    let second = tls::generate_self_signed(&files, NOW + 60, 90).unwrap();
+    let new_pin = second.fingerprint();
+    assert_ne!(new_pin, old_pin);
+    assert_eq!(
+        next_accepted(&mut rx).await,
+        ReloadEvent::Reloaded {
+            fingerprint: new_pin,
+            spki_changed: true
+        }
+    );
+    assert_eq!(acceptor.fingerprint(), new_pin);
+    match get(&transport(&old_pin)).await.unwrap_err() {
+        TransportError::FingerprintMismatch { expected, actual } => {
+            assert_eq!(expected, old_pin.to_string());
+            assert_eq!(actual, new_pin.to_string());
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(get(&transport(&new_pin)).await.unwrap(), StatusCode::OK);
+
+    // ② 同钥续签：证书变、SPKI 不变——peer 的 cert_fingerprint 继续有效。
+    let (_, old_not_after) = second.validity().unwrap();
+    let third = tls::reissue_self_signed(&files, NOW + 120, 365).unwrap();
+    assert_eq!(third.fingerprint(), new_pin);
+    assert_eq!(
+        next_accepted(&mut rx).await,
+        ReloadEvent::Reloaded {
+            fingerprint: new_pin,
+            spki_changed: false
+        }
+    );
+    assert!(acceptor.not_after() > old_not_after, "新证书的有效期装上了");
+    assert_eq!(get(&transport(&new_pin)).await.unwrap(), StatusCode::OK);
+
+    // ③ 写坏证书文件：拒绝、旧的继续服务；修好后再装上。
+    std::fs::write(&files.cert_file, "not a pem").unwrap();
+    let ev = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ev, ReloadEvent::Rejected);
+    assert_eq!(acceptor.fingerprint(), new_pin);
+    assert_eq!(get(&transport(&new_pin)).await.unwrap(), StatusCode::OK);
+    let fourth = tls::generate_self_signed(&files, NOW + 180, 90).unwrap();
+    assert!(matches!(
+        next_accepted(&mut rx).await,
+        ReloadEvent::Reloaded { fingerprint, spki_changed: true } if fingerprint == fourth.fingerprint()
+    ));
+}
+
+#[tokio::test]
+async fn renew_command_runs_before_expiry_and_reports_exit_status() {
+    // ADR-003 D4 external："到期前 renew_before 调用 renew_command"。命令是 argv 直传不经 shell
+    // （runtime::exec 的规则），退出码非 0 只是 Renewed{ok:false} 与一条 warn，watcher 不死、
+    // RENEW_RETRY 后再试；新文件由下一轮热加载装上（上一条测试覆盖）。
+    // 用真时钟签一张只有 1 天的证书，renew_before 30 天 → 第一拍就到期。
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let before = Duration::from_secs(30 * 86_400);
+    let run = |command: Vec<String>, valid_days: u64, interval: Duration| async move {
+        let dir = tempfile::tempdir().unwrap();
+        let files = TlsFiles::self_signed(dir.path());
+        let identity = tls::generate_self_signed(&files, now, valid_days).unwrap();
+        let acceptor = tls::server::Acceptor::new(&identity).unwrap();
+        let renew = reload::Renew::from_config(Some(&command), before).unwrap();
+        let (_watch, mut rx) = reload::spawn(
+            acceptor,
+            reload::WatchConfig {
+                files,
+                interval,
+                renew: Some(renew),
+            },
+        );
+        let ev = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await;
+        (dir, ev)
+    };
+
+    let marker_dir = tempfile::tempdir().unwrap();
+    let marker = marker_dir.path().join("renewed");
+    let touch = vec!["touch".to_owned(), marker.to_string_lossy().into_owned()];
+    let (_d, ev) = run(touch, 1, Duration::from_millis(50)).await;
+    assert_eq!(ev.unwrap().unwrap(), ReloadEvent::Renewed { ok: true });
+    assert!(marker.exists(), "renew_command 真的跑了");
+
+    let (_d, ev) = run(vec!["false".into()], 1, Duration::from_millis(50)).await;
+    assert_eq!(ev.unwrap().unwrap(), ReloadEvent::Renewed { ok: false });
+
+    let (_d, ev) = run(
+        vec!["/nonexistent/agora-renew".into()],
+        1,
+        Duration::from_millis(50),
+    )
+    .await;
+    assert_eq!(
+        ev.unwrap().unwrap(),
+        ReloadEvent::Renewed { ok: false },
+        "起不来也是 ok:false，不 panic"
+    );
+
+    // 没到期就不调：10 年的证书、30 天的 renew_before，几拍之内不该有任何事件。
+    let too_early = marker_dir.path().join("too-early");
+    let touch = vec!["touch".to_owned(), too_early.to_string_lossy().into_owned()];
+    let (_d, ev) = tokio::time::timeout(
+        Duration::from_millis(400),
+        run(touch, 3650, Duration::from_millis(20)),
+    )
+    .await
+    .map(|(d, ev)| (Some(d), ev.ok()))
+    .unwrap_or((None, None));
+    assert!(ev.is_none(), "没到期不该续: {ev:?}");
+    assert!(!too_early.exists());
+}
+
+#[test]
+fn cli_fingerprint_matches_cert_spki_via_binary() {
+    // 验收：`agora tls fingerprint` 输出等于证书 SPKI 的 SHA-256。走真二进制 + 隔离 AGORA_HOME：
+    // 第一次跑生成证书（stdout 只有指纹一行，能直接粘进对方 YAML），第二次同值；rotate-key 之后变。
+    use std::process::Command;
+    let home = tempfile::tempdir().unwrap();
+    // tempdir 按 umask 落成 0755；AGORA_HOME 的自检要求 0700（ADR-003 D6），否则二进制退 2。
+    std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let agora = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_agora"))
+            .env("AGORA_HOME", home.path())
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8(out.stdout).unwrap(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (code, stdout, stderr) = agora(&["tls", "fingerprint"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(stdout.lines().count(), 1, "stdout 只有指纹一行: {stdout:?}");
+    let printed = stdout.trim().to_owned();
+    assert!(printed.starts_with("sha256:") && printed.len() == "sha256:".len() + 64);
+    assert!(stderr.contains("cert_fingerprint"), "{stderr}");
+
+    // 独立算：磁盘上 tls/cert.pem 的叶子证书 → SubjectPublicKeyInfo → SHA-256。
+    let files = TlsFiles::self_signed(home.path());
+    let pem = std::fs::read(&files.cert_file).unwrap();
+    use rustls::pki_types::pem::PemObject;
+    let leaf = rustls::pki_types::CertificateDer::pem_slice_iter(&pem)
+        .next()
+        .unwrap()
+        .unwrap();
+    let spki = agora::tls::x509::spki(&leaf).unwrap();
+    use sha2::Digest;
+    let hex: String = sha2::Sha256::digest(spki)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(printed, format!("sha256:{hex}"));
+    assert_eq!(
+        printed,
+        Identity::from_files(&files)
+            .unwrap()
+            .fingerprint()
+            .to_string()
+    );
+
+    let (code, again, _) = agora(&["tls", "fingerprint"]);
+    assert_eq!(
+        (code, again.trim()),
+        (Some(0), printed.as_str()),
+        "再跑不变"
+    );
+
+    let (code, rotated, stderr) = agora(&["tls", "rotate-key"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_ne!(rotated.trim(), printed);
+    assert!(stderr.contains("peers[].cert_fingerprint"), "{stderr}");
+    let (_, after, _) = agora(&["tls", "fingerprint"]);
+    assert_eq!(after.trim(), rotated.trim());
+
+    let (code, _, stderr) = agora(&["tls"]);
+    assert_eq!(code, Some(2));
+    assert!(stderr.contains("用法"), "{stderr}");
 }

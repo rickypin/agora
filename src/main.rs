@@ -9,6 +9,8 @@
 //! agora hook --host <h> --home <dir> [--record <file>]
 //!                               agent 的 hook 命令：落盘、唤醒、必要时挂起（ADR-002 D3）；
 //!                               --record（或 AGORA_HOOK_RECORD）顺手录成脱敏 fixture（D10）
+//! agora tls fingerprint         本节点 TLS 证书的 SPKI 指纹（peer 的 cert_fingerprint 填它；ADR-003 D4）
+//! agora tls rotate-key          自签模式换钥重签；daemon 热加载，peer 需更新指纹
 //! ```
 //!
 //! 配置来自 `AGORA_HOME/config.yaml`（docs/spec/config.md），缺文件全走默认；明文监听器
@@ -30,7 +32,7 @@ use agora::tls::{self, Mode, TlsFiles};
 /// V1 唯一的运行时；配置里 `runtime.kind` 缺省就是它。
 const RUNTIME_KIND: &str = "tmux";
 
-const USAGE: &str = "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | fake-agent <script>|-e <inline>]";
+const USAGE: &str = "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | tls fingerprint|rotate-key | fake-agent <script>|-e <inline>]";
 
 #[tokio::main]
 async fn main() {
@@ -45,6 +47,7 @@ async fn main() {
         ["hook", rest @ ..] => agora::hook::cmd::run(rest).await,
         ["hooks", rest @ ..] => agora::hook::install::run(rest),
         ["peer", rest @ ..] => agora::cli::peer::run(rest),
+        ["tls", rest @ ..] => tls_cmd(rest),
         // 测试用假 agent（agora-3la）：藏在子命令里，不占第二个 binary。
         ["fake-agent", rest @ ..] => agora::fake_agent::run(rest),
         _ => {
@@ -330,7 +333,7 @@ async fn serve() -> i32 {
 
 /// TLS 监听器绑好之后留给 serve 阶段的东西。
 struct TlsSetup {
-    listener: api::TlsListener,
+    listener: api::BoundTls,
     acceptor: tls::server::Acceptor,
     files: TlsFiles,
     mode: Mode,
@@ -377,9 +380,17 @@ async fn bind_tls(home: &Path, settings: &Settings) -> Result<Option<TlsSetup>, 
     }))
 }
 
+/// `agora tls fingerprint | rotate-key`：home 与 tls 段用 daemon 同一套解析，CLI 与 daemon 看到的
+/// 永远是同一对证书文件（agora-7ku.10）。
+fn tls_cmd(args: &[&str]) -> i32 {
+    let home = home_or_exit();
+    let settings = settings_or_exit(&home);
+    agora::cli::tls::run(args, &home, &settings.raw.tls)
+}
+
 /// 没开 TLS 监听器时这一支永远不返回，让 `select!` 只看另外两支。
 async fn serve_tls(
-    listener: Option<api::TlsListener>,
+    listener: Option<api::BoundTls>,
     state: AppState,
 ) -> Result<(), api::ServeError> {
     match listener {
