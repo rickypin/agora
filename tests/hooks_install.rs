@@ -291,6 +291,59 @@ fn dry_run_shows_the_diff_and_writes_nothing() {
 }
 
 #[test]
+fn install_via_the_bin_link_itself_says_already_pointing_and_never_loops() {
+    // agora-78f（2026-09-06 开发机实测）：`~/.agora/bin/agora hooks install codex --dry-run` 说
+    // "将重指 …/bin/agora -> …/bin/agora"，真跑把链接指成自环，此后三家 hook 的 `[ -x ]` 守卫全假、
+    // agora 收不到任何事件。根因是 macOS 的 current_exe 不解析符号链接（Linux 走 /proc/self/exe 会
+    // 解析，所以这条在 CI 的 ubuntu 上天然通过，只有 macOS 是真正的复现）。
+    let tmp = tempfile::tempdir().unwrap();
+    let agora_home = tmp.path().join("agora");
+    let user_home = tmp.path().join("home");
+    let link = agora_home.join("bin/agora");
+    let real = Path::new(env!("CARGO_BIN_EXE_agora"));
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    symlink(real, &link).unwrap();
+
+    let run = |dry_run: bool| {
+        let mut args = vec![
+            "hooks",
+            "install",
+            "codex",
+            "--home",
+            agora_home.to_str().unwrap(),
+            "--user-home",
+            user_home.to_str().unwrap(),
+        ];
+        if dry_run {
+            args.push("--dry-run");
+        }
+        // 经链接自己跑：Command 的 program 就是链接路径，current_exe 在 macOS 上拿到的也是它。
+        let out = Command::new(&link).args(&args).output().unwrap();
+        (
+            out.status,
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let (status, err) = run(true);
+    assert!(status.success(), "{err}");
+    assert!(err.contains("已指向"), "{err}");
+    assert!(!err.contains("将重指"), "{err}");
+    assert_eq!(std::fs::read_link(&link).unwrap(), real);
+
+    let (status, err) = run(false);
+    assert_eq!(status.code(), Some(0), "{err}");
+    assert!(err.contains("已指向") && err.contains("已写入"), "{err}");
+    assert_eq!(
+        std::fs::read_link(&link).unwrap().canonicalize().unwrap(),
+        real.canonicalize().unwrap()
+    );
+    // 自环的链接 metadata（跟随链接）会 ELOOP 失败；这里必须还能解析到真二进制。
+    assert!(std::fs::metadata(&link).is_ok(), "链接被指成了自环");
+    assert!(user_home.join(".codex/hooks.json").exists());
+}
+
+#[test]
 fn grok_installs_into_its_own_global_hooks_file() {
     // ADR-002 D4：Grok 写 ~/.grok/hooks/agora.json（全局目录永远受信）；没有 PermissionRequest
     // 可装；命令 exec 进 agora，hook 的 ppid 才是 grok 本体（agent_pid 的依据）。

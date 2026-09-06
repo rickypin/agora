@@ -60,12 +60,31 @@ pub fn bin_path(agora_home: &Path) -> PathBuf {
 pub fn dangling_bin_link(agora_home: &Path) -> Option<(PathBuf, PathBuf)> {
     let link = bin_path(agora_home);
     let target = std::fs::read_link(&link).ok()?;
-    // 相对目标按链接所在目录解析（符号链接的语义）；`join` 遇到绝对路径就是绝对路径本身。
-    let resolved = link
-        .parent()
-        .map(|dir| dir.join(&target))
-        .unwrap_or_else(|| target.clone());
+    let resolved = resolve_link_target(&link, &target);
     (!resolved.exists()).then_some((link, target))
+}
+
+/// `read_link` 读出的目标按链接所在目录解析（符号链接的语义）；`join` 遇到绝对路径就是绝对路径本身。
+fn resolve_link_target(link: &Path, target: &Path) -> PathBuf {
+    link.parent()
+        .map(|dir| dir.join(target))
+        .unwrap_or_else(|| target.to_path_buf())
+}
+
+/// 两个路径是不是同一份二进制：两边都 canonicalize 得出来就比真路径，任一失败（悬空链接的目标、
+/// 还不存在的路径）就退回原样比较——悬空的旧链接仍要判 Repoint，不能因为比不出来就放过。
+///
+/// 为什么不能原样比（agora-78f，2026-09-06 实测）：macOS 的 `current_exe()` 走
+/// `_NSGetExecutablePath`，不解析符号链接，经 `<AGORA_HOME>/bin/agora` 链接跑 `hooks install`
+/// 拿到的"当前二进制"就是链接本身；原样比"链接目标 == exe"永远不等，判成 Repoint，真跑会先删链接
+/// 再 `symlink(link, link)`，链接指成自环，此后 hooks.json 里 `if [ -x <AGORA_HOME>/bin/agora ]`
+/// 对三家 host 都为假，hook 静默失效、agora 收不到任何事件。Linux 走 /proc/self/exe 会解析，所以
+/// CI 上复现不出来。tmp 在 macOS 上是 /var → /private/var，正好覆盖"两边 canonical 才相等"的分支。
+fn same_binary(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 /// `<AGORA_HOME>/bin/agora` 该怎么处置（[`Installer::bin_link_plan`]）。三态之外没有"跳过"：每次
@@ -259,7 +278,14 @@ impl Installer {
     pub fn bin_link_plan(&self, exe: &Path) -> LinkPlan {
         let link = bin_path(&self.agora_home);
         match std::fs::read_link(&link) {
-            Ok(target) if target == exe => LinkPlan::Ok(link),
+            // 目标就是当前二进制（按真路径比，[`same_binary`]），或者 exe 就是这条链接本身——经链接
+            // 运行、current_exe 没解析（agora-78f）——都算已指向：链接解析到的就是正在跑的这份。
+            Ok(target)
+                if same_binary(&resolve_link_target(&link, &target), exe)
+                    || same_binary(&link, exe) =>
+            {
+                LinkPlan::Ok(link)
+            }
             // 悬空也走这支：read_link 读的是链接本身，目标在不在无所谓。
             Ok(target) => LinkPlan::Repoint {
                 link,
@@ -271,13 +297,23 @@ impl Installer {
         }
     }
 
-    /// `<AGORA_HOME>/bin/agora` → 当前二进制；指错了就重指。
+    /// `<AGORA_HOME>/bin/agora` → 当前二进制；指错了就重指。symlink 用 `exe` 原样（[`run`] 已
+    /// canonicalize 过；测试传 tmp 路径并断言 `read_link(link) == exe`）。
     pub fn ensure_bin_link(&self, exe: &Path) -> Result<PathBuf, InstallError> {
         let link = bin_path(&self.agora_home);
+        // 硬守卫：exe 就是链接本身（原样或真路径相等）→ 什么都不动，直接当"已指向"。任何情况下都
+        // 不能 remove + symlink 造出 link -> link：2026-09-06 开发机上 `~/.agora/bin/agora hooks
+        // install <agent>` 就是这么把链接指成自环、三家 hook 全哑的（agora-78f）。放在 create_dir_all
+        // 之前——exe 是链接本身时目录必然已在，不该有任何副作用。
+        if same_binary(&link, exe) {
+            return Ok(link);
+        }
         let dir = link.parent().unwrap_or(&self.agora_home);
         std::fs::create_dir_all(dir).map_err(io(dir))?;
-        if std::fs::read_link(&link).ok().as_deref() == Some(exe) {
-            return Ok(link);
+        if let Ok(target) = std::fs::read_link(&link) {
+            if same_binary(&resolve_link_target(&link, &target), exe) {
+                return Ok(link);
+            }
         }
         if link.symlink_metadata().is_ok() {
             std::fs::remove_file(&link).map_err(io(&link))?;
@@ -419,10 +455,13 @@ pub fn parse_args(argv: &[&str]) -> Result<Args, InstallError> {
 }
 
 /// 入口。成功 0；用法错误 2；写不了 1。给用户看的话全在 stderr（stdout 留给将来机器可读的形态），
-/// "当前二进制"是 `current_exe()`；可测的核在 [`run_with`]。
+/// "当前二进制"是 `current_exe()` 经 canonicalize 的真路径；可测的核在 [`run_with`]。
 pub fn run(argv: &[&str]) -> i32 {
     let exe = match std::env::current_exe() {
-        Ok(exe) => exe,
+        // macOS 的 current_exe 不解析符号链接：经 <AGORA_HOME>/bin/agora 跑到这里拿到的是链接本身，
+        // 不解析就会把链接重指成自环（agora-78f，2026-09-06）。canonicalize 失败（二进制在进程起来
+        // 之后被删 / 搬走）退回原路径继续，[`same_binary`] 与 `ensure_bin_link` 的硬守卫兜底。
+        Ok(exe) => exe.canonicalize().unwrap_or(exe),
         Err(err) => {
             eprintln!("agora hooks: current_exe: {err}");
             return 1;
@@ -567,6 +606,46 @@ mod tests {
         // 三种都能修回来。
         inst.ensure_bin_link(&exe).unwrap();
         assert_eq!(std::fs::read_link(&link).unwrap(), exe);
+    }
+
+    #[test]
+    fn bin_link_plan_treats_the_link_itself_as_already_pointing() {
+        // agora-78f（2026-09-06 开发机实测）：macOS 的 current_exe 不解析符号链接，经
+        // <AGORA_HOME>/bin/agora 跑 install 时 exe 就是链接本身；旧实现原样比"目标 == exe"判成
+        // Repoint，真跑 remove + symlink(link, link) 造出自环，三家 hook 的 `[ -x ]` 守卫全假。
+        // tmp 在 macOS 上是 /var → /private/var：read_link 读出的 X 与 canonicalize(link) 不同串，
+        // 只有两边都 canonical 才相等，正好覆盖 same_binary 的那条分支。
+        let tmp = tempfile::tempdir().unwrap();
+        let inst = Installer {
+            agora_home: tmp.path().join("agora"),
+            user_home: tmp.path().join("home"),
+        };
+        let x = tmp.path().join("agora-current");
+        std::fs::write(&x, "").unwrap();
+        let link = bin_path(&inst.agora_home);
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&x, &link).unwrap();
+
+        // 以链接自己的路径当 exe：计划是"已指向"，不是"将重指 link -> link"。
+        let plan = inst.bin_link_plan(&link);
+        assert_eq!(plan, LinkPlan::Ok(link.clone()));
+        assert!(plan.describe(&link, false).contains("已指向"));
+        // 真跑也不动文件系统：链接仍指向 X，且不是自环（metadata 跟随链接，自环会 ELOOP）。
+        assert_eq!(inst.ensure_bin_link(&link).unwrap(), link);
+        assert_eq!(std::fs::read_link(&link).unwrap(), x);
+        assert!(std::fs::metadata(&link).is_ok());
+        // 换一个真二进制仍照常重指：硬守卫只挡"exe 就是链接本身"。
+        let y = tmp.path().join("agora-next");
+        std::fs::write(&y, "").unwrap();
+        assert!(matches!(inst.bin_link_plan(&y), LinkPlan::Repoint { .. }));
+        inst.ensure_bin_link(&y).unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), y);
+        // 悬空的旧链接照旧判 Repoint：目标 canonicalize 不了，退回原样比较，不能因此放过。
+        std::fs::remove_file(&y).unwrap();
+        assert!(matches!(
+            inst.bin_link_plan(&x),
+            LinkPlan::Repoint { from: Some(_), .. }
+        ));
     }
 
     #[test]
