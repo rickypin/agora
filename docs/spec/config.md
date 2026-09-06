@@ -109,5 +109,6 @@ MVP 不需要保存大量 operational telemetry。peer 的最后视图只在内�
 
 ## 机器 token 文件
 
-- 由被访问的节点签发：`agora peer token create <name>`（`--rotate` 换新并立即吊销旧的），明文只输出这一次；该节点只存 SHA-256 哈希，`agora peer token revoke <name>` 即时生效。签发没有前置条件（ADR-003 D3）；token 只在 TLS 监听器上被接受。
-- 持有方写入 `peers[].token_file`：明文、`0600`、不进 git、不进日志（MISSION §8）。
+- 形态 `apt_<name>_<base64url(32 字节随机)>`（一行，随机段恰好 43 字符）：前缀让日志与 secret scanner 认得出它，`<name>` 是被访问节点眼里这个 peer 的名字（字符集与 `node.id` 相同：字母、数字、`-`、`_`，最长 64）。name 与随机段都可能含 `_`，解析按尾部定长 43 切，不按 `_` 切（`src/auth/peer_token.rs`）。
+- 由被访问的节点签发：`agora peer token create <name>`——stdout **只有 token 一行**（`> mac.token` 直接就是 token_file），提示走 stderr；明文只输出这一次，该节点的 `peer_tokens` 表（schema v4）只存整串的 SHA-256。已有有效 token 的 name 再 `create` 拒绝（退出 1），加 `--rotate` 才换新——同一行换哈希，旧 token 立即失效；已吊销的 name 直接重签、不需要 `--rotate`。`agora peer token list` 列出 name / 签发时刻 / 最近使用 / active|revoked（不显示哈希，更没有明文）；`agora peer token revoke <name>` 即时生效（daemon 每次请求查库、不缓存）。三条命令直接操作 `AGORA_HOME/agora.db`，不需要 daemon 在跑（ADR-003 D6）；库文件若由 CLI 首次创建也只属主可读。签发没有前置条件（ADR-003 D3）；token 只在 TLS 监听器上被接受（`docs/spec/api.md`「认证」）。
+- 持有方写入 `peers[].token_file`：明文、`0600`、不进 git、不进日志（MISSION §8）。读它（`peer_token::load_token_file`）先查权限再读内容：文件必须属于当前 uid、group / other 不得有任何位（与 `AGORA_HOME` 自检同一尺度）、内容去掉首尾空白后必须是上面的形态——任何一条不满足都是**配置错误**（`TokenFileError`），该 peer 应显示为「配置错误」而不是"离线"或"未授权"，也不进退避重试（重试改不了文件权限）。守卫 `tests/peer_token.rs::token_file_too_open_is_config_error`。
