@@ -426,7 +426,7 @@ mod tests {
         let spec = GROK.install_spec();
         assert!(spec
             .iter()
-            .all(|h| h.file == PathBuf::from(".grok/hooks/agora.json")));
+            .all(|h| h.file.as_os_str() == ".grok/hooks/agora.json"));
         assert!(spec.iter().all(|h| h.event != "PermissionRequest"));
         let of = |e: &str| spec.iter().find(|h| h.event == e).unwrap();
         assert_eq!(

@@ -303,7 +303,7 @@ mod tests {
         assert!(of("Interrupt").timeout <= Duration::from_secs(3));
         assert!(spec
             .iter()
-            .all(|h| h.file == PathBuf::from(".codex/hooks.json")));
+            .all(|h| h.file.as_os_str() == ".codex/hooks.json"));
         assert!(spec.iter().all(|h| h.matcher.is_none()));
         assert!(CODEX.install_hint().unwrap().contains("/hooks"));
     }

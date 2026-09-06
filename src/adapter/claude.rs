@@ -428,6 +428,6 @@ mod tests {
             .contains("rate_limit"));
         assert!(spec
             .iter()
-            .all(|h| h.file == PathBuf::from(".claude/settings.json")));
+            .all(|h| h.file.as_os_str() == ".claude/settings.json"));
     }
 }
