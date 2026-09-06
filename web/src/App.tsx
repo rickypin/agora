@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchHealth } from "./health";
-import { clearFragment, extractPairToken, isPaired, redeemPair } from "./pair";
+import { clearFragment, extractPairToken, isPaired, redeemPairOnce } from "./pair";
 import { Workspace } from "./Workspace";
 
 type Probe = "probing" | "ok" | "down";
@@ -18,9 +18,11 @@ export function App() {
       .catch(() => !cancelled && setProbe("down"));
 
     // 地址栏带 #pair=<token> → 兑换成 cookie，再清掉 fragment；否则看已有 session 是否有效。
+    // StrictMode 会让这个 effect 同步跑两遍、两遍读到同一个 token：redeemPairOnce 按 token 只 POST 一次
+    // （agora-3w8，反例见 pair.ts）；fragment 要等落定后再清，不能在这里提前清给第二遍看。
     const token = extractPairToken(window.location.hash);
     const settle = token
-      ? redeemPair(token).then((device) => {
+      ? redeemPairOnce(token).then((device) => {
           clearFragment();
           return device ? "paired" : "pair_failed";
         })
