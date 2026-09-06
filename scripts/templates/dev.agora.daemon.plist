@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  agora daemon 的 launchd 用户代理（scripts/install.sh 生成；docs/spec/config.md「安装」）。
+  LANG=C.UTF-8 是 ADR-001 D7 的要求：launchd 起的进程没有登录 shell 的 locale，pane 里的 CJK
+  会变问号。PATH 只要够找到 tmux 与二进制本身：daemon 启动时自己探测用户 shell 的完整 PATH。
+  KeepAlive 只在非零退出时拉起（SuccessfulExit=false，等价 systemd 的 Restart=on-failure）：
+  daemon 以 0 退出是它自己决定收工，不该被 launchd 硬拉回来；崩溃 / 端口被占（退出 1）才拉，
+  launchd 自带 10 s 节流。
+  AGORA_HOME 与 PATH 两处占位符由安装脚本替换（模板见 scripts/templates/）。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.agora.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@AGORA_HOME@/bin/agora</string>
+    <string>serve</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>LANG</key>
+    <string>C.UTF-8</string>
+    <key>AGORA_HOME</key>
+    <string>@AGORA_HOME@</string>
+    <key>PATH</key>
+    <string>@PATH@</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardErrorPath</key>
+  <string>@AGORA_HOME@/daemon.log</string>
+  <key>StandardOutPath</key>
+  <string>@AGORA_HOME@/daemon.log</string>
+</dict>
+</plist>

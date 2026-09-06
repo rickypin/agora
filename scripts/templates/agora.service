@@ -1,0 +1,20 @@
+# agora daemon 的 systemd 用户单元（scripts/install.sh 生成；docs/spec/config.md「安装」）。
+# LANG=C.UTF-8 是 ADR-001 D7 的要求：pane 进程继承 tmux server 的环境，server 又继承
+# daemon 的，daemon 起在 systemd 里就没有登录 shell 的 locale——devcenter 的 CJK 乱码就是这么来的。
+# AGORA_HOME 与 PATH 两处占位符由安装脚本替换（模板见 scripts/templates/）。
+
+[Unit]
+Description=agora daemon (multi-agent dashboard)
+After=network.target
+
+[Service]
+Type=simple
+Environment=LANG=C.UTF-8
+Environment=AGORA_HOME=@AGORA_HOME@
+Environment=PATH=@PATH@
+ExecStart=@AGORA_HOME@/bin/agora serve
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
