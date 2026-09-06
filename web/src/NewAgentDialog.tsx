@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { AgentInfo, CatalogApi, ProjectInfo, SessionApi, WorktreeInfo } from "./api";
+import { WorktreeSelect } from "./WorktreeSelect";
 
 /** 前端唯一写死的"agent"：它没有 Adapter，命令必须由用户填（§6.4 线框的 custom）。 */
 const CUSTOM = "custom";
@@ -169,19 +170,7 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
           </datalist>
 
           <label htmlFor="na-worktree">Worktree</label>
-          <select
-            id="na-worktree"
-            value={worktree}
-            onChange={(e) => setWorktree(e.target.value)}
-            disabled={busy || worktrees.length === 0}
-          >
-            {worktrees.length === 0 && <option value="">—</option>}
-            {worktrees.map((w) => (
-              <option key={w.path} value={w.path}>
-                {(w.branch ?? w.path) + (w.main ? "" : " ↗")}
-              </option>
-            ))}
-          </select>
+          <WorktreeSelect worktrees={worktrees} value={worktree} onChange={setWorktree} disabled={busy} />
 
           <label htmlFor="na-agent">Agent</label>
           <select id="na-agent" value={agent} onChange={(e) => pickAgent(e.target.value)} disabled={busy}>
