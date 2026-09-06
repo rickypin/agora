@@ -9,6 +9,8 @@
 //! agora hook --host <h> --home <dir> [--record <file>]
 //!                               agent 的 hook 命令：落盘、唤醒、必要时挂起（ADR-002 D3）；
 //!                               --record（或 AGORA_HOOK_RECORD）顺手录成脱敏 fixture（D10）
+//! agora peer token create <name> [--rotate] | list | revoke <name>
+//!                               被访问节点签发 / 列出 / 吊销某个 peer 的机器 token（ADR-003 D3）
 //! agora tls fingerprint         本节点 TLS 证书的 SPKI 指纹（peer 的 cert_fingerprint 填它；ADR-003 D4）
 //! agora tls rotate-key          自签模式换钥重签；daemon 热加载，peer 需更新指纹
 //! ```
@@ -32,7 +34,7 @@ use agora::tls::{self, Mode, TlsFiles};
 /// V1 唯一的运行时；配置里 `runtime.kind` 缺省就是它。
 const RUNTIME_KIND: &str = "tmux";
 
-const USAGE: &str = "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | tls fingerprint|rotate-key | fake-agent <script>|-e <inline>]";
+const USAGE: &str = "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | peer token create <name> [--rotate]|list|revoke <name> | tls fingerprint|rotate-key | fake-agent <script>|-e <inline>]";
 
 #[tokio::main]
 async fn main() {

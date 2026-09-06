@@ -286,18 +286,6 @@ pub async fn serve_on(
 
 // ---------- TLS 监听器（ADR-003 D5） ----------
 
-/// 请求经 TLS 监听器进来的标记（请求扩展；与 [`InProcessPeer`] 同一机制：线上的字节变不成它，
-/// 只有 [`serve_tls_router`] 会放）。`Principal` 提取器据此决定接不接 Bearer（ADR-003 D3：Bearer
-/// 只上 TLS 监听器，明文监听器 401 `bearer_requires_tls`）与发 cookie 要不要 `Secure`（D2；随远端
-/// 配对 agora-thc.1）。
-///
-/// 合并注意（2026-09-06）：agora-7ku.2 在 `src/api/auth.rs` 里定义了**同名同形**的标记并从这里
-/// `pub use auth::TlsListener` 导出，提取器认的就是它。两条分支各自能编、合到一起会重复定义——
-/// 合并时删掉这一个、保留 auth.rs 的，`serve_tls_router` 盖的自然就是提取器认的那个。名字故意取
-/// 得一样，就是为了让合并错在编译期而不是错在"TLS 监听器上的 Bearer 全部 401"这种运行期。
-#[derive(Debug, Clone, Copy, Default)]
-pub struct TlsListener;
-
 /// 已绑定的 TLS 监听器：TCP 监听器 + 可热换证书的 acceptor。
 pub struct BoundTls {
     tcp: tokio::net::TcpListener,
@@ -339,6 +327,8 @@ pub async fn serve_tls_on(listener: BoundTls, state: AppState) -> Result<(), Ser
 /// 一个慢客户端拖住所有人；这里握手在每条连接自己的任务里。
 pub async fn serve_tls_router(listener: BoundTls, app: Router) -> Result<(), ServeError> {
     let BoundTls { tcp, acceptor } = listener;
+    // 标记定义在 src/api/auth.rs（agora-7ku.2），Principal 提取器认的就是它；2026-09-06 合并时删掉了
+    // 本文件里同名同形的副本，别再加回来——两份定义会在编译期撞车，这正是当初故意同名的用意。
     let app = app.layer(Extension(TlsListener));
     let mut shutdown = std::pin::pin!(shutdown_signal());
     loop {
