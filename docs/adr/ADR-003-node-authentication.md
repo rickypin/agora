@@ -2,6 +2,7 @@
 
 - 状态：**Accepted**（2026-09-02；草案经第一性原理复审后修订，用户采纳全部修订：设备配对替代 TOTP、A34 降为警告、A31 删签发前置条件、证书默认 external、`AGORA_HOME = ~/.agora`）
 - 日期：2026-09-02
+- 变更：2026-09-06 D1 补例外句（agora-0df）——`/api/auth/*` 除 `logout` 外只接受 Human，Peer 一律 403 `peer_forbidden`；D3 不动，是它的"没有委托链"落到端点上
 - beads：`agora-90t.4`
 - 依赖：MISSION §0.1（多用户是 Non-Goal；同机多用户多实例互为陌生人）、§0.2 / `docs/spec/instance.md`（tailnet 里有他人的节点）、§2.2 不变量 9 / 11、§3.5（peer 模型，ADR-004）、§8；ADR-002 D3（hook 投递不经 HTTP）
 
@@ -59,6 +60,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 - `Principal` 是 axum 提取器，**每个** handler 的签名都要它。未认证白名单只有：SPA shell 与静态资源、`GET /api/health` 的公开子集（只有 `{ "status": "ok" }`）、`POST /api/auth/pair`。
 - 带 `Authorization: Bearer` 的请求按 D3 解析，否则按 D2 找 cookie；都没有 → 401。
 - 授权在 V1 只有一条规则：任一 principal 对本节点全部 API 全权——Remote Shell Access 的诚实写法。每条写请求的日志行带 principal（`human:<device>` / `peer:mac`），转发时两跳各记各的。
+- **唯一例外（2026-09-06，agora-0df）**：`/api/auth/*` 除 `logout` 外——`pair/new`、`devices`、`devices/:id`——只接受 `Human`，`Peer` 一律 403 `peer_forbidden`。依据是 D3 的"没有委托链"：铸造配对链接是**持久化**的提权（被攻破的 peer 借它把浏览器配成本节点的 Human 设备，吊销 peer token 之后那台设备还在），列出 / 吊销设备则能把主人锁在门外；两者都不在 D10 接受的"攻破期间全权"量级内。`/api/sessions/*` 对 Peer 保持全权——一跳转发（§3.5）要靠它们。守卫 `tests/auth.rs::peer_cannot_mint_pair_link_or_touch_devices`。
 - **代码里没有 loopback 例外分支**：多用户主机上的后门就是从"本机调试方便"的例外长出来的。
 
 ### D2 人的凭据：设备配对，本机与远端同一机制（事实 2、3）

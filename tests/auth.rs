@@ -626,3 +626,90 @@ async fn secure_cookie_still_carries_max_age() {
         "{set}"
     );
 }
+
+/// ADR-003 D1 的例外句（agora-0df）：`/api/auth/*` 除 logout 外只接受 Human。peer 的机器 token
+/// 没有委托链（D3）——能铸造配对链接就等于能给本节点配出一台**持久**的 Human 设备，吊销 peer
+/// token 之后它还在。走 `InProcessPeer` 路径：它与 Bearer 在提取器里汇成同一个 `Principal::Peer`，
+/// handler 分不出两者，所以守的是 handler 而不是传输。同一测试里核对转发所需的端点
+/// （`GET /api/sessions`、`POST /api/sessions/{id}/input`）对 Peer **不是** 403：7ku.7 的一跳
+/// 转发要靠它们，收紧只收这三个端点。
+#[tokio::test]
+async fn peer_cannot_mint_pair_link_or_touch_devices() {
+    let fx = Fx::new();
+    // 先配好一台真设备：devices / revoke 的 403 才不是"没东西可列"的巧合。
+    let cookie = fx.pair().await;
+    let devices = json(fx.get_devices_resp(&cookie).await).await;
+    let device_id = devices[0]["id"].as_str().unwrap().to_owned();
+    let pending_before = fx.auth.pending_count();
+
+    let as_peer = |method: &str, path: &str, body: Body| {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, HOST)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .unwrap();
+        req.extensions_mut().insert(api::InProcessPeer {
+            name: "zuan".into(),
+        });
+        fx.app().oneshot(req)
+    };
+
+    let revoke_path = format!("/api/auth/devices/{device_id}");
+    for (method, path) in [
+        ("POST", "/api/auth/pair/new"),
+        ("GET", "/api/auth/devices"),
+        ("DELETE", revoke_path.as_str()),
+    ] {
+        let resp = as_peer(method, path, Body::empty()).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "{method} {path} 对 Peer 必须 403"
+        );
+        assert_eq!(
+            json(resp).await["error"],
+            "peer_forbidden",
+            "{method} {path} 错误类型"
+        );
+    }
+    // 副作用也没有发生：没多出配对链接，设备没被吊销。
+    assert_eq!(
+        fx.auth.pending_count(),
+        pending_before,
+        "peer 铸出了配对链接"
+    );
+    assert_eq!(
+        fx.get_devices(&cookie).await,
+        StatusCode::OK,
+        "设备被 peer 吊销了"
+    );
+
+    // logout 对 Peer 是空操作而不是 403：它本来就没有设备可删。
+    let resp = as_peer("POST", "/api/auth/logout", Body::empty())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // 转发所需的端点对 Peer 保持全权（MISSION §3.5 一跳转发）：list 直接 200，input 走到了
+    // 会话查找（404 not_found）——都不是 403。
+    let resp = as_peer("GET", "/api/sessions", Body::empty())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "Peer 列会话必须仍全权");
+    let resp = as_peer(
+        "POST",
+        "/api/sessions/nope/input",
+        Body::from(r#"{"kind":"text","data":"hi"}"#),
+    )
+    .await
+    .unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "Peer 的 input 不能被收紧"
+    );
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(json(resp).await["error"], "not_found");
+}

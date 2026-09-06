@@ -435,6 +435,7 @@ impl From<AuthError> for ApiError {
             AuthError::Unauthenticated => (StatusCode::UNAUTHORIZED, "unauthenticated"),
             AuthError::BearerRequiresTls => (StatusCode::UNAUTHORIZED, "bearer_requires_tls"),
             AuthError::CrossOrigin => (StatusCode::FORBIDDEN, "cross_origin"),
+            AuthError::PeerForbidden => (StatusCode::FORBIDDEN, "peer_forbidden"),
             AuthError::PairInvalid => (StatusCode::UNAUTHORIZED, "pair_invalid"),
             AuthError::PairPendingLimit(_) => (StatusCode::TOO_MANY_REQUESTS, "pair_pending_limit"),
             AuthError::DeviceNotFound(_) => (StatusCode::NOT_FOUND, "device_not_found"),

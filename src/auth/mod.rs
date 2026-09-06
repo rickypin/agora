@@ -95,6 +95,10 @@ pub enum AuthError {
     /// cookie 认证的非 GET 请求 Origin 与 Host 不同源（ADR-003 D7）。
     #[error("cross-origin request rejected")]
     CrossOrigin,
+    /// `/api/auth/*`（logout 除外）只接受 Human：peer 的机器 token 没有委托链
+    /// （ADR-003 D1 例外句、D3；agora-0df）。
+    #[error("peers may not manage this node's pairing or devices")]
+    PeerForbidden,
     /// 明文监听器不接受 Bearer（ADR-003 D3）。
     #[error("bearer token requires the TLS listener")]
     BearerRequiresTls,

@@ -1,4 +1,7 @@
 //! `/api/auth/*` 与 Principal 提取器（ADR-003 D1 / D2 / D7）。
+//!
+//! 这里是 D1「任一 principal 全权」唯一的例外：除 `logout` 外的 `/api/auth/*` 只接受 Human
+//! （见 [`human_only`]）。
 
 use axum::extract::{FromRequestParts, OptionalFromRequestParts, Path, State};
 use axum::http::request::Parts;
@@ -154,6 +157,23 @@ pub(super) fn same_origin(headers: &HeaderMap) -> bool {
 
 // ---------- handlers ----------
 
+/// ADR-003 D1「任一 principal 全权」的唯一例外（D1 例外句，agora-0df）：配对与设备管理只归 Human。
+///
+/// 为什么单挑这三个端点：peer 的机器 token 没有委托链（D3），而铸造配对链接是**持久化**的提权——
+/// 一台被攻破的 peer 用它把自己的浏览器配成本节点的 Human 设备，之后哪怕吊销了 peer token，
+/// 配出来的设备还在；列出 / 吊销设备则是把主人自己锁在门外。这与 D10 接受的"攻破期间全权"
+/// 不是一个量级。`logout` 不在此列：它对 Peer 本来就是空操作（没有设备可删）。
+/// `/api/sessions/*`（含 `input`）对 Peer 保持全权——7ku.7 的一跳转发要靠它们。
+fn human_only(principal: &Principal) -> Result<(), ApiError> {
+    match principal {
+        Principal::Human { .. } => Ok(()),
+        Principal::Peer { name } => {
+            tracing::warn!(component = "auth", peer = %name, "拒绝 peer 管理本节点的配对 / 设备");
+            Err(AuthError::PeerForbidden.into())
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PairBody {
     pub token: String,
@@ -185,12 +205,13 @@ pub struct PairLink {
     pub url: String,
 }
 
-/// 已认证的 session 铸造新链接（Dashboard "配对新设备"）；origin 取自 Host。
+/// 已认证的 Human session 铸造新链接（Dashboard "配对新设备"）；origin 取自 Host。
 pub async fn pair_new(
     principal: Principal,
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<PairLink>, ApiError> {
+    human_only(&principal)?;
     let token = state.auth.mint_pair_token(PairedVia::Session)?;
     let host = headers
         .get(header::HOST)
@@ -219,9 +240,10 @@ pub async fn logout(
 }
 
 pub async fn devices(
-    _principal: Principal,
+    principal: Principal,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Device>>, ApiError> {
+    human_only(&principal)?;
     Ok(Json(state.auth.list_devices()?))
 }
 
@@ -230,6 +252,7 @@ pub async fn revoke_device(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    human_only(&principal)?;
     state.auth.revoke(&id)?;
     tracing::info!(component = "auth", principal = %principal.log_id(), device = %id, "吊销设备");
     Ok(StatusCode::NO_CONTENT)
