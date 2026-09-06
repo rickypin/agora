@@ -223,8 +223,8 @@ Running 5 · Needs Input 2 · …
 |---|---|---|
 | 在线 | `zuan ●`（绿） | `online: true`；在线只有名字和点，title 里有 `上次见到 <UTC>` |
 | stale | `zuan ○ 上次见到 23:10`（黄点） | `online: false`、无 `last_error`、有 `last_seen`——保留最后一眼，绝不消失（不变量 8） |
-| 异常 | `zuan ✗ 指纹不匹配 · 上次见到 23:10`（红） | `last_error` 的四个类型各一句：`incompatible_version` 版本不兼容、`fingerprint_mismatch` 指纹不匹配、`unauthorized` 未授权、`unreachable` 不可达；没见过就没有"上次见到" |
+| 异常 | `zuan ✗ 指纹不匹配 · 上次见到 23:10`（红） | `last_error` 的五个类型各一句：`incompatible_version` 版本不兼容、`fingerprint_mismatch` 指纹不匹配、`unauthorized` 未授权、`unreachable` 不可达、`misconfigured` 配置错误（agora-41e；ADR-003 D3：本机这一行 `peers[]` 配错了——token_file 权限 / 属主 / 内容、url、指纹——要改文件，不是等网络）；没见过就没有"上次见到" |
 | 未连接 | `zuan ○ 未连接`（灰） | 配置了、还没试过：`last_seen`、`last_error` 都是 null |
 | 本机 | `本机 ●` / `本机 ✗ 不可达` / `本机 … 探测中` | 上一次拉 `/api/health` 成功 / 失败 / 还没拉过 |
 
-"上次见到"是本节点时钟打的时间（MISSION §3.5，不信 peer 报的），显示本地时区 `HH:MM`，完整 UTC 在 title；`retrying: true` 时 title 尾部加"重试中"。原因文案只按 `last_error` 的类型选（MISSION §2.3 规则 10），不解析任何消息文本；不认识的值当没有错误。数据源是 `HealthWatcher` 同一次拉取带出的 peers 段（`nodesSnapshot` / `subscribeNodes`，与 degraded 横幅各自订阅），没有第二条轮询。守卫 `web/src/Header.test.tsx`（四态各一测）、`web/src/health.test.ts`、`web/src/Workspace.test.tsx`。
+"上次见到"是本节点时钟打的时间（MISSION §3.5，不信 peer 报的），显示本地时区 `HH:MM`，完整 UTC 在 title；`retrying: true` 时 title 尾部加"重试中"——`misconfigured` 的 `retrying` 恒为 false（节点不重试、每 10 s 重读配置，`docs/spec/api.md` Health 节），所以它的 title 永远没有"重试中"，人看到的是"去改文件"而不是"等一等"；改好后节点自己恢复，这枚变回绿点，不需要重启。原因文案只按 `last_error` 的类型选（MISSION §2.3 规则 10），不解析任何消息文本；不认识的值当没有错误。数据源是 `HealthWatcher` 同一次拉取带出的 peers 段（`nodesSnapshot` / `subscribeNodes`，与 degraded 横幅各自订阅），没有第二条轮询。守卫 `web/src/Header.test.tsx`（在线 / stale / 指纹不匹配 / 版本不兼容 / 配置错误各一测，另一测覆盖其余文案与"未连接"）、`web/src/health.test.ts`、`web/src/Workspace.test.tsx`。
