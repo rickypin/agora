@@ -152,6 +152,10 @@ pub struct CreateBody {
     pub cols: Option<u16>,
     #[serde(default)]
     pub rows: Option<u16>,
+    /// 首条 prompt（MISSION §6.4 从就绪任务起会话；A43）：只进这一代的启动命令，不进库，
+    /// Restart 不重发；agent 类型不接受（Adapter 的 `initial_prompt_args` 为 None）→ 400。
+    #[serde(default)]
+    pub prompt: Option<String>,
 }
 
 pub async fn create(
@@ -178,6 +182,18 @@ pub async fn create(
                 .map(|a| crate::adapter::AgentIdentity::default_command(a).to_owned())
         })
         .unwrap_or_else(|| body.agent_type.clone());
+    // 首条 prompt 只对说得出怎么接的 Adapter 有意义；对话框对 prompt 标志为 false 的 agent 不显示
+    // 该字段，所以正常到不了这里——到了就是调用方拼错了，按 400 说清楚而不是静默丢掉。
+    let initial_prompt = body.prompt.filter(|p| !p.trim().is_empty());
+    if initial_prompt.is_some()
+        && !crate::adapter::find(&body.agent_type)
+            .is_some_and(crate::adapter::AgentIdentity::accepts_initial_prompt)
+    {
+        return Err(bad_request(&format!(
+            "agent 类型 {} 不支持首条 prompt",
+            body.agent_type
+        )));
+    }
     let mut size = Size::default();
     if let (Some(c), Some(r)) = (body.cols, body.rows) {
         size = Size { cols: c, rows: r };
@@ -204,7 +220,7 @@ pub async fn create(
             new.command = command;
             id
         });
-        let view = s.create(&new)?;
+        let view = s.create_with_prompt(&new, initial_prompt.as_deref())?;
         if let Some(id) = pinned {
             s.set_pinned_agent_session_id(&view.record.id, &id)?;
             return s.get(&view.record.id);

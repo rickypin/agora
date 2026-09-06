@@ -138,6 +138,12 @@ impl AgentIdentity for Claude {
     fn headless_args(&self, prompt: &str) -> Option<Vec<String>> {
         Some(vec!["-p".to_owned(), prompt.to_owned()])
     }
+
+    /// `claude '<prompt>'`：位置参数起交互会话并把它当第一条指令（2.1.261 实测，2026-09-06）。
+    /// 不是 `-p`——那是无头单轮，答完就退出，会话就没了。
+    fn initial_prompt_args(&self, prompt: &str) -> Option<Vec<String>> {
+        Some(vec![prompt.to_owned()])
+    }
 }
 
 impl AgentFallback for Claude {}

@@ -125,6 +125,12 @@ impl AgentIdentity for Codex {
             prompt.to_owned(),
         ])
     }
+
+    /// `codex '<prompt>'`：位置参数起交互会话并把它当第一条指令（0.152.1 实测，2026-09-06）。
+    /// 不是 `exec`——那是无头模式。
+    fn initial_prompt_args(&self, prompt: &str) -> Option<Vec<String>> {
+        Some(vec![prompt.to_owned()])
+    }
 }
 
 impl AgentFallback for Codex {}

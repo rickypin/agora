@@ -110,6 +110,19 @@ pub fn splice_args(command: &str, args: &[String], also_strip: &[&str]) -> Strin
     out.join(" ")
 }
 
+/// 把一个位置参数接到命令尾上：首条 prompt（MISSION §6.4；agora-h1k.2）。
+///
+/// 不能走 [`splice_args`]：它把参数当 `键 值` 对、偶数位当 flag 去剥，一段 prompt 会被当成
+/// 要拆掉的键（2026-09-06）。命令经 `sh -c` 执行，多行 prompt 单引号包住就是一个参数。
+pub fn append_positional(command: &str, arg: &str) -> String {
+    let mut out = command.trim_end().to_owned();
+    if !out.is_empty() {
+        out.push(' ');
+    }
+    out.push_str(&shell_quote(arg));
+    out
+}
+
 /// 参数里的键：偶数位（`--resume`、`resume`、`--session-id`）。
 fn flags_of(args: &[String]) -> impl Iterator<Item = &str> {
     args.iter().step_by(2).map(String::as_str)
@@ -141,4 +154,30 @@ pub fn new_conversation_id() -> String {
         &hex[16..20],
         &hex[20..32]
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_positional_quotes_prompts_and_leaves_plain_tokens_bare() {
+        // 多行、含空格与反引号的 prompt 整段进一个单引号参数；里面的单引号按 sh 的写法拆接。
+        let prompt =
+            "任务 agora-h1k.2：从 bd ready 选任务起会话\n先 `bd update agora-h1k.2 --claim`";
+        assert_eq!(
+            append_positional("claude --session-id abc", prompt),
+            format!("claude --session-id abc '{prompt}'")
+        );
+        assert_eq!(
+            append_positional("claude", "it's"),
+            "claude 'it'\\''s'",
+            "单引号里的单引号：关、转义、再开"
+        );
+        assert_eq!(
+            append_positional("codex ", "plain-token"),
+            "codex plain-token"
+        );
+        assert_eq!(append_positional("", "x"), "x");
+    }
 }

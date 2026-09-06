@@ -99,6 +99,20 @@ pub trait AgentIdentity: Send + Sync {
     fn headless_args(&self, _prompt: &str) -> Option<Vec<String>> {
         None
     }
+
+    /// 起**交互**会话时把首条 prompt 交给 agent 的参数（MISSION §6.4 从就绪任务起会话；A43；
+    /// agora-h1k.2）。与 [`headless_args`](Self::headless_args) 不同：会话留在 TUI 里继续对话，
+    /// prompt 只是第一条指令。None = 这个 agent 没有这种形态（对话框不显示 Prompt 框，API 400）。
+    /// 每个参数由 `resume::append_positional` 单引号包住接到命令尾；prompt 只进这一代的启动命令、
+    /// 不进库，Restart 不重发。
+    fn initial_prompt_args(&self, _prompt: &str) -> Option<Vec<String>> {
+        None
+    }
+
+    /// `GET /api/agents` 的 `prompt` 标志：这个 adapter 接不接受首条 prompt。
+    fn accepts_initial_prompt(&self) -> bool {
+        self.initial_prompt_args("").is_some()
+    }
 }
 
 /// 安装到 agent 配置里的一条 hook（ADR-002 D4）；写文件的是 `agora hooks install`（dvh.1）。

@@ -436,6 +436,32 @@ impl SessionManager {
 
     /// 先外部资源后 metadata（不变量 7 同构）：写库失败 → remove 运行时会话回滚。
     pub fn create(&self, new: &NewSession) -> Result<SessionView, SessionError> {
+        self.create_with_prompt(new, None)
+    }
+
+    /// 起会话，带可选的首条 prompt（MISSION §6.4 从就绪任务起会话；A43；agora-h1k.2）。
+    ///
+    /// prompt **只进这一代的启动命令**：Adapter 的 `initial_prompt_args` 给形态（一等 agent 都是
+    /// 位置参数 `<command> '<prompt>'`），`resume::append_positional` 单引号包住接到命令尾。
+    /// **不进库**——`sessions.command` 存的仍是 `new.command`，Restart 经 `plan_restart` 用库里的
+    /// 命令续对话，prompt 绝不重发：重发会让 agent 把任务从头再做一遍（2026-09-06）。
+    /// 没有 Adapter 的类型（API 层已拦成 400）兜底当位置参数接上。
+    pub fn create_with_prompt(
+        &self,
+        new: &NewSession,
+        initial_prompt: Option<&str>,
+    ) -> Result<SessionView, SessionError> {
+        let launch_command = match initial_prompt.filter(|p| !p.trim().is_empty()) {
+            Some(prompt) => {
+                let args = adapter::find(&new.agent_type)
+                    .and_then(|a| adapter::AgentIdentity::initial_prompt_args(a, prompt))
+                    .unwrap_or_else(|| vec![prompt.to_owned()]);
+                args.iter().fold(new.command.clone(), |cmd, arg| {
+                    adapter::resume::append_positional(&cmd, arg)
+                })
+            }
+            None => new.command.clone(),
+        };
         let id = self.fresh_id()?;
         // 不让已删除会话遗留的文件在 id 被复用时成为新会话的观测。
         if let Some(dir) = lock(&self.hook_state_dir).as_ref() {
@@ -447,7 +473,7 @@ impl SessionManager {
         env.push(("AGORA_EPOCH".into(), "1".into()));
         let spec = LaunchSpec {
             name: runtime_name,
-            command: new.command.clone(),
+            command: launch_command,
             cwd: new.working_directory.clone(),
             env,
             size: new.size,

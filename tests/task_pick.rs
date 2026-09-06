@@ -12,10 +12,13 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use agora::project::Projects;
-use agora::runtime::Runtime;
+use agora::runtime::{
+    AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, Size,
+};
 use agora::session::SessionManager;
 use agora::task::{TaskIndex, READ_ONLY};
 use axum::body::Body;
@@ -24,7 +27,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use common::{Fx, HOST};
+use common::{FakeRuntime, Fx, HOST};
 
 /// 一个假 `bd`：把 argv 追加到 `<dir>/calls.log`；`ready --json` 回一个 epic + 两个 task，
 /// `show <id> --json` 按 id 回答（会话行的标签查询会走到它），别的子命令一律退出 2——
@@ -208,6 +211,173 @@ async fn missing_bd_yields_empty_with_typed_reason() {
         assert_eq!(status, StatusCode::OK, "{reason}: {body}");
         assert_eq!(body["tasks"], json!([]), "{reason}: {body}");
         assert_eq!(body["reason"], *reason, "{body}");
+    }
+}
+
+/// 记下 `create` 收到的 `LaunchSpec.command`：common::FakeRuntime 只记 respawn 的命令，而首条
+/// prompt 只在第一代的启动命令里出现（本批不改 tests/common，包一层）。
+struct RecordingRuntime {
+    inner: FakeRuntime,
+    launches: Mutex<Vec<String>>,
+}
+
+impl Runtime for RecordingRuntime {
+    fn kind(&self) -> &'static str {
+        self.inner.kind()
+    }
+    fn create(&self, spec: &LaunchSpec) -> Result<RuntimeRef, RuntimeError> {
+        self.launches.lock().unwrap().push(spec.command.clone());
+        self.inner.create(spec)
+    }
+    fn list(&self) -> Result<Vec<RuntimeSession>, RuntimeError> {
+        self.inner.list()
+    }
+    fn inspect(&self, r: &RuntimeRef) -> Result<RuntimeSession, RuntimeError> {
+        self.inner.inspect(r)
+    }
+    fn attach(&self, r: &RuntimeRef, s: Size) -> Result<AttachSpec, RuntimeError> {
+        self.inner.attach(r, s)
+    }
+    fn capture_tail(&self, r: &RuntimeRef, n: u32) -> Result<Vec<u8>, RuntimeError> {
+        self.inner.capture_tail(r, n)
+    }
+    fn terminate(&self, r: &RuntimeRef, g: Duration) -> Result<(), RuntimeError> {
+        self.inner.terminate(r, g)
+    }
+    fn respawn(&self, r: &RuntimeRef, spec: &LaunchSpec) -> Result<(), RuntimeError> {
+        self.inner.respawn(r, spec)
+    }
+    fn remove(&self, r: &RuntimeRef) -> Result<(), RuntimeError> {
+        self.inner.remove(r)
+    }
+    fn send_input(&self, r: &RuntimeRef, d: &str) -> Result<(), RuntimeError> {
+        self.inner.send_input(r, d)
+    }
+    fn locate(
+        &self,
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Option<RuntimeRef>, RuntimeError> {
+        self.inner.locate(env)
+    }
+}
+
+/// 对话框的 prompt 模板（原文在 docs/spec/ux.md；前端 `web/src/taskPrompt.ts`）——多行、反引号、
+/// 括号，没有单引号，所以整段落在一对单引号里。
+const PROMPT: &str = "任务 agora-h1k.2：从 bd ready 选任务起会话\n\n先 `bd update agora-h1k.2 --claim`，再 `bd show agora-h1k.2` 读任务书（description / notes / acceptance）。\n按 AGENTS.md 的任务纪律干活：commit subject 末尾带 (agora-h1k.2)；干活中发现的别的问题用 `bd create ... --deps discovered-from:agora-h1k.2` 另立。\n做完 `bd close agora-h1k.2 --reason \"<证据>\"` 写证据。";
+
+#[tokio::test]
+async fn session_created_from_task_prefills_ref_name_and_prompt() {
+    // 对话框选了任务：task_ref = issue id、display_name = 标题、prompt = 模板。prompt 只进这一代的
+    // 启动命令（单引号包住接在命令尾），库里的 command 不带它，Restart 也不重发。
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let bd = fake_bd(tmp.path());
+
+    let mut fx = Fx::new();
+    let rt = Arc::new(RecordingRuntime {
+        inner: FakeRuntime::default(),
+        launches: Mutex::new(Vec::new()),
+    });
+    let index = Arc::new(TaskIndex::new(bd.to_str().unwrap()).synchronous());
+    let sessions = Arc::new(
+        SessionManager::new(fx.db.clone(), rt.clone() as Arc<dyn Runtime>).with_task_index(index),
+    );
+    fx.sessions = sessions.clone();
+    fx.state.sessions = sessions;
+    fx.state.projects = Arc::new(Projects::new(fx.db.clone(), vec![tmp.path().to_path_buf()]));
+    let cookie = fx.cookie();
+
+    let (status, body) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        "/api/sessions",
+        Some(json!({
+            "display_name": "从 bd ready 选任务起会话",
+            "agent_type": "claude",
+            "working_directory": repo.to_string_lossy(),
+            "task_ref": "agora-h1k.2",
+            "prompt": PROMPT,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let gid = body["id"].as_str().unwrap().to_owned();
+    assert_eq!(body["task_ref"], "agora-h1k.2");
+    assert_eq!(body["display_name"], "从 bd ready 选任务起会话");
+    assert_eq!(
+        body["task"]["title"], "从 bd ready 选任务起会话",
+        "task_ref 像 issue id：标签照常经 bd show 补齐 {body}"
+    );
+
+    // 运行时收到的启动命令：原命令 + 单引号包住的 prompt。
+    let launched = rt.launches.lock().unwrap().clone();
+    assert_eq!(launched.len(), 1, "{launched:?}");
+    assert_eq!(launched[0], format!("claude '{PROMPT}'"));
+
+    // 库里的命令不带 prompt。
+    let (status, body) = call(
+        &fx,
+        &cookie,
+        Method::GET,
+        &format!("/api/sessions/{gid}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["command"], "claude", "prompt 不进库 {body}");
+    assert_eq!(body["task_ref"], "agora-h1k.2");
+
+    // Restart 用库里的命令：重发 prompt 会让 agent 把任务从头再做一遍。
+    let (status, body) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        &format!("/api/sessions/{gid}/restart"),
+        Some(json!({ "confirmed": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let respawns = rt.inner.respawns.lock().unwrap().clone();
+    assert_eq!(respawns, vec!["claude".to_owned()], "Restart 不重发 prompt");
+    assert_eq!(
+        rt.launches.lock().unwrap().len(),
+        1,
+        "Restart 走 respawn，不是新建"
+    );
+
+    // 不接受首条 prompt 的 agent 类型（custom 没有 Adapter）→ 400 bad_request，什么都不起。
+    let (status, body) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        "/api/sessions",
+        Some(json!({
+            "display_name": "x",
+            "agent_type": "custom",
+            "working_directory": repo.to_string_lossy(),
+            "command": "my-agent",
+            "prompt": PROMPT,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "bad_request");
+    assert_eq!(rt.launches.lock().unwrap().len(), 1);
+
+    // 零写入：整个流程敲到 bd 的只有 READ_ONLY 里的子命令（标签查询的 show），没有 claim。
+    let recorded = calls(tmp.path());
+    assert!(!recorded.is_empty(), "task_ref 像 issue id 应查过 bd show");
+    for argv in &recorded {
+        assert!(
+            READ_ONLY.contains(&argv[0].as_str()),
+            "对 beads 只准读: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.contains("claim")),
+            "claim 是 agent 自己的事: {argv:?}"
+        );
     }
 }
 
