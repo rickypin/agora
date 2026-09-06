@@ -926,18 +926,25 @@ mod unit {
         assert_eq!(title("剧本-shell"), "剧本-shell");
     }
 
-    fn rt() -> TmuxRuntime {
-        let dir = std::env::temp_dir().join(format!("agora-unit-{}", std::process::id()));
-        TmuxRuntime::new(TmuxConfig {
-            conf_path: dir.join("tmux.conf"),
+    /// 测试用运行时。`TmuxRuntime::new` 会把 tmux.conf 写到 `conf_path`，所以目录必须真的
+    /// 存在、也必须随测试结束一起消失：以前这里用 `temp_dir().join("agora-unit-<pid>")`
+    /// 且从不删，$TMPDIR 里两天累积了 85 个（2026-09-04，agora-9hh）。改用 `tempfile::tempdir()`
+    /// 并把 `TempDir` 守卫**一起返回**——守卫一 drop 目录就没了，只返回 `TmuxRuntime`
+    /// 的话目录在这个函数返回时就已被删掉。调用方要写成 `let (rt, _dir) = rt();`，
+    /// 写 `let (rt, _) = rt();` 会让守卫当场 drop（`_` 不绑定），目录随之消失。
+    fn rt() -> (TmuxRuntime, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let rt = TmuxRuntime::new(TmuxConfig {
+            conf_path: dir.path().join("tmux.conf"),
             ..Default::default()
         })
-        .unwrap()
+        .unwrap();
+        (rt, dir)
     }
 
     #[test]
     fn ref_roundtrip_and_rejects_garbage() {
-        let rt = rt();
+        let (rt, _dir) = rt();
         let r = rt.make_ref("agora", "ag-x");
         let p = rt.parse_ref(&r).unwrap();
         assert_eq!((p.socket, p.session), ("agora", "ag-x"));
@@ -953,7 +960,7 @@ mod unit {
 
     #[test]
     fn foreign_ref_is_read_only_before_any_subprocess() {
-        let rt = rt();
+        let (rt, _dir) = rt();
         let r = rt.make_ref("default", "mywork");
         assert!(matches!(
             rt.require_managed(&r),
