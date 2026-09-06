@@ -13,6 +13,10 @@
 //!                               被访问节点签发 / 列出 / 吊销某个 peer 的机器 token（ADR-003 D3）
 //! agora tls fingerprint         本节点 TLS 证书的 SPKI 指纹（peer 的 cert_fingerprint 填它；ADR-003 D4）
 //! agora tls rotate-key          自签模式换钥重签；daemon 热加载，peer 需更新指纹
+//! agora upgrade --from <新二进制> [--no-restart]
+//!                               一条命令升级本节点：按哈希放进 versions/、probe 新版本、重指 bin/agora、
+//!                               重启 daemon（A39；agora-7ku.8）
+//! agora upgrade --probe         新二进制自报 {"schema_version","api_version"}（stdout JSON，给 upgrade 读）
 //! ```
 //!
 //! 配置来自 `AGORA_HOME/config.yaml`（docs/spec/config.md），缺文件全走默认；明文监听器
@@ -37,7 +41,7 @@ use agora::tls::{self, Mode, TlsFiles};
 /// V1 唯一的运行时；配置里 `runtime.kind` 缺省就是它。
 const RUNTIME_KIND: &str = "tmux";
 
-const USAGE: &str = "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | peer token create <name> [--rotate]|list|revoke <name> | tls fingerprint|rotate-key | fake-agent <script>|-e <inline>]";
+const USAGE: &str = "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | peer token create <name> [--rotate]|list|revoke <name> | tls fingerprint|rotate-key | upgrade --from <新二进制> [--no-restart] | upgrade --probe | fake-agent <script>|-e <inline>]";
 
 #[tokio::main]
 async fn main() {
@@ -53,6 +57,9 @@ async fn main() {
         ["hooks", rest @ ..] => agora::hook::install::run(rest),
         ["peer", rest @ ..] => agora::cli::peer::run(rest),
         ["tls", rest @ ..] => tls_cmd(rest),
+        // --probe 不读配置、不碰 AGORA_HOME：被问的是这份二进制本身（agora-7ku.8）。
+        ["upgrade", "--probe"] => agora::cli::upgrade::probe(),
+        ["upgrade", rest @ ..] => upgrade_cmd(rest),
         // 测试用假 agent（agora-3la）：藏在子命令里，不占第二个 binary。
         ["fake-agent", rest @ ..] => agora::fake_agent::run(rest),
         _ => {
@@ -159,6 +166,15 @@ async fn serve() -> i32 {
         Err(err) => {
             eprintln!("{err}");
             return 1;
+        }
+    };
+    // 三个监听器都绑上了才算"这个实例在跑"：pid 文件写在这里，退出（含 SIGTERM 收尾）时由 Drop 删。
+    // 只给 `agora upgrade` 与人看（agora-7ku.8）；单实例判定仍是上面的 bind，不读它。
+    let _pid_file = match agora::cli::upgrade::PidFile::write(&home) {
+        Ok(f) => Some(f),
+        Err(err) => {
+            tracing::warn!(component = "main", %err, "写不了 agora.pid；`agora upgrade` 将找不到这个 daemon");
+            None
         }
     };
 
@@ -417,6 +433,14 @@ fn tls_cmd(args: &[&str]) -> i32 {
     let home = home_or_exit();
     let settings = settings_or_exit(&home);
     agora::cli::tls::run(args, &home, &settings.raw.tls)
+}
+
+/// `agora upgrade --from …`：home 与 `server.listen` 用 daemon 同一套解析——health 轮询打的就是
+/// daemon 绑的那个地址（agora-7ku.8）。
+fn upgrade_cmd(args: &[&str]) -> i32 {
+    let home = home_or_exit();
+    let settings = settings_or_exit(&home);
+    agora::cli::upgrade::run(args, &home, settings.listen)
 }
 
 /// 没开 TLS 监听器时这一支永远不返回，让 `select!` 只看另外两支。

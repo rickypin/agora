@@ -175,3 +175,50 @@ scripts/install.sh --binary <path> [--home <dir>] [--node-id <id>] [--listen <ad
 ```
 
 **zuan 实机（用户在场的专场；A26 的实机半边）**：Mac 上 `CARGO_BUILD_JOBS=2 cargo zigbuild --release --target x86_64-unknown-linux-gnu`，`scp -r scripts target/x86_64-unknown-linux-gnu/release/agora zuan:~/agora-install/`；zuan 上 `cd ~/agora-install && ./scripts/install.sh --binary ./agora --tls-listen 0.0.0.0:7681`（tmux 不满足时脚本会 `sudo -n apt-get`，sudo 要密码就按它打印的命令手动装）→ `systemctl --user is-enabled agora.service` 应为 `enabled`、`is-active` 为 `active` → 按提示 `sudo loginctl enable-linger $USER` → `sudo reboot` → 重新 ssh 上去 `~/.agora/bin/agora url` 可达、起一个会话跑 `printf '中文\n'`，`tmux -L agora capture-pane -p` 里是 `中文` 的 UTF-8 字节而不是问号。Mac 与 ubuntu:24.04 容器里的同一套断言已由实施 agent 跑过（2026-09-06，见 agora-7ku.1 notes）。
+
+## 升级（`agora upgrade`；A39）
+
+一条命令升级本节点（MISSION §2.3 规则 10：N 个节点各自原地升级；agora-7ku.8）。分工：安装脚本（agora-7ku.1）装运行时与自启单元，`agora upgrade` **只换 agora 自己**（ADR-001 D7），两边共用下面的路径约定，谁都不许改形态：
+
+| 约定 | 值 |
+|---|---|
+| 二进制 | `<AGORA_HOME>/versions/<sha256 前 12 位十六进制>/agora`（0755，按内容哈希存放，同一份只放一次） |
+| 稳定路径 | `<AGORA_HOME>/bin/agora`：指向上面那份的符号链接（目标写绝对路径、经 canonicalize；hook 命令与 Codex 的按条哈希信任都依赖这条路径不变，ADR-002 D4）。开发机上指向 `target/debug/agora` 是允许的特例 |
+| systemd 用户单元 | `agora.service`（`~/.config/systemd/user/agora.service`：ExecStart 是 `<AGORA_HOME>/bin/agora serve`，Environment=LANG=C.UTF-8，Restart=on-failure，WantedBy=default.target） |
+| launchd | label `dev.agora.daemon`（`~/Library/LaunchAgents/dev.agora.daemon.plist`：ProgramArguments `<AGORA_HOME>/bin/agora serve`，EnvironmentVariables 含 LANG=C.UTF-8 与够用的 PATH，RunAtLoad + KeepAlive） |
+| pid 文件 | `<AGORA_HOME>/agora.pid`（0600，十进制 pid + 换行）：`serve` 三个监听器都绑上之后写，正常退出与 SIGTERM 收尾时删（只删内容仍是自己 pid 的那份）。只给 upgrade 与人看；单实例判定仍是先绑监听器、socket 探活（agora-apr），不读它 |
+
+**命令**
+
+- `agora upgrade --from <新二进制路径> [--no-restart]`：升级。人话全走 stderr；stdout 留给将来机器可读的形态。
+- `agora upgrade --probe`：**新**二进制自报能力——stdout 一行 JSON `{"schema_version": <本程序能打开的最高 user_version>, "api_version": "<major>.<minor>"}`，退出 0；不读配置、不碰 `AGORA_HOME`，被问的是这份二进制本身。这是给 upgrade 读的（规则 10：程序读 JSON，不读人话）；旧到没有这个子命令的二进制会打印用法、退出 2，upgrade 按"probe 跑不起来"处理。
+
+**`--from` 的步骤**（`src/cli/upgrade.rs`）
+
+1. 读 `<from>` 算 SHA-256，复制到 `versions/<sha 前 12 位>/agora`（先写 `.part` 再 rename；同 sha 已在就复用）。`<from>` 可以是链接本身、也可以是正在跑的那份——按内容放置，没有"自己复制自己"的坑。
+2. 以那一份跑 `upgrade --probe`（≤ 10 s），解析 JSON；再**只读**打开 `agora.db` 读 `PRAGMA user_version`（不经 `Db::open`——那会先把库迁到本程序的版本）。`schema_version` < 库的 `user_version` → 退出码 2「新版本不认识这个库」，链接不动、daemon 不动、本次放进 `versions/` 的副本删掉。这是规则 10 的**前向**守卫：升级到一个更老的二进制不会让它读错新库；运行期的**后向**守卫是 `DbError::TooNew`（旧程序打开更新的库拒绝启动，守卫 `tests/schema.rs::newer_database_is_refused_not_downgraded`）。迁移带版本号、只前进（`src/session/db.rs`）。
+3. 重指 `<AGORA_HOME>/bin/agora`：与 `agora hooks install` 同一个 `hook::install::ensure_bin_link`，exe 传 canonicalize 后的真路径。hook 条目里的命令是这条稳定路径，条目内容不变，升级后**不必**重新 `hooks install` / 重新在宿主里信任。
+4. 重启 daemon（`--no-restart` 跳过，"daemon 下次启动即新版本"），按顺序探测、命中即用：
+   1. `systemctl --user is-active agora.service` 答 `active` → `systemctl --user restart agora.service`；
+   2. macOS 上 `launchctl print gui/<uid>/dev.agora.daemon` 成功 → `launchctl kickstart -k gui/<uid>/dev.agora.daemon`；
+   3. 都不是 → 读 `agora.pid`：进程活着（`kill(pid, 0)`）就 SIGTERM、等它退出（≤ 10 s；超时报错**不 SIGKILL**，它可能正在收尾），再经 `sh` 以 `<AGORA_HOME>/bin/agora serve` 起新的——stdin `/dev/null`、stdout+stderr 追加到 `<AGORA_HOME>/daemon.log`、`AGORA_HOME` 显式传入；有 `setsid`（Linux 的 util-linux）就开新会话彻底脱离终端，没有（macOS 默认没有）就只放后台——macOS 的正常路径是 launchd，这一支是开发机与测试的兜底。pid 文件不在或进程不在 → 只重指链接，"daemon 未在运行，下次启动即新版本"。
+5. 轮询 `GET http://<server.listen>/api/health`（公开子集）到 200 `{"status":"ok"}` **且** pid 文件里换成了新 pid（≤ 15 s；systemd / launchd 重启时旧进程可能还在答最后几个请求，只看 200 会把旧的当新的），最后打印 `<旧目标> → <新目标>，daemon pid <新>`。
+
+升级窗口里 agent 不死：agent 挂在运行时之下、不挂在 daemon 之下（MISSION §3.4），新 daemon 起来 reconcile 找回全部会话，期间 hook 事件落投递箱、起来后重放。
+
+**退出码与状态**
+
+| 情形 | 退出码 | 链接 | daemon |
+|---|---|---|---|
+| 用法错误 | 2 | 不动 | 不动 |
+| 新版本不认识这个库（probe 的 `schema_version` < 库的 `user_version`） | 2 | 不动 | 不动 |
+| probe 跑不起来 / 非 0 退出 / 输出不是 JSON | 1 | 不动 | 不动 |
+| 复制或重指失败（IO） | 1 | 错误里说明 | 不动 |
+| 旧 daemon 10 s 内没退出、`systemctl` / `launchctl` 失败、起新的失败 | 1 | **已重指** | 仍是旧版本（错误文本说明；手动停掉再起 `agora serve`） |
+| 重启后 15 s 内没有以新 pid 答 200 | 1 | **已重指** | 看 `<AGORA_HOME>/daemon.log` |
+
+**经链接跑也安全**（agora-78f）：`~/.agora/bin/agora upgrade --from …` 这样经链接调用时，macOS 的 `current_exe()` 拿到的是链接本身；upgrade 根本不看 `current_exe`——新二进制按内容放进 `versions/`、按真路径重指，`ensure_bin_link` 的硬守卫另外保证任何情况下都造不出 link → link。
+
+已知盲点（2026-09-06）：pid 文件那一支用 `kill(pid, 0)` 判活，僵尸也算活着——旧 daemon 的父进程不收尸时会等满 10 s 再报错；launchd / systemd / 交互 shell / sshd 都立刻收尸，`tests/upgrade.rs` 起的 daemon 由测试自己另起线程 wait。
+
+守卫：`tests/upgrade.rs::daemon_restart_keeps_agents_sessions_and_metadata`（十个 fake-agent 会话，换二进制路径 + 重启：链接真路径 == `versions/<sha12>/agora`、新 pid ≠ 旧 pid、同样十行 id / name / status 仍 running、pane pid 一个没变）、`::bin_link_repointed_and_hooks_still_deliver`（升级后经链接跑 `hook`，SessionStart 让 external 行出现在 `GET /api/sessions`）、`::migration_versioned_and_older_daemon_refuses`（库的 `user_version` == 程序自报的 `schema_version`；一个只认识 schema 1 的假"新版本"被拒：退出 2、链接与 daemon 不动、`versions/` 里不留它）。
