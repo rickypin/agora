@@ -5,6 +5,8 @@
 #   ① §引用：文档里写的 §N / §N.M 在被引的文档里真的有这一节。
 #   ② A 编号：各 epic 的 --acceptance 引用的 A 编号 ⊆ MISSION §12 ∪ §11，且不重不漏。
 #   ③ 相对链接与仓内路径：markdown 链接、以及正文里反引号包住的本仓库路径，目标存在。
+#      指名道姓提到别的项目（FOREIGN）的那一行，名字之后的路径当作别家的不查；
+#      但 docs/analysis/ 下的路径永远按本仓库的查——那是本仓库放别家分析报告的地方。
 #
 # 用法：scripts/doc-lint.sh（仓库内任意目录）。有问题时逐条打印并以 1 退出。
 # ② 需要 bd（beads 的库不进 git），没有 bd 时只跳过这一项、其余照跑——CI 就是这样。
@@ -20,7 +22,14 @@ OWN_DOCS += sorted(f"docs/adr/{f}" for f in os.listdir("docs/adr") if f.endswith
 # docs/analysis/ 是冻结的历史报告，章节号是它自己的、路径多指向被分析的那些仓库，不在此列。
 
 # 引用别的项目时会指名道姓；这些名字之后的路径不是本仓库的东西（例：devcenter `src/which.rs`）。
+# 例外的例外：以 ANALYSIS 开头的路径永远按本仓库的文件查——docs/analysis/<项目名>/ 是本仓库存放
+# 对别的项目的分析报告的地方，出现在那里的路径按定义是本仓库的文件，哪怕句子在谈 devcenter。
+# 2026-09-06 的反例：architecture.md 把 docs/analysis/devcenter/appendix-b-multihost.md 写成
+# appendix-b.md，同一行前面有"devcenter 教训"，整行被放过、报 0 问题（agora-yuk）。
+# 没有改成"以本仓库顶层目录开头就不例外"——ADR-001 引的 devcenter `src/which.rs` 会被报成缺失；
+# 也没有改成"只放过紧跟在名字后面的那一个路径"——ADR-001 同一行隔着"；"的 `src/tmux.rs` 也是 devcenter 的。
 FOREIGN = ["devcenter"]
+ANALYSIS = "docs/analysis/"
 
 # 允许跨 epic 共担的 A 编号——MISSION §12 自己写明了它们横跨阶段。
 # 声明必须与现实一致：不在这里的重叠是错，在这里却没重叠了也是错（防止条目烂在脚本里）。
@@ -153,8 +162,8 @@ for doc in all_md:
             if "/" not in t or t.split("/")[0] not in TOP:
                 continue  # 不带目录的裸文件名（`config.yaml`）说的是形态，不是仓里某个文件
             before = line[: m.start()].lower()
-            if any(name in before for name in FOREIGN):
-                continue  # 指名道姓引别的项目的文件（devcenter `src/which.rs`）
+            if not t.startswith(ANALYSIS) and any(name in before for name in FOREIGN):
+                continue  # 指名道姓引别的项目的文件（devcenter `src/which.rs`）；docs/analysis/ 下的是我们自己的报告，照查
             if not os.path.exists(t):
                 err(f"{doc}:{n}", f"引用的仓内路径不存在: {t}")
 
