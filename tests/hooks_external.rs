@@ -27,6 +27,16 @@ fn delivery(
     agent_env: &[(&str, String)],
     runtime_env: &[(&str, String)],
 ) -> Delivery {
+    delivery_for("claude", agent_session, payload, agent_env, runtime_env)
+}
+
+fn delivery_for(
+    host: &str,
+    agent_session: &str,
+    payload: Value,
+    agent_env: &[(&str, String)],
+    runtime_env: &[(&str, String)],
+) -> Delivery {
     // 每条投递须有不同文件名；真实 hook 每进程只写一条，测试用递增时间模拟。
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let to_map = |kv: &[(&str, String)]| -> BTreeMap<String, String> {
@@ -36,7 +46,7 @@ fn delivery(
     };
     Delivery {
         envelope: Envelope {
-            host: "claude".into(),
+            host: host.into(),
             agora_session_id: None,
             agora_epoch: None,
             agent_session_id: agent_session.into(),
@@ -52,6 +62,24 @@ fn delivery(
 
 fn session_start(agent_session: &str) -> Value {
     json!({ "hook_event_name": "SessionStart", "session_id": agent_session, "cwd": "/work/agora", "source": "startup" })
+}
+
+/// Claude 与 Codex 的 SessionEnd 同形（CamelCase 事件名、snake_case 键）；Codex 退出 / 结束线程的
+/// reason 是 `other`，Claude 在提示符上退出是 `prompt_input_exit`。
+fn session_end(agent_session: &str, reason: &str) -> Value {
+    json!({ "hook_event_name": "SessionEnd", "session_id": agent_session, "cwd": "/work/devcenter", "reason": reason })
+}
+
+/// Codex Desktop 线程的信封形态（2026-09-05 真投递件）：agent_env 带 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`，
+/// ppid 是所有线程共用的 app-server。测试用自己的进程号当那个"永远活着"的父进程。
+fn codex_desktop(agent_session: &str, payload: Value) -> Delivery {
+    let env = [(
+        "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+        "Codex Desktop".to_owned(),
+    )];
+    let mut d = delivery_for("codex", agent_session, payload, &env, &[]);
+    d.envelope.ppid = std::process::id();
+    d
 }
 
 fn with_hooks() -> (Fx, Arc<Receiver>, tempfile::TempDir) {
@@ -174,6 +202,123 @@ async fn hook_without_terminal_registers_an_external_session() {
     .unwrap();
     assert_eq!(none, "claude:unknown");
     assert_eq!(fx.sessions.list().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn session_end_for_an_unseen_session_registers_nothing() {
+    // agora-vfi 验收第一条：hook 装好之前起的会话退出、Codex Desktop 结束一个线程——agora 收到的唯一
+    // 一条是 SessionEnd。登记只会造一行永远没有后续事件的僵尸（2026-09-05 侧栏那行 devcenter）。
+    // 关掉 locate_external 的"只有 SessionEnded 不登记"→ 行数断言红。
+    let (fx, receiver, home) = with_hooks();
+    let cookie = fx.cookie();
+    let (_, before) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    assert_eq!(before["sessions"].as_array().unwrap().len(), 0, "{before}");
+
+    let d = codex_desktop("ghost-1", session_end("ghost-1", "other"));
+    let path = Inbox::new(home.path()).write(&d).unwrap();
+    let received = receiver
+        .ingest(&path)
+        .unwrap()
+        .expect("不是旧 epoch，要记账");
+    assert_eq!(
+        received.session_key, "codex:ghost-1",
+        "没登记就没有 agora id：挂起键退回 <host>:<agent_session_id>"
+    );
+    assert_eq!(received.event.as_deref(), Some("SessionEnd"));
+    let (_, after) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    assert_eq!(after["sessions"].as_array().unwrap().len(), 0, "{after}");
+    assert!(fx
+        .sessions
+        .find_by_agent_session("codex", "ghost-1")
+        .unwrap()
+        .is_none());
+    // 文件照常进 done，账本里有这条。
+    assert!(!path.exists(), "应用完要移出 inbox");
+    let done = Inbox::new(home.path()).completed().unwrap();
+    assert!(
+        done.iter().any(|p| p.file_name() == path.file_name()),
+        "{done:?}"
+    );
+    assert_eq!(receiver.received_for("codex:ghost-1").len(), 1);
+
+    // Claude 同一规则（Terminal.app 里在装 hook 之前起的会话，此刻退出）。
+    let d = delivery(
+        "ghost-2",
+        session_end("ghost-2", "prompt_input_exit"),
+        &[],
+        &[],
+    );
+    assert_eq!(
+        ingest(&receiver, home.path(), &d).as_deref(),
+        Some("claude:ghost-2")
+    );
+    assert_eq!(fx.sessions.list().unwrap().len(), 0);
+
+    // 反面：同一个会话随后要是来了 SessionStart，照常登记——别把登记整个关掉。
+    let id = ingest(
+        &receiver,
+        home.path(),
+        &delivery("ghost-2", session_start("ghost-2"), &[], &[]),
+    )
+    .unwrap();
+    assert_eq!(fx.sessions.record(&id).unwrap().origin, Origin::External);
+    let (_, after) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    assert_eq!(after["sessions"].as_array().unwrap().len(), 1, "{after}");
+}
+
+#[tokio::test]
+async fn external_session_ends_on_session_end_hook() {
+    // agora-vfi 验收第二条：agora 见过的 Codex Desktop 线程结束时，行在 ≤ 1 tick 内变 FINISHED。
+    // Desktop 线程没有可信 pid（ppid 是共用 app-server，永远活着），行只跟 hook 走。
+    // 关掉 Machine::apply 的 SessionEnded → FINISHED → 最后一段断言红（停在 turn_done）；
+    // 关掉 Codex::agent_pid 的 Desktop 判定 → `alive` 断言红（把测试进程当成了 agent）。
+    let (fx, receiver, home) = with_hooks();
+    let cookie = fx.cookie();
+    let id = ingest(
+        &receiver,
+        home.path(),
+        &codex_desktop("thread-1", session_start("thread-1")),
+    )
+    .unwrap();
+    let rec = fx.sessions.record(&id).unwrap();
+    assert_eq!(rec.origin, Origin::External);
+    assert_eq!(rec.agent_type, "codex");
+    assert_eq!(rec.display_name, "agora");
+    let path = format!("/api/sessions/{}:{}", common::NODE, id);
+    let (status, body) = call(&fx, &cookie, Method::GET, &path, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "starting", "{body}");
+    assert_eq!(
+        body["alive"], false,
+        "Desktop 的 ppid 是共用 app-server，不能当 alive：{body}"
+    );
+
+    // 一轮做完：TURN_DONE（hook 说什么就是什么）。
+    ingest(
+        &receiver,
+        home.path(),
+        &codex_desktop(
+            "thread-1",
+            json!({ "hook_event_name": "Stop", "session_id": "thread-1", "last_assistant_message": "done" }),
+        ),
+    );
+    let (_, body) = call(&fx, &cookie, Method::GET, &path, None).await;
+    assert_eq!(body["status"], "turn_done", "{body}");
+
+    // 用户在 Desktop 里结束这个线程：SessionEnd(reason=other)。下一 tick 就是 FINISHED。
+    ingest(
+        &receiver,
+        home.path(),
+        &codex_desktop("thread-1", session_end("thread-1", "other")),
+    );
+    let (_, body) = call(&fx, &cookie, Method::GET, &path, None).await;
+    assert_eq!(body["status"], "finished", "{body}");
+    assert_eq!(body["source"], "hook", "{body}");
+    assert!(
+        body["reason"].as_str().unwrap_or_default().contains("hook"),
+        "{body}"
+    );
+    assert_eq!(fx.sessions.list().unwrap().len(), 1, "结束不造新行");
 }
 
 #[tokio::test]

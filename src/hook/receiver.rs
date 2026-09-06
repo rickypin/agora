@@ -224,15 +224,16 @@ impl Receiver {
                 delivery.envelope.host
             )));
         };
+        // 事件只 parse 一次：要不要登记外部会话得先看它（locate_external），应用也用它。
+        let events = hooks.parse(&delivery.payload);
         // agora 起的会话带 AGORA_SESSION_ID；其余按 (host, agent_session_id) 找或登记（MISSION §5.4），
         // 找到了挂起键就用 agora 的 id——这样它的 allow / deny 与 agora 起的会话走同一条路。
         let (id, epoch) = match &delivery.envelope.agora_session_id {
             Some(id) => (Some(id.clone()), delivery.envelope.agora_epoch.unwrap_or(0)),
-            None => (self.locate_external(hooks, &delivery), 0),
+            None => (self.locate_external(hooks, &delivery, &events), 0),
         };
         let key = id.clone().unwrap_or_else(|| session_key(&delivery));
         if let Some(id) = &id {
-            let events = hooks.parse(&delivery.payload);
             // 外部会话没有 epoch 概念：按库里那代算，永不因 epoch 被丢。
             let epoch = if delivery.envelope.agora_session_id.is_some() {
                 epoch
@@ -282,9 +283,18 @@ impl Receiver {
     }
 
     /// 无 AGORA_* 的事件找它的会话：先按 (host, agent 自报 id) 查；没有就登记——信封里的运行时
-    /// 环境能定位到可采纳 socket 上的 pane 就有终端，否则是无句柄的 external。agent 没自报 id
-    /// 的（`unknown`）不登记：那会每条事件造一行垃圾。
-    fn locate_external(&self, hooks: &dyn AgentHooks, delivery: &Delivery) -> Option<String> {
+    /// 环境能定位到可采纳 socket 上的 pane 就有终端，否则是无句柄的 external。两种投递件不登记：
+    /// agent 没自报 id 的（`unknown`），那会每条事件造一行垃圾；`events` 为空或只有 SessionEnded 的，
+    /// 那是 agora 没见过的会话在结束——hook 装好之前起的会话退出、Codex Desktop 结束一个线程——
+    /// 登记只会造一行永远没有后续事件的僵尸（2026-09-05 侧栏那行 devcenter，agora-vfi）。三家宿主
+    /// 同一规则，不按 host 分叉。不登记的投递件后面照常走：按 `<host>:<agent_session_id>` 解挂起、
+    /// 进 done、记账本。
+    fn locate_external(
+        &self,
+        hooks: &dyn AgentHooks,
+        delivery: &Delivery,
+        events: &[AgoraEvent],
+    ) -> Option<String> {
         let env = &delivery.envelope;
         if env.agent_session_id == "unknown" {
             return None;
@@ -294,6 +304,16 @@ impl Receiver {
             .find_by_agent_session(&env.host, &env.agent_session_id)
         {
             Ok(Some(rec)) => Some(rec.id),
+            Ok(None)
+                if events
+                    .iter()
+                    .all(|e| matches!(e, AgoraEvent::SessionEnded(_))) =>
+            {
+                tracing::debug!(component = "hook", host = %env.host,
+                    agent_session = %env.agent_session_id, events = events.len(),
+                    "没见过的会话的 SessionEnd（或不产生事件的投递件），不登记");
+                None
+            }
             Ok(None) => {
                 let runtime_ref = match self.sessions.runtime().locate(&env.runtime_env) {
                     Ok(r) => r.map(|r| r.0),
