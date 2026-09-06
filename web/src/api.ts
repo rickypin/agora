@@ -122,8 +122,8 @@ export function sessionApi(fetchImpl: FetchLike = apiFetch) {
 export type SessionApi = ReturnType<typeof sessionApi>;
 
 /**
- * New Agent 对话框的三个只读数据源（§6.4）。与写端点分开：它们没有确认语义，
- * 401 之外的失败只影响下拉框，不该走 WriteResult 那套。
+ * New Agent 对话框的数据源（§6.4）：三个只读的，加一个写——新建 worktree（agora 只管"生"，
+ * A44）。与会话的写端点分开：这里没有确认语义，401 之外的失败只影响下拉框。
  */
 export function catalogApi(fetchImpl: FetchLike = apiFetch) {
   return {
@@ -133,6 +133,17 @@ export function catalogApi(fetchImpl: FetchLike = apiFetch) {
         fetchImpl,
         "GET",
         `/api/projects/worktrees?path=${encodeURIComponent(path)}`,
+      ),
+    /**
+     * `POST /api/projects/worktrees`（MISSION §6.4「只管"生"」；docs/spec/api.md）：201 的响应体就是
+     * GET 会列出的那一项。`base` 不传由节点按缺省链定（主 worktree 当前分支 → origin/HEAD → main）。
+     */
+    createWorktree: (path: string, name: string, base?: string) =>
+      call<WorktreeInfo>(
+        fetchImpl,
+        "POST",
+        "/api/projects/worktrees",
+        base ? { path, name, base } : { path, name },
       ),
     agents: () => call<{ agents: AgentInfo[] }>(fetchImpl, "GET", "/api/agents"),
     system: () => call<{ node: string }>(fetchImpl, "GET", "/api/system"),

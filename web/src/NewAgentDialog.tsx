@@ -69,6 +69,12 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
     };
   }, [catalog]);
 
+  // 「新建…」建成之后重拉一次并选中新项（A44）：bump 这个计数让下面的 effect 再跑，
+  // 想选中的路径先寄在 ref 里，等新列表到了再选——直接 setWorktree 会被 effect 开头的清空冲掉。
+  const [worktreeGen, setWorktreeGen] = useState(0);
+  const pendingWorktree = useRef<WorktreeInfo | null>(null);
+  const [worktreeCreating, setWorktreeCreating] = useState(false);
+
   // 项目变了就重新列 worktree；不是 git 仓库（或手打的路径）就没有 worktree 可选。
   useEffect(() => {
     let cancelled = false;
@@ -77,12 +83,28 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
     if (!project.trim()) return;
     void catalog.worktrees(project.trim()).then((r) => {
       if (cancelled || !r.ok) return;
-      setWorktrees(r.value.worktrees);
+      const created = pendingWorktree.current;
+      pendingWorktree.current = null;
+      if (!created) {
+        setWorktrees(r.value.worktrees);
+        return;
+      }
+      // 刚建好的那项应该已经在 git 的登记里；万一列表还没它（比如另一路径形态），补上再选。
+      const list = r.value.worktrees.some((w) => w.path === created.path)
+        ? r.value.worktrees
+        : [...r.value.worktrees, created];
+      setWorktrees(list);
+      setWorktree(created.path);
     });
     return () => {
       cancelled = true;
     };
-  }, [catalog, project]);
+  }, [catalog, project, worktreeGen]);
+
+  function worktreeCreated(created: WorktreeInfo) {
+    pendingWorktree.current = created;
+    setWorktreeGen((g) => g + 1);
+  }
 
   function pickProject(path: string) {
     setProject(path);
@@ -103,7 +125,9 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
   // 主 worktree = 仓库本身：working_directory 就是它，worktree 字段留空。
   const cwd = selected && !selected.main ? selected.path : project.trim();
   const needsCommand = agent === CUSTOM && command.trim() === "";
-  const canCreate = !busy && project.trim() !== "" && name.trim() !== "" && agent !== "" && !needsCommand;
+  // worktree 名字框开着时先别起会话：cwd 会落回仓库本身，而用户明明想在新 worktree 里干。
+  const canCreate =
+    !busy && !worktreeCreating && project.trim() !== "" && name.trim() !== "" && agent !== "" && !needsCommand;
 
   async function create() {
     setBusy(true);
@@ -170,7 +194,17 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
           </datalist>
 
           <label htmlFor="na-worktree">Worktree</label>
-          <WorktreeSelect worktrees={worktrees} value={worktree} onChange={setWorktree} disabled={busy} />
+          <WorktreeSelect
+            worktrees={worktrees}
+            value={worktree}
+            onChange={setWorktree}
+            disabled={busy}
+            project={project.trim()}
+            defaultName={name}
+            create={catalog.createWorktree}
+            onCreated={worktreeCreated}
+            onCreatingChange={setWorktreeCreating}
+          />
 
           <label htmlFor="na-agent">Agent</label>
           <select id="na-agent" value={agent} onChange={(e) => pickAgent(e.target.value)} disabled={busy}>
