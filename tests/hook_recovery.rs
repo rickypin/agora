@@ -327,10 +327,27 @@ fn corrupt_checkpoint_does_not_block_other_sessions_or_new_inbox() {
 fn starting_decays_through_session_manager_and_after_checkpoint_restore() {
     // agora-okr：起好了、还没给第一条指令的 Claude 会话不能永远 STARTING。从 SessionManager 入口
     // 覆盖（agora-uez 的教训：只喂 Machine 会漏掉接线错误），再走 agora-9dj 的检查点恢复路径。
-    // 宽限缩到 1 s 好等；检查点只在 hook 事件时写，衰减不写盘，恢复出来的仍是 STARTING。
+    // 检查点只在 hook 事件时写，衰减不写盘，恢复出来的仍是 STARTING。
+    //
+    // 宽限 3 s，不能再缩（agora-q8x，2026-09-06）：machine 用整秒时钟比较 now - since >= grace，
+    // 之前设 1 s 时 ingest 落在第 N 秒末、紧接着的 get 落在第 N+1 秒初就已经满 1 s 而衰减，
+    // "ingest 后立刻 get 仍是 STARTING"这条断言在三路并行编译的机器上假阴性（跨秒概率与两次
+    // 调用之间的负载延迟成正比）。3 s 能容 ≥ 2 s 的抖动；衰减那头不再固定睡，按事实等到上限。
+    const GRACE: Duration = Duration::from_secs(3);
     let grace = MachineConfig {
-        startup_grace: Duration::from_secs(1),
+        startup_grace: GRACE,
         ..Default::default()
+    };
+    // 等到状态离开 STARTING（最多宽限 + 3 s），返回最后一次看到的视图；断言留给调用方原样做。
+    let wait_decay = |s: &SessionManager, id: &str| {
+        let deadline = std::time::Instant::now() + GRACE + Duration::from_secs(3);
+        loop {
+            let v = s.get(id).unwrap();
+            if v.assessment.status != Status::Starting || std::time::Instant::now() >= deadline {
+                return v;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     };
     let home = tempfile::tempdir().unwrap();
     let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
@@ -354,8 +371,7 @@ fn starting_decays_through_session_manager_and_after_checkpoint_restore() {
         (v.assessment.status, v.assessment.source),
         (Status::Starting, Source::Hook)
     );
-    std::thread::sleep(Duration::from_millis(1100));
-    let v = s.get(&id).unwrap();
+    let v = wait_decay(&s, &id);
     assert_eq!(
         (v.assessment.status, v.assessment.source),
         (Status::TurnDone, Source::Hook),
@@ -384,8 +400,7 @@ fn starting_decays_through_session_manager_and_after_checkpoint_restore() {
     Receiver::new(home.path(), restarted.clone())
         .replay()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(1100));
-    let v = restarted.get(&id2).unwrap();
+    let v = wait_decay(&restarted, &id2);
     assert_eq!(
         (v.assessment.status, v.assessment.source),
         (Status::TurnDone, Source::Hook),
