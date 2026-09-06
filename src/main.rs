@@ -162,6 +162,18 @@ async fn serve() -> i32 {
         }
     };
 
+    // hooks 装过、二进制却搬了家或 AGORA_HOME 被重置过：链接悬空时 hook 被条目里的 `[ -x ]` 守卫
+    // 静默跳过，用户只会看到 hooks_unheard。这里说一句怎么修；链接根本不存在不提——装 hooks 之前
+    // 它本来就不存在（agora-vkt）。
+    if let Some((link, target)) = agora::hook::install::dangling_bin_link(&home) {
+        tracing::warn!(
+            component = "hook",
+            link = %link.display(),
+            target = %target.display(),
+            "指向的二进制不存在，跑一次 `agora hooks install <agent>` 重指"
+        );
+    }
+
     let probe = env_probe::probe_path(None, std::time::Duration::from_secs(5));
     tracing::info!(component = "main", source = ?probe.source, reason = ?probe.reason, "PATH 探测");
     let path_source = if probe.source == env_probe::PathSource::Shell {
