@@ -62,9 +62,11 @@ impl Fx {
         self.app().oneshot(req).await.unwrap()
     }
 
-    /// TLS 监听器上、带 Bearer 的 `GET /api/auth/devices`——需要 principal 的最普通一条。
-    async fn devices_tls(&self, token: &str) -> axum::response::Response {
-        self.call(self.request("GET", "/api/auth/devices", &format!("Bearer {token}"), true))
+    /// TLS 监听器上、带 Bearer 的 `GET /api/sessions`——需要 principal 且对 Peer 全权的最普通
+    /// 一条。2026-09-06 之前用的是 `/api/auth/devices`，agora-0df 起它对 Peer 是 403
+    /// `peer_forbidden`（ADR-003 D1 例外句），拿它验"token 可用"会把授权收紧误报成认证失败。
+    async fn sessions_tls(&self, token: &str) -> axum::response::Response {
+        self.call(self.request("GET", "/api/sessions", &format!("Bearer {token}"), true))
             .await
     }
 
@@ -132,18 +134,13 @@ async fn bearer_rejected_on_plaintext_listener() {
     let token = peer_token::create(&fx.db, "zuan", false).unwrap();
 
     let plain = fx
-        .call(fx.request(
-            "GET",
-            "/api/auth/devices",
-            &format!("Bearer {token}"),
-            false,
-        ))
+        .call(fx.request("GET", "/api/sessions", &format!("Bearer {token}"), false))
         .await;
     assert_eq!(plain.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(json(plain).await["error"], "bearer_requires_tls");
 
     let basic = fx
-        .call(fx.request("GET", "/api/auth/devices", "Basic abc", false))
+        .call(fx.request("GET", "/api/sessions", "Basic abc", false))
         .await;
     assert_eq!(basic.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(json(basic).await["error"], "bearer_requires_tls");
@@ -154,7 +151,7 @@ async fn bearer_rejected_on_plaintext_listener() {
         .await;
     assert_eq!(health.status(), StatusCode::UNAUTHORIZED);
 
-    let tls = fx.devices_tls(&token).await;
+    let tls = fx.sessions_tls(&token).await;
     assert_eq!(
         tls.status(),
         StatusCode::OK,
@@ -173,10 +170,10 @@ async fn bearer_rejected_on_plaintext_listener() {
 async fn revoked_token_rejected_immediately() {
     let fx = Fx::new();
     let token = peer_token::create(&fx.db, "zuan", false).unwrap();
-    assert_eq!(fx.devices_tls(&token).await.status(), StatusCode::OK);
+    assert_eq!(fx.sessions_tls(&token).await.status(), StatusCode::OK);
 
     peer_token::revoke(&fx.db, "zuan").unwrap();
-    let resp = fx.devices_tls(&token).await;
+    let resp = fx.sessions_tls(&token).await;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(json(resp).await["error"], "unauthenticated");
     let rows = peer_token::list(&fx.db).unwrap();
@@ -192,9 +189,9 @@ async fn revoked_token_rejected_immediately() {
     // 吊销后再签是正常流程，不需要 --rotate；新 token 可用、旧的仍拒。
     let again = peer_token::create(&fx.db, "zuan", false).unwrap();
     assert_ne!(again, token);
-    assert_eq!(fx.devices_tls(&again).await.status(), StatusCode::OK);
+    assert_eq!(fx.sessions_tls(&again).await.status(), StatusCode::OK);
     assert_eq!(
-        fx.devices_tls(&token).await.status(),
+        fx.sessions_tls(&token).await.status(),
         StatusCode::UNAUTHORIZED
     );
 }
@@ -253,21 +250,24 @@ fn plaintext_never_stored() {
 async fn rotate_invalidates_old_token() {
     let fx = Fx::new();
     let t1 = peer_token::create(&fx.db, "zuan", false).unwrap();
-    assert_eq!(fx.devices_tls(&t1).await.status(), StatusCode::OK);
+    assert_eq!(fx.sessions_tls(&t1).await.status(), StatusCode::OK);
     assert!(matches!(
         peer_token::create(&fx.db, "zuan", false),
         Err(PeerTokenError::Exists(_))
     ));
     assert_eq!(
-        fx.devices_tls(&t1).await.status(),
+        fx.sessions_tls(&t1).await.status(),
         StatusCode::OK,
         "拒绝再签不影响旧的"
     );
 
     let t2 = peer_token::create(&fx.db, "zuan", true).unwrap();
     assert_ne!(t1, t2);
-    assert_eq!(fx.devices_tls(&t1).await.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(fx.devices_tls(&t2).await.status(), StatusCode::OK);
+    assert_eq!(
+        fx.sessions_tls(&t1).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(fx.sessions_tls(&t2).await.status(), StatusCode::OK);
     assert_eq!(fx.rows(), 1, "一个 peer 一行");
 
     // principal 是 token 里的 name。
@@ -284,7 +284,7 @@ async fn rotate_invalidates_old_token() {
     let mac = peer_token::create(&fx.db, "mac", false).unwrap();
     let forged = format!("apt_zuan_{}", &mac[mac.len() - 43..]);
     assert_eq!(
-        fx.devices_tls(&forged).await.status(),
+        fx.sessions_tls(&forged).await.status(),
         StatusCode::UNAUTHORIZED
     );
     assert!(matches!(
