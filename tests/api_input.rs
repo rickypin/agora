@@ -6,7 +6,7 @@ mod common;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -20,6 +20,18 @@ use agora::hook::{Delivery, Envelope, Inbox, Receiver};
 use agora::local::Response;
 
 use common::{Fx, HOST};
+
+/// 按事实等到上限：条件成立即退出，最多等 5 s（5 ms 一轮）。
+///
+/// 2026-09-06：之前是固定 100 × 5 ms / 100 × 10 ms 轮询，三路 agent 并行编译的机器与 CI
+/// 单核（GitHub Actions run 34001122947）上 receiver 的 wake 还没跑到就超时，随后的断言假阴性
+/// （agora-e8s）。等待上限放宽不等于放宽断言：断言原样保留，超时了仍然会红。
+async fn wait_until(mut cond: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !cond() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
 
 async fn call(
     fx: &Fx,
@@ -107,12 +119,7 @@ async fn hold(
         .unwrap();
     let r = receiver.clone();
     let task = tokio::spawn(async move { r.wake(&path).await });
-    for _ in 0..100 {
-        if !receiver.pending(session).is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_until(|| !receiver.pending(session).is_empty()).await;
     assert_eq!(receiver.pending(session), vec!["Bash".to_owned()]);
     task
 }
@@ -315,16 +322,13 @@ async fn hold_named(
     let r = receiver.clone();
     let task = tokio::spawn(async move { r.wake(&path).await });
     // 这里用账本证明本条已处理；是否挂起由后面的 API 快照校验。
-    for _ in 0..100 {
-        if receiver
+    wait_until(|| {
+        receiver
             .received_for(session)
             .iter()
             .any(|r| r.delivery.envelope.received_unix_ms == ms)
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    })
+    .await;
     assert!(!receiver.pending(session).is_empty(), "{previous:?}");
     (tool.into(), task)
 }
