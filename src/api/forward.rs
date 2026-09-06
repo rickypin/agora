@@ -48,7 +48,16 @@ pub(super) fn hop(state: &AppState, principal: &Principal, gid: &str) -> Result<
         Route::Peer(t) => match principal {
             // 一跳：来自 peer 的请求只能落在本机会话上。
             Principal::Peer { name } => Err(second_hop(state, node, name)),
-            Principal::Human { .. } => Ok(Hop::Peer(t)),
+            Principal::Human { .. } => {
+                // 人点开了 stale peer 的会话（浏览器建终端 WS、或对它做任何写操作都从这里过）：
+                // 插一次重试（agora-7ku.6；MISSION §3.5）。retry_now 只缩短客户端这一次退避等待，
+                // 在线时无事、离线时一次点开只多一次尝试——不是轮询。转发本身照常进行：peer 真不可达
+                // 就由 transport 报 peer_unreachable，重试成功与否由事件流告诉浏览器。
+                if state.peer_views.is_stale(node) == Some(true) {
+                    state.peer_views.retry_now(node);
+                }
+                Ok(Hop::Peer(t))
+            }
         },
         Route::Unknown => Err(node_unknown(state, node)),
     }

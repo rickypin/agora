@@ -113,6 +113,11 @@ pub async fn get(
             crate::peer::registry::Route::Peer(_)
         );
         if is_peer && matches!(principal, Principal::Human { .. }) {
+            // 人点开 stale peer 的会话：插一次重试（agora-7ku.6，与 forward::hop 同一句）。读仍从
+            // 视图来——给的是最后一眼（带 stale / last_seen），重连成功后事件流会把行刷新。
+            if state.peer_views.is_stale(node) == Some(true) {
+                state.peer_views.retry_now(node);
+            }
             return state
                 .peer_views
                 .get(&gid)
