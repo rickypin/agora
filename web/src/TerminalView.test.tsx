@@ -12,7 +12,11 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { TerminalSocketLike } from "./terminal";
 
-const xterm = vi.hoisted(() => ({ focusCalls: 0 }));
+const xterm = vi.hoisted(() => ({
+  focusCalls: 0,
+  /** TerminalView 装上的 custom key handler（agora-hhu 的平台守卫要直接调它）。 */
+  keyHandler: null as ((ev: KeyboardEvent) => boolean) | null,
+}));
 
 vi.mock("@xterm/xterm", () => {
   class Terminal {
@@ -42,9 +46,12 @@ vi.mock("@xterm/xterm", () => {
     onResize(): { dispose(): void } {
       return { dispose() {} };
     }
-    attachCustomKeyEventHandler(): void {}
+    attachCustomKeyEventHandler(h: (ev: KeyboardEvent) => boolean): void {
+      xterm.keyHandler = h;
+    }
     dispose(): void {
       this.root?.remove();
+      xterm.keyHandler = null;
     }
   }
   return { Terminal };
@@ -158,5 +165,45 @@ describe("TerminalView focus (agora-p29)", () => {
     const before = xterm.focusCalls;
     fireEvent.pointerDown(host);
     expect(xterm.focusCalls).toBe(before);
+  });
+});
+
+/**
+ * Option/Alt+←/→ 词跳的平台判断（agora-hhu）：keys.ts 不读 navigator，靠 TerminalView 挂载时按
+ * navigator.platform 传进来——传错了（或忘了传）mac 用户就会收到 zsh 不认的 ESC[1;5D。keys.test.ts
+ * 守字节本身，这里守"TerminalView 把对的平台传给了它"。jsdom 的 navigator.platform 是 ""，两边都靠
+ * 在实例上定义属性来假扮。
+ */
+describe("TerminalView passes the browser platform to the key layer (agora-hhu)", () => {
+  function pretendPlatform(platform: string) {
+    Object.defineProperty(navigator, "platform", { value: platform, configurable: true });
+  }
+  afterEach(() => {
+    // 删掉实例属性，回到 jsdom 原型上的 getter。
+    delete (navigator as unknown as { platform?: string }).platform;
+  });
+
+  function altArrow(k: "ArrowLeft" | "ArrowRight"): KeyboardEvent {
+    return new KeyboardEvent("keydown", { key: k, altKey: true, cancelable: true });
+  }
+
+  it.each([
+    ["MacIntel", "\x1bb", "\x1bf"],
+    ["iPad", "\x1bb", "\x1bf"],
+    ["Linux x86_64", "\x1b[1;5D", "\x1b[1;5C"],
+    ["Win32", "\x1b[1;5D", "\x1b[1;5C"],
+  ])("on %s Alt+←/→ sends %j / %j through the WS", async (platform, left, right) => {
+    pretendPlatform(platform);
+    setup();
+    await attached();
+    const handler = xterm.keyHandler;
+    expect(handler).not.toBeNull();
+    sock.sent.length = 0;
+    const l = altArrow("ArrowLeft");
+    expect(handler!(l)).toBe(false);
+    expect(l.defaultPrevented).toBe(true);
+    const r = altArrow("ArrowRight");
+    expect(handler!(r)).toBe(false);
+    expect(sock.sent).toEqual([JSON.stringify({ type: "input", data: left }), JSON.stringify({ type: "input", data: right })]);
   });
 });

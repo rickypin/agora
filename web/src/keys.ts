@@ -105,6 +105,15 @@ function digit(ev: KeyLike): number | null {
 }
 
 /**
+ * 键位层的平台开关。这一层不读 `navigator`（node 里要能测两个分支），由 TerminalView 挂载时按
+ * `navigator.platform` 算一次传进来，判法照 xterm 自己的 src/common/Platform.ts（Mac* / iPhone / iPad）。
+ */
+export interface TerminalKeyOptions {
+  /** 浏览器跑在 macOS / iOS 上：Option+←/→ 发 readline 的 `ESC b` / `ESC f`；其它平台发 Ctrl+←/→ 的 CSI。 */
+  mac: boolean;
+}
+
+/**
  * 终端里要替浏览器代劳的键（agora-xqa.3）。返回要发给 pane 的字节，null = 交回 xterm。
  *
  * Shift+Enter 发 `ESC CR`（= Option/Alt+Enter）而不是裸 CR：xterm.js 默认把 Shift+Enter
@@ -115,8 +124,16 @@ function digit(ev: KeyLike): number | null {
  *
  * Cmd+←/→ 映射成 Home/End：浏览器把它们留给了历史前进后退，不拦就会真的退出页面、
  * 顺手丢掉整个终端视图；xterm.js 又不转发它们，所以只能这里代发。
+ *
+ * Alt/Option+方向键（不带 Ctrl / Meta / Shift）按词跳（agora-hhu，2026-09-06）：xterm.js 5.x 在
+ * Keyboard.ts 里把 `ESC[1;3D/C` 改写成 mac 的 `ESC b` / `ESC f`、其它平台的 `ESC[1;5D/C`（Ctrl+←/→），
+ * 非 mac 的 ↑/↓ 同理改成 `ESC[1;5A/B`；6.0.0 的 #5346 把这段 hack 删了、交给 embedder，裸
+ * `ESC[1;3D` zsh 不认——实测 `echo foo bar` → Option+← → `X` 得到 "echo foo bar3DX"（没跳、残片进
+ * 命令行）。这里照 5.5.0 的字节原样接管，升级前后行为不变。mac 上的 Alt+↑/↓ 5.5 本来就不改写
+ * （发 `ESC[1;3A/B`，6.0 也一样），交回 xterm；带 Shift 的组合（`ESC[1;4D` 之类）5.5 也不改写，同样交回。
+ * 非 mac 的 Chrome 把 Alt+←/→ 留给了历史前进后退，所以这几个键也必须走 handleTerminalKey 的 preventDefault。
  */
-export function terminalKey(ev: KeyLike): string | null {
+export function terminalKey(ev: KeyLike, opts: TerminalKeyOptions): string | null {
   if (ev.type && ev.type !== "keydown") return null;
   if (ev.key === "Enter" && ev.shiftKey && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
     return "\x1b\r";
@@ -124,6 +141,20 @@ export function terminalKey(ev: KeyLike): string | null {
   if (ev.metaKey && !ev.ctrlKey && !ev.altKey && !ev.shiftKey) {
     if (ev.key === "ArrowLeft") return "\x1b[H";
     if (ev.key === "ArrowRight") return "\x1b[F";
+  }
+  if (ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
+    switch (ev.key) {
+      case "ArrowLeft":
+        return opts.mac ? "\x1bb" : "\x1b[1;5D";
+      case "ArrowRight":
+        return opts.mac ? "\x1bf" : "\x1b[1;5C";
+      case "ArrowUp":
+        return opts.mac ? null : "\x1b[1;5A";
+      case "ArrowDown":
+        return opts.mac ? null : "\x1b[1;5B";
+      default:
+        return null;
+    }
   }
   return null;
 }
@@ -138,10 +169,14 @@ export interface Preventable extends KeyLike {
  * 终端的自定义 key handler：认识的键自己发字节并 `preventDefault`（否则 Cmd+← 照样让
  * 浏览器后退）；全局快捷键里不带 Ctrl 的那些返回 false 让 xterm 别碰、事件照常冒泡到 window
  * 由全局层处理（agora-82g）；其余一律返回 true 交回 xterm——Ctrl+C/D/Z/R/A/E、Ctrl+K/F、
- * Option+←/→ 按词跳、粘贴都走 xterm 原路，这一层不碰。
+ * 粘贴都走 xterm 原路，这一层不碰。
+ *
+ * 返回 false 时 xterm 对这个键**什么都不做**（5.5.0 与 6.0.0 的 `_keyDown` 都是 custom handler
+ * 一返回 false 就 return，不走 evaluateKeyboardEvent、不 cancel），所以这里代发的字节不会再被
+ * xterm 发一遍；keypress 也会进这个 handler，terminalKey 只认 keydown，不会重复。
  */
-export function handleTerminalKey(ev: Preventable, send: (data: string) => void): boolean {
-  const bytes = terminalKey(ev);
+export function handleTerminalKey(ev: Preventable, send: (data: string) => void, opts: TerminalKeyOptions): boolean {
+  const bytes = terminalKey(ev, opts);
   if (bytes !== null) {
     ev.preventDefault();
     send(bytes);

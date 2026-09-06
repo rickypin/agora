@@ -48,8 +48,9 @@
 |---|---|---|
 | Shift + Enter | `ESC CR`（= Option/Alt+Enter） | xterm.js 默认发裸 CR，TUI 分不出"换行"与"发送"，一按就提交。不用 kitty/CSI-u 的 `ESC[13;2u`：TUI 没打开 kitty keyboard protocol 时会把它当乱码打进输入框；`ESC CR` 是 Claude Code / Codex 今天就认的换行，也是各家 terminal-setup 给 iTerm2 装的那条约定 |
 | Cmd + ← / → | `ESC[H` / `ESC[F`（Home / End） | 浏览器把 Cmd+方向键留给了历史前进后退，不 `preventDefault` 会真的退出页面、顺手丢掉终端视图；xterm.js 又不转发它们 |
+| Option/Alt + ← / →（按词跳） | 浏览器在 macOS / iOS 上：`ESC b` / `ESC f`（readline 的 backward-word / forward-word）；其它平台：`ESC[1;5D` / `ESC[1;5C`（= Ctrl+←/→）。非 mac 的 Alt+↑/↓ 同理发 `ESC[1;5A/B` | xterm.js 5.x 在自己的 Keyboard.ts 里做这条改写，6.0.0 的 #5346 把它删了、交给 embedder，改发裸 `ESC[1;3D/C`，zsh 不认：2026-09-06 实测 `echo foo bar` → Option+← → `X` 得到 `echo foo bar3DX`（没跳、残片进命令行）。agora 升到 6.0 时（agora-hhu）照 5.5.0 的字节接管，平台按**浏览器**的 `navigator.platform` 判（xterm 5.5 也是这么判的，键位随用户手里的键盘走），TerminalView 挂载时算一次传给 `keys.ts`。带 Shift / Ctrl 的 Alt+方向键与 mac 上的 Option+↑/↓ 5.5 本来就不改写（`ESC[1;4D`、`ESC[1;3A`…），仍交回 xterm。非 mac 的 Chrome 把 Alt+←/→ 留给了历史前进后退，所以这几个键也 `preventDefault`。守卫：`web/src/keys.test.ts`「Option/Alt+←/→ 按词跳由 agora 键位层发字节」（mac / 非 mac 各一组、带 Shift 不接管、Cmd+← 仍是 Home），`web/src/TerminalView.test.tsx`「passes the browser platform to the key layer」（TerminalView 传对了平台） |
 
-Option+← / → 按词跳、粘贴、resize 重排、滚轮回看都走 xterm.js 原路，这一层不碰。这些字节进 pane 前还要过一道 `tmux attach` 客户端：它认得的键会按 pane 的终端类型**重新编码**（实测 tmux 3.7c 把 `ESC[H` / `ESC[F` 改发成 `ESC[1~` / `ESC[4~`），键义不变——守卫 `tests/terminal_keys.rs` 因此两种编码都接受。
+粘贴、resize 重排、滚轮回看都走 xterm.js 原路，这一层不碰。这些字节进 pane 前还要过一道 `tmux attach` 客户端：它认得的键会按 pane 的终端类型**重新编码**（实测 tmux 3.7c 把 `ESC[H` / `ESC[F` 改发成 `ESC[1~` / `ESC[4~`），键义不变——守卫 `tests/terminal_keys.rs` 因此两种编码都接受。
 
 ### 终端焦点（agora-p29）
 

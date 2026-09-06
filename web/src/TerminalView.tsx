@@ -73,9 +73,11 @@ export function TerminalView({ sessionId, connect, focusRef, readOnly = false }:
     // 只读时这一头就不发 input：服务端也丢，但少发一帧就少一分歧义。
     const send = readOnly ? () => {} : (d: string) => client.sendInput(d);
     const input = term.onData(send);
-    // 浏览器抢走的那几个键由这一层代发（agora-xqa.3）；其余一律交回 xterm，
-    // 终端里的 Ctrl+C/D/Z/R/A/E 不经过任何 agora 的判断（MISSION §6.5）。
-    term.attachCustomKeyEventHandler((ev) => handleTerminalKey(ev, send));
+    // 浏览器抢走的那几个键由这一层代发（agora-xqa.3）；Option/Alt+←/→ 的词跳字节也在这里发
+    // （agora-hhu：xterm 6.0 不再替 embedder 做这件事），按浏览器所在平台选、挂载时算一次；
+    // 其余一律交回 xterm，终端里的 Ctrl+C/D/Z/R/A/E 不经过任何 agora 的判断（MISSION §6.5）。
+    const keyOpts = { mac: isMacLike() };
+    term.attachCustomKeyEventHandler((ev) => handleTerminalKey(ev, send, keyOpts));
     const resize = term.onResize(({ cols, rows }) => client.sendResize(cols, rows));
     const ro = new ResizeObserver(() => fit.fit());
     ro.observe(el);
@@ -128,6 +130,17 @@ export function TerminalView({ sessionId, connect, focusRef, readOnly = false }:
       <div className="term-host" ref={host} />
     </div>
   );
+}
+
+/**
+ * 浏览器跑在 macOS / iOS 上：Option+←/→ 发 `ESC b` / `ESC f`，否则发 `ESC[1;5D/C`（keys.ts terminalKey）。
+ * 判法照 xterm 5.5 自己的 src/common/Platform.ts（isMac 认 Macintosh / MacIntel / MacPPC / Mac68K，
+ * 另有 iPad / iPhone）——升级到 6.0 后 xterm 不再替我们判，这里得自己判，且判的是**浏览器**的平台，
+ * 不是 pane 所在机器的：5.5 也是这么做的，键位随用户手里的键盘走。
+ */
+function isMacLike(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /^(Mac|iPhone|iPad)/.test(navigator.platform ?? "");
 }
 
 /** 焦点在终端之外的某个文本输入上（侧栏过滤、Rename、New Agent 表单…）。 */
