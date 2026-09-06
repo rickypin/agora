@@ -1,7 +1,10 @@
 //! 人的凭据（ADR-003 D1 / D2）：设备配对 + 按设备的 session。
 //!
 //! 没有 loopback 例外、没有 local-token 文件、没有 TOTP、没有限流：配对链接 256 位、单次、
-//! 5 分钟，未认证者铸造不了它；session 只存 SHA-256。peer 的机器 token 随 agora-7ku.2 接入。
+//! 5 分钟，未认证者铸造不了它；session 只存 SHA-256。peer 的机器 token（ADR-003 D3）在
+//! [`peer_token`]，这里只把 Bearer 接到它的校验上（[`Auth::authenticate_bearer`]）。
+
+pub mod peer_token;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -250,6 +253,16 @@ impl Auth {
             principal: Principal::Human { device: id },
             renewed: touched,
         })
+    }
+
+    // ---------- peer 的机器 token（ADR-003 D3） ----------
+
+    /// `Authorization` 头的值 → `Principal::Peer { name }`。查 name、常量时间比对哈希、未吊销；
+    /// 每次请求都查库，吊销即时生效。未签发过任何 token 时表为空，一切 Bearer 都到不了这里以外
+    /// 的任何分支（A31）。"只在 TLS 监听器上接受"由 `api::auth` 的提取器判，这里不知道监听器。
+    pub fn authenticate_bearer(&self, authorization: &str) -> Result<Principal, AuthError> {
+        let name = peer_token::authenticate(&self.db, authorization)?;
+        Ok(Principal::Peer { name })
     }
 
     // ---------- 设备管理 ----------

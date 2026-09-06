@@ -22,6 +22,17 @@ pub struct InProcessPeer {
     pub name: String,
 }
 
+/// "这个请求来自 TLS 监听器"的标记（ADR-003 D3 / D5）——Bearer 只在带它的请求上被解析，
+/// 其余请求带 `Authorization` 头一律 401 `bearer_requires_tls`。
+///
+/// 与 [`InProcessPeer`] 同一机制：请求扩展不是 HTTP 头，线上任何字节都变不成它；只有监听器
+/// 侧的进程内代码放得进去。TLS 监听器（agora-7ku.10）用
+/// `api::router(state).layer(axum::Extension(TlsListener))` 给自己的每个请求盖上它，明文监听器
+/// 用裸的 `router(state)`，永远盖不上——"Bearer 只上 TLS"于是是结构，不是每处都要记得的检查。
+/// 守卫：`tests/peer_token.rs::bearer_rejected_on_plaintext_listener`。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TlsListener;
+
 /// 每个 handler 的签名都要它；缺了就是免认证端点（守卫：tests/auth.rs）。
 impl FromRequestParts<AppState> for Principal {
     type Rejection = ApiError;
@@ -35,9 +46,17 @@ impl FromRequestParts<AppState> for Principal {
             return Ok(principal);
         }
 
-        // Bearer 优先解析；明文监听器上一律拒绝（TLS 监听器与 peer token 随 agora-7ku.2）。
-        if parts.headers.contains_key(header::AUTHORIZATION) {
-            return Err(AuthError::BearerRequiresTls.into());
+        // Bearer 优先解析（ADR-003 D1）：只在 TLS 监听器上（见 TlsListener），机器 token 的校验在
+        // auth::peer_token。peer 不是浏览器：没有 cookie 续期、也不做 CSRF 同源校验（D7）。
+        if let Some(value) = parts.headers.get(header::AUTHORIZATION) {
+            if parts.extensions.get::<TlsListener>().is_none() {
+                return Err(AuthError::BearerRequiresTls.into());
+            }
+            let header = value.to_str().map_err(|_| AuthError::Unauthenticated)?;
+            let principal = state.auth.authenticate_bearer(header)?;
+            tracing::Span::current()
+                .record("principal", tracing::field::display(principal.log_id()));
+            return Ok(principal);
         }
         let token = cookie_value(&parts.headers, COOKIE_NAME).ok_or(AuthError::Unauthenticated)?;
         // 一次索引命中的 SQLite 查询，微秒级；不值得为它 spawn_blocking。

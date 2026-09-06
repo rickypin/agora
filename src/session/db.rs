@@ -69,6 +69,15 @@ const MIGRATIONS: &[&str] = &[
         last_seen_at DATETIME NOT NULL,
         revoked_at DATETIME
     );",
+    // v4：按 peer 签发的机器 token，只存整串的 SHA-256（ADR-003 D3；agora-7ku.2）。name 是主键：
+    // 一个 peer 同时只有一个有效 token，轮换就是换掉这一行的哈希，旧 token 从此匹配不上。
+    "CREATE TABLE peer_tokens (
+        name TEXT PRIMARY KEY,
+        token_sha256 TEXT NOT NULL,
+        created_at DATETIME NOT NULL,
+        last_used_at DATETIME,
+        revoked_at DATETIME
+    );",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

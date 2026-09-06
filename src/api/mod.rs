@@ -37,7 +37,7 @@ use crate::events::EventBus;
 use crate::project::Projects;
 use crate::session::SessionManager;
 
-pub use auth::InProcessPeer;
+pub use auth::{InProcessPeer, TlsListener};
 pub use health::RuntimeHealth;
 pub use version::{ApiVersion, Compatibility, Incompatible, SystemInfo, API_VERSION};
 
