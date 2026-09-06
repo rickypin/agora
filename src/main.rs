@@ -43,6 +43,7 @@ async fn main() {
         ["auth", "revoke", target] => auth_revoke(target),
         ["hook", rest @ ..] => agora::hook::cmd::run(rest).await,
         ["hooks", rest @ ..] => agora::hook::install::run(rest),
+        ["peer", rest @ ..] => agora::cli::peer::run(rest),
         // 测试用假 agent（agora-3la）：藏在子命令里，不占第二个 binary。
         ["fake-agent", rest @ ..] => agora::fake_agent::run(rest),
         _ => {

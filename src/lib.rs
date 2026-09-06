@@ -19,6 +19,7 @@
 pub mod adapter;
 pub mod api;
 pub mod auth;
+pub mod cli;
 pub mod clock;
 pub mod config;
 pub mod events;

@@ -337,3 +337,82 @@ fn token_file_too_open_is_config_error() {
         Err(TokenFileError::Read { .. })
     ));
 }
+
+/// `agora peer token …` 走真二进制、直接操作 `AGORA_HOME/agora.db`（不起 daemon，ADR-003 D6）：
+/// create 的 stdout 只有 token 一行（能直接重定向成 token_file）；list / revoke / --rotate 的
+/// 结果用同一个库文件在进程内校验——CLI 写的、daemon 读的是同一张表。
+#[test]
+fn cli_create_list_revoke_via_binary() {
+    use std::os::unix::fs::MetadataExt;
+    use std::process::Command;
+    let home = std::path::PathBuf::from(format!("/tmp/agpt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    agora::local::ensure_home(&home).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_agora"))
+            .args(["peer", "token"])
+            .args(args)
+            .env("AGORA_HOME", &home)
+            .output()
+            .unwrap()
+    };
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+
+    // 用法错误 2；库文件此时还不存在。
+    assert_eq!(run(&["bogus"]).status.code(), Some(2));
+    assert!(!home.join("agora.db").exists());
+
+    let out = run(&["create", "zuan"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let t1 = text(&out.stdout).trim().to_owned();
+    assert_eq!(
+        peer_token::parse(&t1),
+        Some("zuan"),
+        "stdout 只有 token 一行: {t1:?}"
+    );
+    assert!(text(&out.stderr).contains("token_file"), "提示走 stderr");
+    assert!(!text(&out.stderr).contains(&t1), "stderr 不带明文");
+    // 库文件由 CLI 首次创建：只属主可读（umask 077）。
+    let mode = std::fs::metadata(home.join("agora.db")).unwrap().mode() & 0o777;
+    assert_eq!(mode & 0o077, 0, "agora.db 权限 {mode:o}");
+
+    let out = run(&["create", "zuan"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "已有有效 token 不加 --rotate 拒绝"
+    );
+    assert!(text(&out.stderr).contains("--rotate"));
+
+    let out = run(&["create", "zuan", "--rotate"]);
+    assert!(out.status.success());
+    let t2 = text(&out.stdout).trim().to_owned();
+    assert_ne!(t1, t2);
+
+    let out = run(&["list"]);
+    let listed = text(&out.stdout);
+    assert!(
+        listed.contains("zuan") && listed.contains("active"),
+        "{listed}"
+    );
+    assert!(!listed.contains(&t2), "list 不显示明文");
+
+    // 同一个库文件：daemon 侧的校验看到的就是 CLI 写的。
+    let db = Db::open(&home.join("agora.db")).unwrap();
+    assert!(peer_token::authenticate(&db, &format!("Bearer {t1}")).is_err());
+    assert_eq!(
+        peer_token::authenticate(&db, &format!("Bearer {t2}")).unwrap(),
+        "zuan"
+    );
+    drop(db);
+
+    let out = run(&["revoke", "zuan"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(run(&["revoke", "nobody"]).status.code(), Some(1));
+    let listed = text(&run(&["list"]).stdout);
+    assert!(listed.contains("revoked"), "{listed}");
+    let db = Db::open(&home.join("agora.db")).unwrap();
+    assert!(peer_token::authenticate(&db, &format!("Bearer {t2}")).is_err());
+    drop(db);
+    let _ = std::fs::remove_dir_all(&home);
+}
