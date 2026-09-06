@@ -100,6 +100,16 @@ export function TerminalView({ sessionId, connect, focusRef, readOnly = false }:
       input.dispose();
       resize.dispose();
       client.close();
+      // Vite dev 的控制台里紧跟这行出现的一条 "Uncaught TypeError: Cannot read properties of undefined
+      // (reading 'dimensions')"（get dimensions ← Viewport.syncScrollArea ← 异步回调）是 xterm 的已知行为，
+      // 不是 agora 的 bug，也不是焦点 / 挂载故障（p29 曾被它带偏）：@xterm/xterm 5.5.0 的 Viewport 构造函数里
+      // `setTimeout(() => this.syncScrollArea())` 没登记成可释放的，dispose 之后照样跑一次，那时 RenderService
+      // 的 `_renderer.value` 已清空。React 19 <StrictMode> 开发模式对每个 effect 同步地挂载 → 清理 → 再挂载，
+      // 所以 dev 里每挂一次终端必现一条；生产构建没有这一步。2026-09-06 agent-browser 代检（agora-oir）：
+      // dev+StrictMode 每次挂载 +1 条、去掉 StrictMode 0 条、rust-embed 生产构建 0 条。
+      // 上游 xtermjs/xterm.js#4983 由 PR #4984 修在 6.0.0，但 6.0.0 同时删了 Alt+←/→ 的词跳映射（#5346，
+      // 实测 Option+← 在 zsh 里变成 "3D" 残片），docs/spec/ux.md 与 keys.test.ts 钉住的行为会回退——升级连
+      // keys.ts 一起做（agora-hhu）。这里不要为了压掉这条错误延迟 dispose 或吞 window.onerror。
       term.dispose();
     };
     // connect 是挂载时定死的测试注入，不进依赖：内联闭包每次渲染都是新引用，进了就会
