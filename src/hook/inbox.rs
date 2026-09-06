@@ -306,6 +306,15 @@ pub fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// 投递箱文件名（`<unix 毫秒 13 位>-<seq>.json`，[`Inbox::write`] 写的）里的时间戳 → unix 秒。
+/// 这是 hook 进程写下事件的那一刻，也就是事件自己的时间：daemon 停机期间攒下的文件重放时，
+/// 状态机的"从什么时候起"（`status_since`，"waiting 3m"）要用它而不是重放的当下（A42；
+/// agora-h1k.4，2026-09-06）。名字不是这个形态（手写的、别的来源）→ None，调用方退回"现在"。
+pub fn delivery_time_secs(name: &str) -> Option<i64> {
+    let ms: u64 = name.split('-').next()?.parse().ok()?;
+    i64::try_from(ms / 1000).ok()
+}
+
 /// `2026-09-04T10:22:33+0800`——hook 进程的本地时间，给人看。
 pub fn local_time_string() -> String {
     let now = now_unix_ms() / 1000;
@@ -393,6 +402,18 @@ mod tests {
         std::fs::write(&outside, b"x").unwrap();
         assert!(!inbox.contains(&outside));
         assert!(inbox.done(&outside).is_err());
+    }
+
+    #[test]
+    fn delivery_time_comes_from_the_file_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::new(dir.path());
+        let p = inbox.write(&delivery(1_757_145_600_123, "s")).unwrap();
+        let name = p.file_name().unwrap().to_string_lossy();
+        assert_eq!(delivery_time_secs(&name), Some(1_757_145_600));
+        assert_eq!(delivery_time_secs("0000000000002-7.json"), Some(0));
+        assert_eq!(delivery_time_secs("handwritten.json"), None);
+        assert_eq!(delivery_time_secs(""), None);
     }
 
     #[test]

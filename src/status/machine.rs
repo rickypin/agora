@@ -295,13 +295,27 @@ impl Machine {
     }
 
     /// hook 事件立即生效。旧 epoch 的丢弃（返回 false）；进程已退出的只当 metadata。
+    /// 事件时刻就是收到的时刻——实时到达的事件用这个。
     pub fn apply(&mut self, event: &AgoraEvent, epoch: i64, now: i64) -> bool {
+        self.apply_at(event, epoch, now, now)
+    }
+
+    /// 同 [`Machine::apply`]，但状态起点（[`Machine::status_since`]）记 `at`——事件自己的时刻，
+    /// 而 `now` 是收到它的时刻。daemon 停机期间攒在投递箱里的事件重放时两者相差几分钟到几小时，
+    /// "waiting 3m"要从 `at` 算（A42；agora-h1k.4，2026-09-06）。
+    ///
+    /// `last_hook_at` 仍记 `now`，不记 `at`：沉默阈值与 STARTING 宽限问的是"daemon 从上次听到
+    /// hook 起还没等到下一条多久了"，是 daemon 的等待，不是事件的年龄——重放一条三分钟前的
+    /// SessionStart 不能让它当场衰减成 TURN_DONE（反例：`tests/hook_recovery.rs` 用 ms=1 的投递
+    /// 断言 ingest 后仍是 STARTING）。`at` 晚于 `now`（时钟异常）按 `now` 算。
+    pub fn apply_at(&mut self, event: &AgoraEvent, epoch: i64, now: i64, at: i64) -> bool {
         if epoch < self.epoch {
             return false;
         }
         if epoch > self.epoch {
             self.reset(epoch, now);
         }
+        let at = at.min(now);
         self.heard_hooks = true;
         self.last_hook_at = Some(now);
         if matches!(self.current.status, Status::Finished | Status::Failed)
@@ -388,7 +402,7 @@ impl Machine {
             }
         };
         if let Some(a) = next {
-            self.set(a, now);
+            self.set(a, at);
         }
         if self.current.source == Source::Hook {
             self.snapshot = Some(HookSnapshot {

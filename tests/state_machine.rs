@@ -448,6 +448,31 @@ fn status_since_is_when_the_state_was_set_not_the_last_tick() {
 }
 
 #[test]
+fn apply_at_moves_status_since_but_not_the_silence_clock() {
+    // agora-h1k.4（A42）：重放一条三分钟前的事件——状态起点回到三分钟前，但 daemon 的沉默 /
+    // 启动宽限时钟从"收到"算：宽限问的是 daemon 等了多久，不是事件多老。改成两者都用事件时刻，
+    // 重放的 SessionStart 会当场衰减成 TURN_DONE，第二个断言就红。
+    let mut m = Machine::new(cfg(), true, 1, 1000);
+    m.apply_at(&AgoraEvent::SessionStarted, 1, 1000, 820);
+    assert_eq!(m.status_since(), 820, "起点是事件时刻");
+    let r = rt(true, None);
+    assert_eq!(
+        tick(&mut m, 1005, &r, None).status,
+        Status::Starting,
+        "宽限 10 s 从收到（1000）算，1005 还没到"
+    );
+    assert_eq!(tick(&mut m, 1011, &r, None).status, Status::TurnDone);
+    // 事件时刻晚于收到时刻（时钟异常）按收到时刻；沉默阈值同样从收到算。
+    m.apply_at(&AgoraEvent::PromptSubmitted("x".into()), 1, 1020, 1500);
+    assert_eq!(m.status_since(), 1020);
+    assert!(!m.hooks_silent(1020 + 599));
+    assert!(m.hooks_silent(1020 + 600));
+    // 实时路径：apply = apply_at(now, now)。
+    m.apply(&AgoraEvent::TurnEnded(None), 1, 1030);
+    assert_eq!(m.status_since(), 1030);
+}
+
+#[test]
 fn hooks_never_heard_after_terminal_activity_is_flagged_but_not_at_startup() {
     // 守卫（agora-dvh.15）：装了 hook 的会话，启动宽限后终端有过活动、再过 unheard_after
     // 仍一条事件没有 → hooks_unheard 报沉默秒数；TUI 启动时那波输出不算起点（Codex 的

@@ -271,6 +271,13 @@ impl SessionManager {
             return Ok(false);
         }
         let now = clock::now_secs();
+        // 状态起点用事件自己的时刻——投递箱文件名里的 ts，hook 进程写文件那一刻——而不是收到的
+        // 时刻：daemon 停机期间写下的 WAITING 重放后，"waiting 3m"得从三分钟前算起，Dashboard 的
+        // 同分排序读的也是它（A42；agora-h1k.4，2026-09-06）。没有文件名的事件（Dashboard 答复
+        // 时 daemon 自己合成的 DecisionResolved）就是现在。
+        let at = delivery
+            .and_then(crate::hook::inbox::delivery_time_secs)
+            .unwrap_or(now);
         {
             let mut machines = lock(&self.machines);
             let stored = machines.entry(id.to_owned()).or_insert_with(|| {
@@ -287,7 +294,7 @@ impl SessionManager {
                 return Ok(false);
             }
             for e in events {
-                if !m.apply(e, epoch, now) {
+                if !m.apply_at(e, epoch, now, at) {
                     tracing::debug!(
                         component = "status",
                         session = id,
