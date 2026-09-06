@@ -1,5 +1,6 @@
 # 被中断（Esc）：Claude Code 2.1.258 没有中断事件（ADR-002 D2 表），Stop 缺席；
 # 中断中的工具收到 PostToolUseFailure，状态留在 RUNNING，直到下一条 prompt 或 hook 沉默规则兜底。
+# 2026-09-06 agora-9cd 起，提示消失 ≥ text_ticks 个 tick 即解除挂起 → UNKNOWN（状态机 observe_hooked 看屏幕；receiver 的 sweep 放掉还在等的 hook）；回放没有屏幕输入，此处 expect 不变。
 {"at":0,"payload":{"hook_event_name":"UserPromptSubmit","prompt":"long task","prompt_id":"p1","session_id":"a1b2c3d4-0000-4000-8000-000000000001","transcript_path":"~/.claude/projects/x/a1b2.jsonl","cwd":"/work/agora","permission_mode":"default","effort":"medium"},"expect":{"status":"running"}}
 {"at":1,"payload":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"toolu_04","tool_input":{"command":"sleep 100"},"session_id":"a1b2c3d4-0000-4000-8000-000000000001","transcript_path":"~/.claude/projects/x/a1b2.jsonl","cwd":"/work/agora","permission_mode":"default","effort":"medium"},"expect":{"status":"running"}}
 {"at":5,"payload":{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_use_id":"toolu_04","tool_input":{"command":"sleep 100"},"error":"interrupted","session_id":"a1b2c3d4-0000-4000-8000-000000000001","transcript_path":"~/.claude/projects/x/a1b2.jsonl","cwd":"/work/agora","permission_mode":"default","effort":"medium"},"expect":{"status":"running"}}
