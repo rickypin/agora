@@ -21,6 +21,9 @@ use crate::gateway::{
 };
 use crate::runtime::Size;
 
+/// 发出 Close 之后最多等对端这么久完成关闭握手（读到它的 Close 或流结束）。
+const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
 #[derive(Deserialize)]
 pub struct TermQuery {
     cols: Option<u16>,
@@ -197,6 +200,20 @@ pub(super) async fn bridge(
         }
     }
     let confirmed = pty.detach().await;
+    // 关闭握手要做完：发了 Close 还得把对端还在路上的帧（exit 前后发出的 input / Pong）读到
+    // 它的 Close 或流结束为止，再放手。直接丢 socket 的话，内核看到接收队列里有未读数据就回
+    // RST，对端收到 RST 会连自己缓冲里还没读的 output / exit 帧一起丢掉。2026-09-06 CI
+    // ubuntu-24.04 上 tests/changes.rs::diff_terminal_is_read_only_and_ephemeral 就这样读到
+    // ConnectionReset：git diff 退出得比测试发 input 帧还快（macOS / 22.04 时序不同没撞上，
+    // 本机 12 连跑也复现不了）。上限 CLOSE_GRACE，不陪不答话的对端耗着。
     let _ = socket.send(Message::Close(None)).await;
+    let _ = tokio::time::timeout(CLOSE_GRACE, async {
+        while let Some(Ok(frame)) = socket.recv().await {
+            if matches!(frame, Message::Close(_)) {
+                break;
+            }
+        }
+    })
+    .await;
     confirmed
 }
