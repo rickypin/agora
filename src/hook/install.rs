@@ -3,18 +3,23 @@
 //! hook 装进用户自己的 agent 配置：文件与事件表由宿主的 `AgentHooks::install_spec` 给，
 //! 这里只会"把一组条目拼进一份 JSON"，不认识任何 agent。规则：
 //! - 命令形态 `if [ -x <AGORA_HOME>/bin/agora ]; then exec <AGORA_HOME>/bin/agora hook --host <h> --home <AGORA_HOME>; fi`：
-//!   稳定路径 + 显式 `--home`；`bin/agora` 是指向当前二进制的符号链接，安装时建 / 修。`exec` 让
-//!   agora 顶替 `sh -c` 那层，hook 进程的 ppid 就是 agent 本体——实测 2026-09-04 Grok 1.0.13 不带
-//!   `exec` 时 ppid 是 sh，而 Grok 的环境里没有进程号变量，外部会话的存活只能靠 ppid。
+//!   稳定路径 + 显式 `--home`；`bin/agora` 是指向当前二进制的符号链接，**每次** install 都建 / 修，
+//!   配置条目"无需改动"也不例外（agora-vkt：2026-09-05 清空 ~/.agora 后三家条目都还在、链接没了，
+//!   `[ -x ]` 守卫让 hook 静默失效，用户只看到 hooks_unheard）；uninstall 不碰它——别的 agent 的
+//!   条目可能还在用。`exec` 让 agora 顶替 `sh -c` 那层，hook 进程的 ppid 就是 agent 本体——实测
+//!   2026-09-04 Grok 1.0.13 不带 `exec` 时 ppid 是 sh，而 Grok 的环境里没有进程号变量，外部会话的
+//!   存活只能靠 ppid。
 //! - 幂等：命令里的 `<AGORA_HOME>/bin/agora hook` 是自己条目的标记——先删自己的再加，重复装不重复；
 //!   卸载只删自己的，别人的条目与文件里其它键原样。
-//! - 装前显示 diff（stderr），`--dry-run` 只看不写；写文件先 `.part` 再 rename。
+//! - 装前显示 diff（stderr），`--dry-run` 只看不写（链接也只报告"将建立 / 将重指"）；写文件先
+//!   `.part` 再 rename。
 //!
 //! 配置文件的形态是三家共同的 `{"hooks": {"<Event>": [{"matcher"?, "hooks": [{"type":
 //! "command", "command", "timeout"}]}]}}`（Claude settings.json、Grok agora.json、Codex
 //! hooks.json，后者 2026-09-05 实测 0.152.1 照此加载）。装完宿主要用户再做一步的（Codex 的
 //! `/hooks` 信任）由 `AgentHooks::install_hint` 说，这里只负责打印。
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
@@ -47,6 +52,73 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> InstallError + '_ {
 /// 稳定路径 `<AGORA_HOME>/bin/agora`。
 pub fn bin_path(agora_home: &Path) -> PathBuf {
     agora_home.join("bin").join("agora")
+}
+
+/// daemon 启动时的自检（agora-vkt）：链接在、指向的二进制没了 → `Some((link, target))`，让 main
+/// 警告一句怎么修。链接根本不存在不算——装 hooks 之前它本来就不存在；指向别处但目标存在也不算，
+/// 那可能是用户有意让 hook 用另一份二进制。
+pub fn dangling_bin_link(agora_home: &Path) -> Option<(PathBuf, PathBuf)> {
+    let link = bin_path(agora_home);
+    let target = std::fs::read_link(&link).ok()?;
+    // 相对目标按链接所在目录解析（符号链接的语义）；`join` 遇到绝对路径就是绝对路径本身。
+    let resolved = link
+        .parent()
+        .map(|dir| dir.join(&target))
+        .unwrap_or_else(|| target.clone());
+    (!resolved.exists()).then_some((link, target))
+}
+
+/// `<AGORA_HOME>/bin/agora` 该怎么处置（[`Installer::bin_link_plan`]）。三态之外没有"跳过"：每次
+/// install 都要走到这里，不看配置条目要不要改（agora-vkt）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkPlan {
+    /// 已经是指向当前二进制的符号链接。
+    Ok(PathBuf),
+    /// 路径上什么都没有：首装，或 AGORA_HOME 被清空重置过。
+    Create(PathBuf),
+    /// 路径上有东西但不对。`from` 是它现在指向的地方——旧版本 / 别处的二进制，或已经悬空；
+    /// `None` 是被普通文件（或目录）占了位、根本不是符号链接。
+    Repoint {
+        link: PathBuf,
+        from: Option<PathBuf>,
+    },
+}
+
+impl LinkPlan {
+    pub fn link(&self) -> &Path {
+        match self {
+            LinkPlan::Ok(link) | LinkPlan::Create(link) => link,
+            LinkPlan::Repoint { link, .. } => link,
+        }
+    }
+
+    pub fn is_ok(&self) -> bool {
+        matches!(self, LinkPlan::Ok(_))
+    }
+
+    /// 给用户看的那一行：总含 `<link> -> <exe>`，让人看得见链接指到了哪。`applied` 是"已经落盘"
+    /// （`--dry-run` 传 false，说"将…"）。
+    pub fn describe(&self, exe: &Path, applied: bool) -> String {
+        let link = self.link().display();
+        let exe = exe.display();
+        match self {
+            LinkPlan::Ok(_) => format!("{link} -> {exe}（已指向）"),
+            LinkPlan::Create(_) if applied => format!("{link} -> {exe}（已建立）"),
+            LinkPlan::Create(_) => format!("将建立 {link} -> {exe}（--dry-run，未建）"),
+            LinkPlan::Repoint { from, .. } => {
+                let why = match from {
+                    Some(t) if t.exists() => format!("原指向 {}", t.display()),
+                    Some(t) => format!("原指向 {}，已不存在", t.display()),
+                    None => "原是普通文件，不是符号链接".to_owned(),
+                };
+                if applied {
+                    format!("{link} -> {exe}（已重指；{why}）")
+                } else {
+                    format!("将重指 {link} -> {exe}（{why}；--dry-run，未改）")
+                }
+            }
+        }
+    }
 }
 
 fn sh_quote(p: &Path) -> String {
@@ -180,6 +252,23 @@ impl Installer {
         let part = plan.file.with_extension("json.part");
         std::fs::write(&part, pretty(&plan.after) + "\n").map_err(io(&part))?;
         std::fs::rename(&part, &plan.file).map_err(io(&plan.file))
+    }
+
+    /// 只看不动：`<AGORA_HOME>/bin/agora` 现在是什么、该怎么办。`--dry-run` 靠它报告，真跑先用它
+    /// 组出给用户看的那一行再 [`Self::ensure_bin_link`]。
+    pub fn bin_link_plan(&self, exe: &Path) -> LinkPlan {
+        let link = bin_path(&self.agora_home);
+        match std::fs::read_link(&link) {
+            Ok(target) if target == exe => LinkPlan::Ok(link),
+            // 悬空也走这支：read_link 读的是链接本身，目标在不在无所谓。
+            Ok(target) => LinkPlan::Repoint {
+                link,
+                from: Some(target),
+            },
+            // 不是符号链接却有东西：普通文件 / 目录占位。symlink_metadata 不跟随链接。
+            Err(_) if link.symlink_metadata().is_ok() => LinkPlan::Repoint { link, from: None },
+            Err(_) => LinkPlan::Create(link),
+        }
     }
 
     /// `<AGORA_HOME>/bin/agora` → 当前二进制；指错了就重指。
@@ -329,9 +418,17 @@ pub fn parse_args(argv: &[&str]) -> Result<Args, InstallError> {
     })
 }
 
-/// 入口。成功 0；用法错误 2；写不了 1。
+/// 入口。成功 0；用法错误 2；写不了 1。给用户看的话全在 stderr（stdout 留给将来机器可读的形态），
+/// "当前二进制"是 `current_exe()`；可测的核在 [`run_with`]。
 pub fn run(argv: &[&str]) -> i32 {
-    match run_inner(argv) {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(err) => {
+            eprintln!("agora hooks: current_exe: {err}");
+            return 1;
+        }
+    };
+    match run_with(argv, &exe, &mut std::io::stderr()) {
         Ok(()) => 0,
         Err(InstallError::Usage(msg)) => {
             eprintln!("{msg}");
@@ -344,7 +441,19 @@ pub fn run(argv: &[&str]) -> i32 {
     }
 }
 
-fn run_inner(argv: &[&str]) -> Result<(), InstallError> {
+/// 一行输出。`out` 在生产里就是 stderr，写不进去（EPIPE）按 IO 错误报而不是 panic。
+fn say(out: &mut dyn Write, line: impl AsRef<str>) -> Result<(), InstallError> {
+    writeln!(out, "{}", line.as_ref()).map_err(io(Path::new("stderr")))
+}
+
+/// `agora hooks <action> <agent> …` 的全部逻辑，`exe` 是"当前二进制"（[`run`] 传 `current_exe()`，
+/// 测试传 tmp 里的假文件），给用户看的话全写进 `out`。
+///
+/// install 的顺序固定是先链接、再配置：条目里的 `[ -x bin/agora ]` 守卫要在条目生效的那一刻就
+/// 通得过。链接那一步不看配置是否 noop（agora-vkt，2026-09-05 实测：清空 ~/.agora 之后三家条目
+/// 都还在、链接没了，旧实现只说"无需改动"就返回，hook 被守卫静默跳过、只剩 hooks_unheard）。
+/// `--dry-run` 两样都只报告不落盘；uninstall 不碰链接——别的 agent 的条目可能还在用。
+pub fn run_with(argv: &[&str], exe: &Path, out: &mut dyn Write) -> Result<(), InstallError> {
     let args = parse_args(argv)?;
     let hooks = adapter::for_host(&args.agent).ok_or_else(|| {
         InstallError::Usage(format!("{} 没有 hook 可装\n{}", args.agent, usage()))
@@ -353,36 +462,34 @@ fn run_inner(argv: &[&str]) -> Result<(), InstallError> {
         agora_home: args.agora_home.clone(),
         user_home: args.user_home.clone(),
     };
-    let plan = if args.action == "install" {
+    let install = args.action == "install";
+    let plan = if install {
         installer.plan_install(hooks)?
     } else {
         installer.plan_uninstall(hooks)?
     };
-    if plan.is_noop() {
-        eprintln!("{} 无需改动", plan.file.display());
-        if args.action == "install" {
-            if let Some(hint) = hooks.install_hint() {
-                eprintln!("{hint}");
-            }
+    if install {
+        let link = installer.bin_link_plan(exe);
+        if !args.dry_run && !link.is_ok() {
+            installer.ensure_bin_link(exe)?;
         }
-        return Ok(());
+        say(out, link.describe(exe, !args.dry_run))?;
     }
-    eprintln!("--- {}", plan.file.display());
-    eprint!("{}", plan.diff());
-    if args.dry_run {
-        eprintln!("(--dry-run，未写入)");
-        return Ok(());
+    if plan.is_noop() {
+        say(out, format!("{} 无需改动", plan.file.display()))?;
+    } else {
+        say(out, format!("--- {}", plan.file.display()))?;
+        out.write_all(plan.diff().as_bytes())
+            .map_err(io(Path::new("stderr")))?;
+        if args.dry_run {
+            return say(out, "(--dry-run，未写入)");
+        }
+        installer.write(&plan)?;
+        say(out, format!("已写入 {}", plan.file.display()))?;
     }
-    if args.action == "install" {
-        let exe = std::env::current_exe().map_err(io(Path::new("current_exe")))?;
-        let link = installer.ensure_bin_link(&exe)?;
-        eprintln!("{} -> {}", link.display(), exe.display());
-    }
-    installer.write(&plan)?;
-    eprintln!("已写入 {}", plan.file.display());
-    if args.action == "install" {
+    if install {
         if let Some(hint) = hooks.install_hint() {
-            eprintln!("{hint}");
+            say(out, hint)?;
         }
     }
     Ok(())
@@ -404,5 +511,85 @@ mod tests {
         assert!(c.starts_with("if [ -x '/Users/x y/.agora/bin/agora' ]; then"));
         assert!(is_ours(Path::new("/Users/x y/.agora"), &c));
         assert!(!is_ours(Path::new("/Users/z/.agora"), &c));
+    }
+
+    #[test]
+    fn bin_link_plan_distinguishes_ok_create_and_repoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inst = Installer {
+            agora_home: tmp.path().join("agora"),
+            user_home: tmp.path().join("home"),
+        };
+        let exe = tmp.path().join("agora-current");
+        std::fs::write(&exe, "").unwrap();
+        let link = bin_path(&inst.agora_home);
+        // 什么都没有 → Create；只看不动。
+        assert_eq!(inst.bin_link_plan(&exe), LinkPlan::Create(link.clone()));
+        assert!(!link.parent().unwrap().exists());
+        assert!(inst
+            .bin_link_plan(&exe)
+            .describe(&exe, false)
+            .starts_with("将建立 "));
+        // 指对了 → Ok。
+        inst.ensure_bin_link(&exe).unwrap();
+        assert_eq!(inst.bin_link_plan(&exe), LinkPlan::Ok(link.clone()));
+        // 指向别处（目标在） / 悬空（目标不在） / 普通文件占位 → Repoint，理由各不同。
+        let old = tmp.path().join("agora-old");
+        std::fs::write(&old, "").unwrap();
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&old, &link).unwrap();
+        let plan = inst.bin_link_plan(&exe);
+        assert_eq!(
+            plan,
+            LinkPlan::Repoint {
+                link: link.clone(),
+                from: Some(old.clone())
+            }
+        );
+        assert!(plan.describe(&exe, true).contains("原指向"));
+        assert!(!plan.describe(&exe, true).contains("已不存在"));
+        std::fs::remove_file(&old).unwrap();
+        assert!(inst
+            .bin_link_plan(&exe)
+            .describe(&exe, true)
+            .contains("已不存在"));
+        std::fs::remove_file(&link).unwrap();
+        std::fs::write(&link, "占位").unwrap();
+        let plan = inst.bin_link_plan(&exe);
+        assert_eq!(
+            plan,
+            LinkPlan::Repoint {
+                link: link.clone(),
+                from: None
+            }
+        );
+        assert!(plan.describe(&exe, false).contains("普通文件"));
+        // 三种都能修回来。
+        inst.ensure_bin_link(&exe).unwrap();
+        assert_eq!(std::fs::read_link(&link).unwrap(), exe);
+    }
+
+    #[test]
+    fn dangling_bin_link_only_flags_a_link_whose_target_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("agora");
+        // 没装过 hooks：链接不存在，不告。
+        assert_eq!(dangling_bin_link(&home), None);
+        let exe = tmp.path().join("agora-current");
+        std::fs::write(&exe, "").unwrap();
+        let inst = Installer {
+            agora_home: home.clone(),
+            user_home: tmp.path().join("h"),
+        };
+        let link = inst.ensure_bin_link(&exe).unwrap();
+        assert_eq!(dangling_bin_link(&home), None);
+        // 二进制搬了家 / 被删：告。
+        std::fs::remove_file(&exe).unwrap();
+        assert_eq!(dangling_bin_link(&home), Some((link.clone(), exe)));
+        // 相对目标按链接所在目录解析。
+        std::fs::remove_file(&link).unwrap();
+        std::fs::write(home.join("bin/real"), "").unwrap();
+        std::os::unix::fs::symlink("real", &link).unwrap();
+        assert_eq!(dangling_bin_link(&home), None);
     }
 }
