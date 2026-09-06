@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agora::api::{self, AppState};
-use agora::auth::{Auth, PairedVia};
+use agora::auth::{self, Auth, PairedVia};
 use agora::config::{self, Config, Settings};
 use agora::local::{self, Request, Response, SOCKET_FILE};
 use agora::peer::backoff::CONNECT_TIMEOUT;
@@ -254,6 +254,15 @@ async fn serve() -> i32 {
     }
     tokio::spawn(hooks.clone().run_sweeper(std::time::Duration::from_secs(5)));
 
+    // 零凭据警告的两个计数（ADR-003 D5）：已配对设备与未吊销的机器 token。只签了 token、还没配对
+    // 过设备的节点（被 peer 访问的典型初始状态）不该被说成"没有人能连进来"（agora-y9v）。
+    // 读库失败按 0 算并说一句——宁可多叫一声，也不能吞掉错误装作有凭据。
+    let machine_tokens = auth::peer_token::list(&db)
+        .map(|t| t.iter().filter(|t| t.revoked_at.is_none()).count())
+        .unwrap_or_else(|err| {
+            tracing::warn!(component = "main", %err, "读不到机器 token 列表，零凭据警告按 0 个 token 算");
+            0
+        });
     let auth = Arc::new(Auth::new(db, settings.auth.clone()));
     let paired_devices = auth
         .list_devices()
@@ -266,10 +275,8 @@ async fn serve() -> i32 {
         );
     }
     let tls_listener = tls.map(|setup| {
-        // 零凭据只警告不拒绝（ADR-003 D5）。机器 token 的计数等 agora-7ku.2 把 peer_tokens 表接进
-        // Auth 后从那里取，现在按 0 算——所以此刻它在"只有 token 没有设备"的节点上会多叫一声，
-        // 接入时把这个 0 换掉。
-        if let Some(w) = tls::zero_credentials_warning(paired_devices, 0) {
+        // 零凭据只警告不拒绝（ADR-003 D5）；守卫 tests/listen.rs::tls_listen_with_only_a_machine_token_does_not_warn。
+        if let Some(w) = tls::zero_credentials_warning(paired_devices, machine_tokens) {
             tracing::warn!(component = "tls", "{w}");
         }
         // 证书文件热加载（rotate-key / 续期后不必重启）；external 还按 renew_before 调 renew_command。

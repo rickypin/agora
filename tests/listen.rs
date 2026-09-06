@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agora::api::{self, plaintext_listen, AppState, ListenError};
-use agora::auth::{Auth, AuthConfig};
+use agora::auth::{self, Auth, AuthConfig};
 use agora::config::Config;
 use agora::runtime::Runtime;
 use agora::session::{Db, SessionManager};
@@ -147,4 +147,33 @@ async fn tls_listen_without_credentials_warns_not_refuses() {
     )
     .await;
     assert!(resp.starts_with("HTTP/1.1 401"), "{resp}");
+}
+
+#[tokio::test]
+async fn tls_listen_with_only_a_machine_token_does_not_warn() {
+    // agora-y9v：只签了机器 token、还没配对过设备的节点（被 peer 访问的典型初始状态）开 tls_listen
+    // 不该被说成"没有人能连进来"。main.rs 把未吊销的 token 数喂给 zero_credentials_warning——
+    // 以前那里写死 0；这条守卫钉住计数的来源（peer_token::list）与过滤规则（revoked_at 为空才算）：
+    // 吊销掉唯一的 token 之后又该警告。
+    let db = Db::open_in_memory().unwrap();
+    assert!(auth::peer_token::list(&db).unwrap().is_empty());
+    let active = |db: &Db| {
+        auth::peer_token::list(db)
+            .unwrap()
+            .iter()
+            .filter(|t| t.revoked_at.is_none())
+            .count()
+    };
+    assert!(tls::zero_credentials_warning(0, active(&db)).is_some());
+
+    auth::peer_token::create(&db, "mac", false).unwrap();
+    assert_eq!(active(&db), 1);
+    assert!(
+        tls::zero_credentials_warning(0, active(&db)).is_none(),
+        "只有 token、没有设备也不该警告"
+    );
+
+    auth::peer_token::revoke(&db, "mac").unwrap();
+    assert_eq!(active(&db), 0, "已吊销的不算");
+    assert!(tls::zero_credentials_warning(0, active(&db)).is_some());
 }
