@@ -35,6 +35,16 @@ impl Fixture {
             conf_path: dir.path().join("tmux.conf"),
             history_limit: 12345,
             record: true,
+            // 运行时的默认子进程超时是 5 s（ADR-001 D6，daemon 上是对的）。这里是真 tmux、
+            // 一次 exec 就回来，比假 tmux 那种 `#!/bin/sh` 再套 `$(cat …)` 的脚本快得多，所以
+            // 从没红过；但同一类病 2026-09-06 在三个 worktree 并行 `cargo test --all-targets`
+            // （8 核、CARGO_BUILD_JOBS=3 ×3）时把 tests/tmux_dead_window.rs 打成 4/4 红、
+            // tests/runtime_degraded.rs 红三条（agora-z62 / agora-74s）：满载下 fork+exec 超过
+            // 5 s，下一行的 `check_version().unwrap()` 就会在"运行时调用超时: …/tmux"上 panic。
+            // 预防性地放宽到测试里等不到的长度（agora-2ck）；这些守卫钉的是 D2 / D3 / D6 的
+            // 行为，不是超时。轮询的 deadline（wait_until / wait_capture / terminate 的孤儿检查）
+            // 与这个超时分开考虑，见各自的注释。别去改 DEFAULT_TIMEOUT。
+            exec_timeout: Duration::from_secs(60),
             ..Default::default()
         })
         .unwrap();
