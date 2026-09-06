@@ -110,6 +110,16 @@ impl TaskIndex {
         self
     }
 
+    /// 单次 `bd` 调用的子进程超时（默认 10 s，`new` 里给，这里不改默认值；`Pending` 占位的
+    /// 重试窗口仍是 `timeout * 2`）。给测试与将来的配置项用：测试里的假 `bd` 是 `#!/bin/sh`
+    /// 脚本，机器满载时 fork+exec 一个 sh 就可能超过 10 s，超时在 `fetch` 里按"没这个 issue"
+    /// 返回 None——2026-09-06 三个 worktree 并行 `cargo test` 时 `tests/task_beads.rs` 就这样
+    /// 红了两条、二进制 10.01 s 收场（agora-z62）；测试把它放宽到等不到的长度，超时就不再是噪声。
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
     /// 同步模式：`get` 缺失时就地查完再返回（测试与 CLI 用）。
     pub fn synchronous(mut self) -> Self {
         self.sync = true;

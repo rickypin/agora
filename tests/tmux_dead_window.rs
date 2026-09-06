@@ -104,6 +104,17 @@ fn write_fake(
         conf_path: dir.path().join("tmux.conf"),
         unknown_signal_grace: grace,
         record: true,
+        // 假 tmux 是 `#!/bin/sh` 脚本（sh 再加一次 `$(cat …)` 子进程）。运行时的默认子进程超时
+        // 是 5 s（ADR-001 D6，daemon 上是对的：一次 hang 住的调用不得拖住所有会话），但机器
+        // 满载时 fork+exec 一个 sh 就可能超过 5 s：2026-09-06 三个 worktree 并行
+        // `cargo test --all-targets`（8 核、CARGO_BUILD_JOBS=3 ×3，load average 36–58）时
+        // 本文件 4/4 全红、二进制 5.03 s 收场——`version().unwrap()` / `inspect(&r).unwrap()`
+        // 在 `RuntimeError::Timeout`（"运行时调用超时: …/tmux"）上 panic（agora-z62；同病同方
+        // 见 tests/runtime_degraded.rs 的 agora-74s）。这些测试钉的是 3.2a 的空 status 窗口与
+        // libutempter 的 SIGCHLD 补发，与超时无关；把超时放宽到测试里等不到的长度，超时就不再
+        // 是噪声。把这行去掉、或改回 `Duration::from_millis(1)`，四条测试会以同样的文本失败。
+        // 别去改 DEFAULT_TIMEOUT——那是 D6 的设计。
+        exec_timeout: Duration::from_secs(60),
         ..Default::default()
     })
     .unwrap();

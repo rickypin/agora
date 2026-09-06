@@ -41,6 +41,20 @@ esac
     bin
 }
 
+/// 用假 `bd` 的 `TaskIndex` 一律给这个子进程超时。假 `bd` 是 `#!/bin/sh` 脚本，`TaskIndex` 的
+/// 默认超时是 10 s（daemon 上是对的：embedded dolt 冷启动慢，但 list() 每 2 s 一轮不能被
+/// 一次 hang 住的 `bd` 拖住），可机器满载时 fork+exec 一个 sh 就可能超过 10 s，超时在
+/// `fetch` 里按"没这个 issue"返回 None：2026-09-06 三个 worktree 并行 `cargo test --all-targets`
+/// （8 核、CARGO_BUILD_JOBS=3 ×3，load average 36–58）时，
+/// `only_read_only_subcommands_ever_reach_bd`（`hit` 的 unwrap 得 None）与
+/// `a_session_with_an_issue_id_carries_title_and_priority`（`v.task` 的 expect）红了，二进制
+/// 10.01 s 收场——正是默认超时的形状（agora-z62）。这些测试钉的是"只准 show / ready"与
+/// "标签到前端手里"，与超时无关；把超时放宽到测试里等不到的长度，超时就不再是噪声。
+/// 把它改回 `Duration::from_millis(1)`，那两条（外加 `answers_including_misses_are_cached`）会以
+/// 同样的形态失败——get 得 None，一个超时文本都看不到。
+/// 别去改 `TaskIndex::new` 里的默认值——那是 daemon 的节拍。
+const FAKE_BD_TIMEOUT: Duration = Duration::from_secs(60);
+
 fn calls(dir: &Path) -> Vec<Vec<String>> {
     std::fs::read_to_string(dir.join("calls.log"))
         .unwrap_or_default()
@@ -55,7 +69,11 @@ fn only_read_only_subcommands_ever_reach_bd() {
     // 录下来的每一次调用都只能是 READ_ONLY 里的子命令。
     let dir = tempfile::tempdir().unwrap();
     let bd = fake_bd(dir.path());
-    let index = Arc::new(TaskIndex::new(bd.to_str().unwrap()).synchronous());
+    let index = Arc::new(
+        TaskIndex::new(bd.to_str().unwrap())
+            .synchronous()
+            .with_timeout(FAKE_BD_TIMEOUT),
+    );
 
     let hit = index.get(dir.path(), "agora-dvh.10").unwrap();
     assert_eq!(
@@ -95,7 +113,8 @@ fn answers_including_misses_are_cached() {
     let index = Arc::new(
         TaskIndex::new(bd.to_str().unwrap())
             .synchronous()
-            .with_ttl(Duration::from_secs(300)),
+            .with_ttl(Duration::from_secs(300))
+            .with_timeout(FAKE_BD_TIMEOUT),
     );
     for _ in 0..3 {
         assert!(index.get(dir.path(), "agora-dvh.10").is_some());
@@ -129,7 +148,11 @@ fn a_session_with_an_issue_id_carries_title_and_priority() {
     // A23：每行显示任务（issue id + 标题），同分按 bd 优先级排——优先级得先到前端手里。
     let dir = tempfile::tempdir().unwrap();
     let bd = fake_bd(dir.path());
-    let (m, _rt) = mgr(Arc::new(TaskIndex::new(bd.to_str().unwrap()).synchronous()));
+    let (m, _rt) = mgr(Arc::new(
+        TaskIndex::new(bd.to_str().unwrap())
+            .synchronous()
+            .with_timeout(FAKE_BD_TIMEOUT),
+    ));
     let v = m
         .create(&session("shell", dir.path(), Some("agora-9nv")))
         .unwrap();
