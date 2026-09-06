@@ -704,3 +704,131 @@ fn session_start_after_session_end_restarts() {
     assert_eq!(m.current().status, Status::Running);
     assert_eq!(tick(&mut m, 6, &r, None).status, Status::Running);
 }
+
+#[test]
+fn idle_status_since_survives_many_ticks() {
+    // 守卫（agora-385）：无 hook 会话进入 IDLE 之后每 tick 的结论一字不差（reason 也一样），起点钉在
+    // 进入 IDLE 的那个 tick——"idle 2m" 与同分按等待时长排序都靠它。2026-09-05 Shell-01 的反例：reason 是
+    // `no output for {n}s`，每 tick 都不同，set() 连 reason 一起比，set_at 每 tick 刷新，侧栏永远 "idle 0s"。
+    // 关掉：IDLE 的 reason 改回带秒数、或 set() 改回 `a != self.current` → 循环里的断言红。
+    let mut m = Machine::new(cfg(), false, 1, 0);
+    let mut r = rt(true, Some(0));
+    tick(&mut m, 0, &r, None);
+    let first = tick(&mut m, 60, &r, None);
+    assert_eq!(
+        (first.status, first.source),
+        (Status::Idle, Source::Activity)
+    );
+    assert_eq!(m.status_since(), 60);
+    for now in [62, 64, 66, 68, 70, 72] {
+        let a = tick(&mut m, now, &r, None);
+        assert_eq!(a, first, "t={now}: 每 tick 的 Assessment 完全相等");
+        assert_eq!(m.status_since(), 60, "t={now}: 起点是进入 IDLE 的那个 tick");
+    }
+    assert!(
+        !first
+            .reason
+            .as_deref()
+            .unwrap()
+            .chars()
+            .any(|c| c.is_ascii_digit()),
+        "reason 里不嵌秒数: {:?}",
+        first.reason
+    );
+    // 输出恢复 → RUNNING，起点跟着更新。
+    r.output_at = Some(80);
+    assert_eq!(tick(&mut m, 80, &r, None).status, Status::Running);
+    assert_eq!(m.status_since(), 80);
+}
+
+#[test]
+fn reason_only_changes_do_not_move_status_since() {
+    // 守卫（agora-385）：status_since 的定义是"当前状态的起点"（docs/spec/api.md）。同状态同来源而 reason 变
+    // （RUNNING 的 `prompt submitted` → `activity` → 换了个工具）不是换状态，起点不动；换了状态才刷新。
+    // 关掉：set() 改回 `a != self.current` → 第二个断言红（起点变成 20）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::PromptSubmitted("do x".into()), 1, 10);
+    assert_eq!(
+        (m.current().status, m.status_since()),
+        (Status::Running, 10)
+    );
+    m.apply(&AgoraEvent::Activity("Bash".into()), 1, 20);
+    assert_eq!(m.current().reason.as_deref(), Some("activity"));
+    assert_eq!(
+        (m.current().status, m.status_since()),
+        (Status::Running, 10),
+        "reason 变了、状态没变：起点不动"
+    );
+    m.apply(&AgoraEvent::Activity("Read".into()), 1, 30);
+    assert_eq!(
+        (m.current().status, m.status_since()),
+        (Status::Running, 10)
+    );
+    m.apply(
+        &AgoraEvent::DecisionNeeded {
+            tool_use_id: "t".into(),
+            summary: "Write".into(),
+        },
+        1,
+        40,
+    );
+    assert_eq!(
+        (m.current().status, m.status_since()),
+        (Status::Waiting, 40),
+        "换了状态才刷新"
+    );
+    // 同状态换来源也算换：进程层的 RUNNING 被 hook 的 RUNNING 接管，起点是 hook 事件那一刻。
+    let mut m = Machine::new(cfg(), false, 1, 0);
+    let r = rt(true, Some(0));
+    tick(&mut m, 5, &r, None);
+    assert_eq!((m.current().source, m.status_since()), (Source::Process, 5));
+    m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 9);
+    assert_eq!((m.current().source, m.status_since()), (Source::Hook, 9));
+}
+
+#[test]
+fn silent_hooks_unknown_reason_is_stable_across_ticks() {
+    // 守卫（agora-385）：hook 沉默 → UNKNOWN 之后屏幕不变，每 tick 的结论一字不差、起点不动；屏幕那半句
+    // 变了（reason 变）起点也不动，因为 (status, source) 没变。关掉：reason 改回 `hooks silent for {n}s`
+    // → 循环里的相等断言红。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    let r = rt(true, Some(0));
+    m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 0);
+    let first = tick(
+        &mut m,
+        603,
+        &r,
+        Some(text(Status::Waiting, "permission prompt")),
+    );
+    assert_eq!(
+        (first.status, first.source),
+        (Status::Unknown, Source::Text)
+    );
+    assert_eq!(
+        first.reason.as_deref(),
+        Some("hooks silent; screen: permission prompt")
+    );
+    assert_eq!(m.status_since(), 603);
+    for now in [605, 607, 609, 611] {
+        let a = tick(
+            &mut m,
+            now,
+            &r,
+            Some(text(Status::Waiting, "permission prompt")),
+        );
+        assert_eq!(a, first, "t={now}");
+        assert_eq!(m.status_since(), 603, "t={now}");
+    }
+    // 屏幕换了一句：reason 跟着变，状态与来源没变，起点仍是 603。
+    let a = tick(&mut m, 613, &r, Some(text(Status::Idle, "shell prompt")));
+    assert_eq!(
+        a.reason.as_deref(),
+        Some("hooks silent; screen: shell prompt")
+    );
+    assert_eq!(m.status_since(), 603);
+    // hook 一出声：TURN_DONE，起点是事件那一刻。
+    m.apply(&AgoraEvent::TurnEnded(None), 1, 620);
+    let a = tick(&mut m, 622, &r, Some(text(Status::Waiting, "prompt")));
+    assert_eq!((a.status, a.source), (Status::TurnDone, Source::Hook));
+    assert_eq!(m.status_since(), 620);
+}

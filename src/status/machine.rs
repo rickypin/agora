@@ -289,8 +289,13 @@ impl Machine {
         *self = Machine::new(cfg, declared, epoch, now);
     }
 
+    /// 写入当前结论。状态的起点（[`Machine::status_since`]）只随 `(status, source)` 变：reason /
+    /// confidence 变了不是换状态——RUNNING 的 `prompt submitted` → `activity`、文本 WAITING 换了一句
+    /// 提示，人等的还是同一件事。不能改回 `a != self.current`（Assessment 派生的 PartialEq 连 reason
+    /// 一起比）：2026-09-06 agora-385 反例——IDLE 的 reason 曾是 `no output for {n}s`，每 tick 都不等，
+    /// set_at 每 tick 刷新，侧栏永远 "idle 0s"、排序拿不到等待时长，事件流每 tick 一条 status_changed。
     fn set(&mut self, a: Assessment, now: i64) {
-        if a != self.current {
+        if (a.status, a.source) != (self.current.status, self.current.source) {
             self.set_at = now;
         }
         self.current = a;
@@ -501,9 +506,11 @@ impl Machine {
         let screen_waits = text
             .is_some_and(|t| matches!(t.status, Status::Waiting | Status::TurnDone | Status::Idle));
         if silent && screen_waits {
+            // reason 里不嵌沉默了多少秒：秒数由 status_since 推得、前端已会算（"unknown 3m"）；嵌了数字
+            // 每 tick 的 Assessment 都不同，Differ 每 tick 发一条 status_changed（2026-09-06 agora-385）。
+            // 只带屏幕那半句——它只随屏幕内容变。
             let reason = format!(
-                "hooks silent for {}s; screen: {}",
-                now - quiet_since,
+                "hooks silent; screen: {}",
                 text.map(|t| t.reason.as_str()).unwrap_or_default()
             );
             self.set(
@@ -576,14 +583,11 @@ impl Machine {
             None
         } else {
             let last = self.last_output_at.unwrap_or(self.since);
-            (now - last >= self.cfg.idle_after.as_secs() as i64).then(|| {
-                Assessment::new(
-                    Status::Idle,
-                    Source::Activity,
-                    0.6,
-                    Some(&format!("no output for {}s", now - last)),
-                )
-            })
+            // 固定的 "no output"，不写 "no output for {n}s"：空闲了多久由 status_since 推得，前端已会算
+            // （"idle 2m"）；嵌了秒数每 tick 的 Assessment 都不同 → 起点每 tick 刷新、事件流每 tick 一条
+            // status_changed（2026-09-05 Shell-01 永远 "idle 0s"，agora-385）。
+            (now - last >= self.cfg.idle_after.as_secs() as i64)
+                .then(|| Assessment::new(Status::Idle, Source::Activity, 0.6, Some("no output")))
         };
         let candidate = text_waiting.or(idle).unwrap_or(process);
         // 驻留：低层不覆盖 high_hold 内高层写的状态；同层推进（STARTING → RUNNING）不算覆盖。
