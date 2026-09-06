@@ -131,3 +131,33 @@ GET /api/health
 `peers`（agora-7ku.12；模型在 `src/peer/state.rs`）：键是 `peers[].name`，配置了的 peer 从启动起就在（还没连上：`online: false`、`last_seen: null`、`retrying: false`、`last_error: null`）。`last_seen` 是上次成功交互的时刻，**本节点时钟**打的 UTC 文本（ADR-004：不信 peer 报的时间），离线后保留——这就是 stale 行的"上次见到"（不变量 8）。`retrying` 表示下一次重试已排定（退避 1 s 起步、30 s 封顶、永不放弃，参数见 `docs/spec/architecture.md`）。`last_error` 是最后一次失败的**类型**，只有四个值：`incompatible_version`（对方 `api_version` 不兼容，A33）、`fingerprint_mismatch`（证书 SPKI 指纹不符）、`unauthorized`（对方 401）、`unreachable`（拒绝 / 5 s 超时 / DNS 失败）；在线时为 `null`。前端只按这四个值渲染原因文案，不解析任何消息文本（MISSION §2.3 规则 10）。守卫 `tests/health.rs::health_peers_section_reports_each_peer_state_by_type`。
 
 前端对 `runtime` 段的消费（agora-bgr）：配对之后 Workspace 带 cookie 拉完整形态（`web/src/health.ts` 的 `HealthWatcher`），`runtime.status = degraded` 时在主区顶部给一条横幅——`reason` 原文 + "会话状态暂不可知，进程没有被杀"——恢复后自动消失。这是前端唯一的一处轮询：degraded 是服务端每次请求现算的结论、没有事件推它，健康时 60 s 一次、degraded 期间 10 s 一次，拉不到就沿用上一次的结论不闪。未认证的门页只用公开子集判在线 / 不可达，公开子集没有 `runtime` 段、也不算 degraded（ADR-003 D1：`tests/health.rs` 守卫公开子集只有 `status` 一个键）。
+
+## 一跳转发（ADR-003 D8、ADR-004；agora-7ku.7）
+
+写操作与终端流按会话 id 的节点前缀路由（MISSION §3.5 / §7.3），实现在 `src/api/forward.rs`；`POST /api/sessions/:id/{kill,restart,cleanup,input}`、`PATCH` / `DELETE /api/sessions/:id` 与 `WS /api/sessions/:id/terminal` 七个端点各在入口查一次 `state.registry.route(<node>)`：
+
+| 前缀 | 去向 |
+|---|---|
+| 本机 `node.id`，或裸 id（无前缀） | 本地 handler，行为与单节点时相同 |
+| 已配置的 peer | 同方法、同路径、同 body 经该 peer 的 `PeerTransport` 送到所属节点，响应**原样**回（状态码、`content-type`、body）；所属节点的每一种判定（409 `needs_confirmation` / `no_pending_decision` / `still_alive`、404 `not_found`、400 `bad_request`、200 + `restart` 字段……）都是它说的，本节点不改写、不补充 |
+| 既不是本机也不是 peer | 404 `node_unknown`，不发任何请求 |
+
+**一跳**（ADR-004）：请求本身的 principal 是 `Peer` 时，非本机前缀一律 404 `node_unknown`——B 收到 A 对 `c:<id>` 的请求就到此为止，哪怕 B 自己配了 C；A→B→C 在结构上不存在，环也就不存在。peer 对本机会话的操作照常（这条规则拦的是"再转"，不是 peer 本身）。守卫 `tests/forward.rs::second_hop_is_refused_at_the_middle_node`、`::unknown_node_is_rejected`。
+
+**确认在所属节点**（ADR-003 D8；MISSION §8）：`confirmed` 随 body 原样过去——不带就是不带、`false` 就是 `false`，转发节点没有任何一条代码路径能把它置 `true`；所属节点按**自己**会话的 agent 状态判断，409 `needs_confirmation` 原样回到浏览器，浏览器弹框后带 `confirmed: true` 重发，再转一次。所属节点看到的调用方是 `Peer { name }`，peer 不享有免确认。守卫 `tests/forward.rs::kill_confirmation_enforced_at_owner`。
+
+**请求上带什么**：只有 `content-type: application/json`（有 body 时）与 body。浏览器的 cookie / `Origin` / `Host` / `Authorization` / `Content-Length` 一个都不转——Bearer 由 `HttpsTransport` 自己加（ADR-003 D3），主机与 TLS 归 transport（D4）。转发的 body 是本节点解析后再序列化的形态（写端点的 body 都是本节点自己定义的小结构，页面又是本节点发的，不会带本节点不认识的字段）。
+
+**终端流**：先向所属节点建 `WS /api/sessions/:id/terminal?<原查询串>`，成功才升级浏览器这条；之后两边帧**原样**互转——`output` / `input` / `resize` / `status` / `exit` / `ping` / `pong` 的 JSON 帧与 WS 层的 Ping / Pong / Close 都不解释、不合并，所属节点的 20 s Ping 与 65 s idle 经本节点到达浏览器，活性判断仍是端到端的。任一侧断（关闭、错误、流结束）就关另一侧；`exit` 帧转过去后本节点主动关两边（所属节点在 exit 之后还要等 attach 退出最多 3 s 才关，浏览器不必陪它等）。所属节点在升级前的拒绝（会话不存在、没有运行时、认证失败）以 HTTP 状态回到浏览器，不建 WS。守卫 `tests/forward.rs::terminal_ws_forwarded_bidirectionally`。
+
+**转发失败的错误类型**（本节点自己产生的；所属节点的非 2xx 不在此列，它们原样回）：
+
+| type | 状态 | 何时 |
+|---|---|---|
+| `node_unknown` | 404 | 前缀既不是本机也不是 peer；或请求来自 peer 且前缀不是本机（一跳） |
+| `peer_unreachable` | 502 | 连不上 / 5 s 内没有应答 / 线上协议错误（`TransportError::Unreachable` / `Timeout` / `Protocol`） |
+| `peer_fingerprint_mismatch` | 502 | 对端证书 SPKI 指纹与 `peers[].cert_fingerprint` 不符（ADR-003 D4：独立类型，绝不并进"不可达"） |
+| `peer_config` | 502 | 本节点这一行 `peers[]` 字面上就用不了（URL 不是 https、指纹格式不对、token_file 读不了 / 权限过宽）或 TLS 客户端建不起来 |
+| `peer_rejected` | 所属节点的状态码 | 只在终端 WS：所属节点以非 101 拒绝了升级；WS 握手失败没有 body，只有状态码可传 |
+
+守卫 `tests/forward.rs::unreachable_peer_is_reported_by_type`。前端按 `type` 分支、不解析 `message`（MISSION §2.3 规则 10）。

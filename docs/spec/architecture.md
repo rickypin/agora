@@ -71,3 +71,30 @@ MISSION §3.5 只定行为契约（断线保留最后视图并标记、恢复后
 全是纯函数：不读时钟、不掷骰子，真正的等待交给调用方的 `tokio::time::sleep`；单测不需要假时钟，直接断言返回值（`src/peer/backoff.rs` 的 5 个单测）。V1 参数写死，不造配置面；要暴露再挂 `peers[]` 或全局 `status` 段。
 
 **每 peer 状态模型**（`src/peer/state.rs`；JSON 形态与字段含义见 `docs/spec/api.md` Health 节）：`PeerState { online, last_seen, retrying, last_error }`，两条转移——`seen(now)` 一次成功交互（在线、刷新 last_seen、清错误、停退避）、`failed(err)` 一次失败（离线、记类型、进入退避，**last_seen 不动**）。`last_seen` 由本节点时钟打（ADR-004），是 stale 行的"上次见到"。`PeerError` 只有四个类型：`IncompatibleVersion` / `FingerprintMismatch` / `Unauthorized` / `Unreachable`——按类型不按文本（MISSION §2.3 规则 10），Header 与 stale 行只据此选文案。`PeerStates` 是节点名 → 状态的表，挂在 `AppState`：`main.rs` 启动时把 `peers[]` 的名字登记进去（还没连上的 peer 从第一秒起就在 health 里），peer 客户端（agora-7ku.5）在成败时写，`/api/health` 只读快照、不去连任何 peer。Header 的渲染见 `docs/spec/ux.md`「Header 节点状态」。
+
+## 一跳转发（agora-7ku.7）
+
+MISSION §3.5 "写操作与终端流按会话所属节点路由：本机直达，peer 经一跳转发"在代码里只有一个入口：`src/api/forward.rs`。六个写 handler（`src/api/sessions.rs` 的 kill / restart / cleanup / input / patch / delete）与终端升级（`src/api/terminal.rs`）在开头各调一次它，之后的代码与单节点时一字不差——转发不是 handler 里的分支，是 handler 之前的一道闸。
+
+```
+浏览器 ──cookie──▶ A: /api/sessions/b:42/kill {confirmed:false}
+                     │ forward::route(state.registry, principal, "b:42")
+                     │   Local  → 本地 handler（裸 id 也走这里）
+                     │   Peer(t)→ t.request(POST /api/sessions/b:42/kill, 同 body)
+                     │   Unknown→ 404 node_unknown
+                     ▼
+                  B: Principal::Peer{a} ─▶ 同一个 kill handler ─▶ 409 needs_confirmation
+                     │ （B 若再看到 c:<id>：principal 是 Peer → node_unknown，不转 C）
+                     ▼
+浏览器 ◀── 409 needs_confirmation（B 的原话，A 只转）
+```
+
+三条结构性保证，各有守卫（`tests/forward.rs`）：
+
+| 保证 | 怎么做到的 | 守卫 |
+|---|---|---|
+| 确认在所属节点判断，转发节点不能代替、不能绕过（ADR-003 D8） | 转发节点没有 `confirmed` 的读写代码，body 原样序列化过去；所属节点上跑的就是本地那个 `require_confirmation`，看到的 principal 是 `Peer`，与 `Human` 同一条路 | `kill_confirmation_enforced_at_owner` |
+| 一跳、不成环（ADR-004） | `forward::hop` 在 `Route::Peer` 分支上先看 principal：`Peer` → `node_unknown`。不是"记录跳数"，是"peer 的请求根本进不了转发分支" | `second_hop_is_refused_at_the_middle_node`、`unknown_node_is_rejected` |
+| 终端流端到端（MISSION §3.2 的链路多一段 WS，不多一个解释者） | 先 `connect_ws` 到所属节点再升级浏览器；桥只搬帧——文本帧、Ping / Pong、Close 原样过，`exit` 转完主动关两边；本节点不 attach、不开 PTY、不做 keepalive | `terminal_ws_forwarded_bidirectionally` |
+
+传输层失败按 `TransportError` 的类型映射成 `peer_unreachable` / `peer_fingerprint_mismatch` / `peer_config` / `peer_rejected`（表见 `docs/spec/api.md`「一跳转发」），指纹不匹配独立成类（ADR-003 D4）。转发不写 `PeerStates`（`/api/health` 的 peers 段）：那是 peer 客户端（agora-7ku.5）的事件流连接说了算的，一次转发的成败不该让 Header 上的 peer 状态闪。
