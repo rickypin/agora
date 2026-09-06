@@ -217,7 +217,9 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         localNode={localNode ?? undefined}
         all={rows}
         total={rows.length}
-        active={tabs.active}
+        // 看 diff 时它的会话行仍算选中（展开区留着，验收标准 / 改动列表与 diff 并排对照，MISSION §6.3）；
+        // 不然行一折叠，关掉 diff 标签又重挂载重拉一次 /changes（2026-09-06 代检时看到）。
+        active={diffOf ?? tabs.active}
         onOpen={openTab}
         onNewAgent={openNewAgent}
         onRowRender={onRowRender}

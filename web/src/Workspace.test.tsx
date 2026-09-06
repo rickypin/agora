@@ -542,8 +542,10 @@ describe("Workspace · 看 diff（MISSION §6.3 看结果；A41，agora-h1k.5）
     expect(mounted).toEqual(["n:a", "n:a"]);
     expect(unmounted).toEqual(["n:a"]);
     expect(sockets).toEqual(["rw:default", "ro:defaultDiffSocket"]);
-    // 侧栏没多一行：diff 不是会话。
+    // 侧栏没多一行：diff 不是会话；它的会话行仍是选中的（展开区还在，不重拉）。
     expect(screen.getAllByTestId(/^row-n:/).length).toBe(2);
+    expect(screen.getByTestId("changes-list-n:a")).toBeTruthy();
+    expect(t.requests.filter((r) => r.url === "/api/sessions/n%3Aa/changes").length).toBe(1);
 
     // 别的行变了（byId 变 → prune 跑一遍）：diff 标签留着——existing 集合里有它。
     await act(async () => {
