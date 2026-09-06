@@ -25,6 +25,9 @@ use agora::api::{self, AppState};
 use agora::auth::{Auth, PairedVia};
 use agora::config::{self, Config, Settings};
 use agora::local::{self, Request, Response, SOCKET_FILE};
+use agora::peer::backoff::CONNECT_TIMEOUT;
+use agora::peer::registry::PeerRegistry;
+use agora::peer::transport::HttpsTransport;
 use agora::runtime::exec::{exec, ExecOptions};
 use agora::runtime::tmux::{TmuxConfig, TmuxRuntime, TmuxSection};
 use agora::runtime::{env_probe, Runtime};
@@ -297,9 +300,20 @@ async fn serve() -> i32 {
     ));
     state.runtime_path_source = path_source;
     // 配置里的 peer 从第一秒起就在 health / Header 里（离线、没见过），不等连上才出现（MISSION §10.3）。
+    // 同时装节点名 → transport 的表（agora-7ku.11）：peer 客户端（7ku.5）与一跳转发（7ku.7）都从
+    // state.registry 查。名字重复或与本机 node.id 同名是配置错误，与其他配置错误一样退出码 2；
+    // url / 指纹 / token_file 的形态错误不在这里拦——HttpsTransport 到真要拨号时才报 Config，
+    // 显示为「配置错误」而不是拒绝启动（docs/spec/config.md「机器 token 文件」）。
+    let mut registry = PeerRegistry::new(&settings.node_id);
     for p in &settings.raw.peers {
         state.peers.register(&p.name);
+        let transport = HttpsTransport::new(p.clone(), CONNECT_TIMEOUT);
+        if let Err(err) = registry.insert(Arc::new(transport)) {
+            tracing::error!(component = "main", %err, "peers 配置被拒绝");
+            return 2;
+        }
     }
+    state.registry = Arc::new(registry);
     hooks.attach_events(state.events.clone(), state.node.clone());
     state.hooks = Some(hooks);
     // 状态变化没有人来通知：轮询求差发 /api/events。

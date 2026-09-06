@@ -104,6 +104,10 @@ pub struct AppState {
     pub probes: Arc<std::sync::Mutex<BTreeMap<String, (crate::adapter::VersionProbe, Instant)>>>,
     /// 每个 peer 在本节点眼里的状态（MISSION §10.3）：peer 客户端写，`/api/health` 的 peers 段读。
     pub peers: crate::peer::state::PeerStates,
+    /// 节点名 → transport（agora-7ku.11）：`main.rs` 按 `peers` 配置装好；peer 客户端（agora-7ku.5）
+    /// 从这里取 transport 去拉视图，一跳转发（agora-7ku.7）按会话 id 的节点前缀在这里 `route`。
+    /// 测试直接赋值（进程内 fake），所以是 `Arc` 而不是 `Option`：查不到就是 `Route::Unknown`。
+    pub registry: Arc<crate::peer::registry::PeerRegistry>,
 }
 
 /// 不可用的探测结果保留多久再重探。
@@ -122,6 +126,7 @@ impl AppState {
             hooks: None,
             probes: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             peers: crate::peer::state::PeerStates::new(),
+            registry: Arc::new(crate::peer::registry::PeerRegistry::new(node)),
         }
     }
 

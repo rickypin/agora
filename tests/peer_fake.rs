@@ -217,3 +217,22 @@ fn in_process_peer_is_only_known_to_the_extractor_and_the_fake_transport() {
         "InProcessPeer 只允许出现在 {allowed:?}，越界文件: {offenders:?}"
     );
 }
+
+/// 接缝（2026-09-06，第三批编排）：AppState 自带一张以本机 node.id 为键的 PeerRegistry，
+/// `main.rs` 按 `peers` 配置装表、测试直接赋值。7ku.5 的 peer 客户端与 7ku.7 的一跳转发都
+/// 只认 `state.registry`，不各自再造一张——两路并行时各造一张，集成时就得二选一。
+#[tokio::test]
+async fn app_state_carries_a_registry_keyed_by_local_node() {
+    let a = Node::new("a");
+    let b = Node::new("b");
+    assert_eq!(a.state.registry.local(), "a");
+    assert!(matches!(a.state.registry.route("a"), Route::Local));
+    assert!(matches!(a.state.registry.route("b"), Route::Unknown));
+
+    let mut reg = PeerRegistry::new(a.name);
+    reg.insert(peer(&b, &a)).unwrap();
+    let mut state = a.state.clone();
+    state.registry = Arc::new(reg);
+    assert!(matches!(state.registry.route("b"), Route::Peer(_)));
+    assert!(matches!(state.registry.route("c"), Route::Unknown));
+}
