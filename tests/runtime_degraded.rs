@@ -88,6 +88,17 @@ fn fake(tag: &str, mode0: &str) -> Fake {
             socket: socket.clone(),
             adopt_sockets: vec![],
             conf_path: dir.path().join("tmux.conf"),
+            // 假 tmux 是 `#!/bin/sh` 脚本（sh 再加两次 `$(cat …)` 子进程）。运行时的默认子进程
+            // 超时是 5 s（ADR-001 D6，daemon 上是对的：一次 hang 住的调用不得拖住所有会话），
+            // 但机器满载时 fork+exec 一个 sh 就可能超过 5 s：2026-09-06 两个 worktree 并行
+            // `cargo test --all-targets`（8 核、CARGO_BUILD_JOBS=4 ×2）时，下面那次
+            // `check_version()` 就返回了 `RuntimeError::Timeout`，`degrades_runtime()` 为
+            // true，三条测试的起点已经 degraded——reason 是"运行时调用超时: …/tmux"而不是
+            // "3.0 / 下限"（agora-74s）。这些测试钉的是 mode 文件（ok / mismatch / old）驱动的
+            // 降级与自愈，与超时无关；把超时放宽到测试里等不到的长度，超时就不再是噪声。
+            // 把这行去掉、或改回 `Duration::from_millis(1)`，三条测试会以同样的文本失败。
+            // 别去改 DEFAULT_TIMEOUT、也别让 Timeout 不算降级——那是 D6 / D7 的设计。
+            exec_timeout: std::time::Duration::from_secs(60),
             ..Default::default()
         })
         .unwrap(),
