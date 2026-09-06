@@ -403,7 +403,7 @@ impl Machine {
             // UNKNOWN / TURN_DONE：Codex Desktop 的线程里 hook 的 ppid 是所有线程共用的 app-server，
             // 永远活着，靠探活它永远不会结束（2026-09-05 devcenter 那一行，agora-vfi）。
             // reason 例外表（2026-09-06）：只有 Claude 的 `clear` 不改状态——/clear 之后进程活着，同一秒
-            // 紧接着新 id 的 SessionStart(source=clear)（testdata/claude/2.1.261/hooks/clear.jsonl）。
+            // 紧接着新 id 的 SessionStart(source=clear)（Claude 2.1.261 真录的 fixture `clear.jsonl`）。
             // 其余都算结束：Claude resume / logout / prompt_input_exit / other（resume 之后同一进程会再发
             // SessionStart(source=resume)，行随即回 STARTING，所以不必例外）、Codex other（0.152.1 只见过
             // 这一个值；它的 /clear 根本不发 SessionEnd）、Grok shutdown（/clear 同样不发）、没有 reason。
