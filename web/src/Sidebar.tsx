@@ -1,34 +1,13 @@
-import { Fragment, memo, useEffect, useState, type ReactNode, type RefObject } from "react";
+import { Fragment, useEffect, useState, type ReactNode, type RefObject } from "react";
 import type { AdoptBody } from "./api";
-import { countByStatus, needsAttention, promptRepeatsLabel, statusLine, taskLabel } from "./attention";
+import { countByStatus, needsAttention, taskLabel } from "./attention";
 import type { SessionRow, UnregisteredRow } from "./events";
 import { Header, type NodeStatus } from "./Header";
+import { rowName, SidebarRow, str } from "./SessionRow";
 
-/** 状态符号（docs/spec/ux.md 线框）。 */
-export function statusSymbol(status: string): string {
-  switch (status) {
-    case "waiting":
-      return "⚠";
-    case "turn_done":
-      return "◆";
-    case "running":
-      return "●";
-    case "starting":
-      return "…";
-    case "idle":
-      return "○";
-    case "finished":
-      return "✓";
-    case "failed":
-      return "✗";
-    default:
-      return "?";
-  }
-}
-
-export function rowName(s: SessionRow): string {
-  return String(s.name ?? s.display_name ?? s.id);
-}
+// 行组件与它的两个小工具搬去了 SessionRow.tsx（agora-h1k.3 接缝，2026-09-06）；Tabs / CommandPalette /
+// SessionSettings 仍从这里 import，所以原样再导出一次，调用方一行不改。
+export { rowName, SidebarRow, statusSymbol } from "./SessionRow";
 
 /** 侧栏过滤匹配的字段（docs/spec/ux.md：name / node / agent / preview）：任务标签与两行预览也算。 */
 export function rowHaystack(s: SessionRow): string {
@@ -44,10 +23,6 @@ export function rowHaystack(s: SessionRow): string {
   ].join(" ");
 }
 
-function str(v: unknown): string {
-  return typeof v === "string" ? v : "";
-}
-
 /** 每 30 s 走一次的时钟，只为"waiting 3m"这种时长文案。 */
 function useNowSeconds(periodMs = 30_000): number {
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
@@ -57,83 +32,6 @@ function useNowSeconds(periodMs = 30_000): number {
   }, [periodMs]);
   return now;
 }
-
-interface RowProps {
-  row: SessionRow;
-  active: boolean;
-  /** 1…9 显示成 Alt/Option 跳转的序号；其余不显示（MISSION §6.5）。 */
-  ordinal: number;
-  onOpen: (id: string) => void;
-  /** 测试注入：数渲染次数。 */
-  onRender?: (id: string) => void;
-  /** 选中行下方的展开区（就地回答，MISSION §6.3）。 */
-  expanded?: ReactNode;
-  /** unix 秒；"waiting 3m"的基准。 */
-  now: number;
-}
-
-/** memo：行对象引用没变就不重渲染（store.ts）。 */
-export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, expanded, now }: RowProps) {
-  onRender?.(row.id);
-  const prompt = str(row.prompt);
-  const progress = str(row.progress);
-  const preview = str(row.preview);
-  // 装了 hook 却从没收到过事件（Codex 未在 /hooks 信任是最常见的一种，agora-dvh.15）：
-  // 行上一行醒目提示，全文放 title；服务端判定，前端不猜。
-  const unheard = str(row.hooks_unheard);
-  // 两行预览读自 hook（❯ 用户最后输入 / ↳ agent 正在做或最后说的）；没有 hook 的会话保持一行
-  // pane preview；两者都没有时退回状态理由（MISSION §6.3；ADR-002 D8）。
-  const lines = prompt || progress ? null : preview || String(row.reason ?? "");
-  return (
-    <li className={active ? "selected" : undefined}>
-      <button
-        className={active ? "row selected" : "row"}
-        onClick={() => onOpen(row.id)}
-        title={`${rowName(row)} (${row.id})`}
-        data-testid={`row-${row.id}`}
-      >
-        <span className={`dot st-${row.status}`}>{statusSymbol(row.status)}</span>
-        <span className="row-main">
-          <span className="name" data-testid={`label-${row.id}`}>
-            {taskLabel(row)}
-          </span>
-          <span className="meta">
-            <span>{String(row.agent_type ?? "")}</span>
-            {row.origin === "external" && <span className="origin">external</span>}
-            <span className="node">@ {row.node}</span>
-            <span className={`state st-${row.status}`} data-testid={`state-${row.id}`}>
-              {statusLine(row, now)}
-            </span>
-          </span>
-          {prompt && !promptRepeatsLabel(row) && (
-            <span className="preview line-prompt" data-testid={`prompt-${row.id}`}>
-              <span className="muted">❯ </span>
-              {prompt}
-            </span>
-          )}
-          {progress && (
-            <span className="preview line-progress" data-testid={`progress-${row.id}`}>
-              <span className="muted">↳ </span>
-              {progress}
-            </span>
-          )}
-          {lines && (
-            <span className="preview muted" data-testid={`preview-${row.id}`}>
-              {lines}
-            </span>
-          )}
-          {unheard && (
-            <span className="preview hooks-unheard" data-testid={`hooks-unheard-${row.id}`} title={unheard}>
-              ⚠ hook 没接上：{unheard}
-            </span>
-          )}
-        </span>
-        <span className="ord muted">{ordinal >= 1 && ordinal <= 9 ? ordinal : ""}</span>
-      </button>
-      {active && expanded}
-    </li>
-  );
-});
 
 /** header 的计数行（docs/spec/ux.md 线框：Running 5 · Needs Input 2 · …）。 */
 function CountsLine({ rows }: { rows: SessionRow[] }) {
