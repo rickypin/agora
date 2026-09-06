@@ -500,4 +500,112 @@ mod tests {
             Err(broadcast::error::TryRecvError::Lagged(_))
         ));
     }
+
+    /// 无 hook 会话的一行视图：状态、reason 与起点都取自真实的状态机，不手写——手写两份一样的行
+    /// 什么都测不出来，这条守卫要抓的正是状态机吐出的 reason 每 tick 不同（agora-385）。
+    fn shell_view(m: &crate::status::Machine, alive: bool) -> SessionView {
+        SessionView {
+            record: crate::session::SessionRecord {
+                id: "s1".into(),
+                runtime_ref: Some("fake:agora:s1".into()),
+                display_name: "shell-01".into(),
+                name_locked: false,
+                agent_type: "shell".into(),
+                working_directory: None,
+                worktree: None,
+                task_ref: None,
+                command: None,
+                agent_session_id: None,
+                epoch: 1,
+                transcript_path: None,
+                created_at: String::new(),
+                spawned_at: None,
+                ended_at: None,
+                ended_at_approximate: false,
+                killed_at: None,
+                updated_at: String::new(),
+                origin: crate::session::Origin::Agora,
+            },
+            name: "shell-01".into(),
+            alive,
+            exit: None,
+            pid: Some(1),
+            managed: true,
+            assessment: m.current().clone(),
+            detail: None,
+            pending_decision: None,
+            respond_via: "terminal",
+            respond_within_secs: None,
+            prompt: None,
+            progress: None,
+            preview: None,
+            status_since: m.status_since(),
+            hooks_unheard: None,
+            task: None,
+        }
+    }
+
+    #[test]
+    fn idle_row_emits_no_status_changed_on_later_ticks() {
+        // 守卫（agora-385）：IDLE 行之后的 tick 什么都没变（reason 固定、status_since 钉在进入 IDLE 那一刻）
+        // → 求差器一条 status_changed 都不发；前端不必每 2 s 重渲染那一行。对照：输出恢复、状态真变了才发。
+        // 关掉：machine.rs 里 IDLE 的 reason 改回 `no output for {n}s` → 第二轮 step 就有事件，断言红。
+        use crate::runtime::{RuntimeRef, RuntimeSession, Size};
+        use crate::status::{Assessment, Liveness, Machine, MachineConfig, Observation};
+        let mut rt = RuntimeSession {
+            r#ref: RuntimeRef("fake:agora:s1".into()),
+            name: "s1".into(),
+            pid: Some(1),
+            alive: true,
+            exit: None,
+            exited_at: None,
+            title: String::new(),
+            cwd: std::path::PathBuf::from("/"),
+            attached: false,
+            size: Size { cols: 80, rows: 24 },
+            managed: true,
+            output_at: Some(0),
+        };
+        let mut m = Machine::new(MachineConfig::default(), false, 1, 0);
+        let tick = |m: &mut Machine, rt: &RuntimeSession, now: i64| {
+            m.observe(Observation {
+                process: Assessment::new(Status::Running, Source::Process, 1.0, None),
+                liveness: Liveness::Alive,
+                text: None,
+                runtime: Some(rt),
+                epoch: 1,
+                now,
+            })
+        };
+        tick(&mut m, &rt, 0);
+        assert_eq!(tick(&mut m, &rt, 60).status, Status::Idle);
+        let mut differ = Differ::default();
+        assert!(
+            differ.step("n", &[shell_view(&m, true)]).is_empty(),
+            "第一轮只建基线"
+        );
+        for now in [62, 64, 66] {
+            tick(&mut m, &rt, now);
+            let events = differ.step("n", &[shell_view(&m, true)]);
+            assert!(
+                events.is_empty(),
+                "t={now}: IDLE 行没变，不该有事件: {events:?}"
+            );
+        }
+        // 输出恢复 → RUNNING：这才是一条 status_changed，起点是恢复那一刻。
+        rt.output_at = Some(70);
+        tick(&mut m, &rt, 70);
+        let events = differ.step("n", &[shell_view(&m, true)]);
+        assert!(
+            matches!(
+                &events[..],
+                [Event::StatusChanged {
+                    status: Status::Running,
+                    status_since: 70,
+                    ..
+                }]
+            ),
+            "{events:?}"
+        );
+    }
 }

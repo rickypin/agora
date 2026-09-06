@@ -852,7 +852,9 @@ impl SessionManager {
                 m.hooks_unheard(now),
             )
         };
-        let hooks_unheard = unheard.map(|secs| {
+        // 句子里不写沉默了多少秒（agora-385，2026-09-06）：hooks_unheard 在求差器的 Seen 里，嵌了秒数
+        // 每 tick 都变、每 tick 一条 status_changed；已经沉默了多久对"去修 hook"这个动作也没有帮助。
+        let hooks_unheard = unheard.map(|_| {
             let hint = adapter::find(&rec.agent_type)
                 .and_then(|a| a.hooks())
                 .and_then(|h| h.install_hint())
@@ -862,7 +864,7 @@ impl SessionManager {
                         rec.agent_type
                     )
                 });
-            format!("终端活动了 {secs} 秒仍没收到任何 hook 事件。{hint}")
+            format!("终端活动了一阵仍没收到任何 hook 事件。{hint}")
         });
         let preview = screen
             .as_deref()

@@ -386,7 +386,7 @@ describe("Workspace", () => {
   });
 
   it("shows the hook-not-connected hint from the server and drops it once hooks are heard (agora-dvh.15)", async () => {
-    const hint = "终端活动了 95 秒仍没收到任何 hook 事件。请在 Codex TUI 里输入 /hooks，按 t 信任 agora 的条目。";
+    const hint = "终端活动了一阵仍没收到任何 hook 事件。请在 Codex TUI 里输入 /hooks，按 t 信任 agora 的条目。";
     const t = setup([{ ...row("n:c"), agent_type: "codex", hooks_unheard: hint }]);
     await online(t);
     const el = screen.getByTestId("hooks-unheard-n:c");
