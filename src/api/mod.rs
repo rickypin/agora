@@ -18,7 +18,7 @@ pub mod version;
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{FromRef, FromRequestParts, Request};
@@ -27,7 +27,9 @@ use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
+use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::service::TowerToHyperService;
 use serde::Serialize;
 use tracing::Instrument;
 
@@ -36,6 +38,7 @@ use crate::config::AgentOverride;
 use crate::events::EventBus;
 use crate::project::Projects;
 use crate::session::SessionManager;
+use crate::tls::server::Acceptor;
 
 pub use auth::{InProcessPeer, TlsListener};
 pub use health::RuntimeHealth;
@@ -279,6 +282,103 @@ pub async fn serve_on(
     .with_graceful_shutdown(shutdown_signal())
     .await
     .map_err(ServeError::Serve)
+}
+
+// ---------- TLS 监听器（ADR-003 D5） ----------
+
+/// 请求经 TLS 监听器进来的标记（请求扩展；与 [`InProcessPeer`] 同一机制：线上的字节变不成它，
+/// 只有 [`serve_tls_router`] 会放）。`Principal` 提取器据此决定接不接 Bearer（ADR-003 D3：Bearer
+/// 只上 TLS 监听器，明文监听器 401 `bearer_requires_tls`；接线随 agora-7ku.2）与发 cookie 要不要
+/// `Secure`（D2；随远端配对 agora-thc.1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverTls;
+
+/// 已绑定的 TLS 监听器：TCP 监听器 + 可热换证书的 acceptor。
+pub struct TlsListener {
+    tcp: tokio::net::TcpListener,
+    acceptor: Acceptor,
+}
+
+impl TlsListener {
+    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.tcp.local_addr()
+    }
+
+    pub fn acceptor(&self) -> &Acceptor {
+        &self.acceptor
+    }
+}
+
+/// TLS 握手的上限：明文客户端 / 端口扫描器连上来不说话，不能让它一直占着任务。
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 绑定 TLS 监听器；与明文监听器一样是 daemon 启动最先做的事之一（agora-apr）。
+pub async fn bind_tls(addr: SocketAddr, acceptor: Acceptor) -> Result<TlsListener, ServeError> {
+    let tcp = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|source| ServeError::Bind { addr, source })?;
+    tracing::info!(component = "api", %addr, fingerprint = %acceptor.fingerprint(), "listening (tls)");
+    Ok(TlsListener { tcp, acceptor })
+}
+
+/// 在 TLS 监听器上跑完整的 API 到 SIGINT / SIGTERM 为止。
+pub async fn serve_tls_on(listener: TlsListener, state: AppState) -> Result<(), ServeError> {
+    serve_tls_router(listener, router(state)).await
+}
+
+/// TLS 监听器上的 accept 循环。每条连接：TLS 握手（带超时）→ hyper http1 服务到连接结束
+/// （含 WS 升级）。这里**没有**"握手失败就按明文处理"的分支：TLS 监听器永不降级明文
+/// （ADR-003 D5，A34；守卫 `tests/listen.rs::tls_listener_never_serves_plaintext`）。
+///
+/// 不用 `axum::serve` 是因为它在 accept 循环里顺序做 `Listener::accept`，TLS 握手放进去会让
+/// 一个慢客户端拖住所有人；这里握手在每条连接自己的任务里。
+pub async fn serve_tls_router(listener: TlsListener, app: Router) -> Result<(), ServeError> {
+    let TlsListener { tcp, acceptor } = listener;
+    let app = app.layer(Extension(OverTls));
+    let mut shutdown = std::pin::pin!(shutdown_signal());
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => return Ok(()),
+            accepted = tcp.accept() => match accepted {
+                Ok((stream, peer)) => {
+                    tokio::spawn(serve_tls_conn(stream, peer, acceptor.clone(), app.clone()));
+                }
+                Err(err) => {
+                    // EMFILE / ECONNABORTED 一类是瞬时的：记一笔、让一让，不把监听器整个放弃。
+                    tracing::warn!(component = "api", %err, "TLS accept 失败");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+}
+
+async fn serve_tls_conn(
+    stream: tokio::net::TcpStream,
+    peer: SocketAddr,
+    acceptor: Acceptor,
+    app: Router,
+) {
+    let tls = match tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+        Ok(Ok(tls)) => tls,
+        Ok(Err(err)) => {
+            tracing::debug!(component = "api", %peer, %err, "TLS 握手失败（明文或对端放弃），连接关闭");
+            return;
+        }
+        Err(_) => {
+            tracing::debug!(component = "api", %peer, "TLS 握手超时，连接关闭");
+            return;
+        }
+    };
+    // `ClientAddr` 读的就是这个扩展；`axum::serve` 的 with_connect_info 在明文监听器上做同一件事。
+    let svc = app.layer(Extension(ConnectInfo(peer)));
+    let conn = hyper::server::conn::http1::Builder::new()
+        .timer(TokioTimer::new())
+        .serve_connection(TokioIo::new(tls), TowerToHyperService::new(svc))
+        .with_upgrades();
+    if let Err(err) = conn.await {
+        tracing::debug!(component = "api", %peer, %err, "TLS 连接结束");
+    }
 }
 
 /// 对端地址；只在真实监听器上有（oneshot 测试里没有 ConnectInfo）。

@@ -25,6 +25,7 @@ use agora::runtime::exec::{exec, ExecOptions};
 use agora::runtime::tmux::{TmuxConfig, TmuxRuntime, TmuxSection};
 use agora::runtime::{env_probe, Runtime};
 use agora::session::{Db, SessionManager};
+use agora::tls::{self, Mode, TlsFiles};
 
 /// V1 唯一的运行时；配置里 `runtime.kind` 缺省就是它。
 const RUNTIME_KIND: &str = "tmux";
@@ -135,6 +136,11 @@ async fn serve() -> i32 {
             return 1;
         }
     };
+    // TLS 监听器（ADR-003 D5）：配了 tls_listen 才有；证书按 tls.mode 来（D4）。
+    let tls = match bind_tls(&home, &settings).await {
+        Ok(t) => t,
+        Err(code) => return code,
+    };
     let socket_path = home.join(SOCKET_FILE);
     let (sock, socket_cleanup) = match local::bind(&socket_path).await {
         Ok(b) => b,
@@ -213,12 +219,45 @@ async fn serve() -> i32 {
     tokio::spawn(hooks.clone().run_sweeper(std::time::Duration::from_secs(5)));
 
     let auth = Arc::new(Auth::new(db, settings.auth.clone()));
-    if auth.list_devices().map(|d| d.is_empty()).unwrap_or(true) {
+    let paired_devices = auth
+        .list_devices()
+        .map(|d| d.iter().filter(|d| d.revoked_at.is_none()).count())
+        .unwrap_or(0);
+    if paired_devices == 0 {
         tracing::info!(
             component = "main",
             "还没有已配对设备：在本机运行 `agora open` 打开浏览器"
         );
     }
+    let tls_listener = tls.map(|setup| {
+        // 零凭据只警告不拒绝（ADR-003 D5）。机器 token 的计数等 agora-7ku.2 把 peer_tokens 表接进
+        // Auth 后从那里取，现在按 0 算——所以此刻它在"只有 token 没有设备"的节点上会多叫一声，
+        // 接入时把这个 0 换掉。
+        if let Some(w) = tls::zero_credentials_warning(paired_devices, 0) {
+            tracing::warn!(component = "tls", "{w}");
+        }
+        // 证书文件热加载（rotate-key / 续期后不必重启）；external 还按 renew_before 调 renew_command。
+        let renew = match setup.mode {
+            Mode::External => tls::reload::Renew::from_config(
+                settings.raw.tls.external.renew_command.as_deref(),
+                config::parse_duration(
+                    "tls.external.renew_before",
+                    &settings.raw.tls.external.renew_before,
+                )
+                .unwrap_or(std::time::Duration::from_secs(720 * 3600)),
+            ),
+            Mode::SelfSigned => None,
+        };
+        let (_watcher, _events) = tls::reload::spawn(
+            setup.acceptor,
+            tls::reload::WatchConfig {
+                files: setup.files,
+                interval: tls::reload::DEFAULT_INTERVAL,
+                renew,
+            },
+        );
+        setup.listener
+    });
 
     // unix socket：CLI 经它铸造配对链接；origin 是 daemon 自己的监听地址。
     let origin = format!("http://{addr}");
@@ -270,7 +309,8 @@ async fn serve() -> i32 {
     tracing::info!(component = "main", node = %settings.node_id, "daemon 就绪");
 
     let served = tokio::select! {
-        r = api::serve_on(http, state) => r.map_err(|e| e.to_string()),
+        r = api::serve_on(http, state.clone()) => r.map_err(|e| e.to_string()),
+        r = serve_tls(tls_listener, state) => r.map_err(|e| e.to_string()),
         r = socket_task => match r {
             Ok(Err(e)) => Err(e.to_string()),
             Ok(Ok(())) => Err("socket 服务意外结束".into()),
@@ -285,6 +325,66 @@ async fn serve() -> i32 {
             tracing::error!(component = "main", %err, "daemon 退出");
             1
         }
+    }
+}
+
+/// TLS 监听器绑好之后留给 serve 阶段的东西。
+struct TlsSetup {
+    listener: api::TlsListener,
+    acceptor: tls::server::Acceptor,
+    files: TlsFiles,
+    mode: Mode,
+}
+
+/// TLS 监听器（ADR-003 D4 / D5）：`tls.mode` 决定证书从哪来——self-signed 首次开时生成到
+/// `<AGORA_HOME>/tls/`、之后复用；external 读 cert_file / key_file。与明文监听器一样最先绑。
+/// 没配 `server.tls_listen` → `Ok(None)`；配置或证书不可用 → 退出码（配置 2，端口 1）。
+async fn bind_tls(home: &Path, settings: &Settings) -> Result<Option<TlsSetup>, i32> {
+    let Some(addr) = settings.tls_listen else {
+        return Ok(None);
+    };
+    let (mode, files) = TlsFiles::from_config(home, &settings.raw.tls).map_err(|err| {
+        tracing::error!(component = "tls", %err, "配置被拒绝");
+        2
+    })?;
+    let identity = match mode {
+        Mode::SelfSigned => tls::load_or_generate_self_signed(home, agora::clock::now_secs()),
+        Mode::External => tls::Identity::from_files(&files),
+    }
+    .map_err(|err| {
+        tracing::error!(component = "tls", %err, "TLS 证书不可用");
+        2
+    })?;
+    let acceptor = tls::server::Acceptor::new(&identity).map_err(|err| {
+        tracing::error!(component = "tls", %err, "TLS 证书装不上");
+        2
+    })?;
+    let listener = api::bind_tls(addr, acceptor.clone()).await.map_err(|err| {
+        eprintln!("{err}；端口被别的程序占用？改 config.yaml 的 server.tls_listen");
+        1
+    })?;
+    tracing::info!(
+        component = "tls",
+        mode = mode.as_str(),
+        fingerprint = %identity.fingerprint(),
+        "TLS 证书就绪；别的节点把它配成 peer 时 cert_fingerprint 填这个值"
+    );
+    Ok(Some(TlsSetup {
+        listener,
+        acceptor,
+        files,
+        mode,
+    }))
+}
+
+/// 没开 TLS 监听器时这一支永远不返回，让 `select!` 只看另外两支。
+async fn serve_tls(
+    listener: Option<api::TlsListener>,
+    state: AppState,
+) -> Result<(), api::ServeError> {
+    match listener {
+        Some(l) => api::serve_tls_on(l, state).await,
+        None => std::future::pending().await,
     }
 }
 
