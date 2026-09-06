@@ -313,6 +313,17 @@ impl Machine {
         self.cfg.startup_grace.as_secs() as i64
     }
 
+    /// 当前是屏幕给的 UNKNOWN：hook 会话里 `Source::Text` 的 UNKNOWN 只有两个来源——`observe_hooked`
+    /// 的"提示消失"规则（`permission prompt gone; hooks silent`，agora-9cd）与 D1 沉默规则
+    /// （`hooks silent; screen: …`）。两者都是"hook 没说话、只有屏幕可看"，所以下一条 hook 事件在
+    /// 它身上就是可信的证据：DecisionResolved 抬回 RUNNING、Idle 落 TURN_DONE（apply_at 两臂共用）。
+    /// 不用 `screen_released` 标记判断：它只覆盖"提示消失"那一条，沉默规则的 UNKNOWN 没有它
+    /// （2026-09-06 agora-01g）。初始的 `Assessment::unknown("no observation yet")` 是 `Source::None`、
+    /// 运行时降级的 UNKNOWN 是 `Source::Process`，都不在这里。
+    fn unknown_from_screen(&self) -> bool {
+        self.current.status == Status::Unknown && self.current.source == Source::Text
+    }
+
     /// Restart：新一代进程，旧状态、旧驻留全部作废。
     fn reset(&mut self, epoch: i64, now: i64) {
         let cfg = self.cfg.clone();
@@ -419,8 +430,7 @@ impl Machine {
                 }
                 // 从 WAITING 回 RUNNING；也从"提示消失"规则给的 UNKNOWN（source=text）回——终端放行、
                 // 工具跑完后 PostToolUse 才到的那条路，行不该停在 UNKNOWN（agora-9cd）。
-                let released_by_screen =
-                    self.current.status == Status::Unknown && self.current.source == Source::Text;
+                let released_by_screen = self.unknown_from_screen();
                 ((self.current.status == Status::Waiting || released_by_screen)
                     && self.pending.is_empty())
                 .then(|| hook(Status::Running, 0.95, Some("decision resolved")))
@@ -437,9 +447,18 @@ impl Machine {
                 self.pending.clear();
                 Some(hook(Status::TurnDone, 0.95, Some(reason)))
             }
-            // 空闲通知只是 TURN_DONE 的确认 / 补漏：RUNNING 里听到它才改，WAITING 不动。
-            AgoraEvent::Idle => (self.current.status == Status::Running)
-                .then(|| hook(Status::TurnDone, 0.9, Some("idle"))),
+            // 空闲通知只是 TURN_DONE 的确认 / 补漏：RUNNING 里听到它才改，WAITING 不动——挂起还在、
+            // 提示还在屏幕上，agent 正等人答权限 / 提问，"停在提示符"说的不是这一种停，不能因此放掉
+            // 挂起（Dashboard 的 Allow / Deny 还有效）。
+            // 也从屏幕给的 UNKNOWN（source=text）落 TURN_DONE（2026-09-06 agora-01g）。反例：终端放行
+            // 后按 Esc，Claude 2.1.261 一个事件都不发，"提示消失"规则把行降成 UNKNOWN 并钉住；约 60 s
+            // 后 Claude 发 Notification(idle_prompt)，只认 RUNNING 的 Idle 臂在它身上不产状态，行一直
+            // UNKNOWN 到用户的下一条 prompt——而 Esc 之后 Claude 确实停在提示符等下一条指令，idle_prompt
+            // 正是 TURN_DONE 的可信证据。沉默规则的 UNKNOWN 同理：hook 活着、agent 停在提示符；不接它
+            // 的话下一个 tick 沉默解除、进程层会把它猜成 RUNNING。
+            AgoraEvent::Idle => (self.current.status == Status::Running
+                || self.unknown_from_screen())
+            .then(|| hook(Status::TurnDone, 0.9, Some("idle"))),
             // 会话结束（MISSION §5.6 session.ended）：hook 层的 FINISHED，conf 0.8——进程退出的事实到了
             // 会以 1.0 覆盖（observe 第 1 步）；没有进程事实的 external 会话则只有这一条能让它离开
             // UNKNOWN / TURN_DONE：Codex Desktop 的线程里 hook 的 ppid 是所有线程共用的 app-server，
@@ -462,7 +481,7 @@ impl Machine {
             self.forget_screen_prompt();
         }
         if let Some(a) = next {
-            // hook 写出了新状态："提示消失"的 UNKNOWN 到此为止；没写状态的事件（SessionId、WAITING 外的
+            // hook 写出了新状态："提示消失"的 UNKNOWN 到此为止；没写状态的事件（SessionId、WAITING 里的
             // Idle）不算——它们没说会话在干什么，UNKNOWN 继续钉着，不让进程层猜成 RUNNING。
             self.screen_released = false;
             self.set(a, at);

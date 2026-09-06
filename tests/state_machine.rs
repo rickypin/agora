@@ -832,3 +832,45 @@ fn silent_hooks_unknown_reason_is_stable_across_ticks() {
     assert_eq!((a.status, a.source), (Status::TurnDone, Source::Hook));
     assert_eq!(m.status_since(), 620);
 }
+
+#[test]
+fn idle_notification_after_silent_hooks_unknown_lands_on_turn_done() {
+    // 守卫（agora-01g）：D1 沉默规则给的 UNKNOWN(text, "hooks silent; …") 收到 Notification(idle_prompt)
+    // → TURN_DONE(hook, "idle")：hook 活着、agent 停在提示符，与"提示消失"的 UNKNOWN 是同一条谓词
+    // （unknown_from_screen）。不接它的话 Idle 在它身上不产状态，下一个 tick 沉默解除、进程层猜成 RUNNING。
+    // 关掉：Idle 臂只认 RUNNING → 第一条 TURN_DONE 断言红。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    let r = rt(true, Some(0));
+    m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 0);
+    let a = tick(
+        &mut m,
+        603,
+        &r,
+        Some(text(Status::Waiting, "permission prompt")),
+    );
+    assert_eq!((a.status, a.source), (Status::Unknown, Source::Text));
+    assert!(
+        a.reason.as_deref().unwrap().contains("hooks silent"),
+        "{a:?}"
+    );
+    let at = 604;
+    assert!(m.apply(&AgoraEvent::Idle, 1, at));
+    let a = m.current();
+    assert_eq!(
+        (a.status, a.source),
+        (Status::TurnDone, Source::Hook),
+        "{a:?}"
+    );
+    assert_eq!(a.reason.as_deref(), Some("idle"));
+    assert_eq!(m.status_since(), at);
+    // 再 tick：屏幕文本随便，仍 TURN_DONE（hook 出声了，沉默解除；hook 说了算）。
+    let a = tick(&mut m, 606, &r, Some(text(Status::Idle, "shell prompt")));
+    assert_eq!(
+        (a.status, a.source),
+        (Status::TurnDone, Source::Hook),
+        "{a:?}"
+    );
+    assert_eq!(m.status_since(), at);
+    let a = tick(&mut m, 608, &r, None);
+    assert_eq!((a.status, a.source), (Status::TurnDone, Source::Hook));
+}
