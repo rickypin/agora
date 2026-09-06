@@ -95,6 +95,8 @@ RUNNING
 
 实现（`web/src/attention.ts`，agora-dvh.10）：侧栏就是 Dashboard——行按分数降序 → bd 优先级升序（`task.priority`，无 bd 视为 P2）→ `status_since` 早的在前排好，再把 NEEDS ATTENTION（分数 ≥ FINISHED）整体提到 RUNNING 前面；过滤只删不换序，所以 Alt/Option+N 跳的第 N 条永远等于眼睛看到的第 N 条。第一列 `taskLabel`：`task.id + title` > `task_ref`（issue id 或首条 prompt 摘要）> 名字。header 下一行是各状态计数。
 
+行上的 `@ <node>`（MISSION §3.5 "每行标明节点"；`web/src/SessionRow.tsx`，agora-7ku.5）只给 **node ≠ 本机** 的行：单机满屏 `@ mac` 是噪音，上面线框里本机的 `@ mac` 在实现里不显示；本机 id 取 `/api/system` 的 `node`（与 Header 本机那一枚同源），还没拉到之前谁都不标——先满屏 `@` 再消失更难看。peer 断线后行带 `stale: true`（`docs/spec/api.md`「peer 视图」），它的「上次见到」与点开即重试归 agora-7ku.6。
+
 每行下面的两行（`❯` 用户最后输入 / `↳` agent 正在做或最后说的，MISSION §6.3；都来自 hook 的 `prompt` / `progress`，没有 hook 的会话只有一行 pane `preview`）：
 
 ```
@@ -169,11 +171,11 @@ The running agent process will be killed. Its output stays until you clean it up
 
 ```
 agora                       AGENTS 12
-本机 ●   zuan ✗ 指纹不匹配 · 上次见到 23:10
+mac ●    zuan ✗ 指纹不匹配 · 上次见到 23:10
 Running 5 · Needs Input 2 · …
 ```
 
-侧栏就是 Dashboard，header 就是它的首行（上文 Attention Dashboard 线框的 `mac ● zuan ●`）；实现 `web/src/Header.tsx`，节点一行放在 `agora` 标题下面而不挤进标题行——260 px 的侧栏放不下 `zuan ✗ 指纹不匹配 · 上次见到 23:10`。本机排第一（名字固定"本机"：peer 的名字来自 `peers[].name`，本机 id 不在 health 里），peer 按 `/api/health` peers 段的键序。每枚：
+侧栏就是 Dashboard，header 就是它的首行（上文 Attention Dashboard 线框的 `mac ● zuan ●`）；实现 `web/src/Header.tsx`，节点一行放在 `agora` 标题下面而不挤进标题行——260 px 的侧栏放不下 `zuan ✗ 指纹不匹配 · 上次见到 23:10`。本机排第一（名字是 `/api/system` 报的本机 node.id——`web/src/health.ts` 的 `VersionWatcher` 同一次拉取带出，不另起轮询；还没拉到之前叫"本机"。agora-7ku.5），peer 按 `/api/health` peers 段的键序。每枚：
 
 | 状态 | 显示 | 依据 |
 |---|---|---|

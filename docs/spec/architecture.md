@@ -55,6 +55,8 @@ fake 让对端看到 `Peer { name }` 靠请求扩展 `InProcessPeer`（`src/api/
 
 单进程多节点的骨架就是这三样（MISSION §2.3 规则 9）：`tests/peer_fake.rs::two_in_process_daemons_can_call_each_other_as_peer` 让 A 以 Peer principal 调到 B 的 `GET /api/sessions`，agora-7ku.5 / agora-7ku.7 的 fake 多节点测试都以此为底。
 
+接缝之上的客户端（agora-7ku.5）分两个文件：`src/peer/client.rs` 的 `PeerClient` 是每 peer 一个的 tokio 任务（`main.rs` 在装好 `registry` 后 `spawn_all`），只做"比版本 → 建流 → 拉全量 → 收增量 → 断了退避"这一个循环，`TransportError` 经 `From` 按类型映成 `PeerError`（`WsRejected(401)` → `unauthorized`、`Config` → `unreachable` 并 warn、其余 → `unreachable`），keepalive 与终端流同数字（20 s ping / 65 s 判死）；`src/peer/view.rs` 的 `PeerViews` 是并入视图（一跳过滤、本机时钟改写 `status_since`、stale 位、与全量差分出事件），挂在 `AppState.peer_views`，`GET /api/sessions` 对 Human 把它的行接在本机行后面。两者之间用 `Wake`（`tokio::sync::Notify` + 一个 force 位）通话：`PeerViews::retry_now(name)` 只缩短一次退避等待（agora-7ku.6 的入口）、`reconnect(name)` 在线时也强制断开重连（测试模拟断线用，不算失败不记 `last_error`）；视图任何变化经 `subscribe()` 的 `watch` 通道发信号。字段形态与守卫见 `docs/spec/api.md`「peer 视图」。
+
 ## peer 重连退避与状态模型（agora-7ku.12；A29 的策略半边）
 
 MISSION §3.5 只定行为契约（断线保留最后视图并标记、恢复后自动重连、不变量 8），参数属实现形状，落地在这里：
@@ -66,7 +68,7 @@ MISSION §3.5 只定行为契约（断线保留最后视图并标记、恢复后
 | jitter | 在 [d/2, d] 里**往下**抖，jitter ∈ [0, 1) 由调用方注入 | 只往下抖，带 jitter 也不会超上限；jitter = 0 就是 1, 2, 4, …, 30 的整齐序列，测试好断言 | `BackoffPolicy::delay(failures, jitter)`；生产用 `random_jitter()` |
 | 放弃 | **永不** | 不变量 8 排除"重试 N 次后标 dead"；`Backoff` 作为 `Iterator` 永远给 `Some`，计数饱和不回绕 | `Backoff` |
 | 每次尝试超时 | 5 s | devcenter 教训：`TcpStream::connect` 无超时把 plan 拖满 45 s 并泄漏 120 s 阻塞线程（`docs/analysis/devcenter/appendix-b-multihost.md`） | `CONNECT_TIMEOUT`，传输层（agora-7ku.11）按它设 |
-| 立即重试 | 用户点开 stale peer 的会话时插一次 | 人已经在等了，不该再等退避 | agora-7ku.6 |
+| 立即重试 | 用户点开 stale peer 的会话时插一次 | 人已经在等了，不该再等退避 | 入口 `PeerViews::retry_now(name)`（`src/peer/view.rs` 的 `Wake`，agora-7ku.5 留的）；UI 接线归 agora-7ku.6 |
 
 全是纯函数：不读时钟、不掷骰子，真正的等待交给调用方的 `tokio::time::sleep`；单测不需要假时钟，直接断言返回值（`src/peer/backoff.rs` 的 5 个单测）。V1 参数写死，不造配置面；要暴露再挂 `peers[]` 或全局 `status` 段。
 
