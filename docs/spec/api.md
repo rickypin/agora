@@ -8,6 +8,7 @@
 GET    /api/sessions               # { sessions: [...], unregistered: [...] }：已登记会话 + 运行时里未登记的（Unknown Agent，可采纳，§5.5）；Human 调用还并入各 peer 的会话行（带 node / stale），Peer 调用只给本机行——一跳防环（文末「peer 视图」）
 POST   /api/sessions               # { display_name, agent_type, working_directory, worktree?, task_ref?, command?, cols?, rows?, prompt? } → 201；command 缺省链：agents.<agent_type>.command → Adapter 的 default_command → agent_type 本身；prompt 是首条 prompt，只进这一代的启动命令、不进库、Restart 不重发，agent 类型不接受 → 400 bad_request（文末「从就绪任务起会话」）
 GET    /api/sessions/:id
+GET    /api/sessions/:id/changes   # 该会话工作目录的改动文件 { files: [{ path, status }], branch, reason }：git status --porcelain=v2 只读；不是仓库 / 目录不在 / 没 git / 超时 → 200 + 空列表 + 类型原因（文末「只读产出」；A41）
 PATCH  /api/sessions/:id           # { display_name }：改名即落锁（§4.5）；其它 Session Settings 字段随前端落地
 POST   /api/sessions/:id/input     # 不经终端的 respond：文本 / 选项；WAITING 与 TURN_DONE 的主路径（M1b）
 POST   /api/sessions/:id/restart   # body 可选 { confirmed: bool }；会杀且未确认 → 409 needs_confirmation；响应多一个 restart 字段（见下）
@@ -88,6 +89,7 @@ GET /api/system
 
 ```
 WS /api/sessions/:id/terminal    # 终端流
+WS /api/sessions/:id/diff        # 只读终端：在会话工作目录跑 git --no-pager diff HEAD，input 帧一律丢弃，不进 sessions 表（文末「只读产出」；A41）
 WS /api/events                   # 全局事件：status change / session created / session removed / notification
 ```
 

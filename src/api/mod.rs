@@ -7,6 +7,7 @@
 
 mod agents;
 mod auth;
+pub mod changes;
 mod events;
 pub mod forward;
 mod health;
@@ -178,6 +179,8 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/sessions/{id}/cleanup"),
     ("POST", "/api/sessions/{id}/input"),
     ("GET", "/api/sessions/{id}/terminal"),
+    ("GET", "/api/sessions/{id}/changes"),
+    ("GET", "/api/sessions/{id}/diff"),
     ("GET", "/api/projects"),
     ("GET", "/api/projects/worktrees"),
     ("POST", "/api/projects/worktrees"),
@@ -213,6 +216,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/{id}/cleanup", post(sessions::cleanup))
         .route("/api/sessions/{id}/input", post(sessions::input))
         .route("/api/sessions/{id}/terminal", get(terminal::upgrade))
+        // 只读产出（MISSION §6.3 看结果；A41，agora-h1k.5）：改动文件列表 + 只读 diff 终端。
+        .route("/api/sessions/{id}/changes", get(changes::list))
+        .route("/api/sessions/{id}/diff", get(changes::diff))
         // 静态段先于 `{id}`：`worktrees` 不会被当成项目路径。
         .route(
             "/api/projects/worktrees",

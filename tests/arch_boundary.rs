@@ -302,9 +302,11 @@ fn git_subprocesses_are_read_only_or_worktree_add() {
             }
         }
     }
+    // worktree list / add（agora-h1k.1）+ status / diff（agora-h1k.5 的 /changes 与 /diff）：四处都得被扫到，
+    // 少一处就是有人把 argv 改成了守卫看不见的写法。
     assert!(
-        seen >= 2,
-        "守卫没扫到 git argv——扫描方式与代码写法脱节了（worktree list / add 至少两处）"
+        seen >= 4,
+        "守卫没扫到 git argv——扫描方式与代码写法脱节了（worktree list / add + status + diff 至少四处）"
     );
     assert!(
         offenders.is_empty(),

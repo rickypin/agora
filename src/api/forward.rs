@@ -147,19 +147,21 @@ fn passthrough(resp: Response) -> Response {
 
 // ---------- 终端流 ----------
 
-/// peer 会话的 `WS /api/sessions/:id/terminal`：先向所属节点建好 WS（会话不存在 / 没有运行时 /
-/// peer 不可达都以 HTTP 状态回，与本机路径一致——客户端不用先建好 WS 再从关闭码里猜），
-/// 再升级浏览器这条，然后两边帧原样互转。
+/// peer 会话的 `WS /api/sessions/:id<suffix>`（`/terminal`，以及 agora-h1k.5 的只读 `/diff`）：先向
+/// 所属节点建好 WS（会话不存在 / 没有运行时 / peer 不可达都以 HTTP 状态回，与本机路径一致——
+/// 客户端不用先建好 WS 再从关闭码里猜），再升级浏览器这条，然后两边帧原样互转。`suffix` 是
+/// `/api/sessions/<gid>` 之后那段，与 [`route`] 同一约定。
 pub(super) async fn terminal(
     principal: &Principal,
     t: Arc<dyn PeerTransport>,
     gid: &str,
+    suffix: &str,
     query: Option<&str>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     let path = match query {
-        Some(q) => format!("/api/sessions/{gid}/terminal?{q}"),
-        None => format!("/api/sessions/{gid}/terminal"),
+        Some(q) => format!("/api/sessions/{gid}{suffix}?{q}"),
+        None => format!("/api/sessions/{gid}{suffix}"),
     };
     let upstream = t
         .connect_ws(&path)
@@ -168,10 +170,11 @@ pub(super) async fn terminal(
     let log_id = principal.log_id();
     let peer = t.name().to_owned();
     let gid = gid.to_owned();
+    let suffix = suffix.to_owned();
     Ok(ws.on_upgrade(move |socket| async move {
-        tracing::info!(component = "gateway", principal = %log_id, peer = %peer, session = %gid, "terminal attach (forwarded)");
+        tracing::info!(component = "gateway", principal = %log_id, peer = %peer, session = %gid, path = %suffix, "terminal attach (forwarded)");
         let exited = bridge(socket, upstream).await;
-        tracing::info!(component = "gateway", principal = %log_id, peer = %peer, session = %gid, exited, "terminal detach (forwarded)");
+        tracing::info!(component = "gateway", principal = %log_id, peer = %peer, session = %gid, path = %suffix, exited, "terminal detach (forwarded)");
     }))
 }
 

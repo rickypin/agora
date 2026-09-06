@@ -27,6 +27,18 @@ pub struct TermQuery {
     rows: Option<u16>,
 }
 
+impl TermQuery {
+    /// `?cols=&rows=` 作为初始尺寸，缺省 160×48（docs/spec/api.md）；0 与缺省同义。
+    /// `/diff` 的升级（agora-h1k.5）也用它。
+    pub(super) fn size(&self) -> Size {
+        let default = Size::default();
+        Size {
+            cols: self.cols.filter(|c| *c > 0).unwrap_or(default.cols),
+            rows: self.rows.filter(|r| *r > 0).unwrap_or(default.rows),
+        }
+    }
+}
+
 pub async fn upgrade(
     principal: Principal,
     State(state): State<AppState>,
@@ -47,14 +59,10 @@ pub async fn upgrade(
         forward::Hop::Local(id) => id,
         // 查询串原样带过去（cols / rows 由所属节点解释），与本机路径同一个 URL。
         forward::Hop::Peer(t) => {
-            return forward::terminal(&principal, t, &gid, uri.query(), ws).await;
+            return forward::terminal(&principal, t, &gid, "/terminal", uri.query(), ws).await;
         }
     };
-    let default = Size::default();
-    let size = Size {
-        cols: q.cols.filter(|c| *c > 0).unwrap_or(default.cols),
-        rows: q.rows.filter(|r| *r > 0).unwrap_or(default.rows),
-    };
+    let size = q.size();
     let spec = {
         let sessions = state.sessions.clone();
         let id = id.clone();
@@ -78,7 +86,7 @@ pub async fn upgrade(
             }
         };
         let pid = pty.pid();
-        let confirmed = bridge(socket, pty).await;
+        let confirmed = bridge(socket, pty, true).await;
         tracing::info!(
             component = "gateway",
             principal = %log_id,
@@ -90,7 +98,7 @@ pub async fn upgrade(
     }))
 }
 
-async fn send(socket: &mut WebSocket, msg: &ServerMessage) -> Result<(), ()> {
+pub(super) async fn send(socket: &mut WebSocket, msg: &ServerMessage) -> Result<(), ()> {
     let text = serde_json::to_string(msg).map_err(|_| ())?;
     socket
         .send(Message::Text(text.into()))
@@ -99,8 +107,22 @@ async fn send(socket: &mut WebSocket, msg: &ServerMessage) -> Result<(), ()> {
 }
 
 /// WS ↔ PTY 桥接循环；返回值同 [`AttachedPty::detach`]。
-async fn bridge(mut socket: WebSocket, mut pty: AttachedPty) -> bool {
-    let _ = send(&mut socket, &ServerMessage::Status { status: "attached" }).await;
+///
+/// `accept_input = false` 是只读终端（agora-h1k.5 的 `/diff`）：第一帧 status 报 `read_only` 而不是
+/// `attached`，之后 `input` 帧一律丢弃、不进 PTY；resize / ping 照常。只读不另写一个循环——PTY 的
+/// 释放顺序（SIGHUP → 确认退出 → 才 drop writer，src/gateway/mod.rs 顶部）是雷区，复制一份等于
+/// 埋第二颗雷（2026-09-06）。
+pub(super) async fn bridge(
+    mut socket: WebSocket,
+    mut pty: AttachedPty,
+    accept_input: bool,
+) -> bool {
+    let status = if accept_input {
+        "attached"
+    } else {
+        "read_only"
+    };
+    let _ = send(&mut socket, &ServerMessage::Status { status }).await;
     let mut decoder = Utf8Stream::default();
     let mut ping = tokio::time::interval(PING_INTERVAL);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -154,7 +176,11 @@ async fn bridge(mut socket: WebSocket, mut pty: AttachedPty) -> bool {
                 last_seen = Instant::now();
                 let Message::Text(payload) = frame else { continue };
                 match serde_json::from_str::<ClientMessage>(&payload) {
-                    Ok(ClientMessage::Input { data }) => pty.write(data.into_bytes()).await,
+                    Ok(ClientMessage::Input { data }) => {
+                        if accept_input {
+                            pty.write(data.into_bytes()).await;
+                        }
+                    }
                     Ok(ClientMessage::Resize { cols, rows }) => {
                         if cols > 0 && rows > 0 {
                             pty.resize(Size { cols, rows });
