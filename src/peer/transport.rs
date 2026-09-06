@@ -12,15 +12,19 @@
 //! - [`InProcessTransport`]：同一进程里另一个节点实例的 axum `Router`。HTTP 走 `oneshot`，
 //!   WS 走 `tokio::io::duplex` 上的真握手；不开 socket、不碰 TLS，给 fake 多节点测试用
 //!   （MISSION §2.3 规则 9 "单进程多节点的测试骨架先于真实集成"）。
-//! - [`HttpsTransport`]：生产实现的桩，只有 `peers[]` 一项的配置与超时；TLS + SPKI 指纹钉住 +
-//!   Bearer 由 agora-7ku.10 在这里填成真的。
+//! - [`HttpsTransport`]：生产实现——`peers[]` 一项 → TCP + TLS（只比对端 SPKI 指纹，ADR-003 D4）
+//!   加 `Authorization: Bearer <token_file 的内容>`（D3）。URL 不是 `https://`、指纹不合法、
+//!   token_file 读不出来都是 [`PeerConfigError`]（显示为「配置错误」，不是离线），且一个字节
+//!   都不往网上发。
 
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
+use axum::http::header::{self, HeaderValue};
 use axum::http::{Request, Response, StatusCode};
 use axum::{Extension, Router};
 use hyper_util::rt::TokioIo;
@@ -33,11 +37,14 @@ use tower::ServiceExt;
 
 use crate::api::InProcessPeer;
 use crate::config::PeerSection;
+use crate::tls::client::{self as tls_client, Mismatch};
+use crate::tls::{Fingerprint, FingerprintError, TlsError};
 
 pub use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-/// 每次尝试（HTTP 到响应头、WS 到握手完成）的缺省上限（agora-7ku notes：5 s）。
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+/// 每次尝试（HTTP 到响应头、WS 到握手完成）的缺省上限：就是退避策略里的
+/// [`CONNECT_TIMEOUT`](super::backoff::CONNECT_TIMEOUT)（5 s），只此一处定义。
+pub const DEFAULT_TIMEOUT: Duration = super::backoff::CONNECT_TIMEOUT;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -69,9 +76,37 @@ pub enum TransportError {
     /// 线上的协议错误（HTTP 解析、WS 帧）。
     #[error("协议错误: {0}")]
     Protocol(String),
-    /// 占位：只从 [`HttpsTransport`] 的桩上出来；agora-7ku.10 填上实现后连这个变体一起删。
-    #[error("peer 的 TLS 传输尚未实现（agora-7ku.10）")]
-    Unimplemented,
+    /// `peers[]` 这一项字面上就用不了（见 [`PeerConfigError`]）：显示为「配置错误」，不是离线
+    /// （ADR-003 D3）。发生在拨号之前，网上没有任何字节。
+    #[error("peer 配置错误: {0}")]
+    Config(#[from] PeerConfigError),
+    /// 本机的 TLS 客户端配置建不起来；实际上只会是 rustls 版本不配这类编程错误。
+    #[error("TLS 客户端: {0}")]
+    Tls(#[from] TlsError),
+}
+
+/// `peers[]` 一项字面上就用不了：URL 不是 https、指纹格式不对、token_file 读不了 / 权限过宽 /
+/// 内容不像 token。ADR-003 D3 说这类显示为「配置错误」而不是离线——状态模型（agora-7ku.5）从
+/// `TransportError::Config` 这一个变体映射，不必认识每一种。
+#[derive(Debug, thiserror::Error)]
+pub enum PeerConfigError {
+    /// peer 链路永不走明文（ADR-003 D5）：`http://` 在这里就拒绝，连都不连。IPv6 写 `[::1]:7681`。
+    #[error("peers[].url 必须是 https://host[:port]，得到 {0:?}")]
+    Url(String),
+    /// 没有指纹就没有信任锚（无 TOFU）：空串、不是 `sha256:<64 hex>` 都在这里拒绝。
+    #[error("peers[].cert_fingerprint: {0}")]
+    Pin(#[from] FingerprintError),
+    #[error("读取 token_file {} 失败: {source}", path.display())]
+    TokenFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// D3：token_file 明文、0600；group / other 有位就是配置错误——别人读得到它就等于能控制那台 peer。
+    #[error("token_file {} 权限 {mode:03o} 过宽：必须 0600（chmod 600 {}）", path.display(), path.display())]
+    TokenFileTooOpen { path: PathBuf, mode: u32 },
+    #[error("token_file {} 的内容不是一个 token（空、多行或含非 ASCII）", path.display())]
+    TokenFileContent { path: PathBuf },
 }
 
 /// 给 `peers[]` 一项的传输。dyn 兼容（注册表存 `Arc<dyn PeerTransport>`），所以 async 方法
@@ -209,24 +244,90 @@ impl PeerTransport for InProcessTransport {
     }
 }
 
-// ---------- 生产实现的桩 ----------
+// ---------- 生产实现 ----------
 
-/// 生产传输的桩：`peers[]` 一项 → TLS（SPKI 指纹钉住，ADR-003 D4）+ Bearer（`token_file`，
-/// ADR-003 D3）。现在只有配置与超时，两个方法都回 `Unimplemented`；agora-7ku.10 在这里填成真的。
-/// 先落一个桩而不是等 7ku.10 一起来，是让 `main.rs` 把 `peers[]` 接进 `PeerRegistry` 的那几行
-/// 今天就能写、编译得过；token 明文按 D3 只在发请求时从 `token_file` 读，不进这个结构体、不进日志。
+/// 生产传输：`peers[]` 一项 → TLS（SPKI 指纹钉住，ADR-003 D4）+ Bearer（`token_file`，D3）。
+///
+/// 每次 `request` / `connect_ws` 自己建一条 TCP + TLS 连接、用完即弃，没有连接池：peer 客户端
+/// （agora-7ku.5）常驻的只有一条 `/api/events` WS 与偶发的转发请求，池子省下的一次握手不值它的
+/// 复杂度；将来要池化只改这里。token 明文按 D3 只在发请求时从 `token_file` 读，不进这个结构体、
+/// 不进日志、不缓存——吊销 / 轮换后换文件即生效。
 pub struct HttpsTransport {
     peer: PeerSection,
     timeout: Duration,
 }
 
+/// `peers[].url` 拆出来的拨号目标。只认 `https://host[:port]`；路径忽略——peer 的 API 路径由调用方给。
+struct Target {
+    host: String,
+    port: u16,
+    /// `Host` 头 / WS URL 里的 authority 原样（含端口）。
+    authority: String,
+}
+
+impl Target {
+    fn parse(url: &str) -> Result<Target, PeerConfigError> {
+        let bad = || PeerConfigError::Url(url.to_owned());
+        let rest = url.trim().strip_prefix("https://").ok_or_else(bad)?;
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        if authority.is_empty() || authority.contains('@') {
+            return Err(bad());
+        }
+        let port_of = |p: &str| p.parse::<u16>().map_err(|_| bad());
+        let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+            let (host, after) = v6.split_once(']').ok_or_else(bad)?;
+            let port = match after.strip_prefix(':') {
+                Some(p) => Some(port_of(p)?),
+                None if after.is_empty() => None,
+                None => return Err(bad()),
+            };
+            (host, port)
+        } else if let Some((host, p)) = authority.rsplit_once(':') {
+            (host, Some(port_of(p)?))
+        } else {
+            (authority, None)
+        };
+        if host.is_empty() {
+            return Err(bad());
+        }
+        Ok(Target {
+            host: host.to_owned(),
+            port: port.unwrap_or(443),
+            authority: authority.to_owned(),
+        })
+    }
+}
+
 impl HttpsTransport {
+    /// `timeout` 用 `backoff::CONNECT_TIMEOUT`（5 s）：一次尝试从 TCP 到响应头 / WS 握手完成的总上限。
     pub fn new(peer: PeerSection, timeout: Duration) -> Self {
         HttpsTransport { peer, timeout }
     }
 
     pub fn peer(&self) -> &PeerSection {
         &self.peer
+    }
+
+    /// 配置检查 + 建 TLS 连接。三项检查都在拨号之前：URL 不是 https、指纹不合法、token 读不出来，
+    /// 一个字节都不往网上发（守卫：`tests/peer_tls.rs::no_pin_no_connect`）。
+    async fn dial(
+        &self,
+    ) -> Result<
+        (
+            Target,
+            String,
+            tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+        ),
+        TransportError,
+    > {
+        let target = Target::parse(&self.peer.url)?;
+        let pin = Fingerprint::parse(&self.peer.cert_fingerprint).map_err(PeerConfigError::Pin)?;
+        let token = read_token(&self.peer.token_file)?;
+        let connector = tls_client::connector(pin)?;
+        let io = tls_client::connect(&connector, &target.host, target.port)
+            .await
+            .map_err(tls_error)?;
+        Ok((target, token, io))
     }
 }
 
@@ -241,17 +342,110 @@ impl PeerTransport for HttpsTransport {
 
     fn request(
         &self,
-        _req: Request<Body>,
+        mut req: Request<Body>,
     ) -> BoxFuture<'_, Result<Response<Body>, TransportError>> {
-        Box::pin(async { Err(TransportError::Unimplemented) })
+        Box::pin(async move {
+            let attempt = async {
+                let (target, token, io) = self.dial().await?;
+                let (mut send, conn) = hyper::client::conn::http1::handshake(TokioIo::new(io))
+                    .await
+                    .map_err(hyper_error)?;
+                // 连接由自己的任务驱动到 body 读完；响应 body 是流，交给调用方消费。
+                let peer = self.peer.name.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = conn.await {
+                        tracing::debug!(component = "peer", %peer, %err, "到 peer 的 HTTP 连接结束");
+                    }
+                });
+                let headers = req.headers_mut();
+                headers.insert(header::HOST, header_value(&target.authority)?);
+                headers.insert(
+                    header::AUTHORIZATION,
+                    header_value(&format!("Bearer {token}"))?,
+                );
+                let resp = send.send_request(req).await.map_err(hyper_error)?;
+                Ok(resp.map(Body::new))
+            };
+            tokio::time::timeout(self.timeout, attempt)
+                .await
+                .map_err(|_| TransportError::Timeout(self.timeout))?
+        })
     }
 
     fn connect_ws<'a>(
         &'a self,
-        _path_and_query: &'a str,
+        path_and_query: &'a str,
     ) -> BoxFuture<'a, Result<PeerWs, TransportError>> {
-        Box::pin(async { Err(TransportError::Unimplemented) })
+        Box::pin(async move {
+            if !path_and_query.starts_with('/') {
+                return Err(TransportError::Protocol(format!(
+                    "WS 路径必须以 / 开头: {path_and_query:?}"
+                )));
+            }
+            let attempt = async {
+                let (target, token, io) = self.dial().await?;
+                let mut req = format!("wss://{}{path_and_query}", target.authority)
+                    .into_client_request()
+                    .map_err(ws_error)?;
+                req.headers_mut().insert(
+                    header::AUTHORIZATION,
+                    header_value(&format!("Bearer {token}"))?,
+                );
+                let io: Box<dyn PeerIo> = Box::new(io);
+                let (ws, _response) = tokio_tungstenite::client_async(req, io)
+                    .await
+                    .map_err(ws_error)?;
+                Ok(ws)
+            };
+            tokio::time::timeout(self.timeout, attempt)
+                .await
+                .map_err(|_| TransportError::Timeout(self.timeout))?
+        })
     }
+}
+
+/// D3：token 明文在 `token_file`，0600；每次发请求读一遍、不缓存。权限过宽是配置错误。
+fn read_token(path: &Path) -> Result<String, PeerConfigError> {
+    use std::os::unix::fs::PermissionsExt;
+    let io_err = |source| PeerConfigError::TokenFile {
+        path: path.to_path_buf(),
+        source,
+    };
+    let meta = std::fs::metadata(path).map_err(io_err)?;
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(PeerConfigError::TokenFileTooOpen {
+            path: path.to_path_buf(),
+            mode,
+        });
+    }
+    let text = std::fs::read_to_string(path).map_err(io_err)?;
+    let token = text.trim();
+    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(PeerConfigError::TokenFileContent {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(token.to_owned())
+}
+
+fn header_value(s: &str) -> Result<HeaderValue, TransportError> {
+    HeaderValue::from_str(s).map_err(|e| TransportError::Protocol(e.to_string()))
+}
+
+/// TLS 建连的 `io::Error`：指纹不匹配是独立类型（ADR-003 D4，绝不并进"离线"），其余都是不可达。
+fn tls_error(e: std::io::Error) -> TransportError {
+    match Mismatch::from_io(&e) {
+        Some(m) => TransportError::FingerprintMismatch {
+            expected: m.expected.to_string(),
+            actual: m.actual.to_string(),
+        },
+        None => TransportError::Unreachable(e),
+    }
+}
+
+fn hyper_error(e: hyper::Error) -> TransportError {
+    TransportError::Protocol(e.to_string())
 }
 
 fn ws_error(e: WsError) -> TransportError {
@@ -268,6 +462,7 @@ mod tests {
     use axum::extract::ws::WebSocketUpgrade;
     use axum::response::IntoResponse;
     use axum::routing::get;
+    use std::os::unix::fs::PermissionsExt;
 
     fn slow_router() -> Router {
         Router::new()
@@ -347,23 +542,110 @@ mod tests {
         );
     }
 
+    #[test]
+    fn peer_url_must_be_https_with_optional_port() {
+        let t = Target::parse("https://zuan.tail6f613.ts.net:7681/").unwrap();
+        assert_eq!((t.host.as_str(), t.port), ("zuan.tail6f613.ts.net", 7681));
+        assert_eq!(t.authority, "zuan.tail6f613.ts.net:7681");
+        let t = Target::parse(" https://10.0.0.2 ").unwrap();
+        assert_eq!((t.host.as_str(), t.port), ("10.0.0.2", 443));
+        let t = Target::parse("https://[fd00::1]:7681/api/x?y").unwrap();
+        assert_eq!((t.host.as_str(), t.port), ("fd00::1", 7681));
+        assert_eq!(t.authority, "[fd00::1]:7681");
+        for bad in [
+            "http://zuan:7681",
+            "zuan:7681",
+            "https://",
+            "https://user@zuan",
+            "https://zuan:notaport",
+            "https://[fd00::1",
+            "https://[fd00::1]x",
+        ] {
+            assert!(
+                matches!(Target::parse(bad), Err(PeerConfigError::Url(_))),
+                "{bad}"
+            );
+        }
+    }
+
     #[tokio::test]
-    async fn https_stub_is_named_after_its_peer_and_says_so_when_used() {
-        // 桩能进注册表（名字来自 peers[].name），用起来只会说"未实现"——不是超时也不是不可达，
-        // 别让 7ku.12 的状态模型把"还没写"显示成 peer 离线。
-        let peer = PeerSection {
+    async fn https_transport_refuses_bad_config_before_dialing() {
+        // 名字来自 peers[].name（注册表的键）；配置字面上就错的三种情形都是 Config 而不是
+        // 不可达 / 超时——7ku.5 的状态模型据此显示「配置错误」（ADR-003 D3），且这里没有任何
+        // 网络地址可连（url 指向一个不存在的主机名），能立刻返回就说明没去拨号。
+        let dir = tempfile::tempdir().unwrap();
+        let token = dir.path().join("zuan.token");
+        std::fs::write(&token, "apt_zuan_abc\n").unwrap();
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let section = |url: &str, pin: &str, token: &Path| PeerSection {
             name: "zuan".into(),
-            url: "https://zuan.example:7681".into(),
-            token_file: "/nonexistent/zuan.token".into(),
-            cert_fingerprint: "sha256:00".into(),
+            url: url.into(),
+            token_file: token.to_path_buf(),
+            cert_fingerprint: pin.into(),
         };
-        let t = HttpsTransport::new(peer, DEFAULT_TIMEOUT);
+        let good_pin = format!("sha256:{}", "0".repeat(64));
+
+        let t = HttpsTransport::new(
+            section("http://zuan.invalid:7681", &good_pin, &token),
+            DEFAULT_TIMEOUT,
+        );
         assert_eq!(t.name(), "zuan");
-        assert_eq!(t.peer().url, "https://zuan.example:7681");
+        assert_eq!(t.peer().url, "http://zuan.invalid:7681");
         let err = t.request(get_req("/api/system")).await.unwrap_err();
-        assert!(matches!(err, TransportError::Unimplemented), "{err:?}");
+        assert!(
+            matches!(err, TransportError::Config(PeerConfigError::Url(_))),
+            "{err:?}"
+        );
+
+        let t = HttpsTransport::new(
+            section("https://zuan.invalid:7681", "", &token),
+            DEFAULT_TIMEOUT,
+        );
         let err = t.connect_ws("/api/events").await.unwrap_err();
-        assert!(matches!(err, TransportError::Unimplemented), "{err:?}");
+        assert!(
+            matches!(err, TransportError::Config(PeerConfigError::Pin(_))),
+            "{err:?}"
+        );
+
+        let t = HttpsTransport::new(
+            section(
+                "https://zuan.invalid:7681",
+                &good_pin,
+                &dir.path().join("missing"),
+            ),
+            DEFAULT_TIMEOUT,
+        );
+        let err = t.request(get_req("/api/system")).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TransportError::Config(PeerConfigError::TokenFile { .. })
+            ),
+            "{err:?}"
+        );
+
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let t = HttpsTransport::new(
+            section("https://zuan.invalid:7681", &good_pin, &token),
+            DEFAULT_TIMEOUT,
+        );
+        let err = t.request(get_req("/api/system")).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TransportError::Config(PeerConfigError::TokenFileTooOpen { mode: 0o644, .. })
+            ),
+            "{err:?}"
+        );
+
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(&token, "  \n").unwrap();
+        assert!(matches!(
+            read_token(&token),
+            Err(PeerConfigError::TokenFileContent { .. })
+        ));
+        std::fs::write(&token, "apt_zuan_abc\n").unwrap();
+        assert_eq!(read_token(&token).unwrap(), "apt_zuan_abc");
     }
 
     #[tokio::test]
