@@ -924,8 +924,8 @@ impl SessionManager {
             self.set_killed_at(id, false)?;
             return Err(e.into());
         }
-        // 刚 terminate 完运行时多半还没收集到退出时刻（tmux 的 pane_dead_time 要等 SIGCHLD），
-        // 这时先记近似的现在，下次 reconcile 有了准确值再补正。
+        // 刚 terminate 完运行时多半还没收集到退出时刻（要等它收到 SIGCHLD），这时先记近似的现在，
+        // 下次 reconcile 有了准确值再补正。
         let exited_at = self.runtime.inspect(&r#ref).ok().and_then(|s| s.exited_at);
         self.mark_ended_at(id, exited_at)?;
         self.get(id)
@@ -1066,9 +1066,9 @@ impl SessionManager {
             match live.iter().find(|s| s.r#ref.0 == r) {
                 Some(s) if s.alive => report.known_alive.push(rec.id.clone()),
                 Some(s) => {
-                    // 退出时刻是运行时报的（tmux 3.3+ 的 pane_dead_time）：daemon 停机一小时期间
-                    // 退出的会话，ended_at 是一小时前，不是 daemon 起来的现在。Kill 时留下的近似值
-                    // 也在这里被准确值补正（A42；agora-h1k.4）。
+                    // 退出时刻是运行时报的（`exited_at`）：daemon 停机一小时期间退出的会话，
+                    // ended_at 是一小时前，不是 daemon 起来的现在。Kill 时留下的近似值也在这里被
+                    // 准确值补正（A42；agora-h1k.4）。
                     if rec.ended_at.is_none() || rec.ended_at_approximate {
                         self.mark_ended_at(&rec.id, s.exited_at)?;
                     }
@@ -1132,7 +1132,7 @@ impl SessionManager {
 
     /// `at` 是运行时报的退出时刻（准，`ended_at_approximate = FALSE`）；None 表示运行时不知道，
     /// 只能记 daemon 的当下并标近似。已有的准确值不动；已有的近似值被后来的准确值覆盖——Kill 时
-    /// 运行时往往还没收集到退出时刻，下次 reconcile 拿到 pane_dead_time 再补正（A42；agora-h1k.4）。
+    /// 运行时往往还没收集到退出时刻，下次 reconcile 拿到 `exited_at` 再补正（A42；agora-h1k.4）。
     /// SQL 里 SET 的各表达式都按更新前的行求值，所以 ended_at_approximate 那行看到的是旧 ended_at。
     fn mark_ended_at(&self, id: &str, at: Option<SystemTime>) -> Result<(), SessionError> {
         let secs = at
