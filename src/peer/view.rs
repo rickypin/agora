@@ -13,9 +13,11 @@
 //!    变"的判据（连同 `status` 一起比），不当时间用——断线重连后同一状态的行不会被重置成 0 分钟，
 //!    时钟漂移的 peer 也污染不了 attention 排序。"上次见到"是 `PeerStates::last_seen`，客户端用同
 //!    一个时钟打。其余时间字段（`created_at` / `ended_at`…）是 peer 的 metadata，原样保留。
-//! 3. **断线保留、标 stale**：peer 掉线后行一条不删，每行 `stale: true`；重新连上、全量对齐后回
-//!    `false`。stale 的两次翻转都发 `session_updated`，浏览器不用轮询就能看见（agora-7ku.6 在这
-//!    上面做"上次见到 hh:mm"与"点开立即重试"）。
+//! 3. **断线保留、标 stale**：peer 掉线后行一条不删，每行 `stale: true` 并带 `last_seen`（该 peer
+//!    的"上次见到"，`PeerState::last_seen` 的 UTC 文本，与 `/api/health` peers 段同一个值、同一只
+//!    本机表）；重新连上、全量对齐后 `stale` 回 `false`、`last_seen` 键消失。stale 的两次翻转都发
+//!    `session_updated`，浏览器不用轮询就能看见。`last_seen` 只出现在 stale 的 peer 行上：非 stale
+//!    时不管 peer 报的行里有没有这个键都剥掉，本机行从来没有（agora-7ku.6）。
 //!
 //! 这里没有 I/O：客户端任务把 peer 的 JSON 喂进来，拿回该发进本机 `EventBus` 的事件。
 
@@ -49,6 +51,9 @@ struct Row {
 struct PeerView {
     rows: BTreeMap<String, Row>,
     stale: bool,
+    /// stale 期间每行 `last_seen` 的来源（unix 秒，本机时钟）；非 stale 时 None。存在这里是为了
+    /// stale 期间再进来的行（理论上不会有——流已断——但 `apply` 的形态要自洽）也带同一个值。
+    last_seen: Option<i64>,
 }
 
 /// 客户端任务的唤醒把手：`retry_now` 缩短一次退避等待（在线时无事），`reconnect` 让在线的
@@ -150,12 +155,13 @@ impl PeerViews {
         let view = inner.peers.entry(peer.to_owned()).or_default();
         let old = std::mem::take(&mut view.rows);
         view.stale = false;
+        view.last_seen = None;
         let mut events = Vec::new();
         for raw in rows {
             let Some(gid) = accept(peer, &raw) else {
                 continue;
             };
-            let row = stamp(raw, old.get(&gid), now, false);
+            let row = stamp(raw, old.get(&gid), now, false, None);
             match old.get(&gid) {
                 None => events.push(Event::SessionCreated {
                     id: gid.clone(),
@@ -193,7 +199,13 @@ impl PeerViews {
                 let now = self.now();
                 let mut inner = lock(&self.inner);
                 let view = inner.peers.entry(peer.to_owned()).or_default();
-                let row = stamp(raw.clone(), view.rows.get(&gid), now, view.stale);
+                let row = stamp(
+                    raw.clone(),
+                    view.rows.get(&gid),
+                    now,
+                    view.stale,
+                    view.last_seen,
+                );
                 let json = row.json.clone();
                 view.rows.insert(gid.clone(), row);
                 drop(inner);
@@ -259,8 +271,8 @@ impl PeerViews {
                         }
                     }
                 }
-                let stale = view.stale;
-                let row = stamp(raw, Some(prev), now, stale);
+                let (stale, last_seen) = (view.stale, view.last_seen);
+                let row = stamp(raw, Some(prev), now, stale, last_seen);
                 let json = row.json.clone();
                 view.rows.insert(id.to_owned(), row);
                 drop(inner);
@@ -320,18 +332,21 @@ impl PeerViews {
         }
     }
 
-    /// peer 掉线：行一条不删，每行 `stale: true`（已经 stale 就没有事件）。返回每行一条
-    /// `session_updated`，浏览器据此立刻把行画成 stale。
-    pub fn mark_stale(&self, peer: &str) -> Vec<Event> {
+    /// peer 掉线：行一条不删，每行 `stale: true` 并写上 `last_seen`（该 peer 的"上次见到"，调用方从
+    /// `PeerState::last_seen` 取——与 `/api/health` peers 段同一个值；None 只可能是从没连上过，那时
+    /// 也没有行可标）。已经 stale 就没有事件。返回每行一条 `session_updated`，浏览器据此立刻把行
+    /// 画成 stale 并显示"上次见到 hh:mm"（agora-7ku.6）。
+    pub fn mark_stale(&self, peer: &str, last_seen: Option<i64>) -> Vec<Event> {
         let mut inner = lock(&self.inner);
         let view = inner.peers.entry(peer.to_owned()).or_default();
         if view.stale {
             return Vec::new();
         }
         view.stale = true;
+        view.last_seen = last_seen;
         let mut events = Vec::with_capacity(view.rows.len());
         for (gid, row) in view.rows.iter_mut() {
-            set(&mut row.json, "stale", Value::Bool(true));
+            mark(&mut row.json, true, last_seen);
             events.push(Event::SessionUpdated {
                 id: gid.clone(),
                 session: row.json.clone(),
@@ -423,8 +438,8 @@ fn accept(peer: &str, raw: &Value) -> Option<String> {
     }
 }
 
-/// 规则 2 + 3：改写 `status_since` 为本机时刻（状态没变就沿用上次打的），置 `stale`。
-fn stamp(mut raw: Value, prev: Option<&Row>, now: i64, stale: bool) -> Row {
+/// 规则 2 + 3：改写 `status_since` 为本机时刻（状态没变就沿用上次打的），置 `stale` / `last_seen`。
+fn stamp(mut raw: Value, prev: Option<&Row>, now: i64, stale: bool, last_seen: Option<i64>) -> Row {
     let token = (
         raw.get("status").and_then(Value::as_str).map(str::to_owned),
         raw.get("status_since").and_then(Value::as_i64),
@@ -434,12 +449,27 @@ fn stamp(mut raw: Value, prev: Option<&Row>, now: i64, stale: bool) -> Row {
         _ => now,
     };
     set(&mut raw, "status_since", Value::from(since));
-    set(&mut raw, "stale", Value::Bool(stale));
+    mark(&mut raw, stale, last_seen);
     Row {
         json: raw,
         token,
         since,
     }
+}
+
+/// 规则 3 的两个键：`stale` 永远在；`last_seen` 只在 stale 且知道"上次见到"时在（UTC 文本，与
+/// `PeerState` 序列化同形，前端可直接喂 Header 那个 `clockText`），否则**剥掉**——peer 报的行里
+/// 就算带了 `last_seen`（它不该带；它导出的是本机行）也不许漏到我们的视图里。
+fn mark(v: &mut Value, stale: bool, last_seen: Option<i64>) {
+    let Value::Object(map) = v else { return };
+    map.insert("stale".to_owned(), Value::Bool(stale));
+    match last_seen.filter(|_| stale) {
+        Some(t) => map.insert(
+            "last_seen".to_owned(),
+            Value::String(crate::clock::format_utc_secs(t)),
+        ),
+        None => map.remove("last_seen"),
+    };
 }
 
 fn set(v: &mut Value, key: &str, val: Value) {
@@ -530,27 +560,49 @@ mod tests {
 
     #[test]
     fn stale_flips_with_events_and_a_snapshot_clears_it() {
-        // 规则 3 / 不变量 8：掉线行不删、标 stale；全量对齐回 false；每次翻转每行一条 session_updated。
+        // 规则 3 / 不变量 8：掉线行不删、标 stale 并带 last_seen；全量对齐回 false、last_seen 消失；
+        // 每次翻转每行一条 session_updated。
         let v = fixed(T0);
-        v.replace(
-            "b",
-            vec![row("b:1", "b", "running", 1), row("b:2", "b", "idle", 2)],
-        );
+        // peer 报的行里混进一个 last_seen（它不该有）：非 stale 时剥掉，不许漏进视图。
+        let mut smuggled = row("b:2", "b", "idle", 2);
+        smuggled["last_seen"] = json!("2020-01-01T00:00:00Z");
+        v.replace("b", vec![row("b:1", "b", "running", 1), smuggled]);
         assert_eq!(v.is_stale("b"), Some(false));
-        let events = v.mark_stale("b");
+        assert!(
+            v.rows().iter().all(|r| r.get("last_seen").is_none()),
+            "非 stale 行没有 last_seen: {:?}",
+            v.rows()
+        );
+        let seen = T0 - 90; // 客户端从 PeerState.last_seen 取来的"上次见到"
+        let events = v.mark_stale("b", Some(seen));
         assert_eq!(events.len(), 2);
-        assert!(events.iter().all(
-            |e| matches!(e, Event::SessionUpdated { session, .. } if session["stale"] == true)
-        ));
+        assert!(events.iter().all(|e| matches!(
+            e,
+            Event::SessionUpdated { session, .. }
+                if session["stale"] == true && session["last_seen"] == "2026-09-02T23:58:30Z"
+        )));
         assert_eq!(v.is_stale("b"), Some(true));
-        assert!(v.rows().iter().all(|r| r["stale"] == true));
-        assert!(v.mark_stale("b").is_empty(), "已经 stale 不再发");
-        // 恢复：b:2 没了、b:1 还在、b:3 新来。
+        assert!(v
+            .rows()
+            .iter()
+            .all(|r| r["stale"] == true && r["last_seen"] == "2026-09-02T23:58:30Z"));
+        assert!(
+            v.mark_stale("b", Some(seen)).is_empty(),
+            "已经 stale 不再发"
+        );
+        // 恢复：b:2 没了、b:1 还在、b:3 新来；stale 回 false、last_seen 键消失。
         let events = v.replace(
             "b",
             vec![row("b:1", "b", "running", 1), row("b:3", "b", "waiting", 3)],
         );
         assert_eq!(v.is_stale("b"), Some(false));
+        assert!(
+            v.rows()
+                .iter()
+                .all(|r| r["stale"] == false && r.get("last_seen").is_none()),
+            "{:?}",
+            v.rows()
+        );
         let kinds: Vec<String> = events
             .iter()
             .map(|e| match e {

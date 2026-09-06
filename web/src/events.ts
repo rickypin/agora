@@ -16,6 +16,12 @@ export interface SessionRow {
   alive: boolean;
   /** 只有并入的 peer 行带它：该 peer 掉线后保留的最后一眼（MISSION §3.5；不变量 8）；本机行没有。 */
   stale?: boolean;
+  /**
+   * 只有 `stale: true` 的 peer 行带它：该 peer 的"上次见到"，本节点时钟打的 UTC 文本
+   * （与 `/api/health` peers 段的 `last_seen` 同一个值，`docs/spec/api.md`「peer 视图」；agora-7ku.6）。
+   * 非 stale 时这个键不存在，本机行永远没有。
+   */
+  last_seen?: string;
   pending_decision?: { request_id: string; summary: string; epoch: number; host?: string } | null;
   [key: string]: unknown;
 }

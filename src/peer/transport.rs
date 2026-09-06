@@ -20,7 +20,7 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -149,6 +149,12 @@ pub struct InProcessTransport {
     /// 测试拨这个开关模拟 peer 断线：置上后每次尝试立即 `Unreachable`，已建好的 WS 不受影响
     /// （对端真断线时旧连接也是各自死各自的）。
     offline: AtomicBool,
+    /// 测试开关（agora-7ku.6）：对端进程活着但坏了——每个 HTTP 请求 500、WS 握手被 502 拒。
+    /// 与 `offline` 是不变量 8 要挡的两种坏 peer：连不上的，和连得上却答非所问的。
+    broken: AtomicBool,
+    /// 测试观测口（agora-7ku.6）：连接尝试计数，`request` 与 `connect_ws` 各算一次，被
+    /// `offline` / `broken` 挡掉的也算——"退避封顶、永不放弃"的集成版就是数它涨了多少。
+    attempts: AtomicUsize,
 }
 
 impl InProcessTransport {
@@ -163,6 +169,8 @@ impl InProcessTransport {
             timeout,
             app,
             offline: AtomicBool::new(false),
+            broken: AtomicBool::new(false),
+            attempts: AtomicUsize::new(0),
         }
     }
 
@@ -173,6 +181,28 @@ impl InProcessTransport {
 
     pub fn is_offline(&self) -> bool {
         self.offline.load(Ordering::SeqCst)
+    }
+
+    /// 模拟 peer 活着但坏了：HTTP 一律 500（body 是文本不是 JSON）、WS 握手 502。
+    pub fn set_broken(&self, broken: bool) {
+        self.broken.store(broken, Ordering::SeqCst);
+    }
+
+    pub fn is_broken(&self) -> bool {
+        self.broken.load(Ordering::SeqCst)
+    }
+
+    /// 到现在为止的连接尝试次数（含被挡掉的）。
+    pub fn attempts(&self) -> usize {
+        self.attempts.load(Ordering::SeqCst)
+    }
+
+    fn broken_response(&self) -> Response<Body> {
+        Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(Body::from(format!("fake peer {} 坏了", self.name)))
+            .expect("静态响应")
     }
 
     fn refused(&self) -> TransportError {
@@ -194,8 +224,12 @@ impl PeerTransport for InProcessTransport {
 
     fn request(&self, req: Request<Body>) -> BoxFuture<'_, Result<Response<Body>, TransportError>> {
         Box::pin(async move {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
             if self.is_offline() {
                 return Err(self.refused());
+            }
+            if self.is_broken() {
+                return Ok(self.broken_response());
             }
             tokio::time::timeout(self.timeout, self.app.clone().oneshot(req))
                 .await
@@ -209,8 +243,12 @@ impl PeerTransport for InProcessTransport {
         path_and_query: &'a str,
     ) -> BoxFuture<'a, Result<PeerWs, TransportError>> {
         Box::pin(async move {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
             if self.is_offline() {
                 return Err(self.refused());
+            }
+            if self.is_broken() {
+                return Err(TransportError::WsRejected(StatusCode::BAD_GATEWAY));
             }
             if !path_and_query.starts_with('/') {
                 return Err(TransportError::Protocol(format!(
@@ -529,17 +567,42 @@ mod tests {
     #[tokio::test]
     async fn offline_fake_is_unreachable_immediately_and_recovers() {
         let t = InProcessTransport::new("b", "a", slow_router(), DEFAULT_TIMEOUT);
+        assert_eq!(t.attempts(), 0);
         t.set_offline(true);
         assert!(t.is_offline());
         let err = t.request(get_req("/ok")).await.unwrap_err();
         assert!(matches!(err, TransportError::Unreachable(_)), "{err:?}");
         let err = t.connect_ws("/ws-401").await.unwrap_err();
         assert!(matches!(err, TransportError::Unreachable(_)), "{err:?}");
+        assert_eq!(t.attempts(), 2, "被拒掉的尝试也算");
         t.set_offline(false);
         assert_eq!(
             t.request(get_req("/ok")).await.unwrap().status(),
             StatusCode::OK
         );
+        assert_eq!(t.attempts(), 3);
+    }
+
+    #[tokio::test]
+    async fn broken_fake_answers_500_and_refuses_ws_but_is_not_unreachable() {
+        // 不变量 8 的第二种坏 peer（agora-7ku.6）：进程活着、连得上、答非所问。HTTP 是"正常返回
+        // 非 2xx"（调用方按状态码判），WS 是 WsRejected(502)——两者都不是 Unreachable。
+        let t = InProcessTransport::new("b", "a", slow_router(), DEFAULT_TIMEOUT);
+        t.set_broken(true);
+        assert!(t.is_broken() && !t.is_offline());
+        let resp = t.request(get_req("/ok")).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let err = t.connect_ws("/ws-401").await.unwrap_err();
+        assert!(
+            matches!(err, TransportError::WsRejected(StatusCode::BAD_GATEWAY)),
+            "{err:?}"
+        );
+        t.set_broken(false);
+        assert_eq!(
+            t.request(get_req("/ok")).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(t.attempts(), 3);
     }
 
     #[test]

@@ -7,10 +7,11 @@
 //! 2. 兼容 → 先建 `WS /api/events` 再 `GET /api/sessions` 全量（先流后快照，中间不丢事件），
 //!    全量进 [`PeerViews::replace`]，之后每帧事件进 [`PeerViews::apply`]，拿回的事件原样发进本机
 //!    `EventBus`——浏览器只连本机一条 `/api/events`，peer 的变化从同一条流到达。
-//! 3. 断线 → 行保留、标 stale（[`PeerViews::mark_stale`]），`PeerStates::failed` 记类型，按
-//!    [`BackoffPolicy`] 退避重连（1 s 起、30 s 顶、永不放弃）。等待可被 [`Wake`] 打断：
-//!    `retry_now` 缩短这一次等待（agora-7ku.6 "点开 stale 会话立即重试"），`reconnect` 在线时也
-//!    强制断开重连。
+//! 3. 断线 → 行保留、标 stale 并写上"上次见到"（[`PeerViews::mark_stale`]，值取 `PeerState::last_seen`），
+//!    `PeerStates::failed` 记类型，按 [`BackoffPolicy`] 退避重连（1 s 起、30 s 顶、永不放弃）。
+//!    等待可被 [`Wake`] 打断：`retry_now` 缩短这一次等待（agora-7ku.6 "点开 stale 会话立即重试"：
+//!    `api::forward::hop` 与 `api::sessions::get` 看到 Human 碰 stale peer 的会话就调一次），
+//!    `reconnect` 在线时也强制断开重连。
 //!
 //! 时间一律本节点时钟（`PeerViews::now`）：`last_seen` 与行上的 `status_since` 用同一只表打。
 //! 测试用 `InProcessTransport` 驱动整个循环，退避策略与时钟都可注入，不 sleep 等真实退避。
@@ -103,7 +104,10 @@ impl PeerClient {
                 }
                 Disconnect::Failed(err) => {
                     self.peers.failed(&self.name, err);
-                    self.publish(self.views.mark_stale(&self.name));
+                    // "上次见到"写到每条 stale 行上：就是 PeerState.last_seen（/api/health peers 段
+                    // 给 Header 的那个值），一只表、一个数字，侧栏行与 Header 不会各说各话。
+                    let last_seen = self.peers.get(&self.name).and_then(|p| p.last_seen);
+                    self.publish(self.views.mark_stale(&self.name, last_seen));
                     let delay = backoff.next_delay(random_jitter());
                     tracing::warn!(
                         component = "peer",
