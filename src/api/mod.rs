@@ -180,6 +180,7 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/sessions/{id}/terminal"),
     ("GET", "/api/projects"),
     ("GET", "/api/projects/worktrees"),
+    ("POST", "/api/projects/worktrees"),
     ("GET", "/api/agents"),
     ("GET", "/api/events"),
     ("POST", "/api/auth/pair"),
@@ -212,7 +213,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/{id}/input", post(sessions::input))
         .route("/api/sessions/{id}/terminal", get(terminal::upgrade))
         // 静态段先于 `{id}`：`worktrees` 不会被当成项目路径。
-        .route("/api/projects/worktrees", get(projects::worktrees))
+        .route(
+            "/api/projects/worktrees",
+            get(projects::worktrees).post(projects::create_worktree),
+        )
         .route("/api/projects", get(projects::list))
         .route("/api/agents", get(agents::list))
         .route("/api/events", get(events::upgrade))

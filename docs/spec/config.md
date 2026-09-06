@@ -50,7 +50,7 @@ auth:                         # ADR-003 D2
   session_max: "365d"         # 距配对
 project_roots:                # 扫描而非手写，按最近使用排序
   - "/Users/ricky/code"
-worktree_root: "../{repo}-wt" # §6.4：新建 worktree 的存放约定，{repo} = 仓库目录名，worktree 名接在其下
+worktree_root: "../{repo}-wt" # §6.4：新建 worktree 的存放约定（POST /api/projects/worktrees，A44）。相对路径相对主 worktree 所在目录解析，{repo} = 主 worktree 的目录名，worktree 名接在其下：~/code/agora + "h1k" → ~/code/agora-wt/h1k；绝对路径原样用；从 linked worktree 发起也按主 worktree 算
 agents:                       # Adapter 默认命令的覆盖（§5.2）；存可移植形式，不写绝对路径（ADR-001 D7）
   claude: { command: "claude" }
   codex:  { command: "codex" }

@@ -143,8 +143,10 @@ Command:  [ claude ]
 
 V1 的取舍（agora-xqa.12）：Node 只有本机（peer 归 M2a），下拉禁用；Project 是可输入的下拉
 （`<input list>`）——列表来自扫描并按最近使用排序，但 `project_roots` 默认为空，只给下拉的话
-新装的 agora 一个会话都起不了；Worktree 只列现有的（新建归 M3 A44），选主 worktree 等于选仓库
-本身；Task 只有一句话（从 bd 就绪任务选归 M3 A43）；Agent 的名字与默认命令来自 `GET /api/agents`，
+新装的 agora 一个会话都起不了；Worktree 列现有的，末尾一项「新建…」（A44，agora-h1k.1）：选中后
+出现名字输入框（默认取 Name 栏的值；issue id 默认随 A43）与「建」按钮，`POST /api/projects/worktrees`
+成功后重拉列表并选中新项，失败按错误类型给文案（同名 worktree / 分支 / 目录已存在、名字不合法、git
+失败）；选主 worktree 等于选仓库本身；Task 只有一句话（从 bd 就绪任务选归 M3 A43）；Agent 的名字与默认命令来自 `GET /api/agents`，
 末尾多一项 `custom`——它没有 Adapter，Command 必填。Name 与 Command 有默认值，用户手改过之后
 换项目 / 换 agent 不再覆盖。
 

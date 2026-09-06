@@ -3,8 +3,10 @@
 //! 项目列表**不靠手写配置**：扫描 `project_roots` 下的 git 仓库，与库里的"最近使用"
 //! 合并后按最近使用排序。上百个仓库的手写列表会立刻过期，目标是常用项目 2–3 次操作起会话。
 //!
-//! 新建 worktree（`git worktree add`）归 M3 A44，这里只列现有的——只读、不写工作区
-//! （MISSION §1.4 的 Git GUI 边界）。
+//! 本文件只读、不写工作区；新建 worktree（`git worktree add -b`，§1.4 Git GUI 边界的唯一例外）
+//! 在 [`worktree`]。
+
+pub mod worktree;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,6 +27,18 @@ pub enum ProjectError {
     /// worktree 查询只接受已知项目：否则这个端点就成了任意目录的探测器。
     #[error("不是已知项目: {0}")]
     Unknown(String),
+    /// 新建 worktree 的名字不合法（空、含 `/` 或 `..` 或空白等；`worktree::validate_name`）。
+    #[error("worktree 名字不合法 {0}")]
+    InvalidName(String),
+    /// 同名 worktree 已登记（`git worktree list` 里有）。
+    #[error("同名 worktree 已存在: {0}")]
+    WorktreeExists(String),
+    /// 同名分支已存在（没挂在任何 worktree 上）。
+    #[error("分支已存在: {0}")]
+    BranchExists(String),
+    /// 目标目录已存在（不是 git 登记的 worktree）。
+    #[error("目录已存在: {0}")]
+    PathExists(String),
     #[error("git 失败: {0}")]
     Git(String),
     #[error(transparent)]
@@ -62,11 +76,23 @@ pub struct Worktree {
 pub struct Projects {
     db: Arc<Db>,
     roots: Vec<PathBuf>,
+    /// 新建 worktree 的存放约定（docs/spec/config.md `worktree_root`；解析见 `worktree`）。
+    worktree_root: String,
 }
 
 impl Projects {
     pub fn new(db: Arc<Db>, roots: Vec<PathBuf>) -> Self {
-        Projects { db, roots }
+        Projects {
+            db,
+            roots,
+            worktree_root: worktree::DEFAULT_WORKTREE_ROOT.to_owned(),
+        }
+    }
+
+    /// 配置里的 `worktree_root`；`main.rs` 装配时调，测试不调就是缺省的 `../{repo}-wt`。
+    pub fn with_worktree_root(mut self, root: impl Into<String>) -> Self {
+        self.worktree_root = root.into();
+        self
     }
 
     pub fn roots(&self) -> &[PathBuf] {

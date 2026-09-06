@@ -294,10 +294,10 @@ async fn serve() -> i32 {
 
     let mut state = AppState::new(auth, sessions.clone(), &settings.node_id);
     state.agents = Arc::new(settings.raw.agents.clone());
-    state.projects = Arc::new(agora::project::Projects::new(
-        sessions.db_handle(),
-        settings.raw.project_roots.clone(),
-    ));
+    state.projects = Arc::new(
+        agora::project::Projects::new(sessions.db_handle(), settings.raw.project_roots.clone())
+            .with_worktree_root(settings.raw.worktree_root.clone()),
+    );
     state.runtime_path_source = path_source;
     // 配置里的 peer 从第一秒起就在 health / Header 里（离线、没见过），不等连上才出现（MISSION §10.3）。
     // 同时装节点名 → transport 的表（agora-7ku.11）：peer 客户端（7ku.5）与一跳转发（7ku.7）都从

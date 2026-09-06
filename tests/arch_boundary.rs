@@ -234,6 +234,73 @@ fn subprocesses_only_through_runtime_exec() {
     }
 }
 
+/// `"…"` 字面量的内容，按出现顺序；argv 里没有转义，不处理。
+fn string_literals(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = s;
+    while let Some(i) = rest.find('"') {
+        let after = &rest[i + 1..];
+        let Some(j) = after.find('"') else { break };
+        out.push(&after[..j]);
+        rest = &after[j + 1..];
+    }
+    out
+}
+
+#[test]
+fn git_subprocesses_are_read_only_or_worktree_add() {
+    // MISSION §6.4「Worktree 跟着任务生灭，agora 只管"生"」+ §1.4 Git GUI 边界（A44，agora-h1k.1）：
+    // src/ 里起的 git 子进程只许只读或只增——合并、销毁、checkout、commit 都归人。
+    //
+    // 扫的是每个 `"git"` 开头的 argv 字面量数组：紧随的第一个不以 `-` 开头的字面量是子命令，
+    // `worktree` 再看下一个。子命令由变量拼出来（数组里 `"git"` 后面第一个字面量不是子命令）
+    // 也算违规——守卫看不见的命令等于没守。`"git"` 后面不跟 `,` 的不是 argv（错误类型 `"git"`
+    // 那种字面量），跳过。`#[cfg(test)]` 之后不扫：单元测试的 fixture 不是子进程
+    // （src/adapter/mod.rs 用 `["git", "commit", …]` 当"不是 agent 名"的反例，2026-09-06）。
+    const ALLOWED: &[&[&str]] = &[
+        &["status"],
+        &["diff"],
+        &["rev-parse"],
+        &["symbolic-ref"],
+        &["worktree", "list"],
+        &["worktree", "add"],
+    ];
+    let mut seen = 0;
+    let mut offenders = Vec::new();
+    for (p, body) in sources("src") {
+        let code = body.split("#[cfg(test)]").next().unwrap_or("");
+        let mut rest = code;
+        while let Some(i) = rest.find("\"git\"") {
+            rest = &rest[i + "\"git\"".len()..];
+            if !rest.trim_start().starts_with(',') {
+                continue;
+            }
+            seen += 1;
+            let end = rest.find(']').unwrap_or(rest.len());
+            let lits: Vec<&str> = string_literals(&rest[..end])
+                .into_iter()
+                .filter(|l| !l.starts_with('-'))
+                .collect();
+            let cmd: Vec<&str> = match lits.first() {
+                Some(&"worktree") => lits.iter().take(2).copied().collect(),
+                Some(&c) => vec![c],
+                None => Vec::new(),
+            };
+            if !ALLOWED.contains(&cmd.as_slice()) {
+                offenders.push(format!("{}: git {}", rel(&p), cmd.join(" ")));
+            }
+        }
+    }
+    assert!(
+        seen >= 2,
+        "守卫没扫到 git argv——扫描方式与代码写法脱节了（worktree list / add 至少两处）"
+    );
+    assert!(
+        offenders.is_empty(),
+        "git 子命令只允许 {ALLOWED:?}（MISSION §6.4 / §1.4），越界: {offenders:?}"
+    );
+}
+
 #[test]
 fn the_terminal_installs_the_key_handler() {
     // agora-xqa.3：键位判断在 keys.ts 里测得再全，没装到 xterm 上也是白的——Shift+Enter
