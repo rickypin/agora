@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
 import { partitionByAttention, sortByAttention } from "./attention";
+import { ChangesApiContext } from "./Changes";
 import { CommandPalette } from "./CommandPalette";
 import { fuzzyFilter } from "./fuzzy";
 import { nodeStatuses } from "./Header";
@@ -13,9 +14,9 @@ import { SessionSettings } from "./SessionSettings";
 import { rowHaystack, rowName, Sidebar } from "./Sidebar";
 import { SessionStore, useSessions, useUnregistered } from "./store";
 import { Tabs } from "./Tabs";
-import type { TerminalClientOptions } from "./terminal";
+import { defaultDiffSocket, type TerminalClientOptions } from "./terminal";
 import { TerminalView } from "./TerminalView";
-import { emptyTabs, tabsReducer } from "./tabstate";
+import { diffTabId, diffTarget, emptyTabs, tabsReducer } from "./tabstate";
 
 interface Props {
   store?: SessionStore;
@@ -31,10 +32,12 @@ interface Props {
   version?: VersionWatcher;
   /** 测试注入：终端 WS 的建法（透传给 TerminalView）。 */
   terminalConnect?: TerminalClientOptions["connect"];
+  /** 测试注入：只读 diff 终端 WS 的建法；缺省 `defaultDiffSocket`（agora-h1k.5）。 */
+  diffConnect?: TerminalClientOptions["connect"];
 }
 
 /** Screen A 的侧栏（Attention Dashboard）+ Screen B：Tabs + 终端 + Session Settings。 */
-export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender, notifyDeps, health: givenHealth, version: givenVersion, terminalConnect }: Props) {
+export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender, notifyDeps, health: givenHealth, version: givenVersion, terminalConnect, diffConnect }: Props) {
   const store = useMemo(() => given ?? new SessionStore(), [given]);
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
   const catalog = useMemo(() => givenCatalog ?? catalogApi(), [givenCatalog]);
@@ -93,7 +96,13 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
 
   const byId = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   useEffect(() => {
-    dispatch({ type: "prune", existing: new Set(byId.keys()) });
+    // diff 标签页（`diff:<id>`）跟着它的会话行活：行在就留着，行没了一起剪掉（agora-h1k.5）。
+    const existing = new Set<string>();
+    for (const id of byId.keys()) {
+      existing.add(id);
+      existing.add(diffTabId(id));
+    }
+    dispatch({ type: "prune", existing });
   }, [byId]);
   useEffect(() => {
     if (pendingOpen && byId.has(pendingOpen)) {
@@ -102,7 +111,9 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     }
   }, [byId, pendingOpen]);
 
-  const active = tabs.active ? byId.get(tabs.active) : undefined;
+  // 激活的是 diff 标签页时，`active` 仍是它所属的会话行：crumb 与终端都要它的名字与 id。
+  const diffOf = tabs.active ? diffTarget(tabs.active) : null;
+  const active = tabs.active ? byId.get(diffOf ?? tabs.active) : undefined;
   // 点已经打开着的那一行 / 标签页：reducer 是 no-op，TerminalView 不重挂、不会再 focus，焦点就留在
   // 刚点的按钮上——敲键盘什么都不进 pane，按 Enter 还会再点一次（agora-vcc，2026-09-05 代检）。
   // 用户的直觉是"点一下这个会话就能打字"，所以命中当前 active 时显式把焦点交回终端。不在按钮的
@@ -120,6 +131,9 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     [focusTerminal],
   );
   const openNewAgent = useCallback(() => setNewAgentOpen(true), []);
+  // 「看 diff」（MISSION §6.3 看结果；agora-h1k.5）：只是开一个 `diff:<id>` 标签页——不发请求、不进会话列表，
+  // 里面的 TerminalView 以 diff socket 连 `WS /api/sessions/:id/diff`，关标签即关 WS。
+  const openDiff = useCallback((id: string) => dispatch({ type: "open", id: diffTabId(id) }), []);
   // 采纳成功：会话随 `session_created` 进列表后再开 Tab；未登记列表不走事件流，主动重拉。
   const adopt = useCallback(
     (body: Parameters<SessionApi["adopt"]>[0]) => {
@@ -161,7 +175,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         case "next":
         case "prev": {
           if (visible.length === 0) break;
-          const at = visible.findIndex((r) => r.id === tabs.active);
+          const at = visible.findIndex((r) => r.id === (diffOf ?? tabs.active));
           const step = hit.action === "next" ? 1 : -1;
           const next = visible[(at + step + visible.length) % visible.length];
           if (next) openTab(next.id);
@@ -176,7 +190,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [paletteOpen, newAgentOpen, visible, tabs.active, openTab]);
+  }, [paletteOpen, newAgentOpen, visible, tabs.active, diffOf, openTab]);
 
   if (blocked !== null) {
     // 节点与页面不是同一个 API major（或读不出版本）：只留横幅，侧栏 / Tabs / 终端一概不挂——
@@ -195,6 +209,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   }
 
   return (
+    <ChangesApiContext.Provider value={api}>
     <div className="workspace">
       <Sidebar
         rows={visible}
@@ -216,6 +231,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         renderExpanded={(r) => <Respond row={r} api={api} onOpenTerminal={openTab} />}
         unregistered={unregistered}
         onAdopt={adopt}
+        onOpenDiff={openDiff}
       />
       <section className="main">
         {degraded !== null && (
@@ -245,16 +261,33 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         {active ? (
           <>
             <div className="crumb">
-              <span>
-                {rowName(active)} / {String(active.agent_type ?? "")} @ {active.node}
-              </span>
-              <button onClick={() => setSettingsOpen((v) => !v)} aria-pressed={settingsOpen}>
-                Settings
-              </button>
+              {diffOf !== null ? (
+                // diff 标签页：没有 Settings——它不是会话，Kill / Restart / Rename 都不是它的事。
+                <span data-testid="crumb-diff">git diff / {rowName(active)}</span>
+              ) : (
+                <>
+                  <span>
+                    {rowName(active)} / {String(active.agent_type ?? "")} @ {active.node}
+                  </span>
+                  <button onClick={() => setSettingsOpen((v) => !v)} aria-pressed={settingsOpen}>
+                    Settings
+                  </button>
+                </>
+              )}
             </div>
             <div className="pane">
               {/* key=会话 id：切 Tab 时旧终端卸载（detach）、新终端挂载，永不 restart。 */}
-              {active.origin === "external" ? (
+              {diffOf !== null ? (
+                // 只读 diff 终端（agora-h1k.5）：key 是标签页 id（与同一会话的终端标签不同），切走即卸载 = WS 关、
+                // git 进程被收走；sessionId 给基础会话 id，URL 的 /diff 由 defaultDiffSocket 拼。
+                <TerminalView
+                  key={tabs.active ?? undefined}
+                  sessionId={diffOf}
+                  connect={diffConnect ?? defaultDiffSocket}
+                  readOnly
+                  focusRef={terminalFocus}
+                />
+              ) : active.origin === "external" ? (
                 // external 会话没有运行时句柄（MISSION §5.5）：只有状态与 hook 的 respond，没有终端可挂。
                 <p className="muted empty" data-testid="no-terminal">
                   external 会话：agora 没有它的终端，只能看状态、经 hook 回答；要操作请去它自己的窗口。
@@ -262,7 +295,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
               ) : (
                 <TerminalView key={active.id} sessionId={active.id} connect={terminalConnect} focusRef={terminalFocus} />
               )}
-              {settingsOpen && <SessionSettings row={active} api={api} onClose={() => setSettingsOpen(false)} />}
+              {settingsOpen && diffOf === null && <SessionSettings row={active} api={api} onClose={() => setSettingsOpen(false)} />}
             </div>
           </>
         ) : (
@@ -289,5 +322,6 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         />
       )}
     </div>
+    </ChangesApiContext.Provider>
   );
 }

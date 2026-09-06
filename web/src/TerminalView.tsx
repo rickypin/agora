@@ -8,7 +8,7 @@ import { TerminalClient, type ExitInfo, type TerminalClientOptions } from "./ter
 /** scrollback 与运行时的 history-limit 对齐（ADR-001 D6）。 */
 export const SCROLLBACK = 10000;
 
-type Link = "connecting" | "attached" | "detached" | "exited";
+type Link = "connecting" | "attached" | "read_only" | "detached" | "exited";
 
 interface Props {
   sessionId: string;
@@ -17,13 +17,16 @@ interface Props {
   /** 挂着的终端的 focus()：Workspace 在点已激活的行 / 标签页时把焦点交回来（agora-vcc）。
    * 挂载时填、卸载时清空。 */
   focusRef?: { current: (() => void) | null };
+  /** 只读终端（agora-h1k.5 的 diff）：xterm 不收键入、不向 WS 发 input；服务端那头也丢 input，两边各守一半。
+   * 退出后的按钮是"重新运行"（再跑一次 git diff）而不是"重新连接"。挂载时定死，与 connect 同理不进依赖。 */
+  readOnly?: boolean;
 }
 
 /**
  * 一个会话的终端：xterm.js + FitAddon ↔ TerminalClient。
  * 组件卸载 = detach（MISSION §4.6）：只关 WS，agent 不受影响。
  */
-export function TerminalView({ sessionId, connect, focusRef }: Props) {
+export function TerminalView({ sessionId, connect, focusRef, readOnly = false }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const [link, setLink] = useState<Link>("connecting");
   const [exit, setExit] = useState<ExitInfo | null>(null);
@@ -36,7 +39,8 @@ export function TerminalView({ sessionId, connect, focusRef }: Props) {
     setExit(null);
     const term = new Terminal({
       scrollback: SCROLLBACK,
-      cursorBlink: true,
+      cursorBlink: !readOnly,
+      disableStdin: readOnly,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
       fontSize: 13,
       theme: { background: "#0e1116", foreground: "#d6dbe3" },
@@ -50,8 +54,9 @@ export function TerminalView({ sessionId, connect, focusRef }: Props) {
       connect,
       onOutput: (data) => term.write(data),
       onStatus: (s) => {
-        if (s === "attached") {
-          setLink("attached");
+        // read_only 是只读终端的"已连上"（docs/spec/api.md「只读产出」）：同样交焦点，滚动 / 选区要它。
+        if (s === "attached" || s === "read_only") {
+          setLink(s === "read_only" ? "read_only" : "attached");
           // 挂载时那一次 focus 在新开的浏览器标签页里偶尔不生效（agora-p29，2026-09-03 目检：
           // attach 成功但键入不进 pane，点一下终端才好）；attached 到达时再交一次焦点。
           // 用户这会儿已经在别的输入框里打字的话不抢。
@@ -65,10 +70,12 @@ export function TerminalView({ sessionId, connect, focusRef }: Props) {
       onClose: (exited) => setLink(exited ? "exited" : "detached"),
     });
     client.connect(sessionId, term.cols, term.rows);
-    const input = term.onData((d) => client.sendInput(d));
+    // 只读时这一头就不发 input：服务端也丢，但少发一帧就少一分歧义。
+    const send = readOnly ? () => {} : (d: string) => client.sendInput(d);
+    const input = term.onData(send);
     // 浏览器抢走的那几个键由这一层代发（agora-xqa.3）；其余一律交回 xterm，
     // 终端里的 Ctrl+C/D/Z/R/A/E 不经过任何 agora 的判断（MISSION §6.5）。
-    term.attachCustomKeyEventHandler((ev) => handleTerminalKey(ev, (d) => client.sendInput(d)));
+    term.attachCustomKeyEventHandler((ev) => handleTerminalKey(ev, send));
     const resize = term.onResize(({ cols, rows }) => client.sendResize(cols, rows));
     const ro = new ResizeObserver(() => fit.fit());
     ro.observe(el);
@@ -104,8 +111,8 @@ export function TerminalView({ sessionId, connect, focusRef }: Props) {
     <div className="term">
       <div className="term-bar">
         <span className={`link link-${link}`}>{linkLabel(link, exit)}</span>
-        {link !== "attached" && link !== "connecting" && (
-          <button onClick={() => setAttempt((n) => n + 1)}>重新连接</button>
+        {link !== "attached" && link !== "read_only" && link !== "connecting" && (
+          <button onClick={() => setAttempt((n) => n + 1)}>{readOnly ? "重新运行" : "重新连接"}</button>
         )}
       </div>
       <div className="term-host" ref={host} />
@@ -126,6 +133,8 @@ function linkLabel(link: Link, exit: ExitInfo | null): string {
       return "连接中…";
     case "attached":
       return "已连接";
+    case "read_only":
+      return "只读";
     case "detached":
       return "已断开（agent 仍在运行）";
     case "exited":

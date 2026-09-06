@@ -192,3 +192,33 @@ GET /api/health
 **首条 prompt**：`POST /api/sessions` 多一个可选的 `prompt`；`GET /api/agents` 每项多一个 `prompt: bool`——该 Adapter 接不接受首条 prompt（Claude、Codex 为 true：`claude '<prompt>'` / `codex '<prompt>'` 位置参数起交互会话并把它当第一条指令，2.1.261 / 0.152.1 实测；Grok、shell 为 false，前端自己加的 `custom` 没有 Adapter，也是 false）。非空 `prompt` 给了不接受的 agent 类型 → 400 `bad_request`（对话框对这类 agent 不显示该字段，正常到不了这里）。语义三条：**只进这一代的启动命令**——`Adapter::initial_prompt_args` 给形态，`resume::append_positional` 单引号包住接到命令尾（命令经 `sh -c` 执行，多行照样一个参数；不走 `splice_args`，它把偶数位当 flag 去剥）；**不进库**——`sessions.command` 存的仍是不带 prompt 的命令，`GET /api/sessions/:id` 的 `command` 里看不到它；**Restart 不重发**——`plan_restart` 用库里的命令续对话，重发会让 agent 把任务从头再做一遍。`task_ref` 由对话框写成 issue id，会话行的 `task` 标签照常经 `bd show` 补齐。
 
 **agora 对 beads 零写入**（不变量 12）：claim 是 agent 开工的纪律（AGENTS.md），模板里让 agent 自己 `bd update <id> --claim`；整条链路敲到 bd 的只有 `ready --json` 与 `show <id> --json`，`bd ready` 的 `--claim` 字面量在 `src/task/` 里被禁。守卫 `tests/task_pick.rs::ready_tasks_listed_from_bd_ready_json`（假 bd 录 argv，端点链路只有 `ready --json`；未知目录 400 且不敲 bd）、`::missing_bd_yields_empty_with_typed_reason`（no_bd / no_beads / bad_output 三档都是 200 + 空列表）、`::session_created_from_task_prefills_ref_name_and_prompt`（运行时收到的命令以单引号 prompt 结尾、GET 的 `command` 不含它、Restart 的 respawn 命令也不含、custom 带 prompt → 400）；`tests/arch_boundary.rs::beads_is_read_only_and_lives_in_task`（`"ready"` 只许在 `src/task/`，`src/task` 禁 `"--claim"`）；`tests/task_beads.rs::only_read_only_subcommands_ever_reach_bd`（白名单恰是 show / ready）。前端 vitest `web/src/NewAgentDialog.test.tsx`、`web/src/taskPrompt.test.ts`；对话框形态与 prompt 模板原文见 `docs/spec/ux.md`「New Agent 对话框线框」。`api_version` 因新端点与新字段（`prompt` 请求字段、agents 的 `prompt` 标志）该 bump minor，由本批集成者统一做，本任务不动它。
+
+## 只读产出：改动文件与 diff 终端（MISSION §6.3；A41；agora-h1k.5）
+
+「看结果」的两个端点都在会话的**工作目录**上做只读观察（`sessions.working_directory`——对话框选 linked worktree 时填的就是该 worktree 的路径；`worktree` 字段存的是分支名，不是路径），实现在 `src/api/changes.rs`。整条链路对仓库零写操作：两处 git 子进程只有 `status` / `diff`，守卫 `tests/arch_boundary.rs::git_subprocesses_are_read_only_or_worktree_add` 扫得到这两个 argv 字面量数组（`seen` 下限随之 2 → 4）；合并、提交、销毁归 Git GUI（MISSION §1.4）。
+
+**`GET /api/sessions/:id/changes`** → `200 { files: [{ path, status }], branch, reason }`：
+
+- 跑 `git -C <cwd> status --porcelain=v2 --branch -z`（经 `runtime::exec`，缺省 5 s 超时；`-z` 让路径不做 C 风格引号转义、重命名的两个路径各占一段）。`files` 按 `path` 排序；重命名 / 复制的 `path` 是新路径。`branch` 是 `# branch.head`，detached HEAD 为 null。
+- `status` 由 porcelain 的 `XY` 压成一个词（X 暂存区、Y 工作区）：任一侧是 `D` → `deleted`（文件已经不在工作区，这是看结果的人最想知道的）；否则第一个非 `.` 的字母决定：`A` `added`、`R` `renamed`、`C` `copied`、`T` `typechange`、`U` / `u` 行 `unmerged`、其余 `modified`；`?` 行 `untracked`；`!`（忽略的文件）不列。
+- 列表为空的类型化原因 `reason`（正常为 null；前端只按它分支，MISSION §2.3 规则 10）：
+
+| reason | 何时 |
+|---|---|
+| `not_a_repo` | 工作目录不是 git 仓库（`git status` 退出码 128） |
+| `no_directory` | 会话没有工作目录（external 会话），或目录已经不存在——先于起 git 判，git 对不存在的 `-C` 目录也报 128、与"不是仓库"分不开 |
+| `no_git` | 本机 PATH 里没有 git |
+| `timeout` | `git status` 超过 5 s 没退出（巨型仓库 / 网络盘） |
+| `git` | git 以其它非零码退出或读输出失败；stderr 尾巴在 daemon 日志里 |
+
+这些都是 `200`：它们不是请求错误，是"这个会话没有可看的改动"这一事实的几种形态，前端给一行灰字而不是错误横幅。会话不存在才 404 `not_found`。peer 会话经 `forward::route`（GET 也走同一条一跳转发）到所属节点，应答原样回；裸 id 视为本机。守卫 `tests/changes.rs::lists_modified_files_from_porcelain`、`::non_repo_yields_typed_reason`。
+
+**`WS /api/sessions/:id/diff`**：只读终端。握手与 `/terminal` 一样（principal → Human 的同源校验 → 按节点前缀 hop；peer 会话由 `forward::terminal` 带 `/diff` 后缀向所属节点建同一条 WS 再原样互转），本机分支**不经** `SessionManager.attach`：直接在 PTY 里 `AttachedPty::spawn` 一个 `git -C <cwd> --no-pager diff --color=always HEAD`（环境 `GIT_PAGER=cat`、`PAGER=cat`，`TERM` 由 gateway 给），`?cols=&rows=` 同 `/terminal`。
+
+- 为什么是 `diff HEAD` 而不是裸 `diff`：agent 干完活常常已经 `git add` 了一部分，裸 `diff` 只给工作区对暂存区的差异；`diff HEAD` 是"自上次提交以来一共改了什么"，与上面的列表（暂存与未暂存都列）对得上。未跟踪的新文件两种写法都不显示，只在列表里带 `?`；还没有任何提交的仓库没有 HEAD，git 在终端里自己报错退出，不另立错误类型。
+- 只读 = 同一条 `terminal::bridge`（PTY 的释放顺序是雷区，不复制第二份循环）多一个 `accept_input = false`：第一帧是 `{ "type": "status", "status": "read_only" }`（而不是 `attached`，客户端与测试据此断言），之后 `input` 帧一律丢弃、不进 PTY；`resize` / `ping` 照常；git 跑完发 `exit` 帧然后关闭。
+- 不进 `sessions` 表、不发任何事件、不碰 SessionManager：`GET /api/sessions` 的行数在开 / 关 diff 前后不变，侧栏不多一行；浏览器关标签 → WS 断 → detach → PTY 释放。
+- 会话没有工作目录 → 升级前 409 `no_directory`（新错误类型，本批由集成者并进「错误应答统一为」总段落）；会话不存在 404 `not_found`；跨站 403 `cross_origin`。
+- 守卫 `tests/changes.rs::diff_terminal_is_read_only_and_ephemeral`（真 WS：首帧 read_only、输出含 diff、发 input 不出错也不回显、收到 exit、行数不变、仓库 `git status --porcelain` 与 `git reflog` 前后一字不差）。
+
+前端（`web/src/Changes.tsx`、`docs/spec/ux.md`「选中行的展开区」）：行展开且 status ∈ {TURN_DONE, FINISHED, FAILED, RUNNING} 时拉一次 `/changes`（status 变了再拉，不轮询），列表 `<单字母> <path>`、空列表「无改动」、`reason` 按类型给一行灰字；「看 diff」开一个 `diff:<会话 id>` 标签页，以 `WS /diff` 挂只读终端（`web/src/terminal.ts` 的 `defaultDiffSocket`），关标签即关 WS。`api_version` 因新端点该 bump minor，由本批集成者统一做（「api_version 兼容规则」），本任务不动它。

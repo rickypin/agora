@@ -82,6 +82,8 @@ interface SidebarProps {
   /** 运行时里未登记的会话（Unknown Agent，MISSION §5.5）。 */
   unregistered?: UnregisteredRow[];
   onAdopt?: (body: AdoptBody) => void;
+  /** 「看 diff」（agora-h1k.5）；只透传给每一行。 */
+  onOpenDiff?: (id: string) => void;
 }
 
 interface UnknownProps {
@@ -161,6 +163,7 @@ export function Sidebar({
   renderExpanded,
   unregistered = [],
   onAdopt,
+  onOpenDiff,
 }: SidebarProps) {
   const now = useNowSeconds();
   const firstRunning = rows.findIndex((r) => !needsAttention(r));
@@ -215,6 +218,7 @@ export function Sidebar({
               expanded={r.id === active ? renderExpanded?.(r) : undefined}
               now={now}
               localNode={localNode}
+              onOpenDiff={onOpenDiff}
             />
           </Fragment>
         ))}

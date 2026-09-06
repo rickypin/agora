@@ -1,5 +1,6 @@
 import { memo, useState, type ReactNode } from "react";
 import { promptRepeatsLabel, statusLine, taskLabel, taskOf } from "./attention";
+import { Changes } from "./Changes";
 import type { SessionRow } from "./events";
 import { clockText } from "./Header";
 
@@ -112,10 +113,12 @@ interface RowProps {
   now: number;
   /** 本机 node.id（`/api/system` 的 node）：node 标签只给不是本机的行；undefined = 还不知道，谁都不标。 */
   localNode?: string;
+  /** 「看 diff」：开该会话的只读 diff 标签页（MISSION §6.3 看结果；agora-h1k.5）。 */
+  onOpenDiff?: (id: string) => void;
 }
 
 /** memo：行对象引用没变就不重渲染（store.ts）。 */
-export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, expanded, now, localNode }: RowProps) {
+export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, expanded, now, localNode, onOpenDiff }: RowProps) {
   onRender?.(row.id);
   const prompt = str(row.prompt);
   const progress = str(row.progress);
@@ -184,6 +187,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
       </button>
       {active && expanded}
       {active && <Acceptance row={row} />}
+      {active && <Changes row={row} onOpenDiff={onOpenDiff} />}
     </li>
   );
 });

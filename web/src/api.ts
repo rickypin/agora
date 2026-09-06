@@ -88,6 +88,14 @@ export interface RestartResult {
   restart?: { resumed: boolean; agent_session_id?: string; reason?: string };
 }
 
+/** `GET /api/sessions/:id/changes`（MISSION §6.3 看结果；A41，agora-h1k.5）：会话工作目录的 git status，只读。 */
+export interface ChangesInfo {
+  files: { path: string; status: string }[];
+  branch: string | null;
+  /** 列表为空的类型化原因（not_a_repo / no_directory / no_git / timeout / git，docs/spec/api.md）；正常 null。 */
+  reason: string | null;
+}
+
 async function call<T>(
   fetchImpl: FetchLike,
   method: string,
@@ -136,6 +144,8 @@ export function sessionApi(fetchImpl: FetchLike = apiFetch) {
       call<{ id: string }>(fetchImpl, "POST", "/api/sessions", body),
     /** 采纳未登记的运行时会话（§5.5）；201 的响应体就是新会话那一行。 */
     adopt: (body: AdoptBody) => call<{ id: string }>(fetchImpl, "POST", "/api/sessions/adopt", body),
+    /** 该会话工作目录的改动文件（§6.3 看结果；A41，agora-h1k.5）：只读的 git status，200 + 类型原因而非错误。 */
+    changes: (id: string) => call<ChangesInfo>(fetchImpl, "GET", `${enc(id)}/changes`),
   };
 }
 

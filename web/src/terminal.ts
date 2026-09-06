@@ -40,6 +40,16 @@ export function defaultTerminalSocket(id: string, cols: number, rows: number): T
   return new WebSocket(`${proto}//${window.location.host}/api/sessions/${encodeURIComponent(id)}/terminal?${q}`) as unknown as TerminalSocketLike;
 }
 
+/**
+ * `WS /api/sessions/:id/diff`（MISSION §6.3 看结果；A41，agora-h1k.5）：在会话工作目录跑 git diff 的只读终端，
+ * 服务端首帧 `status: read_only`、丢弃一切 input。同一行同时出现 `new WebSocket(` 与 `/api/`（守卫同上）。
+ */
+export function defaultDiffSocket(id: string, cols: number, rows: number): TerminalSocketLike {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const q = `cols=${cols}&rows=${rows}`;
+  return new WebSocket(`${proto}//${window.location.host}/api/sessions/${encodeURIComponent(id)}/diff?${q}`) as unknown as TerminalSocketLike;
+}
+
 export class TerminalClient {
   private socket: TerminalSocketLike | null = null;
   private open = false;

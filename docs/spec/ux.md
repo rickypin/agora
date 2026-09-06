@@ -80,7 +80,7 @@ RUNNING
 
 侧栏选中行下方是就地 respond 区（MISSION §6.3 §7.3，`web/src/Respond.tsx`）：WAITING 且 `reason = permission`、`respond_via = hook` → 问题文本（`pending_decision.summary`，形如 `Bash: git push origin main`——工具名 + `tool_input` 主参数的首行，截到 200 字符加 `…`；载荷没带 `tool_input` 才只剩工具名，`src/adapter/hooks.rs permission_summary`）+ Allow / Deny / 打开终端，`respond_within_secs` 短于 5 分钟（Codex 20 s）时再加一行"N 秒内没答会交回终端"；WAITING 的其它情形（`question`，或 `respond_via = terminal`）→ 只有问题文本与"打开终端"；TURN_DONE → `↳` 最后一条回复 + "下一条指令"输入框（发 text，尾部带换行）。Allow / Deny 撞上 `no_pending_decision`（终端先答了 / 过期）只显示一行提示，行状态随事件自己变。
 
-选中行的展开区从上到下（`web/src/SessionRow.tsx`；agora-h1k.3 定）：① 就地 respond（上一段，WAITING / TURN_DONE 才有）；② **验收标准**折叠块——`task.acceptance`（`docs/spec/api.md`，读自 beads 的 acceptance_criteria、不复制进 agora 的库，不变量 12）全文、多行原样，一行 summary `▾ 验收标准 · agora-h1k.3` 可折叠，默认展开（行展开就是为了看"做完算什么"，MISSION §6.3 看结果 / A40）；没有任务或 beads 里没写不占位。respond 在上：回答问题 / 给下一条指令是先做的事，对照验收是看结果时的事；M3 的改动文件列表与"看 diff"（agora-h1k.5）接在验收标准之后，两者并排对照。在 beads 里改了验收标准，`TaskIndex` 的 TTL（5 min）到期重查后展开区跟着变。守卫 `web/src/SessionRow.test.tsx`。
+选中行的展开区从上到下（`web/src/SessionRow.tsx`；agora-h1k.3 定）：① 就地 respond（上一段，WAITING / TURN_DONE 才有）；② **验收标准**折叠块——`task.acceptance`（`docs/spec/api.md`，读自 beads 的 acceptance_criteria、不复制进 agora 的库，不变量 12）全文、多行原样，一行 summary `▾ 验收标准 · agora-h1k.3` 可折叠，默认展开（行展开就是为了看"做完算什么"，MISSION §6.3 看结果 / A40）；没有任务或 beads 里没写不占位。respond 在上：回答问题 / 给下一条指令是先做的事，对照验收是看结果时的事；③ **改动文件**（`web/src/Changes.tsx`；A41，agora-h1k.5）接在验收标准之后，两者并排对照——`GET /api/sessions/:id/changes`（`docs/spec/api.md`「只读产出」，该 worktree 的只读 `git status`）的列表 `<单字母> <path>`（M / A / D / R / C / T / U / ?，与 `git status --short` 同一习惯），标题带分支名，空列表一行「无改动」，`reason` 按类型一行灰字（`not_a_repo` 不是 git 仓库、`no_directory` 工作目录不存在、`no_git` 本机没有 git、`timeout` git status 超时、`git` git 失败——只按类型不按文本，MISSION §2.3 规则 10）；status 是 TURN_DONE / FINISHED / FAILED（做完了看结果）或 RUNNING（瞄一眼进度）时显示，每次 status 变化拉一次、**不轮询**，WAITING / IDLE / STARTING / UNKNOWN 不占位——此刻该做的是回答问题。旁边的「看 diff」开一个 `diff:<会话 id>` 标签页：标签叫 `diff · <会话名>`（点是 ±），crumb 是 `git diff / <会话名>` 且没有 Settings（它不是会话），里面是同一个 TerminalView 以 `WS /api/sessions/:id/diff` 挂的**只读**终端——在该 worktree 跑 `git --no-pager diff HEAD`，连接状态显示「只读」，键入不发也不进 PTY（两边各守一半），跑完显示退出码、按钮「重新运行」再跑一次；关标签即关 WS、git 进程被收走，侧栏不多一行、`GET /api/sessions` 行数不变；会话被删时它的 diff 标签一起消失。`reason` 非空时按钮禁用（没有可 diff 的仓库）。在 beads 里改了验收标准，`TaskIndex` 的 TTL（5 min）到期重查后展开区跟着变。守卫 `web/src/SessionRow.test.tsx`、`web/src/Changes.test.tsx`、`web/src/Workspace.test.tsx`（看 diff 一节）。
 
 ```
 ◆ agora-h1k.3 会话行展开显示任务的验收标准 / Claude @ mac    turn done 2m
@@ -91,6 +91,20 @@ RUNNING
   │ ▾ 验收标准 · agora-h1k.3
   │ tests/task_info.rs::acceptance_is_read_not_stored（库里无该字段、API 有）；
   │ 前端 vitest：展开显示与折叠；docs/spec/api.md task 形态回写。
+  │ 改动 · agora-h1k.3                              [看 diff]
+  │ M src/session/manager.rs
+  │ ? web/src/Acceptance.test.tsx
+```
+
+点「看 diff」后主区：
+
+```
+[ ● agora-h1k.3 ] [ ± diff · agora-h1k.3 ×]
+git diff / agora-h1k.3
+只读
+diff --git a/src/session/manager.rs b/src/session/manager.rs
+@@ -12,6 +12,9 @@
++    pub acceptance: Option<String>,
 ```
 
 实现（`web/src/attention.ts`，agora-dvh.10）：侧栏就是 Dashboard——行按分数降序 → bd 优先级升序（`task.priority`，无 bd 视为 P2）→ `status_since` 早的在前排好，再把 NEEDS ATTENTION（分数 ≥ FINISHED）整体提到 RUNNING 前面；过滤只删不换序，所以 Alt/Option+N 跳的第 N 条永远等于眼睛看到的第 N 条。第一列 `taskLabel`：`task.id + title` > `task_ref`（issue id 或首条 prompt 摘要）> 名字。header 下一行是各状态计数。

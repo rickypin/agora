@@ -45,3 +45,19 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
     }
   }
 }
+
+/**
+ * diff 标签页（MISSION §6.3 看结果；agora-h1k.5）的 id：`diff:<会话 id>`。它不是会话——只是一个跑 git diff 的
+ * 只读终端，关掉即消失、侧栏不多一行；Workspace 在 prune 的 existing 集合里给每个现有会话也放一个 diff id，
+ * 否则 diff 标签一开就被当"消失的会话"剪掉。
+ */
+export const DIFF_PREFIX = "diff:";
+
+export function diffTabId(sessionId: string): string {
+  return `${DIFF_PREFIX}${sessionId}`;
+}
+
+/** `diff:<id>` → `<id>`；不是 diff 标签页返回 null。 */
+export function diffTarget(tabId: string): string | null {
+  return tabId.startsWith(DIFF_PREFIX) ? tabId.slice(DIFF_PREFIX.length) : null;
+}

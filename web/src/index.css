@@ -152,3 +152,18 @@ li.stale > .row:hover, li.stale > .row.selected { opacity: 0.8; }
 .form .task-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .form .task-hint { font-size: 12px; }
 .form textarea { min-width: 0; font: inherit; resize: vertical; }
+
+/* 展开区的改动文件列表（MISSION §6.3 看结果；A41，agora-h1k.5）：接在验收标准之后，同一条左边线、同一缩进。 */
+.changes { margin: 2px 6px 6px 28px; padding: 4px 8px; border-left: 2px solid var(--border); font-size: 12px; }
+.changes-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.changes-head button { font-size: 12px; padding: 1px 6px; }
+.changes-note { margin: 4px 0 0; }
+.changes-list { list-style: none; margin: 4px 0 0; padding: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.changes-list li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chg { display: inline-block; width: 1em; text-align: center; }
+.chg-modified, .chg-typechange, .chg-renamed, .chg-copied { color: var(--warn); }
+.chg-added, .chg-untracked { color: var(--ok); }
+.chg-deleted, .chg-unmerged { color: var(--bad); }
+/* 只读 diff 终端的连接状态与它的标签页点。 */
+.link-read_only { color: var(--accent); }
+.st-diff { color: var(--muted); }
