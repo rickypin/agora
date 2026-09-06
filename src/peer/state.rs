@@ -82,6 +82,30 @@ impl Default for PeerState {
     }
 }
 
+/// 传输层的失败 → 状态模型的类型（agora-7ku.5 接线；MISSION §2.3 规则 10：按类型不按文本）。
+/// `Timeout` / `Unreachable` / `Protocol` / `Tls` 都是"连不上"；`FingerprintMismatch` 保持独立
+/// （ADR-003 D4，绝不并进离线）；`WsRejected(401)` 是未授权、其余状态码当不可达。
+/// `Config(_)`（url / 指纹 / token_file 字面上就用不了）按 ADR-003 D3 该显示为「配置错误」，
+/// 状态模型加这个类型是 agora-41e 的事；在它落地前暂映射为 `Unreachable`，细节在 warn 日志里。
+impl From<crate::peer::transport::TransportError> for PeerError {
+    fn from(e: crate::peer::transport::TransportError) -> Self {
+        use crate::peer::transport::TransportError as T;
+        match e {
+            T::FingerprintMismatch { .. } => PeerError::FingerprintMismatch,
+            T::WsRejected(status) if status == axum::http::StatusCode::UNAUTHORIZED => {
+                PeerError::Unauthorized
+            }
+            T::Config(err) => {
+                tracing::warn!(component = "peer", %err, "peer 配置错误（agora-41e 落地前显示为不可达）");
+                PeerError::Unreachable
+            }
+            T::Timeout(_) | T::Unreachable(_) | T::WsRejected(_) | T::Protocol(_) | T::Tls(_) => {
+                PeerError::Unreachable
+            }
+        }
+    }
+}
+
 /// 全部 peer 的状态表：节点名 → 状态。`AppState` 持有一份，peer 客户端写、`/api/health` 读。
 /// 配置里的每个 peer 启动时先 `register`，还没连上的 peer 也出现在 health 里（离线、没见过），
 /// 而不是等第一次连上才"冒出来"——Header 从第一秒起就能告诉人有几台节点。
@@ -197,6 +221,46 @@ mod tests {
         assert!(snap["zuan"].online && snap["zuan"].last_seen == Some(T0));
         assert_eq!(snap["mac"].last_error, Some(PeerError::Unauthorized));
         assert!(table.get("nope").is_none());
+    }
+
+    #[test]
+    fn transport_errors_map_to_peer_error_by_type() {
+        use crate::peer::transport::{PeerConfigError, TransportError as T};
+        use axum::http::StatusCode;
+        use std::time::Duration;
+        let io = || std::io::Error::other("x");
+        assert_eq!(
+            PeerError::from(T::Timeout(Duration::from_secs(5))),
+            PeerError::Unreachable
+        );
+        assert_eq!(
+            PeerError::from(T::Unreachable(io())),
+            PeerError::Unreachable
+        );
+        assert_eq!(
+            PeerError::from(T::FingerprintMismatch {
+                expected: "a".into(),
+                actual: "b".into()
+            }),
+            PeerError::FingerprintMismatch
+        );
+        assert_eq!(
+            PeerError::from(T::WsRejected(StatusCode::UNAUTHORIZED)),
+            PeerError::Unauthorized
+        );
+        assert_eq!(
+            PeerError::from(T::WsRejected(StatusCode::BAD_GATEWAY)),
+            PeerError::Unreachable
+        );
+        assert_eq!(
+            PeerError::from(T::Protocol("p".into())),
+            PeerError::Unreachable
+        );
+        // agora-41e 之前配置错误暂归不可达；那条任务落地后这一行要改成 Misconfigured。
+        assert_eq!(
+            PeerError::from(T::Config(PeerConfigError::Url("http://x".into()))),
+            PeerError::Unreachable
+        );
     }
 
     #[test]

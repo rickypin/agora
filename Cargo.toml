@@ -21,8 +21,9 @@ hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
 # peer 链路的 WS 客户端（PeerTransport::connect_ws）；版本跟 axum 的 tungstenite 对齐。
 tokio-tungstenite = "0.29"
-# 一跳转发的终端桥（agora-7ku.7）要驱动 tokio-tungstenite 的 Stream / Sink；它本就是 axum 与
-# tokio-tungstenite 的依赖，这里只是把名字借来用（此前只在 dev-dependencies，特性不变，Cargo.lock 不动）。
+# 一跳转发的终端桥（agora-7ku.7）要驱动 tokio-tungstenite 的 Stream / Sink，peer 客户端（agora-7ku.5）
+# 读事件流要 StreamExt::next / SinkExt::send；它本就经 axum / tower / tokio-tungstenite 在二进制的依赖图里
+# （cargo tree -i futures-util -e normal），这里只是把它从 dev-deps 挪成直接依赖，特性不变、Cargo.lock 不动。
 futures-util = "0.3"
 rust-embed = { version = "8.12", features = ["include-exclude"] }
 mime_guess = "2.0"

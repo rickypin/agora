@@ -14,6 +14,8 @@ export interface SessionRow {
   node: string;
   status: string;
   alive: boolean;
+  /** 只有并入的 peer 行带它：该 peer 掉线后保留的最后一眼（MISSION §3.5；不变量 8）；本机行没有。 */
+  stale?: boolean;
   pending_decision?: { request_id: string; summary: string; epoch: number; host?: string } | null;
   [key: string]: unknown;
 }

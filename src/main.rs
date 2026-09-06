@@ -314,6 +314,9 @@ async fn serve() -> i32 {
         }
     }
     state.registry = Arc::new(registry);
+    // 每个 peer 一个客户端任务（agora-7ku.5）：比版本、先流后快照并入视图、断线退避重连；
+    // 视图与状态都写进 state 里的共享把手，这里 clone 出去的 state 看到的是同一份。
+    agora::peer::client::spawn_all(&state);
     hooks.attach_events(state.events.clone(), state.node.clone());
     state.hooks = Some(hooks);
     // 状态变化没有人来通知：轮询求差发 /api/events。

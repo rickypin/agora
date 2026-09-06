@@ -16,6 +16,8 @@
 //! - `project/`：`project_roots` 扫描与 worktree 列举，New Agent 对话框的数据源（MISSION §6.4）。
 //! - `task/`：任务标签层，全仓唯一允许起 `bd` 的地方，且只读（MISSION §6.3；不变量 12）。
 //! - `tls/`：证书来源、SPKI 指纹、TLS 监听器的 acceptor 与 peer 客户端的指纹钉住（ADR-003 D4 / D5）。
+//! - `peer/`：节点作为 peer 的 API 客户端（MISSION §3.5；ADR-004）——传输接缝与注册表、每 peer 状态与
+//!   退避、客户端任务与并入视图；只导出本机会话、一跳，时间用本节点时钟。
 //! - `cli/`：不需要 daemon 在跑的本机子命令（`agora tls …`、`agora peer …`），main.rs 只做分派。
 
 pub mod adapter;

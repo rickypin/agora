@@ -109,6 +109,9 @@ pub struct AppState {
     /// 从这里取 transport 去拉视图，一跳转发（agora-7ku.7）按会话 id 的节点前缀在这里 `route`。
     /// 测试直接赋值（进程内 fake），所以是 `Arc` 而不是 `Option`：查不到就是 `Route::Unknown`。
     pub registry: Arc<crate::peer::registry::PeerRegistry>,
+    /// 并入的 peer 会话视图（agora-7ku.5；MISSION §3.5）：每个 peer 的客户端任务写，
+    /// `GET /api/sessions` 给人看的那份读；给 peer 看的永远只有本机行（一跳）。
+    pub peer_views: crate::peer::view::PeerViews,
 }
 
 /// 不可用的探测结果保留多久再重探。
@@ -128,6 +131,7 @@ impl AppState {
             probes: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             peers: crate::peer::state::PeerStates::new(),
             registry: Arc::new(crate::peer::registry::PeerRegistry::new(node)),
+            peer_views: crate::peer::view::PeerViews::new(),
         }
     }
 

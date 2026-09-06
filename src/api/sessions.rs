@@ -62,14 +62,22 @@ pub(super) async fn blocking<T: Send + 'static>(
 
 /// `{ sessions: [...], unregistered: [...] }`：已登记的会话 + 运行时里未登记的（Unknown Agent，
 /// 可采纳；A1 列表含全部运行时会话）。
+///
+/// 人看到本机行 + 并入的全部 peer 行（离线 peer 的行仍在、带 `stale: true`，不变量 8）；**peer
+/// 来拉只给本机行**——只导出本机会话、一跳防环（MISSION §3.5；docs/spec/api.md「peer 视图」；
+/// 守卫 `tests/peer_view.rs::only_local_sessions_are_exported_one_hop`）。未登记会话同理只有本机的：
+/// 采纳是写操作，peer 的未登记会话要采纳得去它自己的节点。
 pub async fn list(
-    _principal: Principal,
+    principal: Principal,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, ApiError> {
     let node = state.node.clone();
     let (views, unregistered) =
         blocking(&state.sessions, |s| Ok((s.list()?, s.unregistered()?))).await?;
-    let sessions: Vec<Value> = views.iter().map(|v| export(&node, v)).collect();
+    let mut sessions: Vec<Value> = views.iter().map(|v| export(&node, v)).collect();
+    if matches!(principal, Principal::Human { .. }) {
+        sessions.extend(state.peer_views.rows());
+    }
     let unregistered: Vec<Value> = unregistered
         .iter()
         .map(|u| {
@@ -92,11 +100,30 @@ pub async fn list(
     })))
 }
 
+/// 本机会话直达 SessionManager；peer 会话给人看的是并入视图里的那一行（含 `stale`），不为一次
+/// 读去转发。peer 来问 peer 的会话仍是 `node_unknown`（一跳，与 `list` 同一条规则）。
 pub async fn get(
-    _principal: Principal,
+    principal: Principal,
     State(state): State<AppState>,
     Path(gid): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    if let Some((node, _)) = gid.split_once(':') {
+        let is_peer = matches!(
+            state.registry.route(node),
+            crate::peer::registry::Route::Peer(_)
+        );
+        if is_peer && matches!(principal, Principal::Human { .. }) {
+            return state
+                .peer_views
+                .get(&gid)
+                .map(Json)
+                .ok_or_else(|| ApiError {
+                    status: StatusCode::NOT_FOUND,
+                    kind: "not_found",
+                    message: format!("peer {node} 的视图里没有会话 {gid}"),
+                });
+        }
+    }
     let id = local_id(&state, &gid)?;
     let view = blocking(&state.sessions, move |s| s.get(&id)).await?;
     Ok(Json(export(&state.node, &view)))
