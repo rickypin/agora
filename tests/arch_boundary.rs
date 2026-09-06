@@ -204,12 +204,23 @@ fn beads_is_read_only_and_lives_in_task() {
     // 不变量 12：agora 对 beads 零写入。起 `bd` 的地方只有 `src/task/`（子命令白名单由
     // `tests/task_beads.rs` 用假 bd 录下核对）；别处连 "bd" 这个命令名都不许出现。
     assert_only_under("src", "\"bd\"", &["src/task/"], "MISSION 不变量 12");
+    // `ready` 子命令也只许在 src/task/ 出现（A43，agora-h1k.2）：`GET /api/projects/tasks`
+    // 经 `TaskIndex::ready` 走同一个入口，API 层不许自己拼 bd 命令。
+    assert_only_under(
+        "src",
+        "\"ready\"",
+        &["src/task/"],
+        "MISSION 不变量 12 / §6.4",
+    );
     for write in [
         "\"update\"",
         "\"close\"",
         "\"create\"",
         "\"claim\"",
         "\"dep\"",
+        // `bd ready --claim` 会把第一条认领到当前用户名下——只读端点绝不能带这个 flag
+        // （MISSION §6.4：claim 是 agent 开工的纪律，agora 不替它做）。
+        "\"--claim\"",
     ] {
         assert_only_under("src/task", write, &[], "对 beads 只读");
     }

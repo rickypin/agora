@@ -18,10 +18,15 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::runtime::exec::{exec, ExecOptions};
+use crate::runtime::exec::{exec, ExecError, ExecOptions};
 
 /// 允许对 beads 执行的子命令。改这里等于改不变量 12，先改 MISSION。
-pub const READ_ONLY: &[&str] = &["show"];
+///
+/// `show`：会话行的任务标签（§6.3）；`ready`：New Agent 对话框从就绪任务起会话（§6.4，A43，
+/// agora-h1k.2）。两个都只读；claim 是 agent 开工的纪律（AGENTS.md），agora 不替它做——
+/// `bd ready` 的 `--claim` 会认领第一条，这个字面量在 src/task 里被 `tests/arch_boundary.rs`
+/// 禁掉。
+pub const READ_ONLY: &[&str] = &["show", "ready"];
 
 /// `bd show --json` 里我们用的那几个字段。只在内存缓存里活着，随 `TaskIndex::ttl` 过期重查；
 /// 一个字都不进 SQLite（不变量 12；`tests/task_info.rs::acceptance_is_read_not_stored`）。
@@ -35,6 +40,35 @@ pub struct TaskInfo {
     /// `acceptance_criteria` 全文——人看一行时要知道"做完算什么"（MISSION §6.3 看结果；A40；
     /// agora-h1k.3）。beads 里没写或只有空白 → None，前端不占位。
     pub acceptance: Option<String>,
+}
+
+/// `bd ready --json` 里一条可以起会话的任务（MISSION §6.4 从就绪任务起会话；A43）。
+/// 与 [`TaskInfo`] 一样只在响应里活着，一个字不进 SQLite（不变量 12）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReadyTask {
+    pub id: String,
+    pub title: String,
+    /// bd 的 P0–P4。
+    pub priority: u8,
+    /// bd 的 `issue_type`（task / bug / feature / chore…）；epic 在解析时就被滤掉——阶段不是
+    /// 可起会话的任务。
+    #[serde(rename = "type")]
+    pub issue_type: String,
+}
+
+/// `bd ready` 为什么没给出列表——按类型分（MISSION §2.3 规则 10），前端按它给文案。
+/// 都不是错误：没装 bd、目录没有 beads 的仓库照样能起会话，Task 退回一句话。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadyError {
+    /// 命令不存在（没装 bd，或配置的命令路径不对）。
+    NoBd,
+    /// bd 退出非零：目录没有 beads 库，或 dolt 报错。
+    NoBeads,
+    /// 超过 [`TaskIndex`] 的超时（10 s；embedded dolt 冷启动慢）。
+    Timeout,
+    /// 退出 0 但 stdout 不是 JSON 数组。
+    BadOutput,
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +197,71 @@ impl TaskIndex {
         };
         parse_show(&out.stdout, id)
     }
+
+    /// 在 `cwd` 里跑 `bd ready --json`，给 New Agent 对话框列可选的就绪任务（`GET
+    /// /api/projects/tasks`）。同步、不缓存：对话框打开一次拉一次，用户就等这一下。
+    /// 调用方在 blocking 线程。
+    ///
+    /// 只有 `ready --json` 两个参数：**没有 `--claim`**——那会把第一条认领到当前用户名下，
+    /// 而 claim 是 agent 自己开工时做的事（MISSION §6.4；`tests/task_pick.rs` 用假 bd 录下 argv
+    /// 核对）。
+    pub fn ready(&self, cwd: &Path) -> Result<Vec<ReadyTask>, ReadyError> {
+        let sub = READ_ONLY[1];
+        let opts = ExecOptions {
+            timeout: Some(self.timeout),
+            cwd: Some(cwd.to_path_buf()),
+            ..ExecOptions::default()
+        };
+        let out = match exec(&[self.command.as_str(), sub, "--json"], &opts) {
+            Ok(o) if o.status.success() => o,
+            Ok(o) => {
+                tracing::debug!(component = "task", cwd = %cwd.display(), stderr = %String::from_utf8_lossy(&o.stderr_tail).trim(), "bd ready 失败");
+                return Err(ReadyError::NoBeads);
+            }
+            Err(ExecError::Timeout { .. }) => return Err(ReadyError::Timeout),
+            Err(err) if err.is_not_found() => {
+                tracing::debug!(component = "task", %err, "bd 不可用");
+                return Err(ReadyError::NoBd);
+            }
+            Err(err) => {
+                // 起不来（权限、不是可执行文件）与读输出失败：对用户来说都是"这台机器上的 bd
+                // 用不了"，与没装同一档。
+                tracing::debug!(component = "task", %err, "bd ready 起不来");
+                return Err(ReadyError::NoBd);
+            }
+        };
+        parse_ready(&out.stdout).ok_or(ReadyError::BadOutput)
+    }
+}
+
+/// `bd ready --json` 是一个数组；epic 滤掉，其余按 bd 给的顺序。缺 id 或 title 的条目跳过。
+fn parse_ready(stdout: &[u8]) -> Option<Vec<ReadyTask>> {
+    let v: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    let items = v.as_array()?;
+    Some(
+        items
+            .iter()
+            .filter_map(|item| {
+                let issue_type = item
+                    .get("issue_type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("task");
+                if issue_type == "epic" {
+                    return None;
+                }
+                Some(ReadyTask {
+                    id: item.get("id")?.as_str()?.to_owned(),
+                    title: item.get("title")?.as_str()?.to_owned(),
+                    priority: item
+                        .get("priority")
+                        .and_then(|p| p.as_u64())
+                        .map(|p| p.min(4) as u8)
+                        .unwrap_or(2),
+                    issue_type: issue_type.to_owned(),
+                })
+            })
+            .collect(),
+    )
 }
 
 /// `bd show --json` 是一个数组（可以一次问多个 id）；取 id 相同的那条。
@@ -251,5 +350,31 @@ mod tests {
         assert_eq!(one.acceptance, None, "只有空白 = 没写");
         assert!(parse_show(b"Error: no beads database found", "x-1").is_none());
         assert!(parse_show(br#"{"error":"nope"}"#, "x-1").is_none());
+    }
+
+    #[test]
+    fn parse_ready_drops_epics_and_keeps_bd_order() {
+        let body = r#"[{"id":"x-e","title":"M9: 阶段","priority":1,"issue_type":"epic","status":"open"},{"id":"x-2","title":"two","priority":3,"issue_type":"task","status":"open"},{"id":"x-1","title":"one","priority":9,"issue_type":"bug","status":"open"},{"title":"没有 id"}]"#.as_bytes();
+        let tasks = parse_ready(body).unwrap();
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|t| (t.id.as_str(), t.issue_type.as_str(), t.priority))
+                .collect::<Vec<_>>(),
+            vec![("x-2", "task", 3), ("x-1", "bug", 4)],
+            "epic 滤掉、缺 id 的跳过、顺序照 bd 给的、优先级夹到 4"
+        );
+        assert_eq!(parse_ready(b"[]").unwrap(), vec![]);
+        assert!(parse_ready(b"Error: no beads database found").is_none());
+        assert!(parse_ready(br#"{"error":"nope"}"#).is_none(), "不是数组");
+        assert_eq!(
+            serde_json::to_value(&tasks[0]).unwrap(),
+            serde_json::json!({"id":"x-2","title":"two","priority":3,"type":"task"}),
+            "线上的键叫 type"
+        );
+        assert_eq!(
+            serde_json::to_value(ReadyError::NoBd).unwrap(),
+            serde_json::json!("no_bd")
+        );
     }
 }

@@ -179,7 +179,8 @@ impl Projects {
 
     /// 已知 = 扫描得到过（在库里），或字面上位于某个 `project_roots` 之下。
     /// 前者让用过的 worktree 也能查，后者让刚 clone 还没进过库的仓库不必先走一次 list。
-    fn is_known(&self, path: &Path) -> bool {
+    /// `GET /api/projects/tasks` 与 worktree 查询用同一条校验（agora-h1k.2），所以是 pub。
+    pub fn is_known(&self, path: &Path) -> bool {
         if path.components().any(|c| c.as_os_str() == "..") {
             return false;
         }

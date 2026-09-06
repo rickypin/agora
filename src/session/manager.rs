@@ -230,6 +230,12 @@ impl SessionManager {
         self
     }
 
+    /// 同一份只读的 beads 入口给 `GET /api/projects/tasks` 用（`TaskIndex::ready`，agora-h1k.2）：
+    /// 全仓起 `bd` 的地方只有 `src/task/`，API 层不另建一个。
+    pub fn task_index(&self) -> Arc<TaskIndex> {
+        self.tasks.clone()
+    }
+
     /// 状态机参数来自配置（`status.*`、`hooks.silence_after`）。
     pub fn with_status_config(mut self, cfg: MachineConfig) -> Self {
         self.status_cfg = cfg;

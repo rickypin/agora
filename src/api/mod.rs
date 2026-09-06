@@ -181,6 +181,7 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/projects"),
     ("GET", "/api/projects/worktrees"),
     ("POST", "/api/projects/worktrees"),
+    ("GET", "/api/projects/tasks"),
     ("GET", "/api/agents"),
     ("GET", "/api/events"),
     ("POST", "/api/auth/pair"),
@@ -217,6 +218,7 @@ pub fn router(state: AppState) -> Router {
             "/api/projects/worktrees",
             get(projects::worktrees).post(projects::create_worktree),
         )
+        .route("/api/projects/tasks", get(projects::tasks))
         .route("/api/projects", get(projects::list))
         .route("/api/agents", get(agents::list))
         .route("/api/events", get(events::upgrade))

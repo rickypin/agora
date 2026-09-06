@@ -1,6 +1,7 @@
 //! `/api/projects*`：New Agent 对话框的数据源（MISSION §6.4；docs/spec/api.md）。
 //!
-//! 列项目、列该仓库现有的 worktree 都只读；`POST /api/projects/worktrees` 是唯一的写——
+//! 列项目、列该仓库现有的 worktree、列该仓库的就绪任务（`GET /api/projects/tasks`，读 `bd ready`，
+//! A43，agora-h1k.2）都只读；`POST /api/projects/worktrees` 是唯一的写——
 //! `git worktree add -b`，§1.4 Git GUI 边界的唯一例外（A44，agora-h1k.1；`project::worktree`）。
 
 use std::path::PathBuf;
@@ -81,6 +82,56 @@ pub async fn create_worktree(
     .await?;
     tracing::info!(component = "api", principal = %principal.log_id(), worktree = %log_name, "新建 worktree");
     Ok((StatusCode::CREATED, Json(serde_json::json!(worktree))))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TasksQuery {
+    /// 已知项目（与 `GET /api/projects/worktrees` 同一校验）。
+    pub path: PathBuf,
+}
+
+/// `GET /api/projects/tasks?path=<repo>`：该仓库 `bd ready --json` 里可起会话的任务
+/// （MISSION §6.4 从就绪任务起会话；A43；agora-h1k.2）。
+///
+/// 永远 200：`{ tasks: [{ id, title, priority, type }], reason: null | "no_bd" | "no_beads" |
+/// "timeout" | "bad_output" }`——没装 bd、仓库没有 beads 都不是错误，对话框据 `reason` 的
+/// **类型**给一行灰字并把 Task 退回一句话（MISSION §2.3 规则 10）。只有 `path` 不是已知项目
+/// 才 400 `bad_request`（同 worktrees：这个端点不该回答任意目录的存在性）。
+///
+/// agora 对 beads 零写入（不变量 12）：整条链路敲到 bd 的只有 `ready --json`，没有 `--claim`
+/// （守卫 `tests/task_pick.rs`、`tests/arch_boundary.rs::beads_is_read_only_and_lives_in_task`）。
+pub async fn tasks(
+    _principal: Principal,
+    State(state): State<AppState>,
+    Query(q): Query<TasksQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let path = q.path;
+    let known_path = path.clone();
+    blocking(&state.projects, move |p| {
+        if p.is_known(&known_path) {
+            Ok(())
+        } else {
+            Err(ProjectError::Unknown(
+                known_path.to_string_lossy().into_owned(),
+            ))
+        }
+    })
+    .await?;
+    let index = state.sessions.task_index();
+    let listed = tokio::task::spawn_blocking(move || index.ready(&path))
+        .await
+        .map_err(|err| ApiError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            kind: "internal",
+            message: format!("blocking 任务异常: {err}"),
+        })?;
+    let (tasks, reason) = match listed {
+        Ok(tasks) => (tasks, None),
+        Err(reason) => (Vec::new(), Some(reason)),
+    };
+    Ok(Json(
+        serde_json::json!({ "tasks": tasks, "reason": reason }),
+    ))
 }
 
 impl From<ProjectError> for ApiError {

@@ -18,8 +18,8 @@ POST   /api/sessions/adopt         # { runtime_ref, display_name?, project?, age
 GET    /api/projects               # project_roots 扫描结果，按最近使用排序（§6.4）
 GET    /api/projects/worktrees     # ?path=<repo>：该仓库现有 worktree（§6.4）；path 不是已知项目 → 400 bad_request
 POST   /api/projects/worktrees     # { path, name, base? }：git worktree add -b <name> <worktree_root>/<name> <base> → 201，形态同 GET 的一项（§6.4 只管"生"，A44）；冲突 409 worktree_exists / branch_exists / path_exists，名字不合法 400 bad_request，git 失败 502 git
+GET    /api/projects/tasks         # ?path=<repo>：该仓库 bd ready --json 里可起会话的任务（epic 滤掉），只读（§6.4，A43）→ 永远 200 { tasks: [{ id, title, priority, type }], reason: null | "no_bd" | "no_beads" | "timeout" | "bad_output" }；path 不是已知项目 → 400 bad_request（文末「从就绪任务起会话」）
 GET    /api/agents                 # New Agent 对话框的 Agent 下拉：[{ name, command }]，来自 Adapter 启动侧 + agents.<name>.command 覆盖（§5.2）
-GET    /api/tasks/ready            # ?path=<repo>：有 bd 的仓库的 bd ready，只读（M3 A43）
 GET    /api/nodes                  # 本机 + 已配置 peer 的状态：online / last_seen
 GET    /api/system                 # { api_version, version, node }
 GET    /api/health                 # 未认证只返回 { "status": "ok" }；带 principal 是下文的完整形态

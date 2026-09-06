@@ -78,9 +78,11 @@ fn only_read_only_subcommands_ever_reach_bd() {
         );
         assert_eq!(argv.last().map(String::as_str), Some("--json"));
     }
+    // MISSION §6.4「从就绪任务起会话……agora 不写 beads」：`ready` 是第二个、也是最后一个
+    // 只读子命令（A43，agora-h1k.2，其零写入守卫在 tests/task_pick.rs）。
     assert_eq!(
         READ_ONLY,
-        &["show"],
+        &["show", "ready"],
         "改 READ_ONLY 等于改不变量 12，先改 MISSION"
     );
 }
