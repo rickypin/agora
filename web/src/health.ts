@@ -201,7 +201,7 @@ export interface ApiVersion {
  * Rust 单测 `page_is_built_against_the_same_api_version` 读这一行钉住两边一致，
  * 所以这行的写法（`{ major: N, minor: M }` 字面量）别改成别的形态。
  */
-export const API_VERSION: ApiVersion = { major: 1, minor: 1 };
+export const API_VERSION: ApiVersion = { major: 1, minor: 2 };
 
 /**
  * 版本比对的结论，按类型分类（MISSION §2.3 规则 10）：

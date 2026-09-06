@@ -33,7 +33,7 @@ pub(super) fn local_id(state: &AppState, gid: &str) -> Result<String, ApiError> 
             status: StatusCode::NOT_FOUND,
             kind: "node_unknown",
             message: format!(
-                "会话属于节点 {node}，本节点是 {}；peer 转发尚未实现",
+                "会话属于节点 {node}，本节点是 {}：既不是本机也不是可读的 peer 视图",
                 state.node
             ),
         }),

@@ -30,7 +30,7 @@ GET    /api/auth/devices           # 已配对设备列表（含已吊销的，r
 DELETE /api/auth/devices/:id       # 吊销一台设备 → 204；即时生效
 ```
 
-错误应答统一为 `{ "error": "<type>", "message": "..." }`，`type` 是 snake_case，调用方按它分支、不做字符串匹配（§2.3 规则 10）：`unauthenticated`（401）、`bearer_requires_tls`（401）、`pair_invalid`（401，未知 / 已用 / 过期不区分）、`cross_origin`（403）、`peer_forbidden`（403，Peer 调 `/api/auth/*` 里 logout 以外的端点）、`pair_pending_limit`（429）、`device_not_found`（404）；会话端点：`not_found`（404）、`node_unknown`（404，id 的节点前缀不是本节点）、`needs_confirmation`（409）、`still_alive`（409）、`no_runtime`（409，external 会话没有运行时句柄）、`no_command`（409，采纳的会话没记下启动命令，Restart 不知道重跑什么；前端对这类行禁用 Restart）、`already_registered`（409）、`read_only`（409，采纳 socket 上的会话拒绝写操作）、`bad_request`（400）、`runtime`（502）、`git`（502，`/api/projects/worktrees` 的 git 调用失败）、`database`（500）；新建 worktree：`worktree_exists`（409，同名 worktree 已登记）、`branch_exists`（409）、`path_exists`（409，目录已存在但不是 worktree）。`NoPendingDecision` 随 M1b 落地为 `no_pending_decision`。
+错误应答统一为 `{ "error": "<type>", "message": "..." }`，`type` 是 snake_case，调用方按它分支、不做字符串匹配（§2.3 规则 10）：`unauthenticated`（401）、`bearer_requires_tls`（401）、`pair_invalid`（401，未知 / 已用 / 过期不区分）、`cross_origin`（403）、`peer_forbidden`（403，Peer 调 `/api/auth/*` 里 logout 以外的端点）、`pair_pending_limit`（429）、`device_not_found`（404）；会话端点：`not_found`（404）、`node_unknown`（404，id 的节点前缀既不是本机也不是已配置的 peer；或请求来自 peer 而前缀不是本机——一跳）、`needs_confirmation`（409）、`still_alive`（409）、`no_runtime`（409，external 会话没有运行时句柄）、`no_command`（409，采纳的会话没记下启动命令，Restart 不知道重跑什么；前端对这类行禁用 Restart）、`already_registered`（409）、`read_only`（409，采纳 socket 上的会话拒绝写操作）、`bad_request`（400）、`runtime`（502）、`git`（502，`/api/projects/worktrees` 的 git 调用失败）、`database`（500）；一跳转发（本节点自己产生的，细节见「一跳转发」）：`peer_unreachable`（502）、`peer_fingerprint_mismatch`（502）、`peer_config`（502）、`peer_rejected`（所属节点拒绝终端 WS 升级时的原状态码）；新建 worktree：`worktree_exists`（409，同名 worktree 已登记）、`branch_exists`（409）、`path_exists`（409，目录已存在但不是 worktree）。`NoPendingDecision` 随 M1b 落地为 `no_pending_decision`。
 
 `GET /api/projects` 每项是 `{ path, name, last_used_at }`，按最近使用排序（未用过的排在后面、按名字）；列表是 `project_roots` 的扫描结果与库里 `projects` 表的并集，目录已不存在的行在读取时删除。`last_used_at` 只在 `POST /api/sessions` 时更新——"最近使用"指的是起过会话。`GET /api/projects/worktrees` 每项是 `{ path, branch, head, main, locked }`，`branch` 去掉 `refs/heads/` 前缀、detached HEAD 为 null，第一项是主 worktree。`POST /api/projects/worktrees { path, name, base? }` 新建一个（MISSION §6.4「agora 只管"生"」，§1.4 Git GUI 边界的唯一例外；A44，agora-h1k.1）：`path` 与 GET 同一"已知项目"校验；`name` 既是目录名也是分支名，空、含 `/` 或 `..` 或空白、以 `-` / `.` 开头等 → 400 `bad_request`，在起 git 之前判；目标路径按 `worktree_root`（`docs/spec/config.md`）相对**主 worktree** 展开（从 linked worktree 发起也落到同一处）；`base` 缺省链：主 worktree 当前 checked-out 的分支 → detached 时 `git symbolic-ref refs/remotes/origin/HEAD` 指向的远端分支（`origin/main` 形态，直接作起点）→ 再兜底 `main`。冲突在起 git 之前按类型判、各 409：同名 worktree 已登记 `worktree_exists`、分支已存在 `branch_exists`、目录已存在 `path_exists`；git 自己失败（如 base 不存在）→ 502 `git`。成功 201，响应体就是 GET 会列出的那一项（`path` 是 git 登记的规范路径，`main: false`）。agora 不做合并与销毁：src/ 里的 git 子命令只允许 status / diff / rev-parse / symbolic-ref / worktree list / worktree add，守卫 `tests/arch_boundary.rs::git_subprocesses_are_read_only_or_worktree_add`；端点守卫 `tests/worktree_create.rs`。
 
@@ -49,7 +49,7 @@ agora 没起过的会话经 hook 自己出现（§5.4，A16 / A22 合流）：�
 - `/api/auth/*` 除 `logout` 外（`POST pair/new`、`GET devices`、`DELETE devices/:id`）只接受 `Human`：`Peer` → 403 `peer_forbidden`，且不产生任何副作用（ADR-003 D1 例外句，依据 D3 "peer 没有委托链"——配对链接是持久化的提权，吊销 peer token 后配出来的设备还在）。这是"任一 principal 全权"的唯一例外；`/api/sessions/*`（含 `input`）对 Peer 保持全权，一跳转发要靠它们。守卫 `tests/auth.rs::peer_cannot_mint_pair_link_or_touch_devices`。
 - Kill / Restart 带 `confirmed`；所属节点判断需要确认而未确认 → 错误类型 `NeedsConfirmation`；转发节点原样转发 `confirmed`。
 
-会话 id 一律 `<node>:<id>`；`GET /api/sessions` 同列本机与 peer 会话，每条带 `node` 字段，对 peer 会话的写操作与终端流经一跳转发（原则与调用方、API 版本、DELETE ≠ kill 见 MISSION §7.3）。路径里的 `:id` 接受全局 id，也接受裸的本机 id（curl 手敲时少打一段）；节点前缀不是本节点 → `node_unknown`（peer 转发随多节点阶段）。
+会话 id 一律 `<node>:<id>`；`GET /api/sessions` 同列本机与 peer 会话，每条带 `node` 字段，对 peer 会话的写操作与终端流经一跳转发（原则与调用方、API 版本、DELETE ≠ kill 见 MISSION §7.3）。路径里的 `:id` 接受全局 id，也接受裸的本机 id（curl 手敲时少打一段）；节点前缀是已配置的 peer → 读从并入视图来（「peer 视图」）、写操作与终端流经一跳转发（「一跳转发」）；既不是本机也不是 peer → `node_unknown`。
 
 每条 `/api/` 请求写一行结构化日志：方法、路径、状态、耗时、principal（未认证请求该栏为空）；不记请求体（MISSION §10.2）。
 
@@ -70,6 +70,7 @@ GET /api/system
 - **minor +1**：只增不删——新字段、新端点、新错误类型、新 WS 消息类型、新的可选请求参数。老调用方忽略不认识的字段与消息类型照常工作；新调用方对老节点缺失的字段按"没有"处理，不按错误。
 - 首个版本 `1.0`；`api_version` 从这条规则落地起就是 `{ major, minor }` 对象，此前二进制回的裸整数 `1` 不再被任何调用方接受。
 - `1.1`（2026-09-06，第一波第二批合入时集成者统一 bump 一次）：只增字段——session 形态加 `ended_at_approximate`（agora-h1k.4）、task 形态加 `acceptance`（agora-h1k.3）、health 加 `peers` 段（agora-7ku.12）；`/api/system` 本身不变。多条分支同时改字段时不各自 bump，合入一批后由集成者统一加一次 minor，避免撞车。
+- `1.2`（2026-09-06，第三批合入时集成者统一 bump 一次）：只增——peer 会话行加 `stale`（agora-7ku.5，本机行没有此键）；新端点 `POST /api/projects/worktrees` 与错误类型 `worktree_exists` / `branch_exists` / `path_exists`（agora-h1k.1）；错误类型 `peer_forbidden`（agora-0df）与一跳转发的 `peer_unreachable` / `peer_fingerprint_mismatch` / `peer_config` / `peer_rejected`（agora-7ku.7）；`/api/system` 本身不变。
 
 **兼容判定**（`agora::api::version`，`check(ours, theirs)`；结论是枚举，按类型分类、不做字符串匹配）：
 
