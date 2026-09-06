@@ -12,7 +12,7 @@
 | M2a | `agora-7ku` | peer 核心 | `agora-dvh` | MISSION §12：A27、A30、A31、A33、A34、A38。（agora-7ku.12 是 A29 的策略半边，A29 本身由 M2b 认领；A36 不变量 8、11 的收口在 M2b。） | open 4/7 |
 | M2b | `agora-s4r` | 安装运维与收口 | `agora-dvh` | MISSION §12：A26、A29、A39；补齐 A36 中不变量 8、11 的测试。 | open 1/5 |
 | M3 | `agora-h1k` | 产出与起会话增强 | `agora-dvh` | MISSION §12：A40–A44。 | open 5/5 |
-| V2-1 | `agora-thc` | 手机客户端与 PWA（iOS / Android） | `agora-7ku`, `agora-s4r` | MISSION §11 手机条目：A13、A19、A28、A35、A37。 | open 0/2 |
+| V2-1 | `agora-thc` | 手机客户端与 PWA（iOS / Android） | `agora-7ku`, `agora-s4r` | MISSION §11 手机条目：A13、A19、A28、A35、A37。 | open 0/8 |
 
 ## 演示剧本（epic 的 design 字段；agent 先代检，人只看 👁 步骤与代检报告后关闭 epic，MISSION §1.5）
 
@@ -80,3 +80,17 @@ M3 演示剧本（agent 代检，无 👁 步骤；人看代检报告后关闭 e
 4. 停 daemon，在 tmux 里让一个会话退出，等 1 分钟再起 daemon → 该会话 ended_at 是退出时刻而不是 daemon 起来的时刻；停 daemon 期间一个会话进入 WAITING，起 daemon 重放投递箱后'waiting Nm'从事件时间算起（A42；agora-h1k.4）。
 5. CI 绿；tests/arch_boundary.rs 的 git 子进程白名单与 beads 零写入守卫逐条关掉变红。
 全程单节点、桌面、只读：不做合并、不做 diff 组件、不写 beads（§11）。
+
+### V2-1 `agora-thc`
+
+V2-1 演示剧本（agent 先代检，人只看 👁 步骤与代检报告后关闭 epic，MISSION §1.5）
+前置：M2a、M2b 剧本通过（zuan 装好并自启，Mac ↔ zuan 互为 peer，一跳转发可用）；zuan 与 iPhone 在 tailnet（tail5fb9b.ts.net），Android 已加入 tailnet；zuan 出网可达 Let's Encrypt 与 FCM。
+1. zuan：tls.mode external + tailscale cert，public_url 设为 https://zuan.tail5fb9b.ts.net:7681；Mac 上不带 -k 的 curl 得 200、证书链到 ISRG Root；到期前 renew_command 被调用并热加载；health 的 tls 字段为 external（A35 证书半边；agora-thc.3、agora-7ku.10、agora-ltb）。
+2. zuan 上 agora pair 打印 QR → 手机扫码 → 进 Dashboard；Mac 的 Dashboard「配对新设备」也能出 QR；设备列表里出现手机，从 Mac 吊销手机后手机下一次请求 401（A37 凭据半边；agora-thc.1）。👁 一次：扫码后彻底退出 Safari / 关掉 PWA 再打开仍免登录——iOS 站点存储回收策略在桌面不等效。
+3. 手机浏览器「添加到主屏幕」/「安装应用」→ 从主屏打开直接进 Dashboard、无地址栏；SW 只在安全上下文注册，明文 127.0.0.1 上不注册；升级 agora 后 PWA 里是新 bundle（A35 可安装半边、A37；agora-thc.4）。👁：安装 UI 是系统弹层，agent-browser 到不了。
+4. 手机上（或桌面 390×844 视口）：侧栏是 drawer，Dashboard 里 WAITING 行展开就地回答，Kill 出确认框且按得到，终端能键入有回显、软键盘弹出后 pane 重排（A37 界面半边；agora-thc.5）。👁 一次：真机用手指走完「看 Dashboard → 回答 WAITING → 确认 Kill」。
+5. Mac 开 tls_listen 成为 zuan 的 peer；手机在 zuan 的 Dashboard 看到 node=mac 的行，回答 Mac 上的 WAITING → Mac 上文件被创建；attach Mac 会话终端键入有回显；Mac 关掉标签再从手机打开同一会话 scrollback 还在（A28、A13；agora-thc.8，机械在 agora-7ku.5 / 7ku.7）。👁 两条：真手机走一遍；Mac 合盖 60 s 再唤醒，手机上 mac 从「上次见到」恢复在线。
+6. 手机 PWA 里开启推送 → 订阅只注册在 zuan；让任一节点的会话 RUNNING → WAITING → 手机在 PWA 完全关闭时收到推送，点开落到该行就地回答；把 zuan 到 FCM 的路断掉（或 Android 不可达 FCM 时）→ health.push.fcm=false 带原因、Dashboard 显示「推送不可达」且 PWA 打开期间仍实时更新（A19；agora-thc.6 服务端、agora-thc.7 客户端）。👁 两条：iPhone 与 Android 各收到一次推送——到达真机只能在真机上看。
+7. 仅当第 1 步的 external 路径在目标部署走不通：按 agora-thc.2 评估 self-ca，结论回填 ADR-003 D4（由人采纳）。
+8. CI 绿；tests/push.rs 的加密向量、订阅与吊销联动、降级守卫逐条关掉变红；api_version 按 §7.3 bump 并写进兼容规则。
+全程不做：手机终端 ergonomics（软键盘 Ctrl / Esc、手势、剪贴板、文件上传）、TOTP / 登录限流（ADR-003 已否决）、多跳转发、peer 历史。
