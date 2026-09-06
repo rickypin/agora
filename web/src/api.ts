@@ -40,7 +40,25 @@ export interface WorktreeInfo {
 export interface AgentInfo {
   name: string;
   command: string;
+  /** 接不接受首条 prompt（A43）：只对 true 的 agent 显示 Prompt 框并随 body 发 `prompt`。 */
+  prompt: boolean;
 }
+
+/** `GET /api/projects/tasks` 的一项：`bd ready --json` 里可起会话的任务（epic 节点已滤掉）。 */
+export interface ReadyTask {
+  id: string;
+  title: string;
+  /** bd 的 P0–P4。 */
+  priority: number;
+  /** bd 的 issue_type：task / bug / feature / chore… */
+  type: string;
+}
+
+/**
+ * `GET /api/projects/tasks` 没给出列表的原因，按类型（docs/spec/api.md「从就绪任务起会话」）；
+ * 成功时 null。节点将来可能加新值，所以字段类型放宽到 string，文案表不认识的不提示。
+ */
+export type ReadyTasksReason = "no_bd" | "no_beads" | "timeout" | "bad_output";
 
 /** `POST /api/sessions/:id/input`（MISSION §7.3；ADR-002 D5）。 */
 export type InputBody =
@@ -62,6 +80,8 @@ export interface CreateSessionBody {
   worktree?: string | null;
   task_ref?: string | null;
   command?: string;
+  /** 首条 prompt（A43）：只进这一代的启动命令、不进库、Restart 不重发；非空才发。 */
+  prompt?: string;
 }
 
 export interface RestartResult {
@@ -146,6 +166,16 @@ export function catalogApi(fetchImpl: FetchLike = apiFetch) {
         base ? { path, name, base } : { path, name },
       ),
     agents: () => call<{ agents: AgentInfo[] }>(fetchImpl, "GET", "/api/agents"),
+    /**
+     * `GET /api/projects/tasks?path=`（MISSION §6.4 从就绪任务起会话；A43）：该仓库 `bd ready` 的
+     * 就绪任务。永远 200——没装 bd / 没有 beads 是空列表 + 类型化的 `reason`，不是错误。
+     */
+    tasks: (path: string) =>
+      call<{ tasks: ReadyTask[]; reason: ReadyTasksReason | string | null }>(
+        fetchImpl,
+        "GET",
+        `/api/projects/tasks?path=${encodeURIComponent(path)}`,
+      ),
     system: () => call<{ node: string }>(fetchImpl, "GET", "/api/system"),
   };
 }

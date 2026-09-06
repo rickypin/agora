@@ -146,3 +146,9 @@ select:disabled { opacity: 0.5; }
 li.stale > .row { opacity: 0.55; }
 li.stale > .row:hover, li.stale > .row.selected { opacity: 0.8; }
 .row .meta .stale-seen { color: var(--warn); }
+
+/* New Agent 的 Task 字段（A43，agora-h1k.2）：下拉 / 一句话 + 一行灰字（没装 bd、没有 beads），
+   Prompt 是多行框——放在一个格子里叠着，标签列不动。 */
+.form .task-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.form .task-hint { font-size: 12px; }
+.form textarea { min-width: 0; font: inherit; resize: vertical; }

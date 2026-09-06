@@ -135,9 +135,10 @@ Node:     [ zuan ▼ ]              # 本机 + 在线的 peer；选 peer 则经�
 Project:  [ ~/code/agora ]
 Worktree: [ main ▼ / 新建… ]      # 新建 = git worktree add，base 默认主 worktree 当前分支；合并/销毁归人（MISSION §6.4）
 Agent:    [ Claude Code ▼ ]
-Task:     [ agora-90t.1 ▼ / 一句话 ]  # 有 bd 的仓库从 issue 列表选，否则一句话；留空取首条 prompt
+Task:     [ agora-90t.1 ▼ / 一句话 ]  # 有 bd 的仓库从 bd ready 选，否则一句话；留空取首条 prompt
 Name:     [ agora-mission ]
 Command:  [ claude ]
+Prompt:   [ 任务 agora-90t.1：… ]    # 只对接受首条 prompt 的 agent 显示；选任务后预填模板，可改
 [ Create ]
 ```
 
@@ -146,9 +147,34 @@ V1 的取舍（agora-xqa.12）：Node 只有本机（peer 归 M2a），下拉禁
 新装的 agora 一个会话都起不了；Worktree 列现有的，末尾一项「新建…」（A44，agora-h1k.1）：选中后
 出现名字输入框（默认取 Name 栏的值；issue id 默认随 A43）与「建」按钮，`POST /api/projects/worktrees`
 成功后重拉列表并选中新项，失败按错误类型给文案（同名 worktree / 分支 / 目录已存在、名字不合法、git
-失败）；选主 worktree 等于选仓库本身；Task 只有一句话（从 bd 就绪任务选归 M3 A43）；Agent 的名字与默认命令来自 `GET /api/agents`，
+失败）；选主 worktree 等于选仓库本身；Agent 的名字与默认命令来自 `GET /api/agents`，
 末尾多一项 `custom`——它没有 Adapter，Command 必填。Name 与 Command 有默认值，用户手改过之后
 换项目 / 换 agent 不再覆盖。
+
+**Task 从就绪任务选**（MISSION §6.4「从就绪任务起会话」；A43，agora-h1k.2；`web/src/NewAgentDialog.tsx`）：
+选了项目就与 worktrees 并行拉 `GET /api/projects/tasks?path=`（该仓库 `bd ready --json`，epic 已滤掉）。
+有任务时 Task 是下拉（`<select id="na-task">`）：第一项「一句话…」（选它时下面出现原来的自由文本框
+`na-task-text`），其余每项 `<id> · <title>`，顺序照 bd 给的。选中一个任务 → `task_ref` = issue id、
+Name = issue 标题（用户手改过 Name 就不覆盖，沿用上面的规则）、Worktree「新建…」的默认名 = issue id
+（这就是 A44 留给 A43 的入口；没选任务时仍是 Name）、Prompt 框（`na-prompt`，只在所选 agent 的
+`prompt` 标志为 true 时显示——Claude / Codex 有，Grok / shell / custom 没有）预填下面的模板，用户可改，
+非空才随 `POST /api/sessions` 的 `prompt` 发；换回「一句话…」时没改过的 Name 回项目名、Prompt 清空。
+没有任务（`reason` 非空）时 Task 保持一句话输入，旁边一行灰字**按 `reason` 的类型**给文案（MISSION §2.3
+规则 10）：`no_bd`「没装 bd」、`no_beads`「该仓库没有 beads」、`timeout`「bd 没有在 10 s 内应答」、
+`bad_output`「bd 的输出读不懂」，不认识的类型不提示。claim 由 agent 自己做——页面对 beads 什么都不写
+（不变量 12）。守卫 `web/src/NewAgentDialog.test.tsx`（选任务后的预填、无 bd 的提示、prompt 标志为
+false 的 agent 不显示也不发）、`web/src/taskPrompt.test.ts`。
+
+prompt 模板（`web/src/taskPrompt.ts` 的 `taskPrompt(id, title)`，原文以此为准；节点把整段单引号包住
+接到启动命令尾、不进库、Restart 不重发，见 `docs/spec/api.md`「从就绪任务起会话」）：
+
+```
+任务 <id>：<title>
+
+先 `bd update <id> --claim`，再 `bd show <id>` 读任务书（description / notes / acceptance）。
+按 AGENTS.md 的任务纪律干活：commit subject 末尾带 (<id>)；干活中发现的别的问题用 `bd create ... --deps discovered-from:<id>` 另立。
+做完 `bd close <id> --reason "<证据>"` 写证据。
+```
 
 ## 未注册会话与危险操作确认（MISSION §5.5 / §8）
 
