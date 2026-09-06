@@ -2,18 +2,19 @@
 //!
 //! 升级前就把会话解析成 `AttachSpec`——会话不存在 / 没有运行时 的错误以 HTTP 状态返回，
 //! 客户端不用先建好 WS 再从帧里读错误。升级本身先过 `Principal`，再校验 `Origin` 与 `Host`
-//! 同源（ADR-003 D7）。桥接循环在 `gateway`，这里只做 JSON 帧与 keepalive。
+//! 同源（ADR-003 D7）。桥接循环在 `gateway`，这里只做 JSON 帧与 keepalive。会话属于 peer 时
+//! 不在这里 attach：`forward::terminal` 向所属节点建同一条 WS，两边帧原样互转（agora-7ku.7）。
 
 use std::time::Instant;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, Uri};
 use axum::response::Response;
 use serde::Deserialize;
 
 use super::auth::same_origin;
-use super::{ApiError, AppState};
+use super::{forward, ApiError, AppState};
 use crate::auth::{AuthError, Principal};
 use crate::gateway::{
     AttachedPty, ClientMessage, ServerMessage, Utf8Stream, IDLE_TIMEOUT, PING_INTERVAL,
@@ -31,6 +32,7 @@ pub async fn upgrade(
     State(state): State<AppState>,
     Path(gid): Path<String>,
     Query(q): Query<TermQuery>,
+    uri: Uri,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
@@ -40,7 +42,14 @@ pub async fn upgrade(
         tracing::warn!(component = "api", principal = %principal.log_id(), "拒绝跨站 WS 升级");
         return Err(AuthError::CrossOrigin.into());
     }
-    let id = super::sessions::local_id(&state, &gid)?;
+    // 同源校验在前、路由在后：cookie 认证的跨站升级不管目标是谁都先拒。
+    let id = match forward::hop(&state, &principal, &gid)? {
+        forward::Hop::Local(id) => id,
+        // 查询串原样带过去（cols / rows 由所属节点解释），与本机路径同一个 URL。
+        forward::Hop::Peer(t) => {
+            return forward::terminal(&principal, t, &gid, uri.query(), ws).await;
+        }
+    };
     let default = Size::default();
     let size = Size {
         cols: q.cols.filter(|c| *c > 0).unwrap_or(default.cols),

@@ -1,8 +1,8 @@
 //! `/api/sessions*`（docs/spec/api.md；MISSION §4.6 §7.3 §8）。
 //!
 //! 每个 handler 第一个参数是 `Principal`（ADR-003 D1）。Session Manager 的方法会起运行时
-//! 子进程，一律放 `spawn_blocking`。会话 id 对外 `<node>:<id>`；不是本节点的 id 现在
-//! 报 `node_unknown`（peer 转发随 ADR-004 的多节点阶段）。
+//! 子进程，一律放 `spawn_blocking`。会话 id 对外 `<node>:<id>`；写操作对 peer 会话经
+//! `forward` 一跳转发到所属节点（agora-7ku.7），既不是本机也不是 peer 的前缀报 `node_unknown`。
 //!
 //! Kill / Restart 的确认跟着"杀"走（MISSION §8）：会杀且没带 `confirmed: true` →
 //! 409 `needs_confirmation`；不会杀（FINISHED / FAILED / 会话已不在）直接执行。判断在
@@ -12,12 +12,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ApiError, AppState};
+use super::{forward, ApiError, AppState};
 use crate::adapter::RestartPlan;
 use crate::auth::Principal;
 use crate::events::{export, global_id, Event};
@@ -233,7 +234,7 @@ fn announce_created(state: &AppState, view: &SessionView) -> Value {
 
 // ---------- 改 ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct PatchBody {
     #[serde(default)]
     pub display_name: Option<String>,
@@ -245,8 +246,11 @@ pub async fn patch(
     State(state): State<AppState>,
     Path(gid): Path<String>,
     Json(body): Json<PatchBody>,
-) -> Result<Json<Value>, ApiError> {
-    let id = local_id(&state, &gid)?;
+) -> Result<Response, ApiError> {
+    let id = match forward::route(&state, &principal, &gid, Method::PATCH, "", Some(&body)).await? {
+        forward::Routed::Local(id) => id,
+        forward::Routed::Forwarded(resp) => return Ok(resp),
+    };
     let Some(name) = body.display_name else {
         return Err(bad_request("没有可改的字段（display_name）"));
     };
@@ -260,12 +264,12 @@ pub async fn patch(
         id: global_id(&state.node, &view.record.id),
         session: session.clone(),
     });
-    Ok(Json(session))
+    Ok(Json(session).into_response())
 }
 
 // ---------- 生命周期 ----------
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct ConfirmBody {
     #[serde(default)]
     pub confirmed: bool,
@@ -306,12 +310,24 @@ pub async fn kill(
     State(state): State<AppState>,
     Path(gid): Path<String>,
     body: MaybeConfirm,
-) -> Result<Json<Value>, ApiError> {
-    let id = local_id(&state, &gid)?;
+) -> Result<Response, ApiError> {
+    let id = match forward::route(
+        &state,
+        &principal,
+        &gid,
+        Method::POST,
+        "/kill",
+        body.as_deref(),
+    )
+    .await?
+    {
+        forward::Routed::Local(id) => id,
+        forward::Routed::Forwarded(resp) => return Ok(resp),
+    };
     require_confirmation(&state, &id, confirmed(&body), "Kill").await?;
     let view = blocking(&state.sessions, move |s| s.kill(&id)).await?;
     tracing::info!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, "kill");
-    Ok(Json(export(&state.node, &view)))
+    Ok(Json(export(&state.node, &view)).into_response())
 }
 
 /// Restart 退化原因在 API 响应里的长度上限（字符）；日志不截。
@@ -322,8 +338,20 @@ pub async fn restart(
     State(state): State<AppState>,
     Path(gid): Path<String>,
     body: MaybeConfirm,
-) -> Result<Json<Value>, ApiError> {
-    let id = local_id(&state, &gid)?;
+) -> Result<Response, ApiError> {
+    let id = match forward::route(
+        &state,
+        &principal,
+        &gid,
+        Method::POST,
+        "/restart",
+        body.as_deref(),
+    )
+    .await?
+    {
+        forward::Routed::Local(id) => id,
+        forward::Routed::Forwarded(resp) => return Ok(resp),
+    };
     require_confirmation(&state, &id, confirmed(&body), "Restart").await?;
     // resume 命令按 Adapter 算（ADR-002 D7）：探版本会跑子进程，整段放 blocking 线程。
     let st = state.clone();
@@ -358,7 +386,7 @@ pub async fn restart(
     };
     let mut out = export(&state.node, &view);
     out["restart"] = resume;
-    Ok(Json(out))
+    Ok(Json(out).into_response())
 }
 
 /// 回收已退出会话的运行时会话与输出；活着 → 409 `still_alive`。
@@ -366,12 +394,24 @@ pub async fn cleanup(
     principal: Principal,
     State(state): State<AppState>,
     Path(gid): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    let id = local_id(&state, &gid)?;
+) -> Result<Response, ApiError> {
+    let id = match forward::route(
+        &state,
+        &principal,
+        &gid,
+        Method::POST,
+        "/cleanup",
+        forward::NO_BODY,
+    )
+    .await?
+    {
+        forward::Routed::Local(id) => id,
+        forward::Routed::Forwarded(resp) => return Ok(resp),
+    };
     let log_id = id.clone();
     blocking(&state.sessions, move |s| s.cleanup(&id)).await?;
     tracing::info!(component = "api", principal = %principal.log_id(), session_id = %log_id, "cleanup");
-    Ok(StatusCode::NO_CONTENT)
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// 只删 metadata，绝不杀进程（MISSION §7.3）；已退出的顺手清理。
@@ -379,19 +419,31 @@ pub async fn delete(
     principal: Principal,
     State(state): State<AppState>,
     Path(gid): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    let id = local_id(&state, &gid)?;
+) -> Result<Response, ApiError> {
+    let id = match forward::route(
+        &state,
+        &principal,
+        &gid,
+        Method::DELETE,
+        "",
+        forward::NO_BODY,
+    )
+    .await?
+    {
+        forward::Routed::Local(id) => id,
+        forward::Routed::Forwarded(resp) => return Ok(resp),
+    };
     let log_id = id.clone();
     blocking(&state.sessions, move |s| s.delete_metadata(&id)).await?;
     state.events.publish(Event::SessionRemoved {
         id: global_id(&state.node, &log_id),
     });
     tracing::info!(component = "api", principal = %principal.log_id(), session_id = %log_id, "删除 metadata");
-    Ok(StatusCode::NO_CONTENT)
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// `POST /api/sessions/:id/input`（MISSION §7.3；ADR-002 D5）。
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InputBody {
     /// 经挂起的 hook 返回给 agent，不注入键击。
@@ -410,7 +462,7 @@ pub enum InputBody {
     Text { data: String },
 }
 
-#[derive(Deserialize, Clone, Copy)]
+#[derive(Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum DecisionKind {
     Allow,
@@ -422,8 +474,20 @@ pub async fn input(
     State(state): State<AppState>,
     Path(gid): Path<String>,
     Json(body): Json<InputBody>,
-) -> Result<Json<Value>, ApiError> {
-    let id = local_id(&state, &gid)?;
+) -> Result<Response, ApiError> {
+    let id = match forward::route(
+        &state,
+        &principal,
+        &gid,
+        Method::POST,
+        "/input",
+        Some(&body),
+    )
+    .await?
+    {
+        forward::Routed::Local(id) => id,
+        forward::Routed::Forwarded(resp) => return Ok(resp),
+    };
     match body {
         InputBody::Decision {
             decision,
@@ -468,13 +532,13 @@ pub async fn input(
                 },
             })?;
             tracing::info!(component = "api", principal = %principal.log_id(), session_id = %id, tool_use_id = %key, "decision");
-            Ok(Json(serde_json::json!({ "tool_use_id": key })))
+            Ok(Json(serde_json::json!({ "tool_use_id": key })).into_response())
         }
         InputBody::Text { data } => {
             let sid = id.clone();
             blocking(&state.sessions, move |s| s.send_input(&sid, &data)).await?;
             tracing::info!(component = "api", principal = %principal.log_id(), session_id = %id, "text");
-            Ok(Json(serde_json::json!({})))
+            Ok(Json(serde_json::json!({})).into_response())
         }
     }
 }

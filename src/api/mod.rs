@@ -8,6 +8,7 @@
 mod agents;
 mod auth;
 mod events;
+pub mod forward;
 mod health;
 mod projects;
 mod sessions;
