@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { API_VERSION, checkApiVersion, HealthWatcher, isHealthy, localNodeOf, peersOf, runtimeDegraded, versionBlocked, VersionWatcher } from "./health";
+import { API_VERSION, checkApiVersion, HealthWatcher, isHealthy, isPeerError, localNodeOf, peersOf, runtimeDegraded, versionBlocked, VersionWatcher } from "./health";
 
 describe("isHealthy", () => {
   it("accepts the public subset", () => {
@@ -153,6 +153,17 @@ describe("HealthWatcher", () => {
   });
 });
 
+describe("isPeerError", () => {
+  it("knows exactly the five typed values of last_error (rule 10; agora-41e adds misconfigured)", () => {
+    for (const v of ["incompatible_version", "fingerprint_mismatch", "unauthorized", "unreachable", "misconfigured"]) {
+      expect(isPeerError(v)).toBe(true);
+    }
+    expect(isPeerError("something_new")).toBe(false);
+    expect(isPeerError(null)).toBe(false);
+    expect(isPeerError(42)).toBe(false);
+  });
+});
+
 describe("peersOf", () => {
   it("normalizes the peers section and never lets one bad entry break the rest", () => {
     expect(peersOf({ status: "ok" })).toEqual({});
@@ -162,13 +173,16 @@ describe("peersOf", () => {
         status: "ok",
         peers: {
           ok: { online: true, last_seen: "2026-09-02T23:10:00Z", retrying: false, last_error: null },
+          cfg: { online: false, last_seen: "2026-09-02T23:10:00Z", retrying: false, last_error: "misconfigured" },
           odd: { online: "yes", last_seen: 5, last_error: "something_new" },
           junk: 42,
         },
       }),
     ).toEqual({
       ok: { online: true, last_seen: "2026-09-02T23:10:00Z", retrying: false, last_error: null },
-      // 不认识的 last_error 当 null——前端只认四个类型，宁可少说也不瞎说。
+      // 配置错误原样带出：retrying false 是它的语义（节点不重试、定时重读配置），不是缺字段。
+      cfg: { online: false, last_seen: "2026-09-02T23:10:00Z", retrying: false, last_error: "misconfigured" },
+      // 不认识的 last_error 当 null——前端只认五个类型，宁可少说也不瞎说。
       odd: { online: false, last_seen: null, retrying: false, last_error: null },
     });
   });

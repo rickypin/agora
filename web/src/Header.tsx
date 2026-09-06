@@ -6,7 +6,7 @@ import type { NodesHealth, PeerError, PeerHealth } from "./health";
  * Dashboard 线框首行 `mac ● zuan ●   Agents: 12`），所以 header 也就是侧栏的首行。
  *
  * 数据源是 HealthWatcher 同一次拉取带出的 peers 段（agora-7ku.12），不另起轮询。异常原因只按
- * `last_error` 的四个类型选文案，从不解析任何消息文本（MISSION §2.3 规则 10）。本机那一枚的名字是
+ * `last_error` 的五个类型选文案，从不解析任何消息文本（MISSION §2.3 规则 10）。本机那一枚的名字是
  * `/api/system` 报的 node.id（VersionWatcher 同一次拉取带出，agora-7ku.5）：`mac ● zuan ●` 里两枚都是
  * 节点名，与侧栏行上的 `@ zuan` 对得上；还没拉到之前先叫"本机"。
  */
@@ -31,7 +31,7 @@ export function nodeStatuses(h: NodesHealth, localName?: string | null): NodeSta
   return [local, ...Object.entries(h.peers).map(([name, p]) => ({ name, ...p }))];
 }
 
-/** 四个错误类型的文案（唯一出处）。 */
+/** 五个错误类型的文案（唯一出处）。 */
 export function peerErrorLabel(e: PeerError): string {
   switch (e) {
     case "incompatible_version":
@@ -42,6 +42,10 @@ export function peerErrorLabel(e: PeerError): string {
       return "未授权";
     case "unreachable":
       return "不可达";
+    case "misconfigured":
+      // ADR-003 D3 / agora-41e：本机这一行 peers[] 配错了（token_file 权限、url、指纹），要改文件，
+      // 不是等网络。retrying 恒 false，所以 title 不会带"重试中"——现有逻辑已是条件的。
+      return "配置错误";
   }
 }
 

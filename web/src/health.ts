@@ -12,10 +12,14 @@ export interface RuntimeHealth {
   path_source?: string;
 }
 
-/** peers 段里 `last_error` 的四个值（docs/spec/api.md Health；模型 src/peer/state.rs）。按类型不按文本。 */
-export type PeerError = "incompatible_version" | "fingerprint_mismatch" | "unauthorized" | "unreachable";
+/**
+ * peers 段里 `last_error` 的五个值（docs/spec/api.md Health；模型 src/peer/state.rs）。按类型不按文本。
+ * `misconfigured`（agora-41e；ADR-003 D3）：本机这一行 peers[] 字面上就用不了（token_file 权限 / 属主 /
+ * 内容、url 不是 https、指纹不合法），节点不重试、按固定间隔重读配置——所以它是唯一 `retrying` 恒 false 的离线。
+ */
+export type PeerError = "incompatible_version" | "fingerprint_mismatch" | "unauthorized" | "unreachable" | "misconfigured";
 
-const PEER_ERRORS: readonly PeerError[] = ["incompatible_version", "fingerprint_mismatch", "unauthorized", "unreachable"];
+const PEER_ERRORS: readonly PeerError[] = ["incompatible_version", "fingerprint_mismatch", "unauthorized", "unreachable", "misconfigured"];
 
 export function isPeerError(v: unknown): v is PeerError {
   return typeof v === "string" && (PEER_ERRORS as readonly string[]).includes(v);
@@ -26,7 +30,7 @@ export interface PeerHealth {
   online: boolean;
   /** 上次成功交互，本节点时钟打的 UTC 文本；没连上过为 null。离线后保留（不变量 8）。 */
   last_seen: string | null;
-  /** 下一次重试已排定。 */
+  /** 下一次网络重试已排定；`misconfigured` 时恒 false（重试改不了文件，节点在定时重读配置）。 */
   retrying: boolean;
   last_error: PeerError | null;
 }

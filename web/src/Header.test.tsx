@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * Header 对本机与每个 peer 的状态渲染（MISSION §10.3；agora-7ku.12 验收点名的四态：
- * online / stale(last_seen) / fingerprint_mismatch / incompatible_version）。
+ * online / stale(last_seen) / fingerprint_mismatch / incompatible_version；agora-41e 加第五态 misconfigured）。
  * 原因只按 last_error 的类型选文案（规则 10），"上次见到"用本节点打的时间。
  */
 import { cleanup, render, screen } from "@testing-library/react";
@@ -62,9 +62,32 @@ describe("Header 节点状态", () => {
     expect(c.title).toBe("版本不兼容，重试中");
   });
 
-  it("every error type has a label and only those four exist (rule 10)", () => {
+  it("misconfigured: its own reason in red, and no 重试中 because the node is not retrying (ADR-003 D3; agora-41e)", () => {
+    // 配置错了要改文件，不是等网络：与其它错误同一形态（红 ✗ + 原因 + 上次见到），只是 retrying 恒 false，
+    // title 尾部没有"重试中"——人看到的是"去改文件"而不是"等一等"。
+    render(<Header agents={0} nodes={[peer("zuan", { last_seen: SEEN, retrying: false, last_error: "misconfigured" })]} />);
+    const c = chip("zuan");
+    expect(c.textContent).toBe(`zuan✗配置错误 · 上次见到 ${clockText(SEEN)}`);
+    expect(c.className).toContain("bad");
+    expect(c.title).toBe(`配置错误，上次见到 ${SEEN}`);
+    expect(c.title).not.toContain("重试中");
+    expect(c.textContent).not.toContain("离线");
+    // nodeStatuses 原样带出 misconfigured 与 retrying: false。
+    const peers = { zuan: { online: false, last_seen: SEEN, retrying: false, last_error: "misconfigured" as const } };
+    const all = nodeStatuses({ reachable: true, peers }, "mac");
+    expect(all.map((n) => n.name)).toEqual(["mac", "zuan"]);
+    expect(all[1]).toMatchObject({ name: "zuan", online: false, retrying: false, last_error: "misconfigured" });
+    // 从没连上过就配错了：没有"上次见到"，只有原因。
+    cleanup();
+    render(<Header agents={0} nodes={[peer("pi", { last_error: "misconfigured" })]} />);
+    expect(chip("pi").textContent).toBe("pi✗配置错误");
+    expect(chip("pi").title).toBe("配置错误");
+  });
+
+  it("every error type has a label and only those five exist (rule 10)", () => {
     expect(peerErrorLabel("unauthorized")).toBe("未授权");
     expect(peerErrorLabel("unreachable")).toBe("不可达");
+    expect(peerErrorLabel("misconfigured")).toBe("配置错误");
     render(<Header agents={0} nodes={[peer("a", { last_error: "unauthorized" }), peer("b")]} />);
     expect(chip("a").textContent).toBe("a✗未授权");
     // 配置了、还没连上、也没失败过：未连接，不是错误。
