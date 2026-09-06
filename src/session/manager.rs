@@ -407,6 +407,16 @@ impl SessionManager {
         }
     }
 
+    /// 状态机里还没答的权限 / 提问的键（只读）。receiver 的 sweep 用它找"hook 进程还在 socket 上等、
+    /// 状态机却已经没有这个挂起"的 hold——终端里放行后 Esc 中断、或下一条 prompt 清掉了挂起
+    /// （agora-9cd）。没有状态机的会话（从没观测、从没收过事件）返回空。
+    pub fn pending_hook_keys(&self, id: &str) -> Vec<String> {
+        lock(&self.machines)
+            .get(id)
+            .map(Machine::pending_keys)
+            .unwrap_or_default()
+    }
+
     /// 状态机记下的"正在做什么"/ 最后一条回复（两行预览，dvh.10）。
     pub fn detail(&self, id: &str) -> Option<String> {
         lock(&self.machines)
@@ -814,11 +824,16 @@ impl SessionManager {
         let hooked = adapter::has_hooks(&rec.agent_type);
         // 2026-09-05 agora-uez：只读无 hook 的屏幕会让 hooks silent 分支永远拿到 None。
         // hook 健康时不 capture，达到沉默阈值才读取，且状态机只允许降为 UNKNOWN。
-        let silent = lock(&self.machines)
+        // 2026-09-06 agora-9cd：ADR-002 D1"hook 健康时不 capture"的唯一例外——有挂起的权限 / 提问时
+        // 每 tick 都读屏幕，只用来判断提示还在不在（终端里放行或 Esc 中断后 Claude 一个事件都不发，
+        // 提示消失是唯一可观测的事实）。文本层在这里同样只能把 WAITING 降成 UNKNOWN，不能抬；
+        // hooked 会话的 `preview` 仍为 null（下面的 filter 不动）。
+        let (silent, pending) = lock(&self.machines)
             .get(&rec.id)
-            .is_some_and(|m| m.hooks_silent(now));
+            .map(|m| (m.hooks_silent(now), m.has_pending()))
+            .unwrap_or((false, false));
         let screen = match rt {
-            Some(s) if (!hooked || silent) && s.alive => self
+            Some(s) if (!hooked || silent || pending) && s.alive => self
                 .runtime
                 .capture_tail(&s.r#ref, PREVIEW_TAIL_LINES)
                 .ok()

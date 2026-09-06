@@ -161,6 +161,15 @@ pub struct Machine {
     progress: Option<String>,
     /// 还没答的权限 / 提问（并行工具各一个）：清空才回 RUNNING。
     pending: BTreeSet<String>,
+    /// 挂起期间的屏幕证据（agora-9cd）：文本层在 `pending` 非空时见过权限 / 提问的提示。
+    /// 只有见过、之后又连续 `text_ticks` 个 tick 见不到，才算"终端里答过 / 中断了"。`pending` 一变就归零。
+    pending_prompt_seen: bool,
+    /// 见过提示之后连续多少个 tick 没见到它，以及最后计数的那个 tick（同一秒多次读只算一次）。
+    pending_prompt_gone_ticks: u32,
+    pending_prompt_gone_at: i64,
+    /// 当前的 UNKNOWN 是"提示消失"规则给的：进程层的 RUNNING 不得盖掉它，直到下一条 hook 事件写出新状态。
+    /// （沉默规则的 UNKNOWN 不设此标记，仍按原样每 tick 重判。）
+    screen_released: bool,
 }
 
 impl Machine {
@@ -186,6 +195,10 @@ impl Machine {
             prompt: None,
             progress: None,
             pending: BTreeSet::new(),
+            pending_prompt_seen: false,
+            pending_prompt_gone_ticks: 0,
+            pending_prompt_gone_at: 0,
+            screen_released: false,
         }
     }
 
@@ -234,6 +247,24 @@ impl Machine {
 
     pub fn has_hooks(&self) -> bool {
         self.declared_hooks || self.heard_hooks
+    }
+
+    /// 还有没答的权限 / 提问。SessionManager 据此在 hook 健康时也 capture 屏幕（ADR-002 D1 沉默规则的
+    /// 唯一例外，agora-9cd）——只为判断提示是否还在，文本层在这里同样只能降不能抬。
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// 没答的权限 / 提问的键（`tool_use_id`，Claude 的 PermissionRequest 没有它时是 tool_name），与
+    /// receiver 挂起表的键是同一个 `decision_key`：receiver 的 sweep 拿它判断哪个 hold 已经没人等。
+    pub fn pending_keys(&self) -> Vec<String> {
+        self.pending.iter().cloned().collect()
+    }
+
+    fn forget_screen_prompt(&mut self) {
+        self.pending_prompt_seen = false;
+        self.pending_prompt_gone_ticks = 0;
+        self.pending_prompt_gone_at = 0;
     }
 
     /// 装了 hook（Adapter 声明）却一条事件都没听过，而终端在启动宽限之后已经活动了
@@ -336,6 +367,7 @@ impl Machine {
         let waiting_on_others = |pending: &BTreeSet<String>, current: &Assessment| {
             current.status == Status::Waiting && !pending.is_empty()
         };
+        let pending_before = self.pending.clone();
         let next = match event {
             AgoraEvent::SessionStarted => {
                 self.pending.clear();
@@ -385,8 +417,13 @@ impl Machine {
                     }
                     None => self.pending.clear(),
                 }
-                (self.current.status == Status::Waiting && self.pending.is_empty())
-                    .then(|| hook(Status::Running, 0.95, Some("decision resolved")))
+                // 从 WAITING 回 RUNNING；也从"提示消失"规则给的 UNKNOWN（source=text）回——终端放行、
+                // 工具跑完后 PostToolUse 才到的那条路，行不该停在 UNKNOWN（agora-9cd）。
+                let released_by_screen =
+                    self.current.status == Status::Unknown && self.current.source == Source::Text;
+                ((self.current.status == Status::Waiting || released_by_screen)
+                    && self.pending.is_empty())
+                .then(|| hook(Status::Running, 0.95, Some("decision resolved")))
             }
             AgoraEvent::TurnEnded(last) => {
                 self.pending.clear();
@@ -420,7 +457,14 @@ impl Machine {
                     .then(|| hook(Status::Finished, 0.8, Some("session ended (hook)")))
             }
         };
+        // 挂起集合一变（新挂起、答了一个、全清）屏幕证据重新收集：上一条提示见没见过说不了下一条。
+        if self.pending != pending_before {
+            self.forget_screen_prompt();
+        }
         if let Some(a) = next {
+            // hook 写出了新状态："提示消失"的 UNKNOWN 到此为止；没写状态的事件（SessionId、WAITING 外的
+            // Idle）不算——它们没说会话在干什么，UNKNOWN 继续钉着，不让进程层猜成 RUNNING。
+            self.screen_released = false;
             self.set(a, at);
         }
         if self.current.source == Source::Hook {
@@ -517,6 +561,60 @@ impl Machine {
                 Assessment::new(Status::Unknown, Source::Text, 0.5, Some(&reason)),
                 now,
             );
+            return self.current.clone();
+        }
+        // 挂起期间的屏幕证据（agora-9cd，2026-09-06）。实录（2026-09-05，Claude Code 2.1.261，
+        // testdata 里 2.1.261 的 interrupted.jsonl）：PermissionRequest 挂起 → 用户在终端按 1 放行 →
+        // 工具跑起来 → 按 Esc。Claude 对中断一个事件都不发——没有 PostToolUse / PostToolUseFailure /
+        // Stop——agora 的挂起没人解除，行钉在 WAITING(permission) 直到下一条 prompt，Dashboard 一直
+        // "needs input"。终端放行那一刻屏幕上的权限提示就消失了，这是唯一可观测的事实，所以规则是：
+        // 有挂起、当前是 hook 给的 WAITING、文本层**见过**提示、之后连续 `text_ticks` 个 tick 都见不到
+        // → 清挂起、降 UNKNOWN（source=text）。
+        // - 落 UNKNOWN 不落 RUNNING：Esc 中断与"放行后工具正在跑"在屏幕上分不出来，猜 RUNNING 会把
+        //   中断了停在提示符的会话报成在干活；真跑完了 PostToolUse 会把它抬回 RUNNING（apply_at 的
+        //   DecisionResolved 臂）。
+        // - 从没在屏幕上见过提示就不动：检测器认不出这家的权限 UI 时宁可维持 WAITING，退回 10 min
+        //   沉默兜底——否则每个挂起都会在两个 tick 后被误判成"消失"。
+        // - 不能改成"挂起过期"：用户离开几小时再回来答权限是正常的，按时间过期会把真 WAITING 打成
+        //   UNKNOWN，而这条规则只在提示真的不在了才动。
+        // - 同一秒多次读只算一个 tick（同 observe_unhooked 的 text_streak）：Dashboard 每次取视图都是
+        //   一次 observe，几个客户端同时刷新不能把两个 tick 凑齐。
+        if !self.pending.is_empty()
+            && self.current.status == Status::Waiting
+            && self.current.source == Source::Hook
+        {
+            let prompt_on_screen = text.is_some_and(|t| t.status == Status::Waiting);
+            if prompt_on_screen {
+                self.pending_prompt_seen = true;
+                self.pending_prompt_gone_ticks = 0;
+                self.pending_prompt_gone_at = 0;
+            } else if self.pending_prompt_seen {
+                let counted = self.pending_prompt_gone_ticks == 0
+                    || now - self.pending_prompt_gone_at >= self.cfg.tick.as_secs() as i64;
+                if counted {
+                    self.pending_prompt_gone_ticks += 1;
+                    self.pending_prompt_gone_at = now;
+                }
+                if self.pending_prompt_gone_ticks >= self.cfg.text_ticks {
+                    self.pending.clear();
+                    self.forget_screen_prompt();
+                    self.screen_released = true;
+                    self.set(
+                        Assessment::new(
+                            Status::Unknown,
+                            Source::Text,
+                            0.5,
+                            Some("permission prompt gone; hooks silent"),
+                        ),
+                        now,
+                    );
+                    return self.current.clone();
+                }
+            }
+        }
+        // "提示消失"给的 UNKNOWN 钉住：下面的兜底会拿进程层的 RUNNING 盖掉它，而进程活着不等于在干活
+        // （Esc 之后它停在提示符）。hook 的下一条事件写出新状态时才解开（apply_at）。
+        if self.screen_released {
             return self.current.clone();
         }
         if self.current.source == Source::Hook {
