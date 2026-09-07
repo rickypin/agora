@@ -365,6 +365,17 @@ async fn offline_peer_is_stale_with_last_seen_not_removed() {
             }
         }
     }
+    // Header 也从同一条流得知（agora-c8h）：掉线那一刻一条 peer_changed，内容就是 health 的那一项，
+    // 不用等 60 s 的 health 轮询。它在 stale 的 session_updated 之前发出（先记状态再标行）。
+    let changed = got
+        .iter()
+        .find(|e| matches!(e, Event::PeerChanged { name, .. } if name == "b"))
+        .unwrap_or_else(|| panic!("掉线没有 peer_changed: {got:?}"));
+    assert_eq!(
+        serde_json::to_value(changed).unwrap(),
+        json!({ "type": "peer_changed", "name": "b", "peer": p }),
+        "peer_changed 带的就是 /api/health peers 段的那一项"
+    );
     // 在线的 peer 状态模型：last_seen 保留（PeerState::failed 不动它）。
     let p = a.state.peers.get("b").unwrap();
     assert_eq!(p.last_error, Some(PeerError::Unreachable));
@@ -670,13 +681,24 @@ async fn recovery_resyncs_full_snapshot() {
 
     // 事件流：新来的 created、没了的 removed、改了的 updated，以及 keep——内容没变但 stale 翻回
     // false，也有一条 updated（浏览器据此去掉淡显）。顺序无关，一起收。
-    let got = collect_until(&mut rx, "对齐的差分事件", |got| {
+    // 回来那一刻 Header 也立刻知道（agora-c8h）：全量并入之后一条 online: true 的 peer_changed。
+    let got = collect_until(&mut rx, "对齐的差分事件 + 恢复的 peer_changed", |got| {
         got.iter().any(|e| matches!(e, Event::SessionCreated { id, .. } if id == gid(&born)))
             && got.iter().any(|e| matches!(e, Event::SessionRemoved { id } if id == gid(&gone)))
             && got.iter().any(|e| matches!(e, Event::SessionUpdated { id, session } if id == gid(&renamed) && session["display_name"] == "renamed"))
             && got.iter().any(|e| matches!(e, Event::SessionUpdated { id, session } if id == gid(&keep) && session["stale"] == false))
+            && got.iter().any(|e| matches!(e, Event::PeerChanged { name, peer } if name == "b" && peer.online))
     })
     .await;
+    for e in &got {
+        if let Event::PeerChanged { peer, .. } = e {
+            assert!(
+                peer.online && peer.last_error.is_none() && !peer.retrying,
+                "{peer:?}"
+            );
+            assert!(peer.last_seen.is_some(), "{peer:?}");
+        }
+    }
     for e in &got {
         match e {
             Event::SessionCreated { session, .. } | Event::SessionUpdated { session, .. } => {

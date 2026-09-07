@@ -5,7 +5,8 @@ import type { NodesHealth, PeerError, PeerHealth } from "./health";
  * 说它显示本机与每个 peer 的状态（在线 / 异常原因 / 上次见到）。侧栏就是 Dashboard（ux.md Attention
  * Dashboard 线框首行 `mac ● zuan ●   Agents: 12`），所以 header 也就是侧栏的首行。
  *
- * 数据源是 HealthWatcher 同一次拉取带出的 peers 段（agora-7ku.12），不另起轮询。异常原因只按
+ * 数据源是 HealthWatcher 同一次拉取带出的 peers 段（agora-7ku.12），不另起轮询；peer 上线 / 掉线由
+ * `/api/events` 的 `peer_changed` 就地更新同一份快照（agora-c8h），与侧栏行同一眼变。异常原因只按
  * `last_error` 的五个类型选文案，从不解析任何消息文本（MISSION §2.3 规则 10）。本机那一枚的名字是
  * `/api/system` 报的 node.id（VersionWatcher 同一次拉取带出，agora-7ku.5）：`mac ● zuan ●` 里两枚都是
  * 节点名，与侧栏行上的 `@ zuan` 对得上；还没拉到之前先叫"本机"。

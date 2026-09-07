@@ -20,15 +20,18 @@ export class SessionStore {
   onOpen: (() => void) | null = null;
   /** 服务端以 4401 关流（本设备被吊销，agora-0jt）的出口；App 据此回到配对门。 */
   onRevoked: (() => void) | null = null;
+  /** `peer_changed` 事件的出口（agora-c8h）；Workspace 接到 HealthWatcher，Header 的点随之改。 */
+  onPeerChanged: ((name: string, peer: unknown) => void) | null = null;
 
   constructor(
-    opts: Omit<EventsClientOptions, "onChange" | "onUnregistered" | "onNotification" | "onOpen" | "onRevoked"> = {},
+    opts: Omit<EventsClientOptions, "onChange" | "onUnregistered" | "onNotification" | "onOpen" | "onRevoked" | "onPeerChanged"> = {},
   ) {
     this.client = new EventsClient({
       ...opts,
       onNotification: (n) => this.onNotification?.(n),
       onOpen: () => this.onOpen?.(),
       onRevoked: () => this.onRevoked?.(),
+      onPeerChanged: (name, peer) => this.onPeerChanged?.(name, peer),
       onChange: (map) => {
         this.changes += 1;
         this.rows = [...map.values()];

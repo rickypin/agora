@@ -2,6 +2,11 @@
 //!
 //! 这里只有类型与状态转移，没有 I/O：peer 客户端（agora-7ku.5）在每次连接成败时调转移，
 //! `/api/health` 的 peers 段原样序列化它，Header 据此渲染"在线 / 异常原因 / 上次见到"。
+//! 转移改变了**面貌**（`online` / `retrying` / `last_error` 任一）就往事件总线发一条
+//! [`Event::PeerChanged`]（agora-c8h）：Header 与侧栏行同一条 `/api/events` 得知，不用等 health 的
+//! 60 s 轮询——之前侧栏行几秒内变灰、Header 的点要一分钟后才跟上。在线期间每次收到事件都
+//! `seen` 一次、只动 `last_seen`，那不算面貌变化、不发事件：Header 在线的点不显示 last_seen，
+//! 事件流会被每条 peer 事件再放大一倍。
 //! 错误**按类型不按文本**（MISSION §2.3 规则 10）——前端与测试只看 `last_error` 的枚举值，
 //! 谁也不解析消息字符串；人看的细节走日志。
 //!
@@ -14,6 +19,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize, Serializer};
+
+use crate::events::{Event, EventBus};
 
 /// 最后一次连接失败的**类型**。前四类是 M2a 剧本点名要在 Header 上区分的（agora-7ku 设计字段
 /// 第 2、3 步）：指纹不匹配与版本不兼容都必须显示成自己的原因而不是"离线"；第五类
@@ -85,6 +92,12 @@ impl PeerState {
     pub fn is_stale(&self) -> bool {
         !self.online && self.last_seen.is_some()
     }
+
+    /// Header 上看得见的那部分：`online` / `retrying` / `last_error`。`last_seen` 不在内——在线时
+    /// 它每条事件都在变、Header 又不显示它；离线那一刻的值随翻转的事件一起带出。
+    fn face(&self) -> (bool, bool, Option<PeerError>) {
+        (self.online, self.retrying, self.last_error)
+    }
 }
 
 impl Default for PeerState {
@@ -117,42 +130,68 @@ impl From<crate::peer::transport::TransportError> for PeerError {
 /// 全部 peer 的状态表：节点名 → 状态。`AppState` 持有一份，peer 客户端写、`/api/health` 读。
 /// 配置里的每个 peer 启动时先 `register`，还没连上的 peer 也出现在 health 里（离线、没见过），
 /// 而不是等第一次连上才"冒出来"——Header 从第一秒起就能告诉人有几台节点。
+///
+/// 面貌变了就发 [`Event::PeerChanged`]（agora-c8h）。发事件的是表而不是写它的客户端：客户端有
+/// 三处写（断线、收到事件、拉到全量），求差放在这里就没有哪一处能忘。没挂总线（`new()`，单测）
+/// 就只改表。
 #[derive(Debug, Clone, Default)]
-pub struct PeerStates(Arc<Mutex<BTreeMap<String, PeerState>>>);
+pub struct PeerStates {
+    table: Arc<Mutex<BTreeMap<String, PeerState>>>,
+    events: Option<EventBus>,
+}
 
 impl PeerStates {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// 登记一个配置里的 peer；已有的不动（幂等）。
+    /// 面貌变化发到 `events`（`AppState` 用这个）。
+    pub fn with_events(events: EventBus) -> Self {
+        PeerStates {
+            table: Arc::default(),
+            events: Some(events),
+        }
+    }
+
+    /// 登记一个配置里的 peer；已有的不动（幂等）。启动时调，那时还没有订阅者，不发事件。
     pub fn register(&self, name: &str) {
-        lock(&self.0).entry(name.to_owned()).or_default();
+        lock(&self.table).entry(name.to_owned()).or_default();
     }
 
     /// 见 `PeerState::seen`；没登记过的顺手登记。
     pub fn seen(&self, name: &str, now_secs: i64) {
-        lock(&self.0)
-            .entry(name.to_owned())
-            .or_default()
-            .seen(now_secs);
+        self.transition(name, |p| p.seen(now_secs));
     }
 
     /// 见 `PeerState::failed`；没登记过的顺手登记。
     pub fn failed(&self, name: &str, err: PeerError) {
-        lock(&self.0)
-            .entry(name.to_owned())
-            .or_default()
-            .failed(err);
+        self.transition(name, |p| p.failed(err));
+    }
+
+    /// 锁内改、锁外发：面貌（`PeerState::face`）变了才发一条带整个新状态的 `PeerChanged`。
+    fn transition(&self, name: &str, apply: impl FnOnce(&mut PeerState)) {
+        let changed = {
+            let mut table = lock(&self.table);
+            let p = table.entry(name.to_owned()).or_default();
+            let before = p.face();
+            apply(p);
+            (p.face() != before).then(|| p.clone())
+        };
+        if let (Some(peer), Some(events)) = (changed, &self.events) {
+            events.publish(Event::PeerChanged {
+                name: name.to_owned(),
+                peer,
+            });
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<PeerState> {
-        lock(&self.0).get(name).cloned()
+        lock(&self.table).get(name).cloned()
     }
 
     /// 拷一份给 health 序列化（BTreeMap：JSON 键序稳定，测试与人眼都好比）。
     pub fn snapshot(&self) -> BTreeMap<String, PeerState> {
-        lock(&self.0).clone()
+        lock(&self.table).clone()
     }
 }
 
@@ -264,6 +303,60 @@ mod tests {
         assert!(snap["zuan"].online && snap["zuan"].last_seen == Some(T0));
         assert_eq!(snap["mac"].last_error, Some(PeerError::Unauthorized));
         assert!(table.get("nope").is_none());
+    }
+
+    #[test]
+    fn face_changes_are_published_and_last_seen_refreshes_are_not() {
+        // agora-c8h：Header 从事件流得知 peer 上下线；在线期间每条事件的 seen 只动 last_seen，不发。
+        let bus = EventBus::with_capacity(16);
+        let mut rx = bus.subscribe();
+        let table = PeerStates::with_events(bus);
+        table.register("zuan");
+        assert!(rx.try_recv().is_err(), "register 不发事件");
+        table.seen("zuan", T0);
+        match rx.try_recv().expect("第一次连上：离线 → 在线") {
+            Event::PeerChanged { name, peer } => {
+                assert_eq!(name, "zuan");
+                assert!(peer.online && peer.last_seen == Some(T0));
+            }
+            e => panic!("{e:?}"),
+        }
+        table.seen("zuan", T0 + 1);
+        table.seen("zuan", T0 + 2);
+        assert!(rx.try_recv().is_err(), "在线期间刷新 last_seen 不发事件");
+        table.failed("zuan", PeerError::Unreachable);
+        match rx.try_recv().expect("掉线要发") {
+            Event::PeerChanged { peer, .. } => {
+                assert!(!peer.online && peer.retrying);
+                assert_eq!(peer.last_error, Some(PeerError::Unreachable));
+                assert_eq!(peer.last_seen, Some(T0 + 2), "带的是离线那一刻的上次见到");
+                assert_eq!(
+                    serde_json::to_value(Event::PeerChanged {
+                        name: "zuan".into(),
+                        peer
+                    })
+                    .unwrap(),
+                    json!({
+                        "type": "peer_changed",
+                        "name": "zuan",
+                        "peer": { "online": false, "last_seen": "2026-09-03T00:00:02Z", "retrying": true, "last_error": "unreachable" },
+                    }),
+                    "形态与 /api/health peers 段的一项相同（docs/spec/api.md）"
+                );
+            }
+            e => panic!("{e:?}"),
+        }
+        table.failed("zuan", PeerError::Unreachable);
+        assert!(rx.try_recv().is_err(), "同样的失败再来一次，面貌没变，不发");
+        table.failed("zuan", PeerError::Misconfigured);
+        assert!(
+            matches!(rx.try_recv(), Ok(Event::PeerChanged { peer, .. }) if peer.last_error == Some(PeerError::Misconfigured) && !peer.retrying),
+            "错误类型换了算面貌变化"
+        );
+        // 没挂总线的表只改状态。
+        let plain = PeerStates::new();
+        plain.seen("zuan", T0);
+        assert!(plain.get("zuan").unwrap().online);
     }
 
     #[test]

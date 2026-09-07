@@ -153,6 +153,41 @@ describe("HealthWatcher", () => {
   });
 });
 
+describe("HealthWatcher.applyPeer（agora-c8h）", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("a peer_changed from the event stream updates the node snapshot at once, without a poll, and only when it differs", async () => {
+    const zuan = { online: true, last_seen: "2026-09-02T23:10:00Z", retrying: false, last_error: null };
+    const w = new HealthWatcher({ fetchHealth: async () => ({ status: "ok", peers: { zuan } }), okMs: 60_000 });
+    let notified = 0;
+    w.subscribeNodes(() => (notified += 1));
+    w.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const first = w.nodesSnapshot();
+    expect(notified).toBe(1);
+
+    // 事件说的和上次轮询一样：引用不换、不通知。
+    w.applyPeer("zuan", zuan);
+    expect(w.nodesSnapshot()).toBe(first);
+    expect(notified).toBe(1);
+
+    // 掉线：立刻反映，reachable 不动，polls 不多。
+    w.applyPeer("zuan", { ...zuan, online: false, retrying: true, last_error: "unreachable" });
+    expect(w.nodesSnapshot()).toEqual({ reachable: true, peers: { zuan: { ...zuan, online: false, retrying: true, last_error: "unreachable" } } });
+    expect(notified).toBe(2);
+    expect(w.polls).toBe(1);
+
+    // 与 health 同一套整形：坏 last_error 当 null、缺字段补默认；不认识的 peer 也加进来。
+    w.applyPeer("new-one", { online: true, last_error: "???" });
+    expect(w.nodesSnapshot().peers["new-one"]).toEqual({ online: true, last_seen: null, retrying: false, last_error: null });
+    w.applyPeer("junk", null);
+    expect(w.nodesSnapshot().peers.junk).toBeUndefined();
+    expect(notified).toBe(3);
+    w.stop();
+  });
+});
+
 describe("isPeerError", () => {
   it("knows exactly the five typed values of last_error (rule 10; agora-41e adds misconfigured)", () => {
     for (const v of ["incompatible_version", "fingerprint_mismatch", "unauthorized", "unreachable", "misconfigured"]) {

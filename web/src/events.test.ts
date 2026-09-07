@@ -117,6 +117,33 @@ describe("EventsClient", () => {
     expect(client.snapshots).toBe(3);
   });
 
+  it("hands peer_changed to onPeerChanged at once, outside the 300 ms batch, and never touches the rows (agora-c8h)", async () => {
+    const onPeerChanged = vi.fn<(name: string, peer: unknown) => void>();
+    client.stop();
+    client = new EventsClient({
+      connect: () => {
+        const s = new FakeSocket();
+        sockets.push(s);
+        return s;
+      },
+      fetchSnapshot: async () => ({ sessions: snapshot, unregistered: [] }),
+      coalesceMs: 300,
+      onChange,
+      onPeerChanged,
+    });
+    client.start();
+    sockets[sockets.length - 1].serverOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    const changes = onChange.mock.calls.length;
+    const peer = { online: false, last_seen: "2026-09-02T23:10:00Z", retrying: true, last_error: "unreachable" };
+    sockets[sockets.length - 1].serverSend([{ type: "peer_changed", name: "zuan", peer }]);
+    // 立刻到，不等合并批；行列表没有变化、onChange 不多叫。
+    expect(onPeerChanged).toHaveBeenCalledWith("zuan", peer);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(onChange.mock.calls.length).toBe(changes);
+    expect(client.snapshots).toBe(1); // 不因它重拉全量
+  });
+
   it("stops reconnecting and reports revoked when the server closes with 4401 (agora-0jt)", async () => {
     const onRevoked = vi.fn();
     client.stop();

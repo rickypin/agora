@@ -574,6 +574,33 @@ describe("Workspace", () => {
     expect(screen.getByTestId("node-zuan").textContent).toContain("zuan✗不可达 · 上次见到 ");
     expect(screen.queryByTestId("runtime-degraded")).toBeNull();
   });
+
+  it("a peer_changed event moves the header dot at once, without waiting for the health poll; a reconnect re-pulls health (agora-c8h)", async () => {
+    const seen = "2026-09-02T23:10:00Z";
+    const report: unknown = {
+      status: "ok",
+      runtime: { status: "ok", reason: null },
+      peers: { zuan: { online: true, last_seen: seen, retrying: false, last_error: null } },
+    };
+    const health = new HealthWatcher({ fetchHealth: async () => report, okMs: 1e9, degradedMs: 1e9 });
+    const t = setup([row("n:a")], [], undefined, health);
+    await online(t);
+    expect(screen.getByTestId("node-zuan").textContent).toBe("zuan●");
+    // 侧栏行变灰的同一条流上来了 peer_changed：Header 的点立刻变，health 一次都没多拉。
+    await act(async () => {
+      t.sock.send([{ type: "peer_changed", name: "zuan", peer: { online: false, last_seen: seen, retrying: true, last_error: "fingerprint_mismatch" } }]);
+    });
+    expect(screen.getByTestId("node-zuan").textContent).toContain("zuan✗指纹不匹配 · 上次见到 ");
+    expect(health.polls).toBe(1);
+    await act(async () => {
+      t.sock.send([{ type: "peer_changed", name: "zuan", peer: { online: true, last_seen: seen, retrying: false, last_error: null } }]);
+    });
+    expect(screen.getByTestId("node-zuan").textContent).toBe("zuan●");
+    expect(health.polls).toBe(1);
+    // 断流再连上：错过的翻转补不回来，重连时重拉一次 health 对齐（首连不拉，上面 polls 仍是 1）。
+    await online(t);
+    expect(health.polls).toBe(2);
+  });
 });
 
 describe("Workspace · 看 diff（MISSION §6.3 看结果；A41，agora-h1k.5）", () => {

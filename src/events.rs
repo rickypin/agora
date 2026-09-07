@@ -69,6 +69,13 @@ pub enum Event {
         body: String,
         status: Option<Status>,
     },
+    /// 一个 peer 在本节点眼里的面貌变了（agora-c8h；模型 `crate::peer::state`）：`peer` 就是
+    /// `/api/health` peers 段里该节点的那一项，Header 据此立刻改点，不等 health 的 60 s 轮询。
+    /// 只在 `online` / `retrying` / `last_error` 变时发；在线期间 `last_seen` 的刷新不发。
+    PeerChanged {
+        name: String,
+        peer: crate::peer::state::PeerState,
+    },
     /// 服务端丢了该客户端的事件：客户端必须重拉全量快照。
     Resync,
 }
@@ -79,12 +86,14 @@ impl Event {
         match self {
             Event::StatusChanged { id, .. } => Some(("status", id)),
             Event::SessionUpdated { id, .. } => Some(("updated", id)),
+            // 同一 peer 一批里上上下下只留最后一眼（断线即重连那种抖动）。
+            Event::PeerChanged { name, .. } => Some(("peer", name)),
             _ => None,
         }
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct EventBus {
     tx: broadcast::Sender<Event>,
 }

@@ -59,7 +59,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   // 只在配对之后（Workspace 才挂）带 cookie 拉完整报告；未认证的门页只用公开子集。
   const health = useMemo(() => givenHealth ?? new HealthWatcher(), [givenHealth]);
   const degraded = useSyncExternalStore(health.subscribe, health.snapshot, health.snapshot);
-  // Header 的节点状态与 degraded 同一次拉取带出，不另起轮询（MISSION §10.3；agora-7ku.12）。
+  // Header 的节点状态与 degraded 同一次拉取带出，不另起轮询（MISSION §10.3；agora-7ku.12）；peer 的翻转由下面的 onPeerChanged 秒级推进来（agora-c8h）。
   const nodesHealth = useSyncExternalStore(health.subscribeNodes, health.nodesSnapshot, health.nodesSnapshot);
   useEffect(() => {
     health.start();
@@ -74,12 +74,26 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   // 本机 node.id 随同一次 /api/system 来（agora-7ku.5）：Header 本机那一枚的名字、侧栏行标不标 `@ node` 都看它。
   const localNode = useSyncExternalStore(version.subscribe, version.nodeSnapshot, version.nodeSnapshot);
   const nodes = useMemo(() => nodeStatuses(nodesHealth, localNode), [nodesHealth, localNode]);
+  // 断流期间的 peer 翻转补不回来（事件是增量）：重连时顺手重拉一次 health 对齐 Header；首连不拉——
+  // 上面 health.start() 刚拉过（agora-c8h）。
+  const opened = useRef(false);
   useEffect(() => {
-    store.onOpen = () => void version.check();
+    store.onOpen = () => {
+      void version.check();
+      if (opened.current) void health.refresh();
+      opened.current = true;
+    };
     return () => {
       store.onOpen = null;
     };
-  }, [store, version]);
+  }, [store, version, health]);
+  // peer 上线 / 掉线走事件流，Header 的点与侧栏行的变灰同一眼看到（agora-c8h）。
+  useEffect(() => {
+    store.onPeerChanged = (name, peer) => health.applyPeer(name, peer);
+    return () => {
+      store.onPeerChanged = null;
+    };
+  }, [store, health]);
   useEffect(() => {
     store.onRevoked = onRevoked ?? null;
     return () => {

@@ -7,6 +7,7 @@
  * 与 DOM 无关（vitest 在 node 环境里跑）：WebSocket 与快照拉取通过参数注入。
  */
 
+import type { PeerHealth } from "./health";
 import { apiFetch } from "./net";
 
 export interface SessionRow {
@@ -70,6 +71,8 @@ export type AgoraEvent =
   | { type: "decision_resolved"; id: string; tool_use_id: string; via: string }
   /** 浏览器通知（MISSION §6.6）：服务端只在四种转换上发；`status` 是转换后的状态。 */
   | { type: "notification"; id: string | null; title: string; body: string; status?: string | null }
+  /** 一个 peer 的面貌变了（agora-c8h）：`peer` 是 `/api/health` peers 段里该节点的那一项。 */
+  | { type: "peer_changed"; name: string; peer: PeerHealth }
   | { type: "resync" };
 
 /** 服务端因吊销 / 轮换主动关长连接时的关闭码（docs/spec/api.md「认证」；agora-0jt）。 */
@@ -102,6 +105,11 @@ export interface EventsClientOptions {
   onDecisionResolved?: (e: { id: string; tool_use_id: string; via: string }) => void;
   /** 未登记会话只随全量快照来（事件流不推它们）；每次 resync 后回调。 */
   onUnregistered?: (rows: UnregisteredRow[]) => void;
+  /**
+   * 一个 peer 上线 / 掉线 / 换了错误类型（agora-c8h）：立刻回调，不进 300 ms 的合并批——Header 的点
+   * 与侧栏行的变灰该是同一眼看到的。`peer` 原样给出，由 HealthWatcher 整形（web/src/health.ts）。
+   */
+  onPeerChanged?: (name: string, peer: unknown) => void;
   /**
    * WS 每次连上（启动的首连、断流后的重连）时回调，在重拉全量之前。节点的 api_version 比对
    * 挂这里（agora-7ku.4）：升级节点必然重启 daemon、WS 必然断一次，所以换代总能在这一刻被看见。
@@ -206,6 +214,10 @@ export class EventsClient {
     }
     if (e.type === "decision_resolved") {
       this.opts.onDecisionResolved?.(e);
+      return;
+    }
+    if (e.type === "peer_changed") {
+      this.opts.onPeerChanged?.(e.name, e.peer);
       return;
     }
     this.pending.push(e);

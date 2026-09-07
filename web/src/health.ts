@@ -113,6 +113,11 @@ export interface HealthWatcherOptions {
  * health 的 degraded 是服务端每次请求现算的结论，没有事件流推它；健康时一分钟一次几乎没有
  * 流量，degraded 时缩到 10 s 让恢复能被看见。拉不到（daemon 不在 / 401）就保持上一次的结论，
  * 不在"运行时异常"与"没有异常"之间来回闪。
+ *
+ * 节点状态（Header 的点）不等这个轮询：peer 上线 / 掉线 / 换错误类型时 daemon 在 `/api/events` 上
+ * 推 `peer_changed`，Workspace 把它接进 `applyPeer`——侧栏行变灰与 Header 的点是同一条流、同一眼
+ * （agora-c8h；之前 Header 要等下一次 60 s 轮询才跟上）。轮询仍是兜底：断流期间错过的翻转由重连
+ * 时的 `refresh()` 与例行拉取对齐。
  */
 export class HealthWatcher {
   private degraded: string | null = null;
@@ -164,6 +169,18 @@ export class HealthWatcher {
   /** 本机可达性 + 每个 peer 的状态；Header 的数据源。 */
   nodesSnapshot = (): NodesHealth => this.nodes;
 
+  /**
+   * 事件流推来的一个 peer 的新面貌（`peer_changed`，agora-c8h）：与 health 的一项同形，走同一个
+   * 整形（`peersOf`），坏数据同样不毁 Header。没变（事件与上次轮询说的一样）就不换引用、不通知。
+   */
+  applyPeer(name: string, peer: unknown): void {
+    const [entry] = Object.values(peersOf({ peers: { [name]: peer } }));
+    if (!entry) return;
+    if (JSON.stringify(this.nodes.peers[name]) === JSON.stringify(entry)) return;
+    this.nodes = { reachable: this.nodes.reachable, peers: { ...this.nodes.peers, [name]: entry } };
+    for (const l of this.nodeListeners) l();
+  }
+
   private async poll(): Promise<void> {
     this.polls += 1;
     let next = this.degraded;
@@ -205,7 +222,7 @@ export interface ApiVersion {
  * Rust 单测 `page_is_built_against_the_same_api_version` 读这一行钉住两边一致，
  * 所以这行的写法（`{ major: N, minor: M }` 字面量）别改成别的形态。
  */
-export const API_VERSION: ApiVersion = { major: 1, minor: 4 };
+export const API_VERSION: ApiVersion = { major: 1, minor: 5 };
 
 /**
  * 版本比对的结论，按类型分类（MISSION §2.3 规则 10）：

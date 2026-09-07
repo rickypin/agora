@@ -130,10 +130,13 @@ pub const REVOKE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 impl AppState {
     pub fn new(auth: Arc<Auth>, sessions: Arc<SessionManager>, node: &str) -> Self {
+        let events = EventBus::default();
         AppState {
             auth,
             sessions: sessions.clone(),
-            events: EventBus::default(),
+            // peer 面貌变化发到同一条总线（agora-c8h）。
+            peers: crate::peer::state::PeerStates::with_events(events.clone()),
+            events,
             node: Arc::from(node),
             agents: Arc::new(BTreeMap::new()),
             projects: Arc::new(Projects::new(sessions.db_handle(), Vec::new())),
@@ -141,7 +144,6 @@ impl AppState {
             tls_mode: None,
             hooks: None,
             probes: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
-            peers: crate::peer::state::PeerStates::new(),
             registry: Arc::new(crate::peer::registry::PeerRegistry::new(node)),
             peer_views: crate::peer::view::PeerViews::new(),
             revoke_check: REVOKE_CHECK_INTERVAL,
