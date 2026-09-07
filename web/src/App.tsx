@@ -6,7 +6,7 @@ import { Workspace } from "./Workspace";
 type Probe = "probing" | "ok" | "down";
 type Auth = "checking" | "paired" | "unpaired" | "pair_failed" | "revoked";
 
-/** 入口：配对门 → Terminal Workspace（agora-xqa.11）。Dashboard 的 attention 视图归 M1b。 */
+/** 入口：配对门 → Terminal Workspace（agora-xqa.11）。Dashboard 的 attention 视图随 M1b 落地（agora-dvh.6）。 */
 export function App() {
   const [probe, setProbe] = useState<Probe>("probing");
   const [auth, setAuth] = useState<Auth>("checking");

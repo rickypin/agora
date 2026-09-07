@@ -156,7 +156,7 @@ Prompt:   [ 任务 agora-90t.1：… ]    # 只对接受首条 prompt 的 agent 
 [ Create ]
 ```
 
-V1 的取舍（agora-xqa.12）：Node 只有本机（peer 归 M2a），下拉禁用；Project 是可输入的下拉
+V1 的取舍（agora-xqa.12）：Node 只有本机（选 peer 归 agora-fna，A45），下拉禁用；Project 是可输入的下拉
 （`<input list>`）——列表来自扫描并按最近使用排序，但 `project_roots` 默认为空，只给下拉的话
 新装的 agora 一个会话都起不了；Worktree 列现有的，末尾一项「新建…」（A44，agora-h1k.1）：选中后
 出现名字输入框（默认取 Name 栏的值；issue id 默认随 A43）与「建」按钮，`POST /api/projects/worktrees`

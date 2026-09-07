@@ -7,6 +7,8 @@
 #   ③ 相对链接与仓内路径：markdown 链接、以及正文里反引号包住的本仓库路径，目标存在。
 #      指名道姓提到别的项目（FOREIGN）的那一行，名字之后的路径当作别家的不查；
 #      但 docs/analysis/ 下的路径永远按本仓库的查——那是本仓库放别家分析报告的地方。
+#   ④ 延期措辞：代码与自有文档里"归 M2 / 留 V2 / V1 只…"这样的句子，同一行必须带 agora-<id>
+#      （文档里 §11 也算——它是 MISSION 的 V2 台账；§11 本节自己不查）。延期必须可追踪，MISSION §1.5。
 #
 # 用法：scripts/doc-lint.sh（仓库内任意目录）。有问题时逐条打印并以 1 退出。
 # ② 需要 bd（beads 的库不进 git），没有 bd 时只跳过这一项、其余照跑——CI 就是这样。
@@ -166,6 +168,45 @@ for doc in all_md:
                 continue  # 指名道姓引别的项目的文件（devcenter `src/which.rs`）；docs/analysis/ 下的是我们自己的报告，照查
             if not os.path.exists(t):
                 err(f"{doc}:{n}", f"引用的仓内路径不存在: {t}")
+
+# ---------- ④ 延期措辞 ----------
+# 延期必须可追踪（MISSION §1.5；agora-9xs）。2026-09-07 的反例：agora-xqa.12 把 New Agent 的 Node
+# 下拉禁掉，注释只写"peer 归 M2"、没立 issue；两天后拆 M2 只按 §12 的 A 编号机械核对，而 §6.4 那句
+# "本机 + 在线的 peer"没有 A 编号——M2a / M2b 都关了，Mac 上仍不能在 zuan 起会话（agora-fna）。
+# 这里把"知道自己在延期"的那一刻钉死：写下延期措辞的那一行必须带 agora-<id>，文档里另可用 §11
+# （MISSION 的 V2 台账）代替；§11 本节自己就是台账，不查。ROADMAP.md 是 beads 生成的视图，不查。
+# 代码用宽模式（含"V1 只"——代码注释里这三个字只会是延期）；文档用窄模式，"transcript V1 只存不读"
+# 这类设计陈述不算延期。别把模式收窄到只剩"归 M"：2026-09-07 的七处命中里五处是"V1 只 / 归 V2-1"。
+DEFER_CODE = re.compile(r"归 M\d|归 V2|留 V2|留给 V2|留到 V2|放 V2|V1 只|V1 延期|延期到|暂不做|先不做")
+DEFER_DOC = re.compile(r"归 M\d|归 V2|留 V2|留给 V2|留到 V2|放 V2|V1 延期|延期到|暂不做|先不做")
+ISSUE_ID = re.compile(r"agora-[a-z0-9]{3,}(?:\.\d+)?")
+DEFER_HINT = "延期必须可追踪：同一行写上承接它的 issue id（agora-xxx）"
+
+def section_11_lines(path):
+    """MISSION §11 的行号范围（含标题行）；没有 §11 就是空集。"""
+    lines = read(path).splitlines()
+    start = next((i for i, l in enumerate(lines, 1) if re.match(r"^##\s+11[.、．]?\s", l)), None)
+    if start is None:
+        return set()
+    end = next((i for i, l in enumerate(lines, 1) if i > start and re.match(r"^##\s", l)), len(lines) + 1)
+    return set(range(start, end))
+
+code_files = subprocess.run(["git", "ls-files", "src", "web/src"], capture_output=True, text=True,
+                            check=True).stdout.split()
+code_files = [f for f in code_files if re.search(r"\.(rs|ts|tsx)$", f) and ".test." not in f]
+for f in code_files:
+    for n, line in enumerate(read(f).splitlines(), 1):
+        if DEFER_CODE.search(line) and not ISSUE_ID.search(line):
+            err(f"{f}:{n}", f"{DEFER_HINT}: {line.strip()[:80]}")
+for doc in OWN_DOCS:
+    if doc == "ROADMAP.md":
+        continue
+    skip = section_11_lines(doc) if doc == "MISSION.md" else set()
+    for n, line in enumerate(read(doc).splitlines(), 1):
+        if n in skip:
+            continue
+        if DEFER_DOC.search(line) and not ISSUE_ID.search(line) and "§11" not in line:
+            err(f"{doc}:{n}", f"{DEFER_HINT}，或指向 MISSION §11: {line.strip()[:80]}")
 
 for e in errors:
     print(e)

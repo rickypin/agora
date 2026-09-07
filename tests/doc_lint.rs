@@ -60,6 +60,11 @@ fn tools_present() -> bool {
 }
 
 fn repo(spec: &str) -> Repo {
+    repo_with_src(spec, "")
+}
+
+/// 同 `repo`，但 `src/lib.rs` 的内容可指定——④ 段查的是代码注释。
+fn repo_with_src(spec: &str, src: &str) -> Repo {
     let dir = tempfile::tempdir().unwrap();
     // tempdir/repo 是被检查的仓库，tempdir/bin 放假 bd——不进仓库，git ls-files 看不见它。
     let root = &dir.path().join("repo");
@@ -69,7 +74,8 @@ fn repo(spec: &str) -> Repo {
     write(
         root,
         "MISSION.md",
-        "# MISSION\n\n## 12. 验收\n\n- [ ] **A2** 最小仓库里唯一的一条验收\n",
+        // §11 本节是 V2 台账，里面的"V1 延期"不带 id 也不报（④ 段的豁免）。
+        "# MISSION\n\n## 11. 范围外\n\nWindows 节点 V1 延期。\n\n## 12. 验收\n\n- [ ] **A2** 最小仓库里唯一的一条验收\n",
     );
     write(root, "README.md", "# readme\n");
     write(root, "AGENTS.md", "# agents\n");
@@ -81,7 +87,7 @@ fn repo(spec: &str) -> Repo {
         "docs/analysis/devcenter/appendix-b-multihost.md",
         "# 附录 B（存在的报告）\n",
     );
-    write(root, "src/lib.rs", "");
+    write(root, "src/lib.rs", src);
     // 假 bd 前置到 PATH；不整个换掉 PATH，python3 / git 还要找得到。
     let bin = dir.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -193,4 +199,62 @@ fn our_own_missing_paths_are_still_reported() {
         "{}",
         context(&out)
     );
+}
+
+// ---------- ④ 延期措辞（agora-9xs） ----------
+// 2026-09-07 的反例：NewAgentDialog 里一句"peer 归 M2"没立 issue，拆 M2 时谁也不知道有这句话。
+
+#[test]
+fn deferral_without_issue_id_is_reported_in_code_and_docs() {
+    if !tools_present() {
+        eprintln!("skip: 本机没有 git 或 python3");
+        return;
+    }
+    let repo = repo_with_src(
+        "Node 只有本机（peer 归 M2a），下拉禁用\n",
+        "// V1 只能在本机起会话。\nfn f() {}\n",
+    );
+    let out = repo.lint();
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{}", context(&out));
+    assert!(
+        text.contains("src/lib.rs:1:") && text.contains("延期必须可追踪"),
+        "{}",
+        context(&out)
+    );
+    assert!(text.contains("docs/spec/x.md:1:"), "{}", context(&out));
+    assert!(text.trim_end().ends_with("2 个问题"), "{}", context(&out));
+}
+
+#[test]
+fn deferral_with_issue_id_or_section_11_passes() {
+    if !tools_present() {
+        eprintln!("skip: 本机没有 git 或 python3");
+        return;
+    }
+    // 文档：issue id 或 §11 任一即可；代码：只认 issue id（含 .n 子任务）。
+    let repo = repo_with_src(
+        "Node 只有本机（peer 归 agora-fna）\n持久化历史留 V2（§11）\n",
+        "// Web Push 归 V2-1（agora-thc.7）。\nfn f() {}\n",
+    );
+    let out = repo.lint();
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(0), "{}", context(&out));
+    assert!(text.trim_end().ends_with("0 个问题"), "{}", context(&out));
+}
+
+#[test]
+fn design_statements_in_docs_are_not_deferrals() {
+    if !tools_present() {
+        eprintln!("skip: 本机没有 git 或 python3");
+        return;
+    }
+    // "V1 只存不读"是 ADR 的设计陈述，文档用窄模式不报；同一句放进代码就报（代码里只会是延期）。
+    let doc = repo("transcript_path V1 只存不读（ADR-002 D8）\n");
+    let out = doc.lint();
+    assert_eq!(out.status.code(), Some(0), "{}", context(&out));
+    let code = repo_with_src("", "// transcript V1 只存不读\nfn f() {}\n");
+    let out = code.lint();
+    assert_eq!(out.status.code(), Some(1), "{}", context(&out));
+    assert!(stdout(&out).contains("src/lib.rs:1:"), "{}", context(&out));
 }

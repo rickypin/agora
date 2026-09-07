@@ -255,7 +255,7 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
           }}
         >
           <label htmlFor="na-node">Node</label>
-          {/* peer 归 M2（ADR-004）：V1 只能在本机起会话。 */}
+          {/* 目前只能在本机起会话；选 peer 经一跳转发（MISSION §6.4、A45）归 agora-fna。 */}
           <select id="na-node" disabled>
             <option>{node || "本机"}</option>
           </select>

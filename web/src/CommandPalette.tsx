@@ -57,7 +57,7 @@ export function CommandPalette({ rows, api, catalog, onOpen, onNewAgent, onCreat
       id: r.id,
       label: `${rowName(r)} / ${String(r.agent_type ?? "")} @ ${r.node}`,
     }));
-    // node 只在条目文字里出现（V1 只有本机，peer 归 M2/ADR-004），所以搜节点名也搜得到。
+    // node 只在条目文字里出现（现在只有本机；peer 条目随 New Agent 的 Node 下拉一起做，agora-fna），所以搜节点名也搜得到。
     for (const project of projects) {
       for (const agent of agents) {
         list.push({

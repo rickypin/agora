@@ -193,7 +193,7 @@ export function handleTerminalKey(ev: Preventable, send: (data: string) => void,
 export const DESKTOP_MIN_WIDTH = 700;
 
 /**
- * 桌面断点才装全局快捷键与命令面板（MISSION §6.5：手机端没有键盘）。V1 只做桌面断点。
+ * 桌面断点才装全局快捷键与命令面板（MISSION §6.5：手机端没有键盘）。V1 只做桌面断点；窄屏随手机阶段（agora-thc.5）。
  * 看 innerWidth 而不是 matchMedia：jsdom 的 matchMedia 恒为 false，用它测不出"装上了"。
  */
 export function isDesktop(): boolean {

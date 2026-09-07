@@ -119,7 +119,7 @@ async fn serve() -> i32 {
     };
     let addr = settings.listen;
     if settings.raw.runtime.kind != RUNTIME_KIND {
-        tracing::error!(component = "main", kind = %settings.raw.runtime.kind, "未知的 runtime.kind（V1 只有 tmux）");
+        tracing::error!(component = "main", kind = %settings.raw.runtime.kind, "未知的 runtime.kind（V1 只有 tmux；Windows / ConPTY 归 agora-fs8）");
         return 2;
     }
     // 运行时子段只有这里解析：core 层对它不透明（ADR-001 D2）。

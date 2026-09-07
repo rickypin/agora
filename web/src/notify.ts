@@ -1,5 +1,5 @@
 /**
- * 浏览器通知（MISSION §6.6；A18；agora-dvh.11）。V1 桌面用 Notification API，Web Push 归 V2-1。
+ * 浏览器通知（MISSION §6.6；A18；agora-dvh.11）。V1 桌面用 Notification API，Web Push 归 V2-1（agora-thc.7）。
  *
  * 该不该发由服务端决定：`notification` 事件只在 RUNNING → WAITING / TURN_DONE / FINISHED / FAILED
  * 四种转换上来一条，`notifications.enabled` 关掉就一条也没有（src/events.rs）。这里只管三件事：

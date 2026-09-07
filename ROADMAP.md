@@ -11,6 +11,7 @@
 | M1b | `agora-dvh` | Agent 感知 | `agora-xqa` | MISSION §12：A14–A18、A22、A23、A32；另接过 A1 的未登记会话那一半（Unknown Agent 的侧栏展示与采纳入口，A22 的前置，agora-dvh.12 / agora-7cu），A1 两半都做完才算过；补 A36 中不变量 10 的测试。逐条可打勾；每条对应 epic 内至少一个 issue。 | closed  |
 | M2a | `agora-7ku` | peer 核心 | `agora-dvh` | MISSION §12：A27、A30、A31、A33、A34、A38。（agora-7ku.12 是 A29 的策略半边，A29 本身由 M2b 认领；A36 不变量 8、11 的收口在 M2b。） | closed  |
 | M2b | `agora-s4r` | 安装运维与收口 | `agora-dvh` | MISSION §12：A26、A29、A39；补齐 A36 中不变量 8、11 的测试。 | closed  |
+| M2c | `agora-3j0` | 在 peer 上起会话（New Agent 选节点） | `agora-s4r`, `agora-7ku` | MISSION §12：A45。 | open 0/1 |
 | M3 | `agora-h1k` | 产出与起会话增强 | `agora-dvh` | MISSION §12：A40–A44。 | closed  |
 | V2-1 | `agora-thc` | 手机客户端与 PWA（iOS / Android） | `agora-7ku`, `agora-s4r` | MISSION §11 手机条目：A13、A19、A28、A35、A37。 | open 0/8 |
 
@@ -69,6 +70,17 @@ M2b 演示剧本（agent 代检，👁 只有第 2 步的物理变体；tests/in
 4. CI 绿；提交信息里有逐条关掉不变量 8、11 守卫、对应测试变红的记录；两个 daemon 实例之间走真 TLS 与 Bearer 的整栈集成测试在此（A36；agora-7ku.9）。
 5. V2-1（agora-thc）已拆任务级 issue 并有演示剧本（agora-7ku.3）。
 全程手机、PWA、推送、TOTP、浏览器可信证书都不出现（V2-1）。
+
+### M2c `agora-3j0`
+
+M2c 演示剧本（agent 代检，无 👁 步骤；人按 MISSION §1「一天的形态」第 3 步走一遍后关闭 epic，§1.5）
+场景：MISSION §1「一天的形态」第 3 步——起新会话：选仓库与 worktree、选 agent、选节点（本机或 zuan）、填任务。M2a 剧本第 2 步是在 zuan 本地起会话再从 Mac 看到，绕开了这一步（agora-fna 的复盘）。
+前置：M2a / M2b 剧本通过；Mac 已把 zuan 配成 peer 且 Header 显示 zuan 在线。
+1. Mac 打开 127.0.0.1 → New Agent：Node 下拉列出「本机」与在线的 zuan；把 zuan 断网 → 下拉里 zuan 变不可选并标 stale，不报 502（A45）。
+2. 选 zuan → Project 列表换成 zuan 的 project_roots 扫描结果、Worktree / Task 跟着换（Task 来自 zuan 上的 bd ready）、Agent 列表是 zuan 装了的 agent；选一个仓库、shell → Create → 侧栏出现带 @ zuan 的新行，几秒内可 attach 并输入；zuan 的 tmux -L agora ls 多一个会话、Mac 的 tmux 不多（一跳转发，A45、A38）。
+3. 同一对话框选 zuan 上的仓库并「新建 worktree」→ zuan 上 git worktree list 多一行、Mac 上没有（POST /api/projects/worktrees 转发到所属节点）。
+4. 命令面板 New <agent> in <project> @ zuan 条目可用，起的会话与第 2 步一致。
+5. CI 绿；tests/forward.rs 加 create / projects 转发用例；api_version 只增 bump、api.md / ux.md 回写。
 
 ### M3 `agora-h1k`
 
