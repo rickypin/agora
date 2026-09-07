@@ -173,6 +173,13 @@ impl From<exec::ExecError> for RuntimeError {
     }
 }
 
+/// `signal` 能发的两种信号：Kill 的 TERM → 宽限 → KILL 拆成两步时用（agora-284）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminateSignal {
+    Term,
+    Kill,
+}
+
 pub trait Runtime: Send + Sync {
     fn kind(&self) -> &'static str;
     /// 一次调用完成创建 + 会话级选项。
@@ -185,6 +192,8 @@ pub trait Runtime: Send + Sync {
     fn capture_tail(&self, r#ref: &RuntimeRef, lines: u32) -> Result<Vec<u8>, RuntimeError>;
     /// TERM 进程组 → grace → KILL；不销毁会话。
     fn terminate(&self, r#ref: &RuntimeRef, grace: Duration) -> Result<(), RuntimeError>;
+    /// 只给进程组发一个信号、不等它退：Kill 把宽限期放到后台时用（agora-284）。已经死了是 Ok。
+    fn signal(&self, r#ref: &RuntimeRef, sig: TerminateSignal) -> Result<(), RuntimeError>;
     /// 同一会话内重建（Restart）；保留 scrollback。
     fn respawn(&self, r#ref: &RuntimeRef, spec: &LaunchSpec) -> Result<(), RuntimeError>;
     /// 销毁会话；进程仍活着时拒绝（StillAlive）。

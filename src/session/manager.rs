@@ -17,7 +17,7 @@ use super::db::{Db, DbError};
 use super::model::{Origin, SessionRecord};
 use crate::runtime::{
     proctree, AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession,
-    RuntimeStatus, Size,
+    RuntimeStatus, Size, TerminateSignal,
 };
 use crate::status::{
     self, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation, Status,
@@ -33,6 +33,12 @@ const PREVIEW_MAX: usize = 160;
 
 /// Kill 的宽限：TERM → 5 s → KILL（ADR-001 D2）。
 pub const KILL_GRACE: Duration = Duration::from_secs(5);
+/// Kill 发完 TERM 同步等多久：多数 agent（Claude Code 2026-09-07 实测 ≈ 1 s）收到 TERM 即退，等这一下调用方拿到的
+/// 行就已经是 FINISHED；没退的（交互式 shell 忽略 TERM）交给后台等满 [`KILL_GRACE`] 再 KILL，
+/// 调用方立即拿回仍 alive 的行。原先同步等满 5 s，与 peer 转发的 5 s 超时相等——从别的节点 Kill
+/// 一个 shell 会话永远报 502 peer_unreachable，而所属节点其实已经杀掉（2026-09-07 zuan 实测；
+/// agora-284）。上限必须明显小于 `peer::backoff::CONNECT_TIMEOUT`（5 s）。
+pub const KILL_QUICK_WAIT: Duration = Duration::from_secs(1);
 /// 运行时名前缀（MISSION §4.5；config 里运行时段的 `prefix`）。
 pub const RUNTIME_NAME_PREFIX: &str = "ag-";
 
@@ -968,18 +974,65 @@ impl SessionManager {
             self.mark_ended_at(id, before.exited_at)?;
             return self.get(id);
         }
-        // 先记事实再动手：terminate 成功即进程已死，若先杀后写，中间那一瞬 get 会报 FAILED。
-        // terminate 失败则撤回，免得日后被别人用信号杀掉时冒充"用户杀的"。
+        // 先记事实再动手：进程一死 get 就按 killed_at 把信号退出算成 FINISHED，若先杀后写，
+        // 中间那一瞬 get 会报 FAILED。发信号失败则撤回，免得日后被别人用信号杀掉时冒充"用户杀的"。
         self.set_killed_at(id, true)?;
-        if let Err(e) = self.runtime.terminate(&r#ref, KILL_GRACE) {
+        if let Err(e) = self.runtime.signal(&r#ref, TerminateSignal::Term) {
             self.set_killed_at(id, false)?;
             return Err(e.into());
         }
-        // 刚 terminate 完运行时多半还没收集到退出时刻（要等它收到 SIGCHLD），这时先记近似的现在，
+        // TERM → 宽限 → KILL（ADR-001 D2）拆成两段：先同步等 KILL_QUICK_WAIT，收到 TERM 就退的
+        // agent 在这里就 FINISHED；没退的把剩余宽限放到后台线程，调用方立即拿回仍 alive 的行
+        // （killed_at 已写，前端据此显示"正在结束"），进程退出后由 reconcile / 轮询把行推成
+        // FINISHED。别改回同步等满宽限：经 peer 转发的 Kill 会撞上 5 s 转发超时（agora-284）。
+        if !self.wait_dead(&r#ref, KILL_QUICK_WAIT) {
+            let runtime = self.runtime.clone();
+            let bg_ref = r#ref.clone();
+            let sid = id.to_owned();
+            let remaining = KILL_GRACE.saturating_sub(KILL_QUICK_WAIT);
+            let spawned = std::thread::Builder::new()
+                .name(format!("kill-grace-{sid}"))
+                .spawn(move || {
+                    std::thread::sleep(remaining);
+                    match runtime.inspect(&bg_ref) {
+                        Ok(s) if s.alive => {
+                            tracing::info!(component = "session", session_id = %sid, grace = ?KILL_GRACE, "宽限已满，SIGKILL");
+                            if let Err(err) = runtime.signal(&bg_ref, TerminateSignal::Kill) {
+                                tracing::warn!(component = "session", session_id = %sid, %err, "SIGKILL 失败");
+                            }
+                        }
+                        _ => {}
+                    }
+                });
+            if let Err(err) = spawned {
+                // 起不了线程（极端资源耗尽）：退回同步路径，至少把进程杀干净。
+                tracing::warn!(component = "session", session_id = %id, %err, "kill 宽限线程起不来，同步等");
+                self.runtime.terminate(&r#ref, remaining)?;
+            } else {
+                return self.get(id);
+            }
+        }
+        // 刚死运行时多半还没收集到退出时刻（要等它收到 SIGCHLD），这时先记近似的现在，
         // 下次 reconcile 有了准确值再补正。
         let exited_at = self.runtime.inspect(&r#ref).ok().and_then(|s| s.exited_at);
         self.mark_ended_at(id, exited_at)?;
         self.get(id)
+    }
+
+    /// 等运行时报进程已死（100 ms 一探，与运行时自己的 wait_dead 同节奏），到 `budget` 放弃。
+    fn wait_dead(&self, r#ref: &RuntimeRef, budget: Duration) -> bool {
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            match self.runtime.inspect(r#ref) {
+                Ok(s) if !s.alive => return true,
+                Err(RuntimeError::NotFound(_)) => return true,
+                _ => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     /// Restart = respawn：同会话同名同 cwd，epoch +1 经 `AGORA_EPOCH` 交给 agent，原命令。

@@ -7,6 +7,7 @@
 //! - `sleep <ms>`：睡
 //! - `read`：阻塞等一行 stdin，回显 `read:<line>`（EOF → 输出 `read:EOF` 并退出 0）
 //! - `ignore-hup`：忽略 SIGHUP（模拟不理会挂断的 agent）
+//! - `ignore-term`：忽略 SIGTERM（模拟交互式 shell：Kill 得等满宽限再 SIGKILL，agora-284）
 //! - `exit <code>`：以该码退出
 //! - `hook <host> <json>`：以 agent 的身份跑真实的 `agora hook --host <host>`，json 进它的 stdin
 //!   （ADR-002 D3；环境原样继承，所以 `AGORA_SESSION_ID` / `AGORA_EPOCH` 会进信封）；
@@ -76,6 +77,12 @@ pub fn run(args: &[&str]) -> i32 {
             "ignore-hup" => {
                 // SAFETY: 只把 SIGHUP 置为忽略，无其它副作用。
                 unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) };
+            }
+            #[cfg(unix)]
+            "ignore-term" => {
+                // 扮演交互式 shell 那样吃掉 SIGTERM 的进程：Kill 必须等满宽限再 SIGKILL（agora-284）。
+                // SAFETY: 只把 SIGTERM 置为忽略，无其它副作用。
+                unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
             }
             "exit" => return arg.parse().unwrap_or(0),
             "hook" => {

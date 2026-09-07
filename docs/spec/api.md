@@ -12,7 +12,7 @@ GET    /api/sessions/:id/changes   # 该会话工作目录的改动文件 { file
 PATCH  /api/sessions/:id           # { display_name }：改名即落锁（§4.5）；其它 Session Settings 字段随前端落地
 POST   /api/sessions/:id/input     # 不经终端的 respond：文本 / 选项；WAITING 与 TURN_DONE 的主路径（M1b）
 POST   /api/sessions/:id/restart   # body 可选 { confirmed: bool }；会杀且未确认 → 409 needs_confirmation；响应多一个 restart 字段（见下）
-POST   /api/sessions/:id/kill      # 同上；确认跟着"杀"走（MISSION §8）：FINISHED / FAILED / 会话已不在 → 直接执行
+POST   /api/sessions/:id/kill      # 同上；确认跟着"杀"走（MISSION §8）：FINISHED / FAILED / 会话已不在 → 直接执行。发 SIGTERM 后最多同步等 1 s：agent 退了响应里的行就是 FINISHED；没退（交互式 shell 忽略 TERM）立即返回仍 alive 的行（killed_at 已写），5 s 宽限满后 daemon 后台 SIGKILL，行经事件流变 FINISHED——不这样经 peer 转发的 Kill 会撞上 5 s 转发超时报 502（agora-284；守卫 tests/invariants_peer.rs::forwarded_kill_returns_before_the_grace_period）
 POST   /api/sessions/:id/cleanup   # 回收已退出会话保留的运行时会话与输出（ADR-001 D4 清理）；进程还活着 → 错误类型 StillAlive
 DELETE /api/sessions/:id           # 只删 metadata；已退出的顺手清理
 POST   /api/sessions/adopt         # { runtime_ref, display_name?, project?, agent_type? }：采纳可采纳运行时里的未注册会话（§5.5）→ 201；已登记 → 409 already_registered

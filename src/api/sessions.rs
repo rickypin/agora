@@ -375,7 +375,14 @@ pub async fn kill(
     require_confirmation(&state, &id, confirmed(&body), "Kill").await?;
     let view = blocking(&state.sessions, move |s| s.kill(&id)).await?;
     tracing::info!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, "kill");
-    Ok(Json(export(&state.node, &view)).into_response())
+    let session = export(&state.node, &view);
+    // 进程吃掉 TERM 时 kill 立即返回、宽限在后台走（agora-284）：这时行的 status / alive 都没变，
+    // 轮询不会发事件，只有 killed_at 变了——整行推一次，浏览器据它显示"正在结束"直到进程真退。
+    state.events.publish(Event::SessionUpdated {
+        id: global_id(&state.node, &view.record.id),
+        session: session.clone(),
+    });
+    Ok(Json(session).into_response())
 }
 
 /// Restart 退化原因在 API 响应里的长度上限（字符）；日志不截。

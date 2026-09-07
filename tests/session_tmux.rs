@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use agora::runtime::tmux::{TmuxConfig, TmuxRuntime};
 use agora::runtime::{Runtime, Size};
+use agora::session::manager::KILL_GRACE;
 use agora::session::{Db, NewSession, SessionError, SessionManager};
 use agora::status::Status;
 
@@ -127,8 +128,10 @@ fn kill_keeps_scrollback_and_restart_reuses_session() {
         .unwrap();
     let id = s.record.id.clone();
     f.wait(&m, &id, |v| v.alive);
-    let killed = m.kill(&id).unwrap();
-    assert!(!killed.alive);
+    // sleep 收到 TERM 就退，落在 kill 的 1 s 同步等待里；万一机器慢到超过它，kill 会先返回
+    // alive 的行、后台补 KILL（agora-284），所以这里等而不是断言。
+    m.kill(&id).unwrap();
+    let killed = f.wait(&m, &id, |v| !v.alive);
     let r = agora::runtime::RuntimeRef(killed.record.runtime_ref.clone().unwrap());
     let tail = String::from_utf8_lossy(&f.rt.capture_tail(&r, 50).unwrap()).into_owned();
     assert!(tail.contains("ROUND_ONE"), "{tail}");
@@ -150,6 +153,47 @@ fn kill_keeps_scrollback_and_restart_reuses_session() {
         );
         std::thread::sleep(POLL);
     }
+}
+
+#[test]
+fn kill_returns_before_grace_when_process_ignores_term() {
+    // agora-284：进程吃掉 TERM（交互式 shell 的样子）时，kill 不能同步等满 5 s 宽限——经 peer
+    // 转发的 Kill 会撞上 5 s 转发超时。要求：1 s 出头就返回、行仍 alive 但 killed_at 已写；
+    // 宽限满后后台 SIGKILL，行变成 FINISHED "killed by user"。
+    let f = Fixture::new();
+    let m = f.manager();
+    let s = m
+        .create(&spec("k", "trap '' TERM; exec sleep 300"))
+        .unwrap();
+    let id = s.record.id.clone();
+    f.wait(&m, &id, |v| v.alive);
+    let t0 = Instant::now();
+    let after = m.kill(&id).unwrap();
+    let took = t0.elapsed();
+    assert!(
+        took < KILL_GRACE,
+        "kill 同步等了 {took:?}，应远短于宽限 {KILL_GRACE:?}"
+    );
+    assert!(after.alive, "TERM 被忽略，返回时进程应还活着: {after:?}");
+    assert!(after.record.killed_at.is_some(), "{after:?}");
+    let deadline = Instant::now() + KILL_GRACE + Duration::from_secs(5);
+    let dead = loop {
+        let v = m.get(&id).unwrap();
+        if !v.alive {
+            break v;
+        }
+        assert!(Instant::now() < deadline, "宽限满后没被 SIGKILL: {v:?}");
+        std::thread::sleep(POLL);
+    };
+    assert_eq!(dead.assessment.status, Status::Finished, "{dead:?}");
+    assert!(
+        dead.assessment
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("killed by user"),
+        "{dead:?}"
+    );
 }
 
 #[test]

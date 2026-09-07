@@ -108,9 +108,11 @@ pub const STARTING_WINDOW_SECS: u64 = 2;
 /// 进程状态层：只看运行时事实加两个落库的事件时刻。
 /// `spawn_age_secs` 是本代进程起始（`sessions.spawned_at`）距今的秒数，None = 不知道起始时刻，
 /// 不算 STARTING；`killed_by_user` 来自 `sessions.killed_at`，daemon 重启后仍在。
-/// 128+signo 的壳退出码里，只认 agora terminate 会发的那几个（TERM/INT/HUP），其余不算。
+/// 128+signo 的壳退出码里，只认 agora Kill 会发的那几个（HUP/INT/KILL/TERM），其余不算。
+/// 137 是宽限满后的 SIGKILL 经壳包装的样子（agora-284 把宽限放到后台后，被 KILL 的会话
+/// 也得显示成"用户杀的"而不是 FAILED）。
 fn is_shell_signal_code(code: i32) -> bool {
-    matches!(code, 129 | 130 | 143)
+    matches!(code, 129 | 130 | 137 | 143)
 }
 
 pub fn process_layer(

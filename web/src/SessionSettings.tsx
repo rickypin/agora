@@ -36,8 +36,10 @@ export function SessionSettings({ row, api, onClose }: Props) {
   const [busy, setBusy] = useState(false);
   const [restartNote, setRestartNote] = useState<string | null>(null);
   /** 确认之后到节点返回之前：Kill 走 TERM → 5 s → KILL 宽限（ADR-001 D2），shell 会吃满，
-   * 只把按钮变灰会让人以为没点上（agora-9nv）。 */
+   * 只把按钮变灰会让人以为没点上（agora-9nv）。节点现在只同步等 1 s、没退就带着 killed_at
+   * 立即返回（agora-284），所以 Kill 的"正在结束"还要看行本身：killed_at 已写而进程仍 alive。 */
   const [ending, setEnding] = useState<"kill" | "restart" | null>(null);
+  const killing = ending ?? (row.killed_at && row.alive ? "kill" : null);
   const canRestart = typeof row.command === "string" && row.command.trim() !== "";
 
   useEffect(() => {
@@ -130,9 +132,9 @@ export function SessionSettings({ row, api, onClose }: Props) {
           {restartNote}
         </p>
       )}
-      {ending && (
+      {killing && (
         <p className="muted" data-testid="ending-note">
-          {ending === "kill" ? "正在结束…" : "正在重启…"}（先请进程退出，最多等 7 秒）
+          {killing === "kill" ? "正在结束…" : "正在重启…"}（先请进程退出，最多等 7 秒）
         </p>
       )}
       {error && <p className="error">{error}</p>}

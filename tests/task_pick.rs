@@ -18,6 +18,7 @@ use std::time::Duration;
 use agora::project::Projects;
 use agora::runtime::{
     AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, Size,
+    TerminateSignal,
 };
 use agora::session::SessionManager;
 use agora::task::{TaskIndex, READ_ONLY};
@@ -243,6 +244,9 @@ impl Runtime for RecordingRuntime {
     }
     fn terminate(&self, r: &RuntimeRef, g: Duration) -> Result<(), RuntimeError> {
         self.inner.terminate(r, g)
+    }
+    fn signal(&self, r: &RuntimeRef, sig: TerminateSignal) -> Result<(), RuntimeError> {
+        self.inner.signal(r, sig)
     }
     fn respawn(&self, r: &RuntimeRef, spec: &LaunchSpec) -> Result<(), RuntimeError> {
         self.inner.respawn(r, spec)

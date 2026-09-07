@@ -202,7 +202,7 @@ prompt 模板（`web/src/taskPrompt.ts` 的 `taskPrompt(id, title)`，原文以�
 
 点一下展开采纳表单：Name（默认 pane 标题 / 会话名）、Project（默认 pane 的当前目录）、Agent（默认 hint，可改；用户填的优先）；「采纳」发 `POST /api/sessions/adopt`，会话随 `session_created` 进列表并开成 Tab。
 
-Kill 确认框（MISSION §8：确认跟着"杀"走；Kill 只杀进程，运行时会话与输出保留到清理，§4.6）。确认之后到节点返回之前，面板显示一行"正在结束…（先请进程退出，最多等 7 秒）"——Kill 是 TERM → 5 s → KILL 的宽限（ADR-001 D2），交互式 shell 会吃满，只把按钮变灰会让人以为没点上。采纳时没记下启动命令的会话（`command` 为 null）Restart 按钮禁用并在 title 里说明（API 侧是 409 `no_command`）：
+Kill 确认框（MISSION §8：确认跟着"杀"走；Kill 只杀进程，运行时会话与输出保留到清理，§4.6）。从确认起到该行变成 FINISHED 之前，面板显示一行"正在结束…（先请进程退出，最多等 7 秒）"——Kill 是 TERM → 5 s → KILL 的宽限（ADR-001 D2），交互式 shell 会吃满，只把按钮变灰会让人以为没点上。节点只同步等 1 s，没退就立即返回仍 alive 的行并在后台把宽限走完（否则经 peer 转发的 Kill 会撞上 5 s 转发超时报"节点不可达"，agora-284；`docs/spec/api.md` POST /kill），所以这一行的依据是"请求还在飞"或"行上 `killed_at` 已写而 `alive` 仍为 true"，进程一退、行推成 FINISHED 就消失。采纳时没记下启动命令的会话（`command` 为 null）Restart 按钮禁用并在 title 里说明（API 侧是 409 `no_command`）：
 
 ```
 Kill sglog / Codex @ zuan?

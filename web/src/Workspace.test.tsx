@@ -251,6 +251,35 @@ describe("Workspace", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("the ending note stays while the row says killed_at && alive, and clears when the process is gone (agora-284)", async () => {
+    // 节点只同步等 1 s：进程吃掉 TERM 时 kill 立即 200 返回仍 alive 的行，宽限在后台走。这时请求
+    // 已经不在飞了，"正在结束"只能看行本身（killed_at 已写而 alive 仍 true），直到行推成 FINISHED。
+    const t = setup([row("n:a")]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("row-n:a"));
+    fireEvent.click(screen.getByText("Settings"));
+    t.setKill(() => ({ status: 409, body: { error: "needs_confirmation", message: "会杀" } }));
+    fireEvent.click(screen.getByTestId("kill"));
+    await flush();
+    const killedRow = { ...row("n:a"), killed_at: "2026-09-07T10:00:00Z", alive: true };
+    t.setKill(() => ({ status: 200, body: killedRow }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Kill" }));
+    await flush();
+    // 请求已经回来了，但行还没变：没有 killed_at 就没有提示（旧行为），推来带 killed_at 的行才有。
+    expect(screen.queryByTestId("ending-note")).toBeNull();
+    await act(async () => {
+      t.sock.send([{ type: "session_updated", id: "n:a", session: killedRow }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(screen.getByTestId("ending-note").textContent).toContain("正在结束");
+    // 宽限满、进程退了：轮询推 status_changed（alive:false），提示消失。
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:a", status: "finished", source: "process", reason: "killed by user (signal KILL)", alive: false }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(screen.queryByTestId("ending-note")).toBeNull();
+  });
+
   it("Restart is disabled for adopted sessions that never recorded a command (agora-vto)", async () => {
     const t = setup([{ ...row("n:a"), origin: "adopted", command: null }]);
     await online(t);

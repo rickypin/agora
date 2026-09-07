@@ -14,6 +14,7 @@ use agora::api::AppState;
 use agora::auth::{Auth, AuthConfig, PairedVia};
 use agora::runtime::{
     AttachSpec, Exit, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, Size,
+    TerminateSignal,
 };
 use agora::session::{Db, SessionManager};
 
@@ -122,6 +123,22 @@ impl Runtime for FakeRuntime {
         }
         self.inspect(r)?;
         self.set_dead(&r.0, Exit::Signal("TERM".into()));
+        Ok(())
+    }
+    /// fake 里的进程收到什么信号就按什么信号死——没有"忽略 TERM"的 fake；要那个用真 tmux
+    /// （tests/session_tmux.rs / tests/invariants_peer.rs 的 `ignore-term`，agora-284）。
+    fn signal(&self, r: &RuntimeRef, sig: TerminateSignal) -> Result<(), RuntimeError> {
+        if Self::socket_of(&r.0) != "agora" {
+            return Err(RuntimeError::ReadOnly(r.clone()));
+        }
+        if !self.inspect(r)?.alive {
+            return Ok(());
+        }
+        let name = match sig {
+            TerminateSignal::Term => "TERM",
+            TerminateSignal::Kill => "KILL",
+        };
+        self.set_dead(&r.0, Exit::Signal(name.into()));
         Ok(())
     }
     fn respawn(&self, r: &RuntimeRef, spec: &LaunchSpec) -> Result<(), RuntimeError> {

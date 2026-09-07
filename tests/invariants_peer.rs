@@ -784,3 +784,78 @@ async fn invariant_11_unauthenticated_peer_and_device_rejected() {
     let listed: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(find(rows_of(&listed), "on-b")["id"], on_b_gid.as_str());
 }
+
+/// agora-284：经 peer 转发的 Kill 不能被节点自己的宽限拖到转发超时。
+///
+/// B 上的 fake-agent 忽略 SIGTERM（交互式 shell 的样子），人在 A 上对它按 Kill：A 把请求转发给 B，
+/// B 的 kill 只同步等 `KILL_QUICK_WAIT`（1 s），没退就立即返回仍 alive 的行（killed_at 已写），
+/// 宽限在 B 的后台线程走完再 SIGKILL。此前 B 同步等满 `KILL_GRACE`（5 s）== 转发超时
+/// `DEFAULT_TIMEOUT`（5 s），A 报 502 peer_unreachable 而 B 其实正在杀（2026-09-07 zuan 实测）。
+///
+/// 让它红的方法：把 kill 改回 `runtime.terminate(&ref, KILL_GRACE)` 同步等满——A 这边 502。
+#[tokio::test(flavor = "multi_thread")]
+async fn forwarded_kill_returns_before_the_grace_period() {
+    let mut a = node();
+    let mut b = node();
+    let (_a_addr, _fp_a) = a.serve_tls().await;
+    let (_b_addr, fp_b) = b.serve_tls().await;
+    let a_holds = issue_token(&b, &a);
+    let _a_to_b = link(&mut a, &b, &fp_b.to_string(), &a_holds, FAST);
+    wait_for("A 并入 B", || online(&a, &b.name)).await;
+
+    let on_b = b.create_fake("on-b", "ignore-term; print READY; read");
+    let on_b_id = on_b.record.id.clone();
+    let on_b_gid = b.gid(&on_b_id);
+    b.wait(&on_b_id, |v| v.alive && b.tail(v).contains("READY"));
+    wait_for("on-b 出现在 A 的视图里", || {
+        a.state.peer_views.get(&on_b_gid).is_some()
+    })
+    .await;
+
+    // 人在 A 上 Kill（已确认）：A → B 转发，必须在转发超时内 200 回来，行仍 alive 且 killed_at 已写。
+    let t0 = Instant::now();
+    let (status, out) = human_send(
+        &a,
+        Method::POST,
+        &format!("/api/sessions/{on_b_gid}/kill"),
+        Some(json!({ "confirmed": true })),
+    )
+    .await;
+    let took = t0.elapsed();
+    assert_eq!(status, StatusCode::OK, "转发的 kill 用了 {took:?}: {out}");
+    assert!(
+        took < DEFAULT_TIMEOUT,
+        "转发的 kill 用了 {took:?}，不能逼近转发超时 {DEFAULT_TIMEOUT:?}"
+    );
+    assert_eq!(out["id"], on_b_gid.as_str(), "{out}");
+    assert_eq!(out["alive"], true, "TERM 被忽略，返回时进程应还活着: {out}");
+    assert!(out["killed_at"].is_string(), "{out}");
+    assert!(
+        b.pane_alive(&b.sessions.get(&on_b_id).unwrap()),
+        "tmux 独立作证：还活着"
+    );
+
+    // 宽限满后 B 自己 SIGKILL：agora 与 tmux 都说死了，且是"用户杀的"。
+    let deadline = Instant::now() + agora::session::manager::KILL_GRACE + Duration::from_secs(5);
+    let dead = loop {
+        let v = b.sessions.get(&on_b_id).unwrap();
+        if !v.alive {
+            break v;
+        }
+        assert!(Instant::now() < deadline, "宽限满后没被 SIGKILL: {v:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(!b.pane_alive(&dead));
+    assert_eq!(
+        dead.assessment.status,
+        agora::status::Status::Finished,
+        "{dead:?}"
+    );
+    wait_for("A 的视图里 on-b 也变成不 alive", || {
+        a.state
+            .peer_views
+            .get(&on_b_gid)
+            .is_some_and(|row| row["alive"] == false)
+    })
+    .await;
+}

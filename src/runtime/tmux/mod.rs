@@ -626,6 +626,28 @@ impl Runtime for TmuxRuntime {
         }
     }
 
+    fn signal(
+        &self,
+        r: &RuntimeRef,
+        sig: crate::runtime::TerminateSignal,
+    ) -> Result<(), RuntimeError> {
+        self.require_managed(r)?;
+        let s = self.inspect(r)?;
+        if !s.alive {
+            return Ok(());
+        }
+        let Some(pid) = s.pid else {
+            return Ok(());
+        };
+        // 与 terminate 同一条路：pgid == pane_pid，整组发（ADR-001 D2）。发完就走，等不等是调用方的事。
+        let signo = match sig {
+            crate::runtime::TerminateSignal::Term => libc::SIGTERM,
+            crate::runtime::TerminateSignal::Kill => libc::SIGKILL,
+        };
+        signal_group(pid, signo);
+        Ok(())
+    }
+
     fn respawn(&self, r: &RuntimeRef, spec: &LaunchSpec) -> Result<(), RuntimeError> {
         let session = self.require_managed(r)?;
         let target = format!("={session}:");
