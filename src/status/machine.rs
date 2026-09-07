@@ -465,6 +465,9 @@ impl Machine {
             // 永远活着，靠探活它永远不会结束（2026-09-05 devcenter 那一行，agora-vfi）。
             // reason 例外表（2026-09-06）：只有 Claude 的 `clear` 不改状态——/clear 之后进程活着，同一秒
             // 紧接着新 id 的 SessionStart(source=clear)（Claude 2.1.261 真录的 fixture `clear.jsonl`）。
+            // 前提是新 id 落回同一行（agora 起的会话、有 pane 的采纳行）；无句柄的 external 行以
+            // agent id 为身份，新 id 会另起一行，receiver 在送进来之前已把它的 `clear` 改写成别的
+            // reason（`clear_ends_external_row`，agora-s3r），这里不必也不该按 origin 分叉。
             // 其余都算结束：Claude resume / logout / prompt_input_exit / other（resume 之后同一进程会再发
             // SessionStart(source=resume)，行随即回 STARTING，所以不必例外）、Codex other（0.152.1 只见过
             // 这一个值；它的 /clear 根本不发 SessionEnd）、Grok shutdown（/clear 同样不发）、没有 reason。

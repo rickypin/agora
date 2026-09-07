@@ -322,6 +322,69 @@ async fn external_session_ends_on_session_end_hook() {
 }
 
 #[tokio::test]
+async fn external_row_ends_when_claude_clears_to_a_new_id() {
+    // agora-s3r（2026-09-07 现场）：Terminal.app 裸跑的 Claude 里 /clear，旧 id 发 SessionEnd(reason=clear)，
+    // 新 id 的 SessionStart 另起一行，旧行没有 pane、进程还活着（同一个 claude 在跑新会话），从此钉在
+    // RUNNING（侧栏 working 16 min+）。receiver 对无句柄的 external 行把 `clear` 当普通结束。
+    // 关掉 `clear_ends_external_row` 的改写 → 第一段 finished 断言红（停在 running）。
+    let (fx, receiver, home) = with_hooks();
+    let cookie = fx.cookie();
+    // 与现场一致：CLAUDE_PID 是一个活着的进程（测试进程自己），进程层给不出"结束"。
+    let env = [("CLAUDE_PID", std::process::id().to_string())];
+    let old = ingest(
+        &receiver,
+        home.path(),
+        &delivery("old-id", session_start("old-id"), &env, &[]),
+    )
+    .unwrap();
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "old-id",
+            json!({ "hook_event_name": "UserPromptSubmit", "session_id": "old-id", "prompt": "/simplify" }),
+            &env,
+            &[],
+        ),
+    );
+    let old_path = format!("/api/sessions/{}:{}", common::NODE, old);
+    let (_, body) = call(&fx, &cookie, Method::GET, &old_path, None).await;
+    assert_eq!(body["status"], "running", "{body}");
+
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery("old-id", session_end("old-id", "clear"), &env, &[]),
+    );
+    let (_, body) = call(&fx, &cookie, Method::GET, &old_path, None).await;
+    assert_eq!(body["status"], "finished", "旧行到此为止：{body}");
+    assert_eq!(body["source"], "hook", "{body}");
+
+    // 同一秒到的新 id：另一行，从 STARTING 起；旧行不被它救活。
+    let new = ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "new-id",
+            json!({ "hook_event_name": "SessionStart", "session_id": "new-id", "cwd": "/work/agora", "source": "clear" }),
+            &env,
+            &[],
+        ),
+    )
+    .unwrap();
+    assert_ne!(
+        new, old,
+        "无句柄的 external 行以 agent id 为身份，新 id 是新行"
+    );
+    let new_path = format!("/api/sessions/{}:{}", common::NODE, new);
+    let (_, body) = call(&fx, &cookie, Method::GET, &new_path, None).await;
+    assert_eq!(body["status"], "starting", "{body}");
+    let (_, body) = call(&fx, &cookie, Method::GET, &old_path, None).await;
+    assert_eq!(body["status"], "finished", "旧行仍是结束：{body}");
+    assert_eq!(fx.sessions.list().unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn external_session_answers_permission_via_the_hook_and_refuses_text() {
     let (fx, receiver, home) = with_hooks();
     let cookie = fx.cookie();

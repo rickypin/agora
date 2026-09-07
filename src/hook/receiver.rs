@@ -4,6 +4,7 @@
 //! （没有 `AGORA_SESSION_ID`）用 `<host>:<agent_session_id>`，采纳（agora-dvh.12）时再对上。
 //! 上限、超时、解除规则都在这里；哪些事件算解除、映射成什么事件，问宿主的 `AgentHooks`。
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -78,6 +79,28 @@ pub struct Receiver {
 }
 
 /// 账本里记的事件名：只给排障看，所以键名风格两种都认，不算核心层懂 payload。
+/// 无句柄的 external 行（`runtime_ref` NULL）以 (host, agent_session_id) 为身份：Claude 的 /clear 发
+/// 旧 id 的 SessionEnd(reason=clear) 后紧接着**新 id** 的 SessionStart，新 id 在 `locate_external` 里
+/// 查不到就另起一行，旧行从此再没有任何事件。状态机对 `clear` 的"不改状态"例外（agora-vfi）是给
+/// 同一行继续的会话设计的——agora 起的会话 id 是 agora 的，有 pane 的行 `register_external` 按
+/// runtime_ref 复用同一行——对这种行它就错了：旧行钉在最后一个状态，没有 pane 所以沉默规则够不着，
+/// CLAUDE_PID 还在跑新会话所以进程层也不会说结束（2026-09-07 实测：/clear 两次，旧行 working 16 min+，
+/// agora-s3r）。所以在这里把 `clear` 改写成别的 reason，让状态机按普通结束处理：这一行到此为止，
+/// 新行由新 id 的 SessionStart 登记。
+const CLEAR_ENDS_EXTERNAL_ROW: &str = "clear (external row: the new id lands on a new row)";
+
+fn clear_ends_external_row(events: &[AgoraEvent]) -> Vec<AgoraEvent> {
+    events
+        .iter()
+        .map(|e| match e {
+            AgoraEvent::SessionEnded(Some(r)) if r == "clear" => {
+                AgoraEvent::SessionEnded(Some(CLEAR_ENDS_EXTERNAL_ROW.to_owned()))
+            }
+            e => e.clone(),
+        })
+        .collect()
+}
+
 fn event_name(payload: &serde_json::Value) -> Option<String> {
     ["hook_event_name", "hookEventName"]
         .iter()
@@ -239,10 +262,15 @@ impl Receiver {
         let key = id.clone().unwrap_or_else(|| session_key(&delivery));
         if let Some(id) = &id {
             // 外部会话没有 epoch 概念：按库里那代算，永不因 epoch 被丢。
-            let epoch = if delivery.envelope.agora_session_id.is_some() {
-                epoch
+            let rec = if delivery.envelope.agora_session_id.is_some() {
+                None
             } else {
-                self.sessions.record(id).map(|r| r.epoch).unwrap_or(epoch)
+                self.sessions.record(id).ok()
+            };
+            let epoch = rec.as_ref().map(|r| r.epoch).unwrap_or(epoch);
+            let events: Cow<'_, [AgoraEvent]> = match &rec {
+                Some(r) if r.runtime_ref.is_none() => Cow::Owned(clear_ends_external_row(&events)),
+                _ => Cow::Borrowed(&events),
             };
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             let applied = self
