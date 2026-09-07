@@ -2,7 +2,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { catalogApi, sessionApi, type FetchLike, type ReadyTask } from "./api";
-import { NewAgentDialog } from "./NewAgentDialog";
+import type { NodeStatus } from "./Header";
+import { NewAgentDialog, nodeOptionLabel } from "./NewAgentDialog";
 import { taskPrompt } from "./taskPrompt";
 import { NEW_WORKTREE } from "./WorktreeSelect";
 
@@ -37,37 +38,73 @@ const TASKS: { tasks: ReadyTask[]; reason: string | null } = {
 /** 没装 bd 的机器：旧用例都走这条路，对话框形态与 A43 之前一样。 */
 const NO_BD = { tasks: [], reason: "no_bd" };
 
-function setup(tasks: { tasks: ReadyTask[]; reason: string | null } = NO_BD) {
+// zuan 上的目录（A45）：带 `node=zuan` 的请求答这一套，与本机的一项都不重合。
+const ZUAN_PROJECTS = {
+  projects: [{ path: "/home/z/code/beta", name: "beta", last_used_at: "2026-09-07T02:00:00Z" }],
+};
+const ZUAN_AGENTS = { agents: [{ name: "zb", command: "zb-bin", prompt: false }] };
+const ZUAN_WORKTREES = {
+  worktrees: [{ path: "/home/z/code/beta", branch: "main", head: "f00", main: true, locked: false }],
+};
+const ZUAN_NEW_WORKTREE = { path: "/home/z/code/beta-wt/beta", branch: "beta", head: "f00", main: false, locked: false };
+
+const peer = (name: string, extra: Partial<NodeStatus> = {}): NodeStatus => ({
+  name,
+  online: true,
+  last_seen: null,
+  retrying: false,
+  last_error: null,
+  ...extra,
+});
+/** Header 给的那份：本机在线、zuan 在线、old 断线（stale）、v2 版本不兼容。 */
+const NODES: NodeStatus[] = [
+  peer("mac", { local: true }),
+  peer("zuan"),
+  peer("old", { online: false, last_seen: "2026-09-07T01:00:00Z", retrying: true, last_error: "unreachable" }),
+  peer("v2", { online: false, retrying: true, last_error: "incompatible_version" }),
+];
+
+function setup(tasks: { tasks: ReadyTask[]; reason: string | null } = NO_BD, nodes?: NodeStatus[]) {
   const requests: { url: string; method: string; body?: string }[] = [];
   const f: FetchLike = async (url, init) => {
     requests.push({ url, method: init.method ?? "GET", body: init.body as string | undefined });
+    const method = init.method ?? "GET";
+    const onZuan = url.includes("node=zuan") || (init.body as string | undefined)?.includes('"node":"zuan"');
     const body = url.startsWith("/api/projects/tasks")
       ? tasks
       : url.startsWith("/api/projects/worktrees")
-        ? WORKTREES
+        ? method === "POST"
+          ? ZUAN_NEW_WORKTREE
+          : onZuan
+            ? ZUAN_WORKTREES
+            : WORKTREES
         : url.startsWith("/api/projects")
-          ? PROJECTS
+          ? onZuan
+            ? ZUAN_PROJECTS
+            : PROJECTS
           : url.startsWith("/api/agents")
-            ? AGENTS
+            ? onZuan
+              ? ZUAN_AGENTS
+              : AGENTS
             : url.startsWith("/api/system")
               ? { node: "mac" }
-              : { id: "mac:new1" };
+              : { id: onZuan ? "zuan:new7" : "mac:new1" };
     return new Response(JSON.stringify(body), {
-      status: init.method === "POST" ? 201 : 200,
+      status: method === "POST" ? 201 : 200,
       headers: { "content-type": "application/json" },
     });
   };
   const onCreated = vi.fn();
   const onClose = vi.fn();
   render(
-    <NewAgentDialog api={sessionApi(f)} catalog={catalogApi(f)} onClose={onClose} onCreated={onCreated} />,
+    <NewAgentDialog api={sessionApi(f)} catalog={catalogApi(f)} nodes={nodes} onClose={onClose} onCreated={onCreated} />,
   );
   return { requests, onCreated, onClose };
 }
 
 const field = (id: string) => document.getElementById(id) as HTMLInputElement | HTMLSelectElement;
 const created = (requests: { url: string; method: string; body?: string }[]) =>
-  JSON.parse(requests.find((r) => r.method === "POST")!.body!);
+  JSON.parse(requests.find((r) => r.method === "POST" && r.url === "/api/sessions")!.body!);
 
 it("defaults to the most recently used project and the first agent's command", async () => {
   // §6.4：常用项目 2–3 次操作起会话——打开即选中最近用过的那个，Create 就能按。
@@ -235,4 +272,75 @@ it("agents without the prompt flag get no Prompt box and the body carries no pro
   const body = created(requests);
   expect(body).toMatchObject({ agent_type: "a2", task_ref: "agora-h1k.2" });
   expect(body).not.toHaveProperty("prompt");
+});
+
+it("lists the local node and the peers; offline or incompatible peers are listed but not selectable", async () => {
+  // A45：本机 + 已配置的 peer 都在下拉里，离线 / 版本不兼容的标出原因类型并 disabled——选了只会得到 502，
+  // 不如在下拉里就说清楚；没给 nodes（单机）只有本机。
+  setup(NO_BD, NODES);
+  await waitFor(() => expect(field("na-node").value).toBe("mac"));
+  const options = Array.from((field("na-node") as HTMLSelectElement).options).map((o) => ({
+    value: o.value,
+    text: o.textContent,
+    disabled: o.disabled,
+  }));
+  expect(options).toEqual([
+    { value: "mac", text: "mac", disabled: false },
+    { value: "zuan", text: "zuan", disabled: false },
+    { value: "old", text: "old · stale", disabled: true },
+    { value: "v2", text: "v2 · 版本不兼容", disabled: true },
+  ]);
+  expect(nodeOptionLabel(peer("fresh", { online: false, retrying: true, last_error: "unreachable" }))).toBe(
+    "fresh · 未连接",
+  );
+});
+
+it("picking a peer re-lists everything from it and creates the session and the worktree there", async () => {
+  // MISSION §1 第 3 步在 Mac 上选 zuan：Project / Worktree / Task / Agent 四个下拉换成 zuan 的
+  //（五个 catalog 端点带 node=zuan），「新建 worktree」与 Create 的 body 带 node: "zuan"，
+  // 响应的 id 带 zuan 前缀；换回本机后 body 不再有 node。
+  const { requests, onCreated } = setup(NO_BD, NODES);
+  await waitFor(() => expect(field("na-project").value).toBe("/Users/r/code/agora"));
+
+  fireEvent.change(field("na-node"), { target: { value: "zuan" } });
+  await waitFor(() => expect(field("na-project").value).toBe("/home/z/code/beta"));
+  expect(field("na-name").value).toBe("beta");
+  expect(field("na-agent").value).toBe("zb");
+  expect(field("na-command").value).toBe("zb-bin");
+  await waitFor(() => expect(screen.getByRole("option", { name: "新建…" })).toBeTruthy());
+  const urls = requests.map((r) => r.url);
+  expect(urls).toContain("/api/projects?node=zuan");
+  expect(urls).toContain("/api/agents?node=zuan");
+  expect(urls).toContain(`/api/projects/worktrees?path=${encodeURIComponent("/home/z/code/beta")}&node=zuan`);
+  expect(urls).toContain(`/api/projects/tasks?path=${encodeURIComponent("/home/z/code/beta")}&node=zuan`);
+  // 上一台机器的项目一个都不能留在下拉里：路径在那边。
+  expect(Array.from((document.getElementById("na-projects") as HTMLDataListElement).options).map((o) => o.value)).toEqual([
+    "/home/z/code/beta",
+  ]);
+
+  // 新建 worktree 也在 zuan 上建。
+  fireEvent.change(field("na-worktree"), { target: { value: NEW_WORKTREE } });
+  expect(field("na-worktree-name").value).toBe("beta");
+  fireEvent.click(screen.getByTestId("worktree-create"));
+  await waitFor(() => expect(field("na-worktree").value).toBe("/home/z/code/beta-wt/beta"));
+  const wt = requests.find((r) => r.method === "POST" && r.url === "/api/projects/worktrees")!;
+  expect(JSON.parse(wt.body!)).toEqual({ path: "/home/z/code/beta", name: "beta", node: "zuan" });
+
+  fireEvent.click(screen.getByTestId("create"));
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith("zuan:new7"));
+  expect(created(requests)).toMatchObject({
+    node: "zuan",
+    display_name: "beta",
+    agent_type: "zb",
+    working_directory: "/home/z/code/beta-wt/beta",
+    worktree: "beta",
+  });
+
+  // 换回本机：列表回到本机的，body 不带 node。
+  fireEvent.change(field("na-node"), { target: { value: "mac" } });
+  await waitFor(() => expect(field("na-project").value).toBe("/Users/r/code/agora"));
+  fireEvent.click(screen.getByTestId("create"));
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith("mac:new1"));
+  const last = JSON.parse(requests.filter((r) => r.method === "POST" && r.url === "/api/sessions").pop()!.body!);
+  expect(last).not.toHaveProperty("node");
 });

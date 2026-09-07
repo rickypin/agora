@@ -7,6 +7,7 @@ import type {
   SessionApi,
   WorktreeInfo,
 } from "./api";
+import type { NodeStatus } from "./Header";
 import { taskPrompt } from "./taskPrompt";
 import { WorktreeSelect } from "./WorktreeSelect";
 
@@ -19,9 +20,25 @@ const FREE_TEXT = "";
 interface Props {
   api: SessionApi;
   catalog: CatalogApi;
+  /**
+   * Node 下拉的数据源（A45，agora-fna）：Header 同一份 `nodeStatuses`——本机 + 每个已配置的 peer 及其
+   * 在线 / 离线 / 错误类型。没给（单机、旧测试）就只有本机。
+   */
+  nodes?: NodeStatus[];
   onClose: () => void;
   /** 创建成功：把新会话打开成 Tab。 */
   onCreated: (id: string) => void;
+}
+
+/**
+ * Node 下拉里一个 peer 的文字：在线只有名字；离线按**类型**加一段（MISSION §2.3 规则 10，不解析消息）——
+ * 版本不兼容是自己的原因（A33：不读它的数据），见过的离线是 stale（MISSION §3.5 的措辞），
+ * 没见过的是还没连上。离线的一律不可选：选了也只会得到 502，不如在下拉里就说清楚（A45）。
+ */
+export function nodeOptionLabel(n: NodeStatus): string {
+  if (n.online) return n.name;
+  if (n.last_error === "incompatible_version") return `${n.name} · 版本不兼容`;
+  return n.last_seen ? `${n.name} · stale` : `${n.name} · 未连接`;
 }
 
 /**
@@ -55,12 +72,24 @@ export function describeTasksReason(reason: string): string | null {
  * task_ref = issue id、Name = 标题、Worktree「新建…」的默认名 = issue id、Prompt 预填模板
  * （`taskPrompt`）——都是默认值，用户手改过的不覆盖。claim 由 agent 自己做（模板里写着），
  * 页面对 beads 什么都不写。
+ *
+ * Node（A45，agora-fna）：本机 + 已配置的 peer，在线的才可选。选了 peer，Project / Worktree / Task /
+ * Agent 四个下拉全部改从那台机器取（五个 catalog 端点带 `node=`，节点经一跳转发），Create 与
+ * 「新建 worktree」也带 `node` 在那边执行；响应的会话 id 带它的前缀，新行随 peer 视图进侧栏。
  */
-export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
+export function NewAgentDialog({ api, catalog, nodes, onClose, onCreated }: Props) {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
-  const [node, setNode] = useState<string>("");
+  /** 本机 node.id（`/api/system`）：Node 下拉第一项的名字，也是"选了本机"的 value。 */
+  const [localName, setLocalName] = useState<string>("");
+  /** 选中的 peer 名；null = 本机。catalog 请求与 create body 的 `node` 都从这里来。 */
+  const [node, setNode] = useState<string | null>(null);
+  const target = node ?? undefined;
+  const peers = (nodes ?? []).filter((n) => !n.local);
+  const selectedPeer = node === null ? null : peers.find((n) => n.name === node);
+  // 对话框开着时 peer 掉线：下拉里它变灰，Create 也别按——按了只会得到 502。
+  const nodeOnline = node === null || selectedPeer?.online === true;
 
   const [project, setProject] = useState("");
   const [worktree, setWorktree] = useState("");
@@ -83,10 +112,11 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 打开时、以及每次换节点：项目与 agent 列表从所选节点拉（`target`），默认值跟着换。
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [p, a, s] = await Promise.all([catalog.projects(), catalog.agents(), catalog.system()]);
+      const [p, a, s] = await Promise.all([catalog.projects(target), catalog.agents(target), catalog.system()]);
       if (cancelled) return;
       if (p.ok) {
         setProjects(p.value.projects);
@@ -105,12 +135,24 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
           if (!commandEdited.current) setCommand(first.command);
         }
       }
-      if (s.ok) setNode(s.value.node);
+      if (s.ok) setLocalName(s.value.node);
     })();
     return () => {
       cancelled = true;
     };
-  }, [catalog]);
+  }, [catalog, target]);
+
+  /** 换节点：上一台机器的项目 / agent / worktree 一个都不能留——路径在那边，这边没有。 */
+  function pickNode(value: string) {
+    const next = value === localName ? null : value;
+    if (next === node) return;
+    setNode(next);
+    setProjects([]);
+    setAgents([]);
+    setProject("");
+    setWorktree("");
+    setAgent("");
+  }
 
   // 「新建…」建成之后重拉一次并选中新项（A44）：bump 这个计数让下面的 effect 再跑，
   // 想选中的路径先寄在 ref 里，等新列表到了再选——直接 setWorktree 会被 effect 开头的清空冲掉。
@@ -124,7 +166,7 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
     setWorktrees([]);
     setWorktree("");
     if (!project.trim()) return;
-    void catalog.worktrees(project.trim()).then((r) => {
+    void catalog.worktrees(project.trim(), target).then((r) => {
       if (cancelled || !r.ok) return;
       const created = pendingWorktree.current;
       pendingWorktree.current = null;
@@ -142,7 +184,7 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [catalog, project, worktreeGen]);
+  }, [catalog, project, target, worktreeGen]);
 
   // 与 worktrees 并行拉该仓库的就绪任务（A43）。与上面分开的 effect：新建 worktree 之后不必再
   // 敲一次 bd（embedded dolt 冷启动要几秒）。换项目就清掉上一个仓库的任务与选择。
@@ -153,7 +195,7 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
     setTaskPick(FREE_TEXT);
     if (!promptEdited.current) setPrompt("");
     if (!project.trim()) return;
-    void catalog.tasks(project.trim()).then((r) => {
+    void catalog.tasks(project.trim(), target).then((r) => {
       if (cancelled) return;
       // 400（不是已知项目）之类：没有列表也没有可说的原因——Task 就是一句话，不提示。
       if (!r.ok) return;
@@ -163,7 +205,7 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [catalog, project]);
+  }, [catalog, project, target]);
 
   function worktreeCreated(created: WorktreeInfo) {
     pendingWorktree.current = created;
@@ -210,12 +252,20 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
   const tasksHint = tasksReason === null ? null : describeTasksReason(tasksReason);
   // worktree 名字框开着时先别起会话：cwd 会落回仓库本身，而用户明明想在新 worktree 里干。
   const canCreate =
-    !busy && !worktreeCreating && project.trim() !== "" && name.trim() !== "" && agent !== "" && !needsCommand;
+    !busy &&
+    !worktreeCreating &&
+    nodeOnline &&
+    project.trim() !== "" &&
+    name.trim() !== "" &&
+    agent !== "" &&
+    !needsCommand;
 
   async function create() {
     setBusy(true);
     setError(null);
     const r = await api.create({
+      // 选了 peer 才带 node：本机不发这个键，老节点（不认识 node 的）也照常。
+      ...(target ? { node: target } : {}),
       display_name: name.trim(),
       agent_type: agent,
       working_directory: cwd,
@@ -255,9 +305,14 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
           }}
         >
           <label htmlFor="na-node">Node</label>
-          {/* 目前只能在本机起会话；选 peer 经一跳转发（MISSION §6.4、A45）归 agora-fna。 */}
-          <select id="na-node" disabled>
-            <option>{node || "本机"}</option>
+          {/* 本机 + 已配置的 peer（MISSION §6.4、A45）：离线 / 版本不兼容的列出来但不可选，选中的 peer 经一跳转发执行。 */}
+          <select id="na-node" value={node ?? localName} onChange={(e) => pickNode(e.target.value)} disabled={busy}>
+            <option value={localName}>{localName || "本机"}</option>
+            {peers.map((n) => (
+              <option key={n.name} value={n.name} disabled={!n.online}>
+                {nodeOptionLabel(n)}
+              </option>
+            ))}
           </select>
 
           <label htmlFor="na-project">Project</label>
@@ -287,7 +342,8 @@ export function NewAgentDialog({ api, catalog, onClose, onCreated }: Props) {
             project={project.trim()}
             // MISSION §6.4：worktree 名默认 issue id，无 bd（没选任务）用 Name。
             defaultName={taskPick || name}
-            create={catalog.createWorktree}
+            // 选了 peer 就在那台机器的仓库里建（A45）。
+            create={(path, wtName) => catalog.createWorktree(path, wtName, undefined, target)}
             onCreated={worktreeCreated}
             onCreatingChange={setWorktreeCreating}
           />

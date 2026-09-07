@@ -52,7 +52,7 @@ impl fmt::Display for ApiVersion {
 
 /// 本二进制实现的 API 版本。改形态时按 api.md 的递增规则改这里，并同步
 /// `web/src/health.ts` 的 `API_VERSION`——页面按哪一版构建就按哪一版比。
-pub const API_VERSION: ApiVersion = ApiVersion::new(1, 5);
+pub const API_VERSION: ApiVersion = ApiVersion::new(1, 6);
 
 /// `GET /api/system` 的响应体。peer 客户端用同一个类型反序列化，字段名只在这里出现一次。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

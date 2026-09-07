@@ -74,6 +74,8 @@ export interface AdoptBody {
 }
 
 export interface CreateSessionBody {
+  /** 在哪个节点起（A45）：不发 = 本机；peer 名 → 节点经一跳转发在那台机器上起，响应的 id 带它的前缀。 */
+  node?: string;
   display_name: string;
   agent_type: string;
   working_directory: string;
@@ -156,35 +158,41 @@ export type SessionApi = ReturnType<typeof sessionApi>;
  * A44）。与会话的写端点分开：这里没有确认语义，401 之外的失败只影响下拉框。
  */
 export function catalogApi(fetchImpl: FetchLike = apiFetch) {
+  // 五个端点都多一个可选的 node（A45，docs/spec/api.md「在 peer 上起会话」）：不给 = 本机；peer 名 →
+  // 节点经一跳转发到那台机器上答。查询串里只在给了时才出现，老节点不认识它也照常答本机的。
+  const q = (pairs: Record<string, string | undefined>) => {
+    const parts = Object.entries(pairs)
+      .filter((kv): kv is [string, string] => kv[1] !== undefined && kv[1] !== "")
+      .map(([k, v]) => `${k}=${encodeURIComponent(v)}`);
+    return parts.length ? `?${parts.join("&")}` : "";
+  };
   return {
-    projects: () => call<{ projects: ProjectInfo[] }>(fetchImpl, "GET", "/api/projects"),
-    worktrees: (path: string) =>
-      call<{ worktrees: WorktreeInfo[] }>(
-        fetchImpl,
-        "GET",
-        `/api/projects/worktrees?path=${encodeURIComponent(path)}`,
-      ),
+    projects: (node?: string) =>
+      call<{ projects: ProjectInfo[] }>(fetchImpl, "GET", `/api/projects${q({ node })}`),
+    worktrees: (path: string, node?: string) =>
+      call<{ worktrees: WorktreeInfo[] }>(fetchImpl, "GET", `/api/projects/worktrees${q({ path, node })}`),
     /**
      * `POST /api/projects/worktrees`（MISSION §6.4「只管"生"」；docs/spec/api.md）：201 的响应体就是
-     * GET 会列出的那一项。`base` 不传由节点按缺省链定（主 worktree 当前分支 → origin/HEAD → main）。
+     * GET 会列出的那一项。`base` 不传由节点按缺省链定（主 worktree 当前分支 → origin/HEAD → main）；
+     * `node` 给了就在那台机器的仓库里建（A45）。
      */
-    createWorktree: (path: string, name: string, base?: string) =>
-      call<WorktreeInfo>(
-        fetchImpl,
-        "POST",
-        "/api/projects/worktrees",
-        base ? { path, name, base } : { path, name },
-      ),
-    agents: () => call<{ agents: AgentInfo[] }>(fetchImpl, "GET", "/api/agents"),
+    createWorktree: (path: string, name: string, base?: string, node?: string) =>
+      call<WorktreeInfo>(fetchImpl, "POST", "/api/projects/worktrees", {
+        path,
+        name,
+        ...(base ? { base } : {}),
+        ...(node ? { node } : {}),
+      }),
+    agents: (node?: string) => call<{ agents: AgentInfo[] }>(fetchImpl, "GET", `/api/agents${q({ node })}`),
     /**
      * `GET /api/projects/tasks?path=`（MISSION §6.4 从就绪任务起会话；A43）：该仓库 `bd ready` 的
      * 就绪任务。永远 200——没装 bd / 没有 beads 是空列表 + 类型化的 `reason`，不是错误。
      */
-    tasks: (path: string) =>
+    tasks: (path: string, node?: string) =>
       call<{ tasks: ReadyTask[]; reason: ReadyTasksReason | string | null }>(
         fetchImpl,
         "GET",
-        `/api/projects/tasks?path=${encodeURIComponent(path)}`,
+        `/api/projects/tasks${q({ path, node })}`,
       ),
     system: () => call<{ node: string }>(fetchImpl, "GET", "/api/system"),
   };

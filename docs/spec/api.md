@@ -6,7 +6,7 @@
 
 ```
 GET    /api/sessions               # { sessions: [...], unregistered: [...] }：已登记会话 + 运行时里未登记的（Unknown Agent，可采纳，§5.5）；Human 调用还并入各 peer 的会话行（带 node / stale），Peer 调用只给本机行——一跳防环（文末「peer 视图」）
-POST   /api/sessions               # { display_name, agent_type, working_directory, worktree?, task_ref?, command?, cols?, rows?, prompt? } → 201；command 缺省链：agents.<agent_type>.command → Adapter 的 default_command → agent_type 本身；prompt 是首条 prompt，只进这一代的启动命令、不进库、Restart 不重发，agent 类型不接受 → 400 bad_request（文末「从就绪任务起会话」）
+POST   /api/sessions               # { node?, display_name, agent_type, working_directory, worktree?, task_ref?, command?, cols?, rows?, prompt? } → 201；node 是已配置的 peer → 整个 body 一跳转发到它、201 与 <node>:<id> 原样回（文末「在 peer 上起会话」，A45）；command 缺省链：agents.<agent_type>.command → Adapter 的 default_command → agent_type 本身；prompt 是首条 prompt，只进这一代的启动命令、不进库、Restart 不重发，agent 类型不接受 → 400 bad_request（文末「从就绪任务起会话」）
 GET    /api/sessions/:id
 GET    /api/sessions/:id/changes   # 该会话工作目录的改动文件 { files: [{ path, status }], branch, reason }：git status --porcelain=v2 只读；不是仓库 / 目录不在 / 没 git / 超时 → 200 + 空列表 + 类型原因（文末「只读产出」；A41）
 PATCH  /api/sessions/:id           # { display_name }：改名即落锁（§4.5）；其它 Session Settings 字段随前端落地
@@ -16,12 +16,11 @@ POST   /api/sessions/:id/kill      # 同上；确认跟着"杀"走（MISSION §8
 POST   /api/sessions/:id/cleanup   # 回收已退出会话保留的运行时会话与输出（ADR-001 D4 清理）；进程还活着 → 错误类型 StillAlive
 DELETE /api/sessions/:id           # 只删 metadata；已退出的顺手清理
 POST   /api/sessions/adopt         # { runtime_ref, display_name?, project?, agent_type? }：采纳可采纳运行时里的未注册会话（§5.5）→ 201；已登记 → 409 already_registered
-GET    /api/projects               # project_roots 扫描结果，按最近使用排序（§6.4）
-GET    /api/projects/worktrees     # ?path=<repo>：该仓库现有 worktree（§6.4）；path 不是已知项目 → 400 bad_request
-POST   /api/projects/worktrees     # { path, name, base? }：git worktree add -b <name> <worktree_root>/<name> <base> → 201，形态同 GET 的一项（§6.4 只管"生"，A44）；冲突 409 worktree_exists / branch_exists / path_exists，名字不合法 400 bad_request，git 失败 502 git
-GET    /api/projects/tasks         # ?path=<repo>：该仓库 bd ready --json 里可起会话的任务（epic 滤掉），只读（§6.4，A43）→ 永远 200 { tasks: [{ id, title, priority, type }], reason: null | "no_bd" | "no_beads" | "timeout" | "bad_output" }；path 不是已知项目 → 400 bad_request（文末「从就绪任务起会话」）
-GET    /api/agents                 # New Agent 对话框的 Agent 下拉：[{ name, command, prompt }]，来自 Adapter 启动侧 + agents.<name>.command 覆盖（§5.2）；prompt: bool = 接不接受首条 prompt（A43）
-GET    /api/nodes                  # 本机 + 已配置 peer 的状态：online / last_seen
+GET    /api/projects               # ?node=：project_roots 扫描结果，按最近使用排序（§6.4）；node 是 peer → 那台机器的（「在 peer 上起会话」）
+GET    /api/projects/worktrees     # ?path=<repo>&node=：该仓库现有 worktree（§6.4）；path 不是已知项目 → 400 bad_request
+POST   /api/projects/worktrees     # { node?, path, name, base? }：git worktree add -b <name> <worktree_root>/<name> <base> → 201，形态同 GET 的一项（§6.4 只管"生"，A44）；冲突 409 worktree_exists / branch_exists / path_exists，名字不合法 400 bad_request，git 失败 502 git
+GET    /api/projects/tasks         # ?path=<repo>&node=：该仓库 bd ready --json 里可起会话的任务（epic 滤掉），只读（§6.4，A43）→ 永远 200 { tasks: [{ id, title, priority, type }], reason: null | "no_bd" | "no_beads" | "timeout" | "bad_output" }；path 不是已知项目 → 400 bad_request（文末「从就绪任务起会话」）
+GET    /api/agents                 # ?node=：New Agent 对话框的 Agent 下拉：[{ name, command, prompt }]，来自 Adapter 启动侧 + agents.<name>.command 覆盖（§5.2）；prompt: bool = 接不接受首条 prompt（A43）
 GET    /api/system                 # { api_version, version, node }
 GET    /api/health                 # 未认证只返回 { "status": "ok" }；带 principal 是下文的完整形态
 POST   /api/auth/pair              # { token } → Set-Cookie agora_session + { device }；唯一的未认证写端点
@@ -75,6 +74,7 @@ GET /api/system
 - `1.2`（2026-09-06，第三批合入时集成者统一 bump 一次）：只增——peer 会话行加 `stale`（agora-7ku.5，本机行没有此键）；新端点 `POST /api/projects/worktrees` 与错误类型 `worktree_exists` / `branch_exists` / `path_exists`（agora-h1k.1）；错误类型 `peer_forbidden`（agora-0df）与一跳转发的 `peer_unreachable` / `peer_fingerprint_mismatch` / `peer_config` / `peer_rejected`（agora-7ku.7）；`/api/system` 本身不变。
 - `1.3`（2026-09-06，第四批合入时集成者统一 bump 一次）：只增——stale 的 peer 行加 `last_seen`（agora-7ku.6，只在 `stale: true` 的 peer 行出现）；新端点 `GET /api/projects/tasks`、`POST /api/sessions` 加可选 `prompt`、`GET /api/agents` 每项加 `prompt: bool`（agora-h1k.2）；新端点 `GET /api/sessions/:id/changes` 与 `WS /api/sessions/:id/diff`（终端流新状态帧 `read_only`）、错误类型 `no_directory`（agora-h1k.5）；`/api/system` 本身不变。
 - `1.4`（2026-09-06，第五批合入时集成者统一 bump 一次）：只增——`GET /api/health` 的 `peers[].last_error` 加第五个值 `misconfigured`（agora-41e；ADR-003 D3：本节点这一行 `peers[]` 字面上就用不了——token_file 权限 / 属主 / 内容、url 不是 https、指纹不合法；该值下 `retrying` 恒 false，daemon 每 10 s 重读配置，改好即恢复），老页面把不认识的值当 `null`、显示成离线而不会错读；同批的 agora-vfi（SessionEnd → hook 层 FINISHED、无可信 pid 的 external 行 `alive: false`）与 agora-vkt（`hooks install` 补建链接）不改形态；`/api/system` 本身不变。
+- `1.6`（2026-09-07，agora-fna）：只增——`POST /api/sessions` 与 `POST /api/projects/worktrees` 的 body 加可选 `node`，`GET /api/projects`、`/api/projects/worktrees`、`/api/projects/tasks`、`/api/agents` 加可选 `?node=`（「在 peer 上起会话」，A45）；老节点不认识它就当没给、答本机的，新页面对老节点只是选不到 peer 而不会错读；`/api/system` 本身不变。
 - `1.5`（2026-09-07）：只增——事件流加 `peer_changed`（agora-c8h：一个 peer 在本节点眼里的面貌变了，`peer` 与 `GET /api/health` peers 段的一项同形），Header 据此秒级改点、不再等 60 s 的 health 轮询；老页面不认识这个 `type` 就丢掉（`EventsClient.apply` 的 default 分支），退回轮询节奏而不会错读；`/api/system` 本身不变。
 
 **兼容判定**（`agora::api::version`，`check(ours, theirs)`；结论是枚举，按类型分类、不做字符串匹配）：
@@ -191,6 +191,18 @@ GET /api/health
 | `peer_rejected` | 所属节点的状态码 | 只在终端 WS：所属节点以非 101 拒绝了升级；WS 握手失败没有 body，只有状态码可传 |
 
 守卫 `tests/forward.rs::unreachable_peer_is_reported_by_type`。前端按 `type` 分支、不解析 `message`（MISSION §2.3 规则 10）。
+
+## 在 peer 上起会话（MISSION §6.4 / §1 第 3 步；A45；agora-fna）
+
+New Agent 的 Node 下拉选了 peer 之后，对话框的四个下拉与两个写操作都要在**那台机器**上答：`GET /api/projects`、`GET /api/projects/worktrees`、`GET /api/projects/tasks`、`GET /api/agents` 各加一个可选的 `?node=<name>`，`POST /api/sessions` 与 `POST /api/projects/worktrees` 的 body 各加一个可选的 `node`。路由规则与会话 id 的前缀**完全相同**（`forward::node_hop`，与 `hop` 同一段代码）：
+
+| `node` | 去向 |
+|---|---|
+| 没给 / 空串 / 本机 `node.id` | 本地 handler，行为与单节点时相同 |
+| 已配置的 peer | 同方法、同路径（**含原查询串**）、同 body 经该 peer 的 `PeerTransport` 送过去，响应原样回——`GET` 答的是那台机器的 `project_roots` 扫描、它的 git、它的 `bd ready`、它装了的 agent 与它的 `agents.<name>.command` 覆盖；`POST /api/sessions` 在那边校验、起会话、发 `session_created`（新行随 peer 视图进本节点的事件流），本节点的库、运行时、`projects` 表一个字不动，201 里的 `id` 已经是 `<peer>:<id>`；`POST /api/projects/worktrees` 在那边的仓库里 `git worktree add`，本节点磁盘上没有 |
+| 既不是本机也不是 peer | 404 `node_unknown`，不发任何请求 |
+
+转发过去的请求**仍带着** `node`（查询串 / body 原样），所属节点看它等于自己的名字就走本机分支——不为"转发过来的"另开一条路径，一跳也顺带成立：请求的 principal 是 `Peer` 而 `node` 不是本机 → `node_unknown`（B 收到 A 的 `node: "c"` 到此为止，哪怕 B 配了 C）。peer 离线 → 502 `peer_unreachable`（同「一跳转发」的错误类型表）；对话框据 Header 同一份节点状态把离线 / 版本不兼容的 peer 列出来但设成不可选（`docs/spec/ux.md`），正常到不了 502。老节点（1.5 及以前）不认识 `node`：查询参数与 body 字段都被忽略、答本机的——所以本节点只在 `node` 是 peer 时才把请求送过去，peer 的 api_version 不兼容时 Header 已把它标成不可选。守卫 `tests/forward.rs::create_session_forwarded_to_the_chosen_node`、`::catalog_and_worktree_creation_forwarded_to_the_chosen_node`；前端 `web/src/NewAgentDialog.test.tsx`（Node 下拉与换节点重拉）、`web/src/CommandPalette.test.tsx`（`New <agent> in <project> @ <peer>`）。
 
 ## 从就绪任务起会话（MISSION §6.4；A43；agora-h1k.2）
 

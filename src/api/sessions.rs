@@ -136,8 +136,13 @@ pub async fn get(
 
 // ---------- 创建 / 采纳 ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateBody {
+    /// 在哪个节点起（New Agent 的 Node 下拉，A45，agora-fna）：没给 / 本机名 → 本机；已配置的 peer →
+    /// 整个 body 经一跳转发到它，响应（含 `<node>:<id>`）原样回；既不是本机也不是 peer → 404
+    /// `node_unknown`。转发过去时这个字段原样带着，所属节点看它就是自己的名字。
+    #[serde(default)]
+    pub node: Option<String>,
     pub display_name: String,
     pub agent_type: String,
     pub working_directory: PathBuf,
@@ -162,7 +167,21 @@ pub async fn create(
     principal: Principal,
     State(state): State<AppState>,
     Json(body): Json<CreateBody>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+) -> Result<Response, ApiError> {
+    // 选了 peer 节点：整个 body 原样过去，在那边校验、起会话、发事件；本机的库、运行时、projects
+    // 表一个字都不动——新行随 peer 视图的 session_created 进本机的事件流（A45）。
+    if let Some(resp) = forward::route_node(
+        &state,
+        &principal,
+        body.node.as_deref(),
+        Method::POST,
+        "/api/sessions",
+        Some(&body),
+    )
+    .await?
+    {
+        return Ok(resp);
+    }
     if body.display_name.trim().is_empty() || body.agent_type.trim().is_empty() {
         return Err(bad_request("display_name 与 agent_type 不能为空"));
     }
@@ -230,7 +249,7 @@ pub async fn create(
     .await?;
     touch_project(&state, working_directory).await;
     tracing::info!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, "创建会话");
-    Ok((StatusCode::CREATED, Json(announce_created(&state, &view))))
+    Ok((StatusCode::CREATED, Json(announce_created(&state, &view))).into_response())
 }
 
 #[derive(Debug, Deserialize)]

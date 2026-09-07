@@ -46,10 +46,28 @@ pub(super) fn hop(state: &AppState, principal: &Principal, gid: &str) -> Result<
     let Some((node, id)) = gid.split_once(':') else {
         return Ok(Hop::Local(gid.to_owned()));
     };
+    Ok(match node_hop(state, principal, Some(node))? {
+        None => Hop::Local(id.to_owned()),
+        Some(t) => Hop::Peer(t),
+    })
+}
+
+/// 一个**节点名**该往哪走（会话 id 的前缀，以及 New Agent 选节点时的 `?node=` / body `node`，
+/// A45，agora-fna）：`None` / 空串 / 本机名 → 本机（`Ok(None)`）；已配置的 peer → 它的 transport；
+/// 既不是本机也不是 peer → 404 `node_unknown`。一跳规则与会话前缀完全相同：请求来自
+/// `Principal::Peer` 时非本机名一律 `node_unknown`——A 让 B 在 C 上起会话在结构上不存在。
+pub(super) fn node_hop(
+    state: &AppState,
+    principal: &Principal,
+    node: Option<&str>,
+) -> Result<Option<Arc<dyn PeerTransport>>, ApiError> {
+    let Some(node) = node.filter(|n| !n.is_empty()) else {
+        return Ok(None);
+    };
     match state.registry.route(node) {
-        Route::Local => Ok(Hop::Local(id.to_owned())),
+        Route::Local => Ok(None),
         Route::Peer(t) => match principal {
-            // 一跳：来自 peer 的请求只能落在本机会话上。
+            // 一跳：来自 peer 的请求只能落在本机上。
             Principal::Peer { name } => Err(second_hop(state, node, name)),
             Principal::Human { .. } => {
                 // 人点开了 stale peer 的会话（浏览器建终端 WS、或对它做任何写操作都从这里过）：
@@ -59,10 +77,37 @@ pub(super) fn hop(state: &AppState, principal: &Principal, gid: &str) -> Result<
                 if state.peer_views.is_stale(node) == Some(true) {
                     state.peer_views.retry_now(node);
                 }
-                Ok(Hop::Peer(t))
+                Ok(Some(t))
             }
         },
         Route::Unknown => Err(node_unknown(state, node)),
+    }
+}
+
+/// 不按会话 id、按节点名路由的端点（`POST /api/sessions`、`/api/projects*`、`/api/agents`——
+/// New Agent 对话框选了 peer 之后这五条都要在那台机器上答，A45）：`node` 是本机或没给 →
+/// `Ok(None)`，handler 自己做；是 peer → 同方法、同 `path`（含查询串）、同 body 送过去，响应原样回。
+/// 转发过去的请求仍带着 `node`（查询串 / body 里原样），所属节点看它等于自己的名字就走本机分支——
+/// 不用为"转发过来的"另开一条路径，一跳规则也顺带成立（所属节点若看到第三个名字就是第二跳）。
+pub(super) async fn route_node<B: Serialize>(
+    state: &AppState,
+    principal: &Principal,
+    node: Option<&str>,
+    method: Method,
+    path: &str,
+    body: Option<&B>,
+) -> Result<Option<Response>, ApiError> {
+    match node_hop(state, principal, node)? {
+        None => Ok(None),
+        Some(t) => relay(principal, &t, method, path, body).await.map(Some),
+    }
+}
+
+/// `/api/<...>` + 原查询串：转发按节点名路由的 GET 时用，查询串一个字都不改。
+pub(super) fn path_with_query(path: &str, query: Option<&str>) -> String {
+    match query {
+        Some(q) if !q.is_empty() => format!("{path}?{q}"),
+        _ => path.to_owned(),
     }
 }
 
@@ -279,7 +324,7 @@ fn node_unknown(state: &AppState, node: &str) -> ApiError {
         status: StatusCode::NOT_FOUND,
         kind: "node_unknown",
         message: format!(
-            "会话属于节点 {node}，本节点是 {}，它也不是已配置的 peer",
+            "节点 {node} 既不是本节点 {}，也不是已配置的 peer",
             state.registry.local()
         ),
     }
@@ -290,7 +335,7 @@ fn second_hop(state: &AppState, node: &str, from: &str) -> ApiError {
         status: StatusCode::NOT_FOUND,
         kind: "node_unknown",
         message: format!(
-            "会话属于节点 {node}；这个请求来自 peer {from}，本节点 {} 不做第二跳（ADR-004 一跳）",
+            "目标是节点 {node}；这个请求来自 peer {from}，本节点 {} 不做第二跳（ADR-004 一跳）",
             state.registry.local()
         ),
     }

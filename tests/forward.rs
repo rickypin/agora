@@ -680,3 +680,286 @@ async fn revoked_browser_device_closes_forwarded_terminal() {
     .await;
     assert_eq!(reason, "revoked");
 }
+
+// ---------- 在 peer 上起会话（A45，agora-fna；MISSION §6.4 New Agent 选节点） ----------
+
+/// 在 `dir` 里跑一条 git（抄自 tests/worktree_create.rs：本批不动 tests/common）。
+fn git(dir: &std::path::Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("起 git");
+    assert!(
+        out.status.success(),
+        "git {args:?} 失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// `git init -b main` + 首个 commit；本机没有 git 就返回 false（调用方跳过）。
+fn git_init(dir: &std::path::Path) -> bool {
+    std::fs::create_dir_all(dir).unwrap();
+    let probe = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !probe {
+        return false;
+    }
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["config", "user.email", "t@example.com"]);
+    git(dir, &["config", "user.name", "t"]);
+    git(dir, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    true
+}
+
+/// `POST /api/sessions` 带 `node`：本机名 / 不带 → 本机；peer → 整个 body 一跳转发到它，
+/// 201 与 `<node>:<id>` 原样回，会话只在它的运行时里；未知名与 A 不认识的 C 都是 404 node_unknown；
+/// peer 离线是 502 peer_unreachable；B 收到来自 peer A 的 `node: "c"` 是第二跳，也 node_unknown。
+#[tokio::test]
+async fn create_session_forwarded_to_the_chosen_node() {
+    let (a, b, c, to_b) = chain();
+    let body = |node: &str, name: &str| {
+        json!({
+            "node": node,
+            "display_name": name,
+            "agent_type": "shell",
+            "working_directory": "/tmp",
+            "command": "sleep 300",
+        })
+    };
+
+    // 选 B：在 B 上起，A 一个字不存。
+    let r = a
+        .call(Method::POST, "/api/sessions", Some(body("b", "on-b")))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    assert_eq!(r.content_type.as_deref(), Some("application/json"));
+    let gid = gid_of(&r.body);
+    assert!(gid.starts_with("b:"), "{gid}");
+    assert_eq!(r.body["node"], "b");
+    assert_eq!(r.body["display_name"], "on-b");
+    assert!(b.alive(&ref_of(&r.body)), "会话在 B 的运行时里");
+    assert!(a.rt.sessions.lock().unwrap().is_empty(), "A 的运行时没有它");
+    let on_b = b
+        .call(Method::GET, &format!("/api/sessions/{gid}"), None)
+        .await;
+    assert_eq!(on_b.status, StatusCode::OK, "{}", on_b.body);
+    let mine = a.call(Method::GET, "/api/sessions", None).await;
+    assert!(
+        mine.body["sessions"].as_array().unwrap().is_empty(),
+        "A 的库里没有它（视图并入是 peer 客户端的事，这里没起）: {}",
+        mine.body
+    );
+
+    // 本机名与不带 node 一样走本机。
+    let r = a
+        .call(Method::POST, "/api/sessions", Some(body("a", "home")))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    assert!(gid_of(&r.body).starts_with("a:"));
+    assert!(a.alive(&ref_of(&r.body)));
+
+    // B 的校验原样回：display_name 空是 B 说的 400，不是 A 的。
+    let mut bad = body("b", "");
+    bad["display_name"] = json!("   ");
+    let r = a.call(Method::POST, "/api/sessions", Some(bad)).await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.body);
+    assert_eq!(r.body["error"], "bad_request");
+
+    // 既不是本机也不是 peer；C 只是 B 的 peer，A 不认识就是不认识。
+    for node in ["nobody", "c"] {
+        let r = a
+            .call(Method::POST, "/api/sessions", Some(body(node, "nope")))
+            .await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{node}: {}", r.body);
+        assert_eq!(r.body["error"], "node_unknown", "{node}");
+    }
+    assert!(c.rt.sessions.lock().unwrap().is_empty(), "C 上什么都没起");
+
+    // 一跳：B 收到来自 peer A 的 node: "c"，自己认识 C 也不转。
+    let to_b_direct = peer(&b, &a);
+    let resp = to_b_direct
+        .request(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/sessions")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body("c", "hop2").to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let r = Reply::from(resp).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.body);
+    assert_eq!(r.body["error"], "node_unknown");
+    assert!(c.rt.sessions.lock().unwrap().is_empty());
+
+    // peer 离线：按类型报 502，不是 not_found、不静默；恢复后同一请求就通。
+    to_b.set_offline(true);
+    let r = a
+        .call(Method::POST, "/api/sessions", Some(body("b", "later")))
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_GATEWAY, "{}", r.body);
+    assert_eq!(r.body["error"], "peer_unreachable");
+    to_b.set_offline(false);
+    let r = a
+        .call(Method::POST, "/api/sessions", Some(body("b", "later")))
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    assert_eq!(b.rt.sessions.lock().unwrap().len(), 2);
+}
+
+/// New Agent 的四个下拉在 peer 上取：`GET /api/projects` / `/worktrees` / `/tasks` / `/api/agents`
+/// 带 `?node=b` 答的是 B 的 project_roots、B 的 git、B 的 bd、B 的 agent 配置；`POST
+/// /api/projects/worktrees` 带 `node: "b"` 在 B 的仓库里建，A 的磁盘上没有；不带 node 仍是 A 自己的
+/// （A 不认识 B 的仓库 → 400）。
+#[tokio::test]
+async fn catalog_and_worktree_creation_forwarded_to_the_chosen_node() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let repo = root.join("alpha");
+    if !git_init(&repo) {
+        eprintln!("跳过：本机没有可用的 git");
+        return;
+    }
+    // B 的项目根与 agent 配置在 link 之前定：A 的 fake transport 在 link 那一刻快照 B 的 Router。
+    let mut b = Node::new("b");
+    b.state.projects = Arc::new(agora::project::Projects::new(
+        b.state.sessions.db_handle(),
+        vec![root.clone()],
+    ));
+    let mut agents = std::collections::BTreeMap::new();
+    agents.insert(
+        "shell".to_owned(),
+        agora::config::AgentOverride {
+            command: Some("b-shell".to_owned()),
+        },
+    );
+    b.state.agents = Arc::new(agents);
+    let mut a = Node::new("a");
+    a.link(&[&b]);
+    let repo_s = repo.to_string_lossy().into_owned();
+    let enc = |s: &str| s.replace('/', "%2F");
+
+    // agents：B 的覆盖只在 ?node=b 时看得到。
+    let r = a.call(Method::GET, "/api/agents?node=b", None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let shell_on_b = r.body["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["name"] == "shell")
+        .expect("B 也有 shell adapter");
+    assert_eq!(shell_on_b["command"], "b-shell");
+    let r = a.call(Method::GET, "/api/agents", None).await;
+    let shell_on_a = r.body["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["name"] == "shell")
+        .unwrap();
+    assert_ne!(shell_on_a["command"], "b-shell", "不带 node 是 A 自己的");
+
+    // projects：B 扫到 alpha，A 什么都没有。
+    let r = a.call(Method::GET, "/api/projects?node=b", None).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let names: Vec<&str> = r.body["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["alpha"]);
+    let r = a.call(Method::GET, "/api/projects", None).await;
+    assert!(
+        r.body["projects"].as_array().unwrap().is_empty(),
+        "{}",
+        r.body
+    );
+
+    // worktrees / tasks：路径是 B 的仓库，A 自己不认识它（400），带 node=b 就是 B 在答。
+    let r = a
+        .call(
+            Method::GET,
+            &format!("/api/projects/worktrees?path={}&node=b", enc(&repo_s)),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let wts = r.body["worktrees"].as_array().unwrap();
+    assert_eq!(wts.len(), 1);
+    assert_eq!(wts[0]["main"], true);
+    assert_eq!(wts[0]["branch"], "main");
+    let r = a
+        .call(
+            Method::GET,
+            &format!("/api/projects/worktrees?path={}", enc(&repo_s)),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.body);
+    assert_eq!(r.body["error"], "bad_request");
+    let r = a
+        .call(
+            Method::GET,
+            &format!("/api/projects/tasks?path={}&node=b", enc(&repo_s)),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert!(r.body["tasks"].is_array(), "{}", r.body);
+
+    // 新建 worktree：B 的 git 登记多一行，落在 B 的 worktree_root 下；A 的磁盘上没有。
+    let r = a
+        .call(
+            Method::POST,
+            "/api/projects/worktrees",
+            Some(json!({ "node": "b", "path": repo_s, "name": "wt-b" })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    assert_eq!(r.body["main"], false);
+    assert_eq!(r.body["branch"], "wt-b");
+    let listed = git(&repo, &["worktree", "list", "--porcelain"]);
+    assert_eq!(
+        listed.matches("worktree ").count(),
+        2,
+        "B 的仓库应多一个 worktree: {listed}"
+    );
+    assert!(root.join("alpha-wt").join("wt-b").is_dir());
+    // 再建同名：B 的 409 原样回。
+    let r = a
+        .call(
+            Method::POST,
+            "/api/projects/worktrees",
+            Some(json!({ "node": "b", "path": repo_s, "name": "wt-b" })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    assert_eq!(r.body["error"], "worktree_exists");
+    // 未知节点：不发任何请求、B 的仓库不动。
+    let r = a
+        .call(
+            Method::POST,
+            "/api/projects/worktrees",
+            Some(json!({ "node": "nobody", "path": repo_s, "name": "wt-x" })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.body);
+    assert_eq!(r.body["error"], "node_unknown");
+    assert_eq!(
+        git(&repo, &["worktree", "list", "--porcelain"])
+            .matches("worktree ")
+            .count(),
+        2
+    );
+    let r = a.call(Method::GET, "/api/projects?node=nobody", None).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.body);
+    assert_eq!(r.body["error"], "node_unknown");
+}

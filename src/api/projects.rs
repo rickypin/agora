@@ -7,15 +7,38 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Query, RawQuery, State};
+use axum::http::{Method, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::Deserialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 
-use super::{ApiError, AppState};
+use super::{forward, ApiError, AppState};
 use crate::auth::Principal;
 use crate::project::{ProjectError, Projects};
+
+/// 四个端点的 `?node=` / body `node`（New Agent 选 peer 后 Project / Worktree / Task 都从那台机器取，
+/// A45，agora-fna）：没给 / 本机 → 本机；peer → 同路径（含原查询串）经一跳转发；否则 404 `node_unknown`。
+/// 路径、查询串、body 都原样过去，所属节点看 `node` 等于自己就走本机分支。
+async fn forwarded(
+    state: &AppState,
+    principal: &Principal,
+    node: Option<&str>,
+    method: Method,
+    path: &str,
+    raw_query: Option<&str>,
+    body: Option<&impl Serialize>,
+) -> Result<Option<Response>, ApiError> {
+    forward::route_node(
+        state,
+        principal,
+        node,
+        method,
+        &forward::path_with_query(path, raw_query),
+        body,
+    )
+    .await
+}
 
 /// 在 blocking 线程上跑一步项目查询（扫目录 / 起 git 子进程，ADR-001 D8）。
 async fn blocking<T: Send + 'static>(
@@ -33,31 +56,71 @@ async fn blocking<T: Send + 'static>(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+    #[serde(default)]
+    pub node: Option<String>,
+}
+
 /// `project_roots` 扫描结果 ∪ 用过的项目，按最近使用排序（§6.4）。
 pub async fn list(
-    _principal: Principal,
+    principal: Principal,
     State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
+    Query(q): Query<ListQuery>,
+    RawQuery(raw): RawQuery,
+) -> Result<Response, ApiError> {
+    if let Some(resp) = forwarded(
+        &state,
+        &principal,
+        q.node.as_deref(),
+        Method::GET,
+        "/api/projects",
+        raw.as_deref(),
+        forward::NO_BODY,
+    )
+    .await?
+    {
+        return Ok(resp);
+    }
     let projects = blocking(&state.projects, |p| p.list()).await?;
-    Ok(Json(serde_json::json!({ "projects": projects })))
+    Ok(Json(serde_json::json!({ "projects": projects })).into_response())
 }
 
 #[derive(Debug, Deserialize)]
 pub struct WorktreeQuery {
     pub path: PathBuf,
+    #[serde(default)]
+    pub node: Option<String>,
 }
 
 pub async fn worktrees(
-    _principal: Principal,
+    principal: Principal,
     State(state): State<AppState>,
     Query(q): Query<WorktreeQuery>,
-) -> Result<Json<Value>, ApiError> {
+    RawQuery(raw): RawQuery,
+) -> Result<Response, ApiError> {
+    if let Some(resp) = forwarded(
+        &state,
+        &principal,
+        q.node.as_deref(),
+        Method::GET,
+        "/api/projects/worktrees",
+        raw.as_deref(),
+        forward::NO_BODY,
+    )
+    .await?
+    {
+        return Ok(resp);
+    }
     let worktrees = blocking(&state.projects, move |p| p.worktrees(&q.path)).await?;
-    Ok(Json(serde_json::json!({ "worktrees": worktrees })))
+    Ok(Json(serde_json::json!({ "worktrees": worktrees })).into_response())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateWorktreeBody {
+    /// 在哪个节点建（A45）；没给 / 本机 → 本机。
+    #[serde(default)]
+    pub node: Option<String>,
     /// 已知项目（与 GET 的 `?path=` 同一校验）。
     pub path: PathBuf,
     /// 既是目录名也是分支名。
@@ -68,26 +131,46 @@ pub struct CreateWorktreeBody {
 }
 
 /// `POST /api/projects/worktrees` → 201，响应体与 GET 的每项同形（`main: false`）。
-/// Peer 也能调：New Agent 选 peer 节点时经一跳转发在那边建（MISSION §6.4）。
+/// Peer 也能调：New Agent 选 peer 节点时经一跳转发在那边建（MISSION §6.4；A45）。
 pub async fn create_worktree(
     principal: Principal,
     State(state): State<AppState>,
     Json(body): Json<CreateWorktreeBody>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let CreateWorktreeBody { path, name, base } = body;
+) -> Result<Response, ApiError> {
+    if let Some(resp) = forwarded(
+        &state,
+        &principal,
+        body.node.as_deref(),
+        Method::POST,
+        "/api/projects/worktrees",
+        None,
+        Some(&body),
+    )
+    .await?
+    {
+        return Ok(resp);
+    }
+    let CreateWorktreeBody {
+        node: _,
+        path,
+        name,
+        base,
+    } = body;
     let log_name = name.clone();
     let worktree = blocking(&state.projects, move |p| {
         p.create_worktree(&path, &name, base.as_deref())
     })
     .await?;
     tracing::info!(component = "api", principal = %principal.log_id(), worktree = %log_name, "新建 worktree");
-    Ok((StatusCode::CREATED, Json(serde_json::json!(worktree))))
+    Ok((StatusCode::CREATED, Json(serde_json::json!(worktree))).into_response())
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TasksQuery {
     /// 已知项目（与 `GET /api/projects/worktrees` 同一校验）。
     pub path: PathBuf,
+    #[serde(default)]
+    pub node: Option<String>,
 }
 
 /// `GET /api/projects/tasks?path=<repo>`：该仓库 `bd ready --json` 里可起会话的任务
@@ -101,10 +184,24 @@ pub struct TasksQuery {
 /// agora 对 beads 零写入（不变量 12）：整条链路敲到 bd 的只有 `ready --json`，没有 `--claim`
 /// （守卫 `tests/task_pick.rs`、`tests/arch_boundary.rs::beads_is_read_only_and_lives_in_task`）。
 pub async fn tasks(
-    _principal: Principal,
+    principal: Principal,
     State(state): State<AppState>,
     Query(q): Query<TasksQuery>,
-) -> Result<Json<Value>, ApiError> {
+    RawQuery(raw): RawQuery,
+) -> Result<Response, ApiError> {
+    if let Some(resp) = forwarded(
+        &state,
+        &principal,
+        q.node.as_deref(),
+        Method::GET,
+        "/api/projects/tasks",
+        raw.as_deref(),
+        forward::NO_BODY,
+    )
+    .await?
+    {
+        return Ok(resp);
+    }
     let path = q.path;
     let known_path = path.clone();
     blocking(&state.projects, move |p| {
@@ -129,9 +226,7 @@ pub async fn tasks(
         Ok(tasks) => (tasks, None),
         Err(reason) => (Vec::new(), Some(reason)),
     };
-    Ok(Json(
-        serde_json::json!({ "tasks": tasks, "reason": reason }),
-    ))
+    Ok(Json(serde_json::json!({ "tasks": tasks, "reason": reason })).into_response())
 }
 
 impl From<ProjectError> for ApiError {

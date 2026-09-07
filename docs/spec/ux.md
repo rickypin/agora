@@ -58,7 +58,7 @@
 
 Command Palette 支持 fuzzy search sessions / projects / nodes / actions（`New Claude in agora @ zuan`）。目标是让管理 20–50 个 agent 时仍然高效。手机端没有键盘，快捷键与命令面板只在桌面生效（`isDesktop()`：视口窄于 700 px 就不装 window keydown，命令面板也开不出来）。
 
-面板里选 `New <agent> in <project> @ <node>` 直接起会话，走的是和 New Agent 对话框同一个 `POST /api/sessions`，字段取默认值（项目名当 display_name、agent 的默认命令）——面板的意义就是不填表；要填 Task / Worktree 的走对话框（面板末尾那条 `New Agent…`）。侧栏过滤与面板共用 `web/src/fuzzy.ts` 的打分（连续命中、词首命中加分，同分保持原顺序），所以 Alt/Option+N 跳的第 N 条永远等于眼睛看到的第 N 条。
+面板里选 `New <agent> in <project> @ <node>` 直接起会话，走的是和 New Agent 对话框同一个 `POST /api/sessions`，字段取默认值（项目名当 display_name、agent 的默认命令）——面板的意义就是不填表；要填 Task / Worktree 的走对话框（面板末尾那条 `New Agent…`）。本机一组之外，每个**在线**的 peer 各一组（A45，agora-fna）：项目与 agent 从那台机器取（`?node=`），条目带 `node`、节点一跳转发；离线的 peer 没有条目、也不去拉（`web/src/CommandPalette.test.tsx`）。侧栏过滤与面板共用 `web/src/fuzzy.ts` 的打分（连续命中、词首命中加分，同分保持原顺序），所以 Alt/Option+N 跳的第 N 条永远等于眼睛看到的第 N 条。
 
 ## 视觉参考
 
@@ -156,7 +156,9 @@ Prompt:   [ 任务 agora-90t.1：… ]    # 只对接受首条 prompt 的 agent 
 [ Create ]
 ```
 
-V1 的取舍（agora-xqa.12）：Node 只有本机（选 peer 归 agora-fna，A45），下拉禁用；Project 是可输入的下拉
+Node（A45，agora-fna；`web/src/NewAgentDialog.tsx`）：第一项本机（名字取 `/api/system` 的 `node`），其后每个已配置的 peer 一项，数据源是 Header 同一份 `nodeStatuses`（`HealthWatcher` 的 peers 段 + 事件流的 `peer_changed`，不另起轮询）。在线的 peer 可选；离线的**列出来但不可选**（`<option disabled>`），文字按类型加一段——`版本不兼容`（`last_error = incompatible_version`）、见过的离线 `stale`、没见过的 `未连接`——选了只会得到 502，不如在下拉里就说清楚；对话框开着时所选 peer 掉线，它变灰、Create 也禁用。选了 peer：Project / Worktree / Task / Agent 四个下拉**全部改从那台机器取**（五个 catalog 端点带 `node=`，`docs/spec/api.md`「在 peer 上起会话」），上一台机器的项目一个都不留在下拉里；「新建…」与 Create 的 body 带 `node`，在那边执行；201 的 `id` 带它的前缀，新行随 peer 视图进侧栏、带 `@ <node>`。守卫 `web/src/NewAgentDialog.test.tsx`。
+
+V1 的取舍（agora-xqa.12）：Project 是可输入的下拉
 （`<input list>`）——列表来自扫描并按最近使用排序，但 `project_roots` 默认为空，只给下拉的话
 新装的 agora 一个会话都起不了；Worktree 列现有的，末尾一项「新建…」（A44，agora-h1k.1）：选中后
 出现名字输入框（默认取 Name 栏的值；issue id 默认随 A43）与「建」按钮，`POST /api/projects/worktrees`

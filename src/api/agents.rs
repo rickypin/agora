@@ -5,18 +5,42 @@
 //! `tests/arch_boundary.rs` 只守得住 `src/`。每项另带 `prompt: bool`——接不接受首条 prompt
 //! （agora-h1k.2），同样是 Adapter 说的。
 
-use axum::extract::State;
+use axum::extract::{Query, RawQuery, State};
+use axum::http::Method;
+use axum::response::{IntoResponse, Response};
 use axum::Json;
+use serde::Deserialize;
 use serde_json::Value;
 
-use super::{ApiError, AppState};
+use super::{forward, ApiError, AppState};
 use crate::adapter::ADAPTERS;
 use crate::auth::Principal;
 
+#[derive(Debug, Deserialize)]
+pub struct AgentsQuery {
+    /// 问哪个节点装了什么（New Agent 选 peer 后 Agent 下拉换成那台机器的，A45）；没给 / 本机 → 本机。
+    #[serde(default)]
+    pub node: Option<String>,
+}
+
 pub async fn list(
-    _principal: Principal,
+    principal: Principal,
     State(state): State<AppState>,
-) -> Result<Json<Value>, ApiError> {
+    Query(q): Query<AgentsQuery>,
+    RawQuery(raw): RawQuery,
+) -> Result<Response, ApiError> {
+    if let Some(resp) = forward::route_node(
+        &state,
+        &principal,
+        q.node.as_deref(),
+        Method::GET,
+        &forward::path_with_query("/api/agents", raw.as_deref()),
+        forward::NO_BODY,
+    )
+    .await?
+    {
+        return Ok(resp);
+    }
     let agents: Vec<Value> = ADAPTERS
         .iter()
         .map(|a| {
@@ -29,7 +53,7 @@ pub async fn list(
             })
         })
         .collect();
-    Ok(Json(serde_json::json!({ "agents": agents })))
+    Ok(Json(serde_json::json!({ "agents": agents })).into_response())
 }
 
 /// 配置覆盖 > Adapter 默认。与 `POST /api/sessions` 的缺省链是同一条，改一处要改两处。

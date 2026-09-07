@@ -340,6 +340,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         <NewAgentDialog
           api={api}
           catalog={catalog}
+          nodes={nodes}
           onClose={() => setNewAgentOpen(false)}
           onCreated={(id) => setPendingOpen(id)}
         />
@@ -349,6 +350,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           rows={rows}
           api={api}
           catalog={catalog}
+          nodes={nodes}
           onOpen={openTab}
           onNewAgent={openNewAgent}
           onCreated={(id) => setPendingOpen(id)}
