@@ -11,7 +11,7 @@
 | M1b | `agora-dvh` | Agent 感知 | `agora-xqa` | MISSION §12：A14–A18、A22、A23、A32；另接过 A1 的未登记会话那一半（Unknown Agent 的侧栏展示与采纳入口，A22 的前置，agora-dvh.12 / agora-7cu），A1 两半都做完才算过；补 A36 中不变量 10 的测试。逐条可打勾；每条对应 epic 内至少一个 issue。 | closed  |
 | M2a | `agora-7ku` | peer 核心 | `agora-dvh` | MISSION §12：A27、A30、A31、A33、A34、A38。（agora-7ku.12 是 A29 的策略半边，A29 本身由 M2b 认领；A36 不变量 8、11 的收口在 M2b。） | closed  |
 | M2b | `agora-s4r` | 安装运维与收口 | `agora-dvh` | MISSION §12：A26、A29、A39；补齐 A36 中不变量 8、11 的测试。 | closed  |
-| M3 | `agora-h1k` | 产出与起会话增强 | `agora-dvh` | MISSION §12：A40–A44。 | open 5/5 |
+| M3 | `agora-h1k` | 产出与起会话增强 | `agora-dvh` | MISSION §12：A40–A44。 | closed  |
 | V2-1 | `agora-thc` | 手机客户端与 PWA（iOS / Android） | `agora-7ku`, `agora-s4r` | MISSION §11 手机条目：A13、A19、A28、A35、A37。 | open 0/8 |
 
 ## 演示剧本（epic 的 design 字段；agent 先代检，人只看 👁 步骤与代检报告后关闭 epic，MISSION §1.5）
@@ -74,9 +74,10 @@ M2b 演示剧本（agent 代检，👁 只有第 2 步的物理变体；tests/in
 
 M3 演示剧本（agent 代检，无 👁 步骤；人看代检报告后关闭 epic，MISSION §1.5）
 前置：M1b 剧本通过；本机 agora 仓库有 beads（bd ready 非空）；config 里 worktree_root 用默认值。
+
 1. New Agent：Project 选 agora → Task 字段列出 bd ready 的任务，选一个 → Name、Worktree 名（= issue id）、首条 prompt（含 issue id 与 claim 提示）自动填好；Worktree 选'新建…' → 创建后自动选中，git worktree list 里多一行、分支基于主 worktree 当前分支（A43 A44；agora-h1k.2 / agora-h1k.1）。Create 后 bd show 该 issue 仍是 open：agora 没写 beads（不变量 12）。
-2. 会话行展开 → 显示该任务的验收标准全文（与 bd show 一致、可折叠）；在 beads 里改验收标准，几秒后展开区跟着变，agora 的库里没有这段文字（A40；agora-h1k.3）。
-3. 让 agent 改两个文件后回 TURN_DONE → 行展开列出改动文件；点'看 diff'→ 新标签页开一个只读终端显示 git diff，打字无效、关掉标签即消失、侧栏不多一行；期间 git status 与 reflog 证明没有任何写操作（A41；agora-h1k.5）。
+2. 会话行展开 → 显示该任务的验收标准全文（与 bd show 一致、可折叠）；在 beads 里改验收标准，缓存过期（task 索引 TTL 300 s）后展开区跟着变，agora 的库里没有这段文字（A40；agora-h1k.3）。
+3. 让 agent 改两个文件后回 TURN_DONE → 行展开列出改动文件；点'看 diff'→ 主区切成只读终端显示 git diff（crumb 是 git diff / <名字>；没有顶栏标签页，agora-a46），打字无效、「关闭 diff」回到该会话的终端、侧栏不多一行；期间 git status 与 reflog 证明没有任何写操作（A41；agora-h1k.5）。
 4. 停 daemon，在 tmux 里让一个会话退出，等 1 分钟再起 daemon → 该会话 ended_at 是退出时刻而不是 daemon 起来的时刻；停 daemon 期间一个会话进入 WAITING，起 daemon 重放投递箱后'waiting Nm'从事件时间算起（A42；agora-h1k.4）。
 5. CI 绿；tests/arch_boundary.rs 的 git 子进程白名单与 beads 零写入守卫逐条关掉变红。
 全程单节点、桌面、只读：不做合并、不做 diff 组件、不写 beads（§11）。
