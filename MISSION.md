@@ -132,7 +132,7 @@ MVP 的完成定义不是"可以在浏览器里打开终端"，而是：
 | 1 | Browser crash ≠ Agent crash |
 | 2 | WebSocket disconnect ≠ Agent crash |
 | 3 | agora daemon crash ≠ Agent crash |
-| 4 | Close Tab ≠ Kill Session |
+| 4 | Detach（关闭终端视图 / 切到别的行）≠ Kill Session |
 | 5 | One broken Agent must not affect another Agent |
 | 6 | UI state is disposable. Agent state is persistent. |
 | 7 | 运行时是 Agent persistence 的 Source of Truth；SQLite 只保存 metadata / preferences / mapping，不是 process existence 的 Source of Truth【ADR-001】 |
@@ -169,7 +169,7 @@ MVP 的完成定义不是"可以在浏览器里打开终端"，而是：
 
 ### 3.1 组件与 Ownership
 
-每个节点一个 daemon：**Session Manager + State Detector + Terminal Gateway**，其下是持久化运行时【ADR-001】与其中的 agent 进程，旁边是只存 metadata 的 SQLite。客户端是浏览器里的同一个 Web（Dashboard / Tabs / xterm.js / 通知），经 HTTP（仅 loopback）或 HTTPS 与 WebSocket 连接某一个节点（§8 两个监听器）。总体架构图见 `docs/spec/architecture.md`。
+每个节点一个 daemon：**Session Manager + State Detector + Terminal Gateway**，其下是持久化运行时【ADR-001】与其中的 agent 进程，旁边是只存 metadata 的 SQLite。客户端是浏览器里的同一个 Web（Dashboard / xterm.js 终端 / 通知），经 HTTP（仅 loopback）或 HTTPS 与 WebSocket 连接某一个节点（§8 两个监听器）。总体架构图见 `docs/spec/architecture.md`。
 
 Ownership 边界（MVP 最重要的架构边界）：
 
@@ -320,7 +320,7 @@ Display name 可任意修改，运行时身份不变。一行显示的名字有�
 | 操作 | 语义 |
 |---|---|
 | **Detach** | 停止浏览，agent 继续运行 |
-| **Close Tab** | 与 Detach 等价 |
+| **关闭终端视图**（主区 crumb 的「关闭」，或点侧栏别的行） | 与 Detach 等价 |
 | **Archive** | 从默认 Dashboard 隐藏，保留运行时会话（可放 V2） |
 | **Kill** | 杀掉 agent 进程，**必须显式确认**；运行时会话连同其输出保留，按下面的清理策略回收（ADR-001 D4：scrollback 还在、Restart 仍是同一会话） |
 | **Delete Metadata** | 移除 agora metadata，但不杀运行时会话 |
@@ -328,7 +328,7 @@ Display name 可任意修改，运行时身份不变。一行显示的名字有�
 
 **已退出会话的清理**：FINISHED / FAILED / 被 Kill 的运行时会话在用户看过之后清理（Dashboard 里确认或 Delete Metadata 时一并清掉保留的输出）。这不是 kill——进程已经不在——所以不需要确认，但不得在用户看到结果之前发生；V1 不做定时回收。策略细节见 ADR-001 D4。
 
-浏览器 Tab 表示当前浏览器打开的 agent，而不是 agent 生命周期。切换 / 关闭 Tab 不允许：restart session、recreate 运行时会话、丢失 agent 状态、终止 PTY 拥有的进程。
+主区显示的是侧栏当前选中行的终端，这是浏览器的视图状态，而不是 agent 生命周期；页面只有这一个选中集合——曾经的顶栏 Tabs 是第二个选中集合（标签页管主区、侧栏行管展开区，二者可不一致），用户 2026-09-07 反馈"只有左侧栏时很容易上手，加上顶栏就不知道该如何操作"，去掉（agora-a46）。切换行 / 关闭终端视图不允许：restart session、recreate 运行时会话、丢失 agent 状态、终止 PTY 拥有的进程。
 
 ---
 
@@ -415,7 +415,7 @@ MVP 依赖运行时 scrollback，不自行构建 terminal transcript database。
 ### 6.2 MVP Screens（只需要 4 个）
 
 - **Screen A — Dashboard**：agents / status / needs attention；**WAITING 行可就地回答、TURN_DONE 行可就地下一条指令**，不必进 Screen B
-- **Screen B — Terminal Workspace**：Sidebar + Tabs + Terminal
+- **Screen B — Terminal Workspace**：Sidebar + Terminal（主区只跟侧栏选中行，没有顶栏 Tabs；§4.6）
 - **Screen C — New Agent Dialog**：创建 agent
 - **Screen D — Session Settings**：修改 Display Name / Project，以及危险操作
 
@@ -645,7 +645,7 @@ MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终�
 - [ ] **A16** 手动在 Terminal.app 里起的 Claude Code 会话出现在列表里（hook 采纳，external）
 - [ ] **A17** WAITING agent 会进入 Attention 区域
 - [ ] **A18** WAITING / TURN_DONE / FINISHED / FAILED 可以触发 browser notification
-- [ ] **A20** Close Tab 不会 kill agent
+- [ ] **A20** 关闭终端视图 / 切换行不会 kill agent
 - [ ] **A21** Kill 必须经过 explicit confirmation
 - [ ] **A22** 可以 adopt 外部创建的运行时会话
 - [ ] **A23** 每个会话显示"在做的任务"（issue id + 标题，或首条 prompt 摘要）；attention 同分按任务优先级排序

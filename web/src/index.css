@@ -76,12 +76,8 @@ select:disabled { opacity: 0.5; }
 .st-finished, .st-idle { color: var(--muted); }
 
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-.tabs { display: flex; gap: 2px; padding: 4px 6px 0; border-bottom: 1px solid var(--border); background: var(--panel); overflow-x: auto; }
-.tab { display: flex; align-items: center; border: 1px solid transparent; border-bottom: 0; border-radius: 4px 4px 0 0; color: var(--muted); }
-.tab.active { background: var(--bg); border-color: var(--border); color: var(--fg); }
-.tab-label, .tab-close { background: none; border: 0; padding: 3px 6px; color: inherit; display: flex; gap: 6px; align-items: center; }
-.tab-close:hover { color: var(--bad); }
 .crumb { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; border-bottom: 1px solid var(--border); color: var(--muted); }
+.crumb-actions { display: flex; gap: 6px; }
 .pane { position: relative; flex: 1; min-height: 0; display: flex; }
 .pane .term { flex: 1; min-width: 0; }
 .empty { padding: 2rem; }
@@ -166,4 +162,3 @@ li.stale > .row:hover, li.stale > .row.selected { opacity: 0.8; }
 .chg-deleted, .chg-unmerged { color: var(--bad); }
 /* 只读 diff 终端的连接状态与它的标签页点。 */
 .link-read_only { color: var(--accent); }
-.st-diff { color: var(--muted); }

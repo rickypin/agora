@@ -5,7 +5,7 @@ import type { SessionRow, UnregisteredRow } from "./events";
 import { Header, type NodeStatus } from "./Header";
 import { rowName, SidebarRow, str } from "./SessionRow";
 
-// 行组件与它的两个小工具搬去了 SessionRow.tsx（agora-h1k.3 接缝，2026-09-06）；Tabs / CommandPalette /
+// 行组件与它的两个小工具搬去了 SessionRow.tsx（agora-h1k.3 接缝，2026-09-06）；CommandPalette /
 // SessionSettings 仍从这里 import，所以原样再导出一次，调用方一行不改。
 export { rowName, SidebarRow, statusSymbol } from "./SessionRow";
 

@@ -164,7 +164,7 @@ describe("Workspace", () => {
     // 点击：该行成为 active，就地回答区随行展开（不是终端的事）。
     expect(screen.getByTestId("respond-n:b")).toBeTruthy();
     expect(screen.getByTestId("allow")).toBeTruthy();
-    expect(screen.getByTestId("tab-n:b")).toBeTruthy();
+    expect(screen.getByTestId("term-n:b")).toBeTruthy();
   });
 
   it("asks for notification permission once, in a banner that goes away after the answer", async () => {
@@ -187,19 +187,44 @@ describe("Workspace", () => {
     expect(n.created.map((c) => c.title)).toEqual(["t2"]);
   });
 
-  it("opening / switching / closing tabs only mounts and unmounts terminals, never writes to the API (A20)", async () => {
+  it("switching rows and closing the terminal view only mounts and unmounts terminals, never writes to the API (A20)", async () => {
+    // 主区只跟侧栏 active 行，没有顶栏标签页（agora-a46）：切行 = 旧终端 detach、新终端挂载；
+    // crumb 的「关闭」= Detach：主区清空。全程零写请求（MISSION §4.6；不变量 4）。
     const t = setup([row("n:a"), row("n:b")]);
     await online(t);
+    expect(screen.queryByRole("tablist")).toBeNull();
     fireEvent.click(screen.getByTestId("row-n:a"));
+    expect(screen.getByTestId("crumb").textContent).toBe("a / claude @ n");
     fireEvent.click(screen.getByTestId("row-n:b"));
     expect(mounted).toEqual(["n:a", "n:b"]);
-    expect(unmounted).toEqual(["n:a"]); // 切 Tab：旧终端 detach
-    fireEvent.click(screen.getByTestId("tab-n:a"));
-    fireEvent.click(screen.getByTestId("close-n:a"));
-    expect(screen.queryByTestId("tab-n:a")).toBeNull();
-    expect(screen.getByTestId("term-n:b")).toBeTruthy();
+    expect(unmounted).toEqual(["n:a"]); // 切行：旧终端 detach
+    expect(screen.getByTestId("crumb").textContent).toBe("b / claude @ n");
+    expect(screen.queryByTestId("term-n:a")).toBeNull();
+    fireEvent.click(screen.getByTestId("close-view"));
+    expect(screen.queryByTestId("term-n:b")).toBeNull();
+    expect(screen.queryByTestId("crumb")).toBeNull();
+    expect(screen.getByText("从左侧选一个 agent。")).toBeTruthy();
+    expect(unmounted).toEqual(["n:a", "n:b"]);
+    // 侧栏行都还在：关掉的只是视图。
+    expect(screen.getAllByTestId(/^row-n:/).length).toBe(2);
     await flush();
     expect(t.requests.filter((r) => r.method !== "GET")).toEqual([]);
+  });
+
+  it("the terminal view clears when its session leaves the list (agora-a46)", async () => {
+    const rows = [row("n:a"), row("n:b")];
+    const t = setup(rows);
+    await online(t);
+    fireEvent.click(screen.getByTestId("row-n:a"));
+    expect(screen.getByTestId("term-n:a")).toBeTruthy();
+    rows.splice(0, 1);
+    await act(async () => {
+      t.sock.send([{ type: "session_removed", id: "n:a" }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(screen.queryByTestId("term-n:a")).toBeNull();
+    expect(screen.getByText("从左侧选一个 agent。")).toBeTruthy();
+    expect(unmounted).toEqual(["n:a"]);
   });
 
   it("a status_changed event re-renders only the affected sidebar row (no full refresh)", async () => {
@@ -289,8 +314,8 @@ describe("Workspace", () => {
     expect(screen.getByTestId("kill")).toHaveProperty("disabled", false);
   });
 
-  it("New Agent opens the created session as a tab only once it is in the list", async () => {
-    // POST 的 201 先于 `session_created` 到达：那时开 Tab 会被 prune 立刻关掉
+  it("New Agent selects the created session only once it is in the list", async () => {
+    // POST 的 201 先于 `session_created` 到达：那时选中会被"行没了就清空"立刻清掉
     // （列表里还没有这一行），用户看到的是"创建了但没打开"。
     const t = setup([]);
     await online(t);
@@ -299,13 +324,13 @@ describe("Workspace", () => {
     fireEvent.click(screen.getByTestId("create"));
     await flush();
     expect(t.requests.some((r) => r.method === "POST" && r.url === "/api/sessions")).toBe(true);
-    expect(screen.queryByTestId("tab-n:new")).toBeNull();
+    expect(screen.queryByTestId("term-n:new")).toBeNull();
 
     await act(async () => {
       t.sock.send([{ type: "session_created", id: "n:new", session: row("n:new") }]);
       await new Promise((r) => setTimeout(r, 5));
     });
-    expect(screen.getByTestId("tab-n:new")).toBeTruthy();
+    expect(screen.getByTestId("term-n:new")).toBeTruthy();
     expect(mounted).toEqual(["n:new"]);
   });
 
@@ -383,7 +408,8 @@ describe("Workspace", () => {
     expect(screen.getByTestId("counts").textContent).toBe("Running 1 · Needs Input 2 · Turn Done 1 · Failed 1");
     // Alt/Option+N 跳的是显示顺序里的第 N 条：第 2 条是 p1。
     fireEvent.keyDown(window, { code: "Digit2", altKey: true });
-    expect(screen.getByTestId("tab-n:p1")).toBeTruthy();
+    expect(screen.getByTestId("term-n:p1")).toBeTruthy();
+    expect(screen.getByTestId("crumb").textContent).toContain("@ n");
   });
 
   it("shows the two hook lines, or one pane preview line when the session has no hooks", async () => {
@@ -462,7 +488,7 @@ describe("Workspace", () => {
     const banner = screen.getByTestId("api-version-mismatch");
     expect(banner.textContent).toBe("⚠ 节点 API 版本 2.0，页面按 1.0 构建，请刷新页面");
     expect(banner.getAttribute("title")).toBe("节点 API 版本 2.0，页面按 1.0 构建，请刷新页面");
-    // 会话区一个字不渲染：侧栏行、Tabs、终端都不在——快照已经到了 store 里，但形态可能变了，渲染就是错读。
+    // 会话区一个字不渲染：侧栏行、终端都不在——快照已经到了 store 里，但形态可能变了，渲染就是错读。
     expect(t.store.snapshot()).toHaveLength(2);
     expect(screen.queryByTestId("row-n:a")).toBeNull();
     expect(screen.queryByTestId("row-n:b")).toBeNull();
@@ -551,7 +577,7 @@ describe("Workspace", () => {
 });
 
 describe("Workspace · 看 diff（MISSION §6.3 看结果；A41，agora-h1k.5）", () => {
-  it("看 diff opens a read-only diff tab on the diff socket; closing it closes only that, rows unchanged", async () => {
+  it("看 diff swaps the main area to a read-only diff on the diff socket; closing it returns to the terminal, rows unchanged", async () => {
     const t = setup([row("n:a", "turn_done"), row("n:b")]);
     await online(t);
     fireEvent.click(screen.getByTestId("row-n:a"));
@@ -563,8 +589,7 @@ describe("Workspace · 看 diff（MISSION §6.3 看结果；A41，agora-h1k.5）
     expect(sockets).toEqual(["rw:default"]);
 
     fireEvent.click(screen.getByTestId("diff-n:a"));
-    // 新标签页 `diff · a`，crumb 是 `git diff / a` 且没有 Settings；终端以 diff socket 只读挂载，会话终端已卸载。
-    expect(screen.getByTestId("tab-diff:n:a").textContent).toContain("diff · a");
+    // 主区切成 diff：crumb 是 `git diff / a` 且没有 Settings；终端以 diff socket 只读挂载，会话终端已卸载。
     expect(screen.getByTestId("crumb-diff").textContent).toBe("git diff / a");
     expect(screen.queryByText("Settings")).toBeNull();
     expect(screen.getByTestId("term-diff-n:a")).toBeTruthy();
@@ -576,16 +601,19 @@ describe("Workspace · 看 diff（MISSION §6.3 看结果；A41，agora-h1k.5）
     expect(screen.getByTestId("changes-list-n:a")).toBeTruthy();
     expect(t.requests.filter((r) => r.url === "/api/sessions/n%3Aa/changes").length).toBe(1);
 
-    // 别的行变了（byId 变 → prune 跑一遍）：diff 标签留着——existing 集合里有它。
+    // 别的行变了（byId 变 → "行没了就清空"跑一遍）：a 还在，diff 视图留着。
     await act(async () => {
       t.sock.send([{ type: "status_changed", id: "n:b", status: "waiting", source: "hook", reason: "permission", alive: true }]);
       await new Promise((r) => setTimeout(r, 5));
     });
-    expect(screen.getByTestId("tab-diff:n:a")).toBeTruthy();
+    expect(screen.getByTestId("term-diff-n:a")).toBeTruthy();
+    // 再点一次看 diff：不重挂（WS 不重连）。
+    fireEvent.click(screen.getByTestId("diff-n:a"));
+    expect(mounted).toEqual(["n:a", "n:a"]);
 
-    // 关标签：diff 终端卸载（= WS 关），回到会话终端；rows 不变；全程没有写请求。
-    fireEvent.click(screen.getByTestId("close-diff:n:a"));
-    expect(screen.queryByTestId("tab-diff:n:a")).toBeNull();
+    // 「关闭 diff」：diff 终端卸载（= WS 关），回到会话终端；rows 不变；全程没有写请求。
+    fireEvent.click(screen.getByTestId("close-diff"));
+    expect(screen.queryByTestId("crumb-diff")).toBeNull();
     expect(screen.queryByTestId("term-diff-n:a")).toBeNull();
     expect(screen.getByTestId("term-n:a")).toBeTruthy();
     expect(unmounted).toEqual(["n:a", "n:a"]);
@@ -594,7 +622,7 @@ describe("Workspace · 看 diff（MISSION §6.3 看结果；A41，agora-h1k.5）
     expect(t.requests.filter((r) => r.method !== "GET")).toEqual([]);
   });
 
-  it("a diff tab goes away with its session, and 看 diff on an already-open diff just activates it", async () => {
+  it("clicking another row leaves the diff for that row's terminal; the diff goes away with its session", async () => {
     // session_removed 会让 store 重拉快照，所以快照里也得把 a 拿掉（同一个数组）。
     const rows = [row("n:a", "finished"), row("n:b", "finished")];
     const t = setup(rows);
@@ -602,25 +630,27 @@ describe("Workspace · 看 diff（MISSION §6.3 看结果；A41，agora-h1k.5）
     fireEvent.click(screen.getByTestId("row-n:a"));
     await flush();
     fireEvent.click(screen.getByTestId("diff-n:a"));
+    expect(screen.getByTestId("term-diff-n:a")).toBeTruthy();
+    // 点 b 行：主区是 b 的终端，a 的 diff 卸载（WS 关）。
     fireEvent.click(screen.getByTestId("row-n:b"));
     await flush();
+    expect(screen.queryByTestId("term-diff-n:a")).toBeNull();
+    expect(screen.getByTestId("term-n:b")).toBeTruthy();
+    // 在看 b 的 diff 时再点 b 行：回到 b 的终端。
     fireEvent.click(screen.getByTestId("diff-n:b"));
-    expect(screen.getByTestId("tab-diff:n:a")).toBeTruthy();
-    expect(screen.getByTestId("tab-diff:n:b").closest('[role="tab"]')?.getAttribute("aria-selected")).toBe("true");
-    // 再点 a 的看 diff：不开第二个，只激活。
-    fireEvent.click(screen.getByTestId("row-n:a"));
-    await flush();
-    fireEvent.click(screen.getByTestId("diff-n:a"));
-    expect(screen.getAllByTestId(/^tab-diff:/).length).toBe(2);
-    expect(screen.getByTestId("tab-diff:n:a").closest('[role="tab"]')?.getAttribute("aria-selected")).toBe("true");
-    // 会话 a 被删：它的终端标签与 diff 标签一起剪掉，b 的都还在。
-    rows.splice(0, 1);
+    expect(screen.getByTestId("term-diff-n:b")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("row-n:b"));
+    expect(screen.queryByTestId("term-diff-n:b")).toBeNull();
+    expect(screen.getByTestId("term-n:b")).toBeTruthy();
+    // 正在看 b 的 diff 时会话 b 被删：主区回到空。
+    fireEvent.click(screen.getByTestId("diff-n:b"));
+    rows.splice(1, 1);
     await act(async () => {
-      t.sock.send([{ type: "session_removed", id: "n:a" }]);
+      t.sock.send([{ type: "session_removed", id: "n:b" }]);
       await new Promise((r) => setTimeout(r, 5));
     });
-    expect(screen.queryByTestId("tab-n:a")).toBeNull();
-    expect(screen.queryByTestId("tab-diff:n:a")).toBeNull();
-    expect(screen.getByTestId("tab-diff:n:b")).toBeTruthy();
+    expect(screen.queryByTestId("term-diff-n:b")).toBeNull();
+    expect(screen.queryByTestId("crumb-diff")).toBeNull();
+    expect(screen.getByText("从左侧选一个 agent。")).toBeTruthy();
   });
 });

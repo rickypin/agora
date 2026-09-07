@@ -118,8 +118,8 @@ describe("不吞终端的 Ctrl 键（MISSION §6.5 硬约束）", () => {
     const term = screen.getByTestId("term-mac:a");
     term.focus();
     expect(press({ key: k, ctrlKey: true }, term)).toBe(false);
-    // 也不能顺手干别的：Tab 没变、没发过任何写请求。
-    expect(screen.getByTestId("tab-mac:a")).toBeTruthy();
+    // 也不能顺手干别的：主区没变、没发过任何写请求。
+    expect(screen.getByTestId("term-mac:a")).toBeTruthy();
     await flush();
     expect(t.requests.filter((r) => r.method !== "GET")).toEqual([]);
   });
@@ -194,13 +194,13 @@ describe("Command Palette", () => {
       agent_type: "codex",
       working_directory: "/code/sglog",
     });
-    // 和 New Agent 一样：会话进了列表才开 Tab（不然会被 prune 立刻关掉）。
-    expect(screen.queryByTestId("tab-mac:new")).toBeNull();
+    // 和 New Agent 一样：会话进了列表才选中（不然会被"行没了就清空"立刻清掉）。
+    expect(screen.queryByTestId("term-mac:new")).toBeNull();
     await act(async () => {
       t.sock.send([{ type: "session_created", id: "mac:new", session: row("mac:new") }]);
       await new Promise((r) => setTimeout(r, 5));
     });
-    expect(screen.getByTestId("tab-mac:new")).toBeTruthy();
+    expect(screen.getByTestId("term-mac:new")).toBeTruthy();
   });
 
   it("面板开着时全局快捷键让位给它", async () => {

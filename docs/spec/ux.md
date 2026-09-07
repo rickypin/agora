@@ -8,7 +8,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │ agora                          mac ●   zuan ●        │
 ├─────────────────┬───────────────────────────────────────────┤
-│ AGENTS          │ agora / claude @ mac                      │
+│ AGENTS          │ agora / claude @ mac    [Settings] [关闭] │
 │                 │                                           │
 │ ● agora   mac   │ ┌───────────────────────────────────────┐ │
 │   Claude        │ │                                       │ │
@@ -54,7 +54,7 @@
 
 ### 终端焦点（agora-p29）
 
-打开一个会话就该能直接打字，不用先点终端。TerminalView 在三处交焦点：① 挂载时 `term.focus()` 一次；② WS 收到 `status: attached` 再一次——新开的浏览器标签页里挂载那一次偶尔不生效（2026-09-03 目检：attach 成功、键入不进 pane、点一下终端才好），但用户这会儿已经在别的文本输入（侧栏过滤、Rename、New Agent 表单）里打字的话不抢；③ `.term-host` 上的 pointerdown 把焦点交回 xterm 的 helper textarea，点在 `.xterm` 之外的 padding 上也算——xterm 自己的 mousedown 只覆盖 `.xterm` 内部，padding 那一圈由 agora 取消浏览器缺省的 mousedown，不然焦点会被挪到 body。不在 pointerdown 上 `preventDefault`：那会连带取消后面的 mousedown / click，xterm 的选区靠它们。守卫 `web/src/TerminalView.test.tsx`。④ 点**已经激活**的侧栏行或标签页（agora-vcc，2026-09-05 代检）：Tab reducer 对已激活的 id 是 no-op，TerminalView 不重挂也不会再 focus，焦点留在刚点的按钮上——Workspace 在这种命中时显式调用挂着的终端的 `focus()`（TerminalView 经 `focusRef` 暴露），不在行 / 标签按钮的 mousedown 上 `preventDefault`，侧栏的键盘可达性不变。守卫 `web/src/Workspace.focus.test.tsx`。人工复现步骤在 M1a 演示剧本第 4 步（新标签页打开会话 → 直接键入）。
+打开一个会话就该能直接打字，不用先点终端。TerminalView 在三处交焦点：① 挂载时 `term.focus()` 一次；② WS 收到 `status: attached` 再一次——新开的浏览器标签页里挂载那一次偶尔不生效（2026-09-03 目检：attach 成功、键入不进 pane、点一下终端才好），但用户这会儿已经在别的文本输入（侧栏过滤、Rename、New Agent 表单）里打字的话不抢；③ `.term-host` 上的 pointerdown 把焦点交回 xterm 的 helper textarea，点在 `.xterm` 之外的 padding 上也算——xterm 自己的 mousedown 只覆盖 `.xterm` 内部，padding 那一圈由 agora 取消浏览器缺省的 mousedown，不然焦点会被挪到 body。不在 pointerdown 上 `preventDefault`：那会连带取消后面的 mousedown / click，xterm 的选区靠它们。守卫 `web/src/TerminalView.test.tsx`。④ 点**已经激活**的侧栏行（agora-vcc，2026-09-05 代检）：视图状态不变，TerminalView 不重挂也不会再 focus，焦点留在刚点的按钮上——Workspace 在这种命中时显式调用挂着的终端的 `focus()`（TerminalView 经 `focusRef` 暴露），不在行按钮的 mousedown 上 `preventDefault`，侧栏的键盘可达性不变。守卫 `web/src/Workspace.focus.test.tsx`。人工复现步骤在 M1a 演示剧本第 4 步（新标签页打开会话 → 直接键入）。
 
 Command Palette 支持 fuzzy search sessions / projects / nodes / actions（`New Claude in agora @ zuan`）。目标是让管理 20–50 个 agent 时仍然高效。手机端没有键盘，快捷键与命令面板只在桌面生效（`isDesktop()`：视口窄于 700 px 就不装 window keydown，命令面板也开不出来）。
 
@@ -81,7 +81,7 @@ RUNNING
 
 侧栏选中行下方是就地 respond 区（MISSION §6.3 §7.3，`web/src/Respond.tsx`）：WAITING 且 `reason = permission`、`respond_via = hook` → 问题文本（`pending_decision.summary`，形如 `Bash: git push origin main`——工具名 + `tool_input` 主参数的首行，截到 200 字符加 `…`；载荷没带 `tool_input` 才只剩工具名，`src/adapter/hooks.rs permission_summary`）+ Allow / Deny / 打开终端，`respond_within_secs` 短于 5 分钟（Codex 20 s）时再加一行"N 秒内没答会交回终端"；WAITING 的其它情形（`question`，或 `respond_via = terminal`）→ 只有问题文本与"打开终端"；TURN_DONE → `↳` 最后一条回复 + "下一条指令"输入框（发 text，尾部带换行）。Allow / Deny 撞上 `no_pending_decision`（终端先答了 / 过期）只显示一行提示，行状态随事件自己变。
 
-选中行的展开区从上到下（`web/src/SessionRow.tsx`；agora-h1k.3 定）：① 就地 respond（上一段，WAITING / TURN_DONE 才有）；② **验收标准**折叠块——`task.acceptance`（`docs/spec/api.md`，读自 beads 的 acceptance_criteria、不复制进 agora 的库，不变量 12）全文、多行原样，一行 summary `▾ 验收标准 · agora-h1k.3` 可折叠，默认展开（行展开就是为了看"做完算什么"，MISSION §6.3 看结果 / A40）；没有任务或 beads 里没写不占位。respond 在上：回答问题 / 给下一条指令是先做的事，对照验收是看结果时的事；③ **改动文件**（`web/src/Changes.tsx`；A41，agora-h1k.5）接在验收标准之后，两者并排对照——`GET /api/sessions/:id/changes`（`docs/spec/api.md`「只读产出」，该 worktree 的只读 `git status`）的列表 `<单字母> <path>`（M / A / D / R / C / T / U / ?，与 `git status --short` 同一习惯），标题带分支名，空列表一行「无改动」，`reason` 按类型一行灰字（`not_a_repo` 不是 git 仓库、`no_directory` 工作目录不存在、`no_git` 本机没有 git、`timeout` git status 超时、`git` git 失败——只按类型不按文本，MISSION §2.3 规则 10）；status 是 TURN_DONE / FINISHED / FAILED（做完了看结果）或 RUNNING（瞄一眼进度）时显示，每次 status 变化拉一次、**不轮询**，WAITING / IDLE / STARTING / UNKNOWN 不占位——此刻该做的是回答问题。旁边的「看 diff」开一个 `diff:<会话 id>` 标签页：标签叫 `diff · <会话名>`（点是 ±），crumb 是 `git diff / <会话名>` 且没有 Settings（它不是会话），里面是同一个 TerminalView 以 `WS /api/sessions/:id/diff` 挂的**只读**终端——在该 worktree 跑 `git --no-pager diff HEAD`，连接状态显示「只读」，键入不发也不进 PTY（两边各守一半），跑完显示退出码、按钮「重新运行」再跑一次；关标签即关 WS、git 进程被收走，侧栏不多一行、`GET /api/sessions` 行数不变；会话被删时它的 diff 标签一起消失。`reason` 非空时按钮禁用（没有可 diff 的仓库）。在 beads 里改了验收标准，`TaskIndex` 的 TTL（5 min）到期重查后展开区跟着变。守卫 `web/src/SessionRow.test.tsx`、`web/src/Changes.test.tsx`、`web/src/Workspace.test.tsx`（看 diff 一节）。
+选中行的展开区从上到下（`web/src/SessionRow.tsx`；agora-h1k.3 定）：① 就地 respond（上一段，WAITING / TURN_DONE 才有）；② **验收标准**折叠块——`task.acceptance`（`docs/spec/api.md`，读自 beads 的 acceptance_criteria、不复制进 agora 的库，不变量 12）全文、多行原样，一行 summary `▾ 验收标准 · agora-h1k.3` 可折叠，默认展开（行展开就是为了看"做完算什么"，MISSION §6.3 看结果 / A40）；没有任务或 beads 里没写不占位。respond 在上：回答问题 / 给下一条指令是先做的事，对照验收是看结果时的事；③ **改动文件**（`web/src/Changes.tsx`；A41，agora-h1k.5）接在验收标准之后，两者并排对照——`GET /api/sessions/:id/changes`（`docs/spec/api.md`「只读产出」，该 worktree 的只读 `git status`）的列表 `<单字母> <path>`（M / A / D / R / C / T / U / ?，与 `git status --short` 同一习惯），标题带分支名，空列表一行「无改动」，`reason` 按类型一行灰字（`not_a_repo` 不是 git 仓库、`no_directory` 工作目录不存在、`no_git` 本机没有 git、`timeout` git status 超时、`git` git 失败——只按类型不按文本，MISSION §2.3 规则 10）；status 是 TURN_DONE / FINISHED / FAILED（做完了看结果）或 RUNNING（瞄一眼进度）时显示，每次 status 变化拉一次、**不轮询**，WAITING / IDLE / STARTING / UNKNOWN 不占位——此刻该做的是回答问题。旁边的「看 diff」把主区切成这一行的 diff 视图（agora-a46 之后没有标签页，主区一次只显示选中行的终端或它的 diff）：crumb 是 `git diff / <会话名>` 带「关闭 diff」、没有 Settings（它不是会话），里面是同一个 TerminalView 以 `WS /api/sessions/:id/diff` 挂的**只读**终端——在该 worktree 跑 `git --no-pager diff HEAD`，连接状态显示「只读」，键入不发也不进 PTY（两边各守一半），跑完显示退出码、按钮「重新运行」再跑一次；「关闭 diff」或再点这一行回到它的终端，点别的行则切到那一行的终端，三者都关 WS、git 进程被收走；侧栏不多一行、`GET /api/sessions` 行数不变；会话被删时主区回到空。`reason` 非空时按钮禁用（没有可 diff 的仓库）。在 beads 里改了验收标准，`TaskIndex` 的 TTL（5 min）到期重查后展开区跟着变。守卫 `web/src/SessionRow.test.tsx`、`web/src/Changes.test.tsx`、`web/src/Workspace.test.tsx`（看 diff 一节）。
 
 ```
 ◆ agora-h1k.3 会话行展开显示任务的验收标准 / Claude @ mac    turn done 2m
@@ -100,8 +100,7 @@ RUNNING
 点「看 diff」后主区：
 
 ```
-[ ● agora-h1k.3 ] [ ± diff · agora-h1k.3 ×]
-git diff / agora-h1k.3
+git diff / agora-h1k.3                              [关闭 diff]
 只读
 diff --git a/src/session/manager.rs b/src/session/manager.rs
 @@ -12,6 +12,9 @@
@@ -137,7 +136,7 @@ diff --git a/src/session/manager.rs b/src/session/manager.rs
 │ ⚠ 运行时 degraded：运行时 server 不可用: protocol version   │
 │   mismatch (client 8, server 7)。会话状态暂不可知，进程没有被杀。 │
 ├─────────────────────────────────────────────────────────────┤
-│ [tabs…]                                                     │
+│ agora / claude @ mac                    [Settings] [关闭]   │
 ```
 
 主区顶部一行，`--warn` 色、暗黄底，只在 `/api/health` 的 `runtime.status = degraded` 时出现（agora 对 tmux 失明：版本过低、client / server 协议不匹配，ADR-001 D7）。文案 = `reason` 原文 + 固定的后半句；原文太长截断，完整原因放 `title`。没有它，用户看到的是一屋子 UNKNOWN 而不知道为什么。数据源是 `web/src/health.ts` 的 `HealthWatcher`（健康 60 s、degraded 10 s 重拉，见 `docs/spec/api.md` Health 节），运行时恢复后横幅自己消失，不用刷新。未认证门页不拉完整报告、没有这条横幅。守卫 `web/src/Workspace.test.tsx`、`web/src/health.test.ts`。
@@ -200,7 +199,7 @@ prompt 模板（`web/src/taskPrompt.ts` 的 `taskPrompt(id, title)`，原文以�
   Unknown Agent（像 claude）    ← 括号是进程树给的 hint，认不出就没有
 ```
 
-点一下展开采纳表单：Name（默认 pane 标题 / 会话名）、Project（默认 pane 的当前目录）、Agent（默认 hint，可改；用户填的优先）；「采纳」发 `POST /api/sessions/adopt`，会话随 `session_created` 进列表并开成 Tab。
+点一下展开采纳表单：Name（默认 pane 标题 / 会话名）、Project（默认 pane 的当前目录）、Agent（默认 hint，可改；用户填的优先）；「采纳」发 `POST /api/sessions/adopt`，会话随 `session_created` 进列表并成为选中行、主区打开它的终端。
 
 Kill 确认框（MISSION §8：确认跟着"杀"走；Kill 只杀进程，运行时会话与输出保留到清理，§4.6）。从确认起到该行变成 FINISHED 之前，面板显示一行"正在结束…（先请进程退出，最多等 7 秒）"——Kill 是 TERM → 5 s → KILL 的宽限（ADR-001 D2），交互式 shell 会吃满，只把按钮变灰会让人以为没点上。节点只同步等 1 s，没退就立即返回仍 alive 的行并在后台把宽限走完（否则经 peer 转发的 Kill 会撞上 5 s 转发超时报"节点不可达"，agora-284；`docs/spec/api.md` POST /kill），所以这一行的依据是"请求还在飞"或"行上 `killed_at` 已写而 `alive` 仍为 true"，进程一退、行推成 FINISHED 就消失。采纳时没记下启动命令的会话（`command` 为 null）Restart 按钮禁用并在 title 里说明（API 侧是 409 `no_command`）：
 

@@ -142,18 +142,22 @@ describe("点已激活的行 / 标签页后焦点回到终端（agora-vcc）", (
     expect(focusInTerminal()).toBe(true);
   });
 
-  it("点已激活的标签页同理", async () => {
+  it("在看它的 diff 时再点这一行：回到终端，焦点在终端（重挂载的 focus）", async () => {
     const t = setup([row("n:a"), row("n:b")]);
     await act(async () => {
       t.sock.onopen?.({});
     });
     await flush();
-    fireEvent.click(screen.getByTestId("row-n:a"));
+    const rowA = screen.getByTestId("row-n:a");
+    fireEvent.click(rowA);
     await flush();
-    const tab = screen.getByTestId("tab-n:a");
-    tab.focus();
-    expect(focusInTerminal()).toBe(false);
-    fireEvent.click(tab);
+    fireEvent.click(screen.getByTestId("diff-n:a"));
+    await flush();
+    expect(screen.getByTestId("crumb-diff")).toBeTruthy();
+    rowA.focus();
+    fireEvent.click(rowA);
+    await flush();
+    expect(screen.queryByTestId("crumb-diff")).toBeNull();
     expect(focusInTerminal()).toBe(true);
   });
 
@@ -169,7 +173,7 @@ describe("点已激活的行 / 标签页后焦点回到终端（agora-vcc）", (
     rowB.focus();
     fireEvent.click(rowB);
     await flush();
-    expect(screen.getByTestId("tab-n:b").closest("[role=tab]")?.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByTestId("crumb").textContent).toContain("b /");
     expect(focusInTerminal()).toBe(true);
   });
 });
