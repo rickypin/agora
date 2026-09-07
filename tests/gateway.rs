@@ -15,7 +15,7 @@ use serde_json::Value;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
-use common::Fx;
+use common::{expect_close_code, Fx, FAST_REVOKE_CHECK};
 
 fn sh(script: &str) -> AttachSpec {
     AttachSpec {
@@ -317,4 +317,55 @@ async fn terminal_ws_rejects_cross_origin_and_unknown_session() {
     .await
     .expect_err("不存在的会话应在升级前 404");
     assert!(err.to_string().contains("404"), "{err}");
+}
+
+/// 吊销设备后它开着的终端流由服务端以 `4401 revoked` 关掉，attach 进程与客户端自己断开时一样被
+/// SIGHUP 收走（agora-0jt）。吊销走 `Auth::revoke`——与 `agora auth revoke` 直写库同一条 UPDATE。
+#[tokio::test]
+async fn revoked_device_terminal_is_hung_up_with_4401() {
+    let dir = tempfile::tempdir().unwrap();
+    let pidfile = dir.path().join("pid");
+    let (mut fx, gid) = fx_with_attach(&format!(
+        "echo $$ > {}; echo READY; read -r l",
+        pidfile.display()
+    ));
+    fx.state.revoke_check = FAST_REVOKE_CHECK;
+    let cookie = fx.cookie();
+    let addr = listen(&fx).await;
+    let mut ws = connect(
+        &addr,
+        &format!("/api/sessions/{gid}/terminal"),
+        &cookie,
+        &format!("http://{addr}"),
+    )
+    .await
+    .unwrap();
+    next_json(&mut ws, |v| {
+        v["type"] == "output" && v["data"].as_str().unwrap().contains("READY")
+    })
+    .await;
+    let pid: u32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(alive(pid));
+
+    let device = fx.auth.list_devices().unwrap().remove(0).id;
+    fx.auth.revoke(&device).unwrap();
+    let reason = expect_close_code(
+        &mut ws,
+        agora::api::REVOKED_CLOSE_CODE,
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(reason, "revoked");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while alive(pid) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!alive(pid), "吊销断开后 attach 进程应被 SIGHUP 收走");
+    // 会话本身不受影响：吊销的是这台设备，不是 agent。
+    assert!(fx.rt.sessions.lock().unwrap()["fake:agora:s1"].alive);
 }

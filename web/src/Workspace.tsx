@@ -44,10 +44,12 @@ interface Props {
   terminalConnect?: TerminalClientOptions["connect"];
   /** 测试注入：只读 diff 终端 WS 的建法；缺省 `defaultDiffSocket`（agora-h1k.5）。 */
   diffConnect?: TerminalClientOptions["connect"];
+  /** 事件流被服务端以 4401 关掉（本设备被吊销，agora-0jt）：App 换回配对门。 */
+  onRevoked?: () => void;
 }
 
 /** Screen A 的侧栏（Attention Dashboard）+ Screen B：侧栏 active 行的终端 + Session Settings（无顶栏标签页，agora-a46）。 */
-export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender, notifyDeps, health: givenHealth, version: givenVersion, terminalConnect, diffConnect }: Props) {
+export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender, notifyDeps, health: givenHealth, version: givenVersion, terminalConnect, diffConnect, onRevoked }: Props) {
   const store = useMemo(() => given ?? new SessionStore(), [given]);
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
   const catalog = useMemo(() => givenCatalog ?? catalogApi(), [givenCatalog]);
@@ -78,6 +80,12 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
       store.onOpen = null;
     };
   }, [store, version]);
+  useEffect(() => {
+    store.onRevoked = onRevoked ?? null;
+    return () => {
+      store.onRevoked = null;
+    };
+  }, [store, onRevoked]);
   const [view, setView] = useState<View | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newAgentOpen, setNewAgentOpen] = useState(false);

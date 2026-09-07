@@ -42,7 +42,7 @@ use crate::project::Projects;
 use crate::session::SessionManager;
 use crate::tls::server::Acceptor;
 
-pub use auth::{InProcessPeer, TlsListener};
+pub use auth::{InProcessPeer, TlsListener, REVOKED_CLOSE_CODE};
 pub use health::RuntimeHealth;
 pub use version::{ApiVersion, Compatibility, Incompatible, SystemInfo, API_VERSION};
 
@@ -116,10 +116,17 @@ pub struct AppState {
     /// 并入的 peer 会话视图（agora-7ku.5；MISSION §3.5）：每个 peer 的客户端任务写，
     /// `GET /api/sessions` 给人看的那份读；给 peer 看的永远只有本机行（一跳）。
     pub peer_views: crate::peer::view::PeerViews,
+    /// 长连接（events / terminal / diff WS 与转发桥）多久复查一次凭据（agora-0jt；
+    /// `auth::until_revoked`）。缺省 [`REVOKE_CHECK_INTERVAL`]；测试调短。
+    pub revoke_check: Duration,
 }
 
 /// 不可用的探测结果保留多久再重探。
 pub const PROBE_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 吊销 / 轮换之后，该 principal 已建立的长连接最迟多久被服务端关掉（docs/spec/api.md「认证」）。
+/// 每条连接每个间隔一次索引命中的 SQLite 查询，几十条连接也只是每秒几次。
+pub const REVOKE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 impl AppState {
     pub fn new(auth: Arc<Auth>, sessions: Arc<SessionManager>, node: &str) -> Self {
@@ -137,6 +144,7 @@ impl AppState {
             peers: crate::peer::state::PeerStates::new(),
             registry: Arc::new(crate::peer::registry::PeerRegistry::new(node)),
             peer_views: crate::peer::view::PeerViews::new(),
+            revoke_check: REVOKE_CHECK_INTERVAL,
         }
     }
 

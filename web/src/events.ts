@@ -72,10 +72,14 @@ export type AgoraEvent =
   | { type: "notification"; id: string | null; title: string; body: string; status?: string | null }
   | { type: "resync" };
 
+/** 服务端因吊销 / 轮换主动关长连接时的关闭码（docs/spec/api.md「认证」；agora-0jt）。 */
+export const REVOKED_CLOSE_CODE = 4401;
+
 /** 最小的 WebSocket 形态，便于测试用假对象。 */
 export interface SocketLike {
   onopen: ((ev: unknown) => void) | null;
   onmessage: ((ev: { data: string }) => void) | null;
+  /** 真 WebSocket 给的是 CloseEvent（有 `code`）；假对象可以什么都不给。 */
   onclose: ((ev: unknown) => void) | null;
   onerror: ((ev: unknown) => void) | null;
   close(): void;
@@ -103,6 +107,11 @@ export interface EventsClientOptions {
    * 挂这里（agora-7ku.4）：升级节点必然重启 daemon、WS 必然断一次，所以换代总能在这一刻被看见。
    */
   onOpen?: () => void;
+  /**
+   * 服务端以 4401 关掉了这条流：本设备被吊销（agora-0jt）。之后不再重连——重连只会吃 401，
+   * 页面该回到配对门。
+   */
+  onRevoked?: () => void;
 }
 
 export function defaultSocket(): SocketLike {
@@ -164,7 +173,14 @@ export class EventsClient {
       }
       for (const e of batch) this.enqueue(e);
     };
-    sock.onclose = () => this.scheduleReconnect();
+    sock.onclose = (ev) => {
+      if ((ev as { code?: unknown } | null)?.code === REVOKED_CLOSE_CODE) {
+        this.stop();
+        this.opts.onRevoked?.();
+        return;
+      }
+      this.scheduleReconnect();
+    };
     sock.onerror = () => {
       /* onclose 会跟着来 */
     };

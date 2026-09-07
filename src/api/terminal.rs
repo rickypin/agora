@@ -5,15 +5,16 @@
 //! 同源（ADR-003 D7）。桥接循环在 `gateway`，这里只做 JSON 帧与 keepalive。会话属于 peer 时
 //! 不在这里 attach：`forward::terminal` 向所属节点建同一条 WS，两边帧原样互转（agora-7ku.7）。
 
+use std::future::Future;
 use std::time::Instant;
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Uri};
 use axum::response::Response;
 use serde::Deserialize;
 
-use super::auth::same_origin;
+use super::auth::{revoked_close, same_origin, until_revoked};
 use super::{forward, ApiError, AppState};
 use crate::auth::{AuthError, Principal};
 use crate::gateway::{
@@ -62,7 +63,8 @@ pub async fn upgrade(
         forward::Hop::Local(id) => id,
         // 查询串原样带过去（cols / rows 由所属节点解释），与本机路径同一个 URL。
         forward::Hop::Peer(t) => {
-            return forward::terminal(&principal, t, &gid, "/terminal", uri.query(), ws).await;
+            return forward::terminal(&state, &principal, t, &gid, "/terminal", uri.query(), ws)
+                .await;
         }
     };
     let size = q.size();
@@ -72,6 +74,7 @@ pub async fn upgrade(
         super::sessions::blocking(&state.sessions, move |_| sessions.attach(&id, size)).await?
     };
     let log_id = principal.log_id();
+    let revoked = until_revoked(state, principal);
     Ok(ws.on_upgrade(move |socket| async move {
         tracing::info!(component = "gateway", principal = %log_id, session = %id, "terminal attach");
         let pty = match AttachedPty::spawn(&spec, size) {
@@ -89,7 +92,7 @@ pub async fn upgrade(
             }
         };
         let pid = pty.pid();
-        let confirmed = bridge(socket, pty, true).await;
+        let confirmed = bridge(socket, pty, true, revoked).await;
         tracing::info!(
             component = "gateway",
             principal = %log_id,
@@ -115,10 +118,14 @@ pub(super) async fn send(socket: &mut WebSocket, msg: &ServerMessage) -> Result<
 /// `attached`，之后 `input` 帧一律丢弃、不进 PTY；resize / ping 照常。只读不另写一个循环——PTY 的
 /// 释放顺序（SIGHUP → 确认退出 → 才 drop writer，src/gateway/mod.rs 顶部）是雷区，复制一份等于
 /// 埋第二颗雷（2026-09-06）。
+///
+/// `revoked` 是这条连接的凭据复查（`auth::until_revoked`，agora-0jt）：它完成就以 `4401 revoked`
+/// 关掉这一条 attach——与客户端自己断开走同一条释放路径，会话不受影响。
 pub(super) async fn bridge(
     mut socket: WebSocket,
     mut pty: AttachedPty,
     accept_input: bool,
+    revoked: impl Future<Output = &'static str>,
 ) -> bool {
     let status = if accept_input {
         "attached"
@@ -132,9 +139,17 @@ pub(super) async fn bridge(
     ping.tick().await; // 第一个 tick 立即完成，跳过。
     let mut last_seen = Instant::now();
     let mut exit = pty.exit_signal();
+    let mut close: Option<CloseFrame> = None;
+    tokio::pin!(revoked);
     loop {
         tokio::select! {
             biased;
+
+            why = &mut revoked => {
+                tracing::info!(component = "gateway", why, "凭据失效，断开这一条 attach");
+                close = Some(revoked_close());
+                break;
+            }
 
             exit = exit.wait() => {
                 // 读线程可能还有尾巴没送到；先把 channel 里的排空再报 exit。
@@ -200,13 +215,19 @@ pub(super) async fn bridge(
         }
     }
     let confirmed = pty.detach().await;
-    // 关闭握手要做完：发了 Close 还得把对端还在路上的帧（exit 前后发出的 input / Pong）读到
-    // 它的 Close 或流结束为止，再放手。直接丢 socket 的话，内核看到接收队列里有未读数据就回
-    // RST，对端收到 RST 会连自己缓冲里还没读的 output / exit 帧一起丢掉。2026-09-06 CI
-    // ubuntu-24.04 上 tests/changes.rs::diff_terminal_is_read_only_and_ephemeral 就这样读到
-    // ConnectionReset：git diff 退出得比测试发 input 帧还快（macOS / 22.04 时序不同没撞上，
-    // 本机 12 连跑也复现不了）。上限 CLOSE_GRACE，不陪不答话的对端耗着。
-    let _ = socket.send(Message::Close(None)).await;
+    close_handshake(&mut socket, close).await;
+    confirmed
+}
+
+/// 关闭握手要做完：发了 Close 还得把对端还在路上的帧（exit 前后发出的 input / Pong）读到
+/// 它的 Close 或流结束为止，再放手。直接丢 socket 的话，内核看到接收队列里有未读数据就回
+/// RST，对端收到 RST 会连自己缓冲里还没读的 output / exit 帧一起丢掉——连关闭码也一起丢。
+/// 2026-09-06 CI ubuntu-24.04 上 tests/changes.rs::diff_terminal_is_read_only_and_ephemeral 就这样读到
+/// ConnectionReset：git diff 退出得比测试发 input 帧还快（macOS / 22.04 时序不同没撞上，
+/// 本机 12 连跑也复现不了）。上限 CLOSE_GRACE，不陪不答话的对端耗着。`frame` 是要带的关闭码
+/// （吊销是 `4401 revoked`，agora-0jt；正常结束 None）。
+pub(super) async fn close_handshake(socket: &mut WebSocket, frame: Option<CloseFrame>) {
+    let _ = socket.send(Message::Close(frame)).await;
     let _ = tokio::time::timeout(CLOSE_GRACE, async {
         while let Some(Ok(frame)) = socket.recv().await {
             if matches!(frame, Message::Close(_)) {
@@ -215,5 +236,4 @@ pub(super) async fn bridge(
         }
     })
     .await;
-    confirmed
 }

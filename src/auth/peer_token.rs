@@ -17,7 +17,7 @@ use std::path::Path;
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 
-use super::{random_token, sha256_hex, AuthError};
+use super::{random_token, sha256_hex, AuthError, CredentialStamp};
 use crate::clock::age_secs;
 use crate::session::{Db, DbError};
 
@@ -232,6 +232,26 @@ pub fn authenticate(db: &Db, authorization: &str) -> Result<String, AuthError> {
         )?;
     }
     Ok(name.to_owned())
+}
+
+/// 长连接复查用的凭据指纹（agora-0jt；[`super::Auth::credential_stamp`]）：这个 peer 当前有效
+/// token 的哈希。吊销 → `Revoked`；轮换 → 哈希变了；**从没签发过 → `Untracked`**，不是吊销：
+/// A31 保证没有行的 name 从来过不了 Bearer 校验，所以能拿着这个名字走到长连接里的只有进程内
+/// 注入的 Peer（fake 多节点测试的进程内 transport），它没有可吊销的凭据。
+pub fn stamp(db: &Db, name: &str) -> Result<CredentialStamp, AuthError> {
+    let row: Option<(String, Option<String>)> = db
+        .conn()
+        .query_row(
+            "SELECT token_sha256, revoked_at FROM peer_tokens WHERE name = ?1",
+            [name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        None => CredentialStamp::Untracked,
+        Some((_, Some(_))) => CredentialStamp::Revoked,
+        Some((hash, None)) => CredentialStamp::Valid(hash),
+    })
 }
 
 // ---------- 持有方：token_file ----------

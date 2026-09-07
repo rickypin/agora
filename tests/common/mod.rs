@@ -259,3 +259,36 @@ impl Fx {
         format!("agora_session={plain}")
     }
 }
+
+// ---------- WS 关闭码（agora-0jt） ----------
+
+pub type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// 等服务端主动发来带 `code` 的关闭帧（最多 `within`）：业务帧 / Ping 跳过；流在关闭帧之前结束或
+/// 出错都算失败——RST 会把关闭码一起冲掉，那正是 `close_handshake` 要防的（src/api/terminal.rs）。
+/// 返回关闭帧的 reason。
+pub async fn expect_close_code(ws: &mut Ws, code: u16, within: Duration) -> String {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let msg = tokio::time::timeout(left, ws.next())
+            .await
+            .unwrap_or_else(|_| panic!("{within:?} 内应收到关闭码 {code}"));
+        match msg {
+            Some(Ok(Message::Close(Some(frame)))) => {
+                assert_eq!(u16::from(frame.code), code, "关闭码不对: {frame:?}");
+                return frame.reason.to_string();
+            }
+            Some(Ok(Message::Close(None))) => panic!("收到不带码的关闭帧，期待 {code}"),
+            Some(Ok(_)) => continue,
+            None => panic!("流在关闭帧之前结束（期待关闭码 {code}）"),
+            Some(Err(err)) => panic!("流在关闭帧之前出错（期待关闭码 {code}）: {err}"),
+        }
+    }
+}
+
+/// 复查间隔调短到测试能等的量级；缺省 5 s 是线上的（`api::REVOKE_CHECK_INTERVAL`）。
+pub const FAST_REVOKE_CHECK: Duration = Duration::from_millis(100);

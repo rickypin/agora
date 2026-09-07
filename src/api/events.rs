@@ -15,7 +15,8 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use tokio::sync::broadcast::error::RecvError;
 
-use super::auth::same_origin;
+use super::auth::{revoked_close, same_origin, until_revoked};
+use super::terminal::close_handshake;
 use super::{ApiError, AppState};
 use crate::auth::{AuthError, Principal};
 use crate::events::{coalesce, Event};
@@ -38,15 +39,23 @@ pub async fn upgrade(
     let log_id = principal.log_id();
     Ok(ws.on_upgrade(move |socket| async move {
         tracing::info!(component = "api", principal = %log_id, "events 订阅开始");
-        run(socket, state).await;
+        run(socket, state, principal).await;
         tracing::info!(component = "api", principal = %log_id, "events 订阅结束");
     }))
 }
 
-async fn run(mut socket: WebSocket, state: AppState) {
+async fn run(mut socket: WebSocket, state: AppState, principal: Principal) {
     let mut rx = state.events.subscribe();
+    // 凭据吊销 / 轮换后服务端主动关（agora-0jt）：订阅本身不再发请求，不复查就永远认不出来。
+    let revoked = until_revoked(state.clone(), principal.clone());
+    tokio::pin!(revoked);
     loop {
         tokio::select! {
+            why = &mut revoked => {
+                tracing::info!(component = "api", principal = %principal.log_id(), why, "凭据失效，关掉 events 订阅");
+                close_handshake(&mut socket, Some(revoked_close())).await;
+                break;
+            }
             first = rx.recv() => {
                 let mut batch = match first {
                     Ok(e) => vec![e],

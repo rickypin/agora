@@ -23,7 +23,9 @@ use agora::session::{Db, SessionManager};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use axum::Router;
+use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tower::ServiceExt;
 
 const HOST: &str = "127.0.0.1:7681";
@@ -73,6 +75,34 @@ impl Fx {
     async fn sessions_tls(&self, token: &str) -> axum::response::Response {
         self.call(self.request("GET", "/api/sessions", &format!("Bearer {token}"), true))
             .await
+    }
+
+    /// 真监听器（WS 升级走不了 oneshot）：整个 Router 盖 TLS 监听器标记（与 main.rs 的 TLS 监听器
+    /// 同一写法，只是底下是明文 TCP——标记是请求扩展，不看连接本身），复查间隔调短。
+    async fn listen_tls(&self) -> String {
+        let rt = Arc::new(common::FakeRuntime::default());
+        let sessions = Arc::new(SessionManager::new(self.db.clone(), rt as Arc<dyn Runtime>));
+        let mut state = AppState::new(self.auth.clone(), sessions, common::NODE);
+        state.revoke_check = common::FAST_REVOKE_CHECK;
+        let app = api::router(state).layer(axum::Extension(TlsListener));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        addr.to_string()
+    }
+
+    /// 以 Bearer 订阅 `/api/events`（peer 客户端的那条长连接）。
+    async fn events_ws(&self, addr: &str, token: &str) -> common::Ws {
+        let mut req = format!("ws://{addr}/api/events")
+            .into_client_request()
+            .unwrap();
+        req.headers_mut().insert(
+            header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+        tokio_tungstenite::connect_async(req).await.unwrap().0
     }
 
     fn rows(&self) -> i64 {
@@ -509,4 +539,67 @@ fn cli_create_list_revoke_via_binary() {
     assert!(peer_token::authenticate(&db, &format!("Bearer {t2}")).is_err());
     drop(db);
     let _ = std::fs::remove_dir_all(&home);
+}
+
+/// 吊销机器 token 也要切断它已建立的订阅（agora-0jt）：2026-09-07 实机代检 agora-7ku.2.1 S4 发现
+/// zuan 吊销 mac 之后，mac 的 peer 客户端那条 `/api/events` 继续收事件、health 里 mac 仍 online——
+/// "吊销即时（每次请求查库）"只覆盖新请求，长连接一辈子只请求一次。守卫：吊销后流在复查间隔内
+/// 收到 `4401 revoked`；同 name 重新签发的 token 能建新流。
+#[tokio::test]
+async fn revoke_closes_live_event_stream() {
+    let fx = Fx::new();
+    let token = peer_token::create(&fx.db, "mac", false).unwrap();
+    let addr = fx.listen_tls().await;
+    let mut ws = fx.events_ws(&addr, &token).await;
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(
+        "{\"type\":\"ping\"}".into(),
+    ))
+    .await
+    .unwrap();
+
+    peer_token::revoke(&fx.db, "mac").unwrap();
+    let reason = common::expect_close_code(
+        &mut ws,
+        agora::api::REVOKED_CLOSE_CODE,
+        std::time::Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(reason, "revoked");
+
+    let again = peer_token::create(&fx.db, "mac", false).unwrap();
+    let mut ws = fx.events_ws(&addr, &again).await;
+    ws.close(None).await.unwrap();
+}
+
+/// `--rotate` 说"旧的立即失效"：旧 token 建立的流同样被关（关闭码相同，日志里的原因是 rotated），
+/// 新 token 的流不受影响。
+#[tokio::test]
+async fn rotate_closes_the_old_tokens_stream() {
+    let fx = Fx::new();
+    let old = peer_token::create(&fx.db, "mac", false).unwrap();
+    let addr = fx.listen_tls().await;
+    let mut ws_old = fx.events_ws(&addr, &old).await;
+
+    let new = peer_token::create(&fx.db, "mac", true).unwrap();
+    let mut ws_new = fx.events_ws(&addr, &new).await;
+    common::expect_close_code(
+        &mut ws_old,
+        agora::api::REVOKED_CLOSE_CODE,
+        std::time::Duration::from_secs(2),
+    )
+    .await;
+
+    // 新流活着：ping 有 pong。
+    ws_new
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            "{\"type\":\"ping\"}".into(),
+        ))
+        .await
+        .unwrap();
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(2), ws_new.next())
+        .await
+        .expect("新流应答 pong")
+        .unwrap()
+        .unwrap();
+    assert_eq!(reply.into_text().unwrap().as_str(), "{\"type\":\"pong\"}");
 }

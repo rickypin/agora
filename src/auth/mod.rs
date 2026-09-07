@@ -73,6 +73,21 @@ impl Principal {
     }
 }
 
+/// 长连接（events / terminal WS）复查凭据时看的指纹（agora-0jt；[`Auth::credential_stamp`]）。
+/// 认证只发生在升级那一次，"吊销即时"对长连接来说得靠之后按固定间隔复查——CLI 的
+/// `agora auth revoke` / `agora peer token revoke` 是另一个进程直写 SQLite（ADR-003 D6），
+/// daemon 收不到任何回调，所以没有"吊销时通知"这条路可走。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialStamp {
+    /// 凭据有效；字符串是它的哈希——变了就是被轮换了，旧连接同样该断。
+    Valid(String),
+    /// 已吊销（设备 / 机器 token），连接该断。
+    Revoked,
+    /// 这个 principal 不由库里的凭据支撑，不复查：只有进程内注入的 Peer（fake 多节点测试）
+    /// 会到这里，见 `peer_token::stamp`。
+    Untracked,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairedVia {
     Socket,
@@ -267,6 +282,33 @@ impl Auth {
     pub fn authenticate_bearer(&self, authorization: &str) -> Result<Principal, AuthError> {
         let name = peer_token::authenticate(&self.db, authorization)?;
         Ok(Principal::Peer { name })
+    }
+
+    // ---------- 长连接的凭据复查（agora-0jt） ----------
+
+    /// 一个已认证 principal 背后凭据的当前指纹：Human → 设备的 session 哈希（吊销 → `Revoked`），
+    /// Peer → 机器 token 的哈希（吊销 → `Revoked`，轮换 → 哈希变了，没签过 → `Untracked`）。
+    /// 一次索引命中；长连接按 `api::REVOKE_CHECK_INTERVAL` 复查它，与升级时拿到的比对。
+    pub fn credential_stamp(&self, principal: &Principal) -> Result<CredentialStamp, AuthError> {
+        match principal {
+            Principal::Human { device } => {
+                let row: Option<(String, Option<String>)> = self
+                    .db
+                    .conn()
+                    .query_row(
+                        "SELECT session_sha256, revoked_at FROM devices WHERE id = ?1",
+                        [device],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()?;
+                Ok(match row {
+                    Some((hash, None)) => CredentialStamp::Valid(hash),
+                    // 设备行不会被删，None 只可能是库被换掉了；按吊销处理更安全。
+                    Some((_, Some(_))) | None => CredentialStamp::Revoked,
+                })
+            }
+            Principal::Peer { name } => peer_token::stamp(&self.db, name),
+        }
     }
 
     // ---------- 设备管理 ----------

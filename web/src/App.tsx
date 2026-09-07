@@ -4,7 +4,7 @@ import { clearFragment, extractPairToken, isPaired, redeemPairOnce } from "./pai
 import { Workspace } from "./Workspace";
 
 type Probe = "probing" | "ok" | "down";
-type Auth = "checking" | "paired" | "unpaired" | "pair_failed";
+type Auth = "checking" | "paired" | "unpaired" | "pair_failed" | "revoked";
 
 /** 入口：配对门 → Terminal Workspace（agora-xqa.11）。Dashboard 的 attention 视图归 M1b。 */
 export function App() {
@@ -44,7 +44,8 @@ export function App() {
       </main>
     );
   }
-  return <Workspace />;
+  // 事件流被服务端以 4401 关掉 = 本设备在别处被吊销（agora-0jt）：不再重连，回到配对门。
+  return <Workspace onRevoked={() => setAuth("revoked")} />;
 }
 
 function authLine(auth: Auth): string {
@@ -57,5 +58,7 @@ function authLine(auth: Auth): string {
       return "配对链接无效、已用或已过期：在本机终端重新运行 agora open";
     case "unpaired":
       return "本设备未配对：在本机终端运行 agora open";
+    case "revoked":
+      return "本设备的配对已被吊销：要继续用，在本机终端重新运行 agora open";
   }
 }

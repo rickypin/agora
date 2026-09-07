@@ -14,7 +14,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tower::ServiceExt;
 
-use common::Fx;
+use common::{expect_close_code, Fx, FAST_REVOKE_CHECK};
 
 /// 起一个真实监听器（oneshot 走不了 WS 升级），返回地址。
 async fn listen(fx: &Fx) -> String {
@@ -190,4 +190,82 @@ async fn slow_subscriber_is_told_to_resync_instead_of_getting_a_backlog() {
         .count();
     assert!(has_resync, "{batch:?}");
     assert!(removed < 10, "落后的事件不该被补齐: {batch:?}");
+}
+
+/// 吊销设备后它已建立的订阅由服务端关掉（agora-0jt）：认证只在升级时做一次，订阅本身再不发请求，
+/// 之前"吊销即时"只对下一次 HTTP 请求成立。守卫：吊销 a 之后，a 的流在复查间隔内收到 `4401 revoked`；
+/// b 的流不受影响，ping 仍有 pong。
+#[tokio::test]
+async fn revoked_device_stream_is_closed_by_the_server() {
+    let mut fx = Fx::new();
+    fx.state.revoke_check = FAST_REVOKE_CHECK;
+    let a = fx.cookie();
+    let b = fx.cookie();
+    let addr = listen(&fx).await;
+    let origin = format!("http://{addr}");
+    let mut ws_a = connect(&addr, &a, &origin).await.unwrap();
+    let mut ws_b = connect(&addr, &b, &origin).await.unwrap();
+
+    // 用 b 经 API 吊销 a（`agora auth revoke` 直写库是同一条 UPDATE，daemon 同样只能靠复查发现）。
+    let a_id: String = fx
+        .db
+        .conn()
+        .query_row(
+            "SELECT id FROM devices WHERE session_sha256 = ?1",
+            [agora::auth::sha256_hex(a.split_once('=').unwrap().1)],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let resp = fx
+        .app()
+        .oneshot(
+            Request::delete(format!("/api/auth/devices/{a_id}"))
+                .header(header::HOST, common::HOST)
+                .header(header::ORIGIN, format!("http://{}", common::HOST))
+                .header(header::COOKIE, &b)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let reason = expect_close_code(
+        &mut ws_a,
+        agora::api::REVOKED_CLOSE_CODE,
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(reason, "revoked");
+
+    ws_b.send(Message::Text(r#"{"type":"ping"}"#.into()))
+        .await
+        .unwrap();
+    let pong = next_batch_or_pong(&mut ws_b).await;
+    assert_eq!(pong["type"], "pong");
+    // 吊销之后 a 再来升级也是 401，与 HTTP 请求一致。
+    let Err(err) = connect(&addr, &a, &origin).await else {
+        panic!("吊销后的 cookie 不该再能升级")
+    };
+    assert!(
+        matches!(err, tokio_tungstenite::tungstenite::Error::Http(ref r) if r.status() == StatusCode::UNAUTHORIZED),
+        "{err:?}"
+    );
+}
+
+/// 收下一条文本帧（pong 是单个对象，事件帧是数组）。
+async fn next_batch_or_pong<S>(ws: &mut S) -> Value
+where
+    S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("5 s 内应有帧")
+            .unwrap()
+            .unwrap();
+        if let Message::Text(text) = msg {
+            return serde_json::from_str(&text).unwrap();
+        }
+    }
 }

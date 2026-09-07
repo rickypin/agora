@@ -14,6 +14,7 @@
 //! 也没有"调用方是 peer 就免确认"的分支——所属节点看到的就是一个普通的 Peer principal。
 //! 守卫：`tests/forward.rs::kill_confirmation_enforced_at_owner`。
 
+use std::future::Future;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -24,6 +25,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::tungstenite;
 
+use super::auth::{revoked_close, until_revoked};
+use super::terminal::close_handshake;
 use super::{ApiError, AppState};
 use crate::auth::Principal;
 use crate::peer::registry::Route;
@@ -150,8 +153,11 @@ fn passthrough(resp: Response) -> Response {
 /// peer 会话的 `WS /api/sessions/:id<suffix>`（`/terminal`，以及 agora-h1k.5 的只读 `/diff`）：先向
 /// 所属节点建好 WS（会话不存在 / 没有运行时 / peer 不可达都以 HTTP 状态回，与本机路径一致——
 /// 客户端不用先建好 WS 再从关闭码里猜），再升级浏览器这条，然后两边帧原样互转。`suffix` 是
-/// `/api/sessions/<gid>` 之后那段，与 [`route`] 同一约定。
+/// `/api/sessions/<gid>` 之后那段，与 [`route`] 同一约定。浏览器这一侧的凭据照样复查
+/// （`auth::until_revoked`，agora-0jt）：本节点吊销了这台设备，桥就以 `4401 revoked` 关浏览器、
+/// 关上游；所属节点那一侧看到的是本节点的 Peer principal，它的复查在它自己的 `terminal::bridge`。
 pub(super) async fn terminal(
+    state: &AppState,
     principal: &Principal,
     t: Arc<dyn PeerTransport>,
     gid: &str,
@@ -171,9 +177,10 @@ pub(super) async fn terminal(
     let peer = t.name().to_owned();
     let gid = gid.to_owned();
     let suffix = suffix.to_owned();
+    let revoked = until_revoked(state.clone(), principal.clone());
     Ok(ws.on_upgrade(move |socket| async move {
         tracing::info!(component = "gateway", principal = %log_id, peer = %peer, session = %gid, path = %suffix, "terminal attach (forwarded)");
-        let exited = bridge(socket, upstream).await;
+        let exited = bridge(socket, upstream, revoked).await;
         tracing::info!(component = "gateway", principal = %log_id, peer = %peer, session = %gid, path = %suffix, exited, "terminal detach (forwarded)");
     }))
 }
@@ -183,10 +190,21 @@ pub(super) async fn terminal(
 /// 浏览器的 Pong 经这里回去，活性判断仍是端到端的。任一侧断（None / Err / Close）就关另一侧；
 /// exit 帧转过去后主动关两边——所属节点在 exit 之后还要等 attach 退出（最多 3 s）才关，
 /// 浏览器不必陪它等。返回值：是否见到 exit。
-async fn bridge(mut browser: WebSocket, mut peer: PeerWs) -> bool {
+async fn bridge(
+    mut browser: WebSocket,
+    mut peer: PeerWs,
+    revoked: impl Future<Output = &'static str>,
+) -> bool {
     let mut exited = false;
+    let mut close = None;
+    tokio::pin!(revoked);
     loop {
         tokio::select! {
+            why = &mut revoked => {
+                tracing::info!(component = "gateway", why, "凭据失效，断开这一条转发的 attach");
+                close = Some(revoked_close());
+                break;
+            }
             from_browser = browser.recv() => {
                 let Some(Ok(msg)) = from_browser else { break };
                 let closing = matches!(msg, Message::Close(_));
@@ -210,7 +228,7 @@ async fn bridge(mut browser: WebSocket, mut peer: PeerWs) -> bool {
         }
     }
     let _ = peer.close(None).await;
-    let _ = browser.send(Message::Close(None)).await;
+    close_handshake(&mut browser, close).await;
     exited
 }
 

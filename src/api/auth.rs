@@ -11,7 +11,9 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use super::{ApiError, AppState, ClientAddr};
-use crate::auth::{Auth, AuthConfig, AuthError, Device, PairedVia, Principal, COOKIE_NAME};
+use crate::auth::{
+    Auth, AuthConfig, AuthError, CredentialStamp, Device, PairedVia, Principal, COOKIE_NAME,
+};
 
 /// 进程内 peer 身份：同一进程里另一个节点实例经 `crate::peer::transport::InProcessTransport`
 /// 调本实例的 Router 时，用请求扩展里的它顶替 Bearer——fake 多节点测试不开 socket、不碰 TLS
@@ -82,6 +84,53 @@ impl FromRequestParts<AppState> for Principal {
             return Err(AuthError::CrossOrigin.into());
         }
         Ok(principal)
+    }
+}
+
+// ---------- 长连接的凭据复查（agora-0jt） ----------
+
+/// 服务端因吊销 / 轮换关掉长连接时的 WS 关闭码（4000–4999 是应用自定义段；docs/spec/api.md「认证」）。
+pub const REVOKED_CLOSE_CODE: u16 = 4401;
+
+/// 吊销 / 轮换的关闭帧：`4401 revoked`。
+pub(super) fn revoked_close() -> axum::extract::ws::CloseFrame {
+    axum::extract::ws::CloseFrame {
+        code: REVOKED_CLOSE_CODE,
+        reason: "revoked".into(),
+    }
+}
+
+/// 长连接（events / terminal / diff WS 与转发桥）的凭据复查：升级时 `Principal` 提取器只认了一次，
+/// "吊销即时"对一条开着的连接得靠之后每 `state.revoke_check` 再查一次库——CLI 的 `agora auth revoke`
+/// / `agora peer token revoke` 是另一个进程直写 SQLite（ADR-003 D6），daemon 收不到任何回调，
+/// 所以不存在"吊销时通知所有连接"的路。完成即"该断了"，返回进日志的原因（`revoked` / `rotated`）；
+/// 调用方在自己的 `select!` 里挂它，然后以 [`revoked_close`] 关连接。
+///
+/// 库读失败不断连：瞬时故障不该把所有人踢下线，记 warn 下一轮再试。`Untracked`（进程内注入的
+/// Peer）永远不完成。
+pub(super) async fn until_revoked(state: AppState, principal: Principal) -> &'static str {
+    let initial = loop {
+        match state.auth.credential_stamp(&principal) {
+            Ok(CredentialStamp::Valid(hash)) => break hash,
+            Ok(CredentialStamp::Revoked) => return "revoked",
+            Ok(CredentialStamp::Untracked) => std::future::pending::<()>().await,
+            Err(err) => {
+                tracing::warn!(component = "auth", principal = %principal.log_id(), %err, "复查凭据失败，下一轮再试");
+                tokio::time::sleep(state.revoke_check).await;
+            }
+        }
+    };
+    loop {
+        tokio::time::sleep(state.revoke_check).await;
+        match state.auth.credential_stamp(&principal) {
+            Ok(CredentialStamp::Valid(now)) if now == initial => {}
+            Ok(CredentialStamp::Valid(_)) => return "rotated",
+            // 行不会被删；Valid 之后再见到 Untracked 只能是库被换掉了，按吊销处理。
+            Ok(CredentialStamp::Revoked) | Ok(CredentialStamp::Untracked) => return "revoked",
+            Err(err) => {
+                tracing::warn!(component = "auth", principal = %principal.log_id(), %err, "复查凭据失败，下一轮再试");
+            }
+        }
     }
 }
 

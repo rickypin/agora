@@ -19,6 +19,10 @@ class FakeSocket implements SocketLike {
   serverDrop(): void {
     this.onclose?.({});
   }
+  /** 服务端带码关闭（真 WebSocket 的 CloseEvent 有 `code`）。 */
+  serverClose(code: number): void {
+    this.onclose?.({ code });
+  }
 }
 
 function row(id: string, status = "running"): SessionRow {
@@ -111,5 +115,39 @@ describe("EventsClient", () => {
     // 安静 10 s：没有任何额外的全量拉取（不轮询）。
     await vi.advanceTimersByTimeAsync(10_000);
     expect(client.snapshots).toBe(3);
+  });
+
+  it("stops reconnecting and reports revoked when the server closes with 4401 (agora-0jt)", async () => {
+    const onRevoked = vi.fn();
+    client.stop();
+    client = new EventsClient({
+      connect: () => {
+        const s = new FakeSocket();
+        sockets.push(s);
+        return s;
+      },
+      fetchSnapshot: async () => ({ sessions: snapshot, unregistered: [] }),
+      reconnectMinMs: 100,
+      onChange,
+      onRevoked,
+    });
+    client.start();
+    const first = sockets.length - 1;
+    sockets[first].serverOpen();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 普通断流：退避后重连。
+    sockets[first].serverClose(1006);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sockets.length).toBe(first + 2);
+    expect(onRevoked).not.toHaveBeenCalled();
+
+    // 4401：本设备被吊销——回调一次、之后再久也不重连（重连只会吃 401）。
+    sockets[first + 1].serverOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    sockets[first + 1].serverClose(4401);
+    expect(onRevoked).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sockets.length).toBe(first + 2);
   });
 });

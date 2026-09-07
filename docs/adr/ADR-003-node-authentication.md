@@ -78,6 +78,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 - cookie `agora_session`：`HttpOnly; SameSite=Lax; Path=/; Max-Age=<session_idle 秒数>`；经 TLS 监听器发放时加 `Secure`（`127.0.0.1` 与远端主机名是不同 origin，cookie 罐互不干扰）。WS 握手是同站 GET，cookie 自动携带。
 - **`Max-Age` 不可省，且要跟着上一条的滑动窗口一起推。** 上面那句"距最近使用 30 天"是**两个**窗口：服务端按 `last_seen_at` 判过期，浏览器按 cookie 的 `Max-Age` 决定还留不留这条 cookie。不发 `Max-Age` 就是 session cookie，浏览器一关就丢，服务端的 30 天判得再对也没有凭据可判（agora-z8b：本 ADR 早先版本就漏写了这一段，实现照着写，于是文档与代码一致地错）。只在配对时发一次也不行：那是"距配对 30 天"，天天在用的人第 31 天照样被浏览器丢掉。因此每次刷新 `last_seen_at`（每小时至多一次）时随响应重发一遍 cookie。
 - 吊销：`agora auth devices` / `agora auth revoke <device-id | --all>`；`POST /api/auth/logout` 只删当前设备。Dashboard 设备列表随 V2-1。
+- **吊销对已建立的长连接也即时**（2026-09-07，agora-0jt）：events / terminal WS 升级时只认证一次，之后每 5 s 复查凭据指纹，吊销（peer 则含 `--rotate`）在下一次复查时由服务端以 `4401 revoked` 关掉连接。复查而不是通知，因为 D6 的 CLI 吊销是另一个进程直写 SQLite，daemon 收不到回调。实机代检 agora-7ku.2.1 S4 发现的：zuan 吊销 mac 后，mac 那条已建立的订阅继续收事件、health 里仍 online，直到它自己断线。
 - 接受的代价：所有已配对设备都失效时（全部过期、或手机丢了而笔记本又不在身边），只能回到节点本机或 ssh 上去 `agora pair`。滑动 30 天让这种情况在正常使用下不出现。
 
 ### D3 节点凭据：按 peer 签发的机器 token，被访问方只存哈希（事实 1、4）
@@ -87,7 +88,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 - **没有签发前置条件**：token 在节点对外监听之前签出来没有任何危害——它用不了。MISSION v0.8 要求"签发时必须已在非 loopback 监听且已配置 TLS"，目的是保证 token 只在 TLS 上用，而这由 D5 结构性保证，不由签发时机保证；前置条件只会制造"启动前要有凭据、凭据要启动后签"的鸡生蛋。A31 后半句据此改写。
 - **Bearer 只在 TLS 监听器上被接受**：明文监听器（D5）收到 `Authorization` 头一律 401 `bearer_requires_tls`。
 - 持有方：`peers[].token_file` 明文、`0600`、不进 git、不进日志；启动时校验权限，过宽则该 peer 显示为"配置错误"而非离线。
-- 验证：查 name → 常量时间比对 → 未吊销 → `Peer { name }`。**没有签发过任何 token 的节点拒绝一切 Bearer**（A31）；吊销即时生效（每请求一次索引命中，不缓存）。
+- 验证：查 name → 常量时间比对 → 未吊销 → `Peer { name }`。**没有签发过任何 token 的节点拒绝一切 Bearer**（A31）；吊销即时生效（每请求一次索引命中，不缓存；已建立的长连接每 5 s 复查、由服务端关掉——D2 同款，agora-0jt）。
 - peer 不能再签发 token、不能铸造配对链接、不能改配置：没有委托链。
 - 已知代价（单用户接受）：持有 peer token 的节点被攻破 = 能控制那些 peer；止损是按 peer 吊销，这也是 token 必须按 peer 单独签发的原因。
 
@@ -169,6 +170,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 - **loopback 免认证的特例回来了** → 多用户主机后门。守卫：`tests/auth.rs::loopback_requires_session`。
 - **配对链接可重用、不过期、或未认证也能铸造** → 守卫：`tests/auth.rs::pair_token_single_use_and_expires`、`::pair_token_minted_only_via_socket_or_session`、`::pending_pair_tokens_capped`。
 - **session 不过期或吊销不生效** → 守卫：`tests/auth.rs::session_idle_and_absolute_expiry`、`::revoked_device_rejected_immediately`。
+- **吊销 / 轮换不切断已建立的长连接**（agora-0jt） → 被吊销的设备或 peer 继续收事件、开着终端，直到自己断线。守卫：`tests/peer_token.rs::revoke_closes_live_event_stream`、`::rotate_closes_the_old_tokens_stream`、`tests/events.rs::revoked_device_stream_is_closed_by_the_server`、`tests/gateway.rs::revoked_device_terminal_is_hung_up_with_4401`、`tests/forward.rs::revoked_browser_device_closes_forwarded_terminal`。
 - **明文监听器绑到非 loopback**或**TLS 监听器降级明文**（A34） → 凭据上网。守卫：`tests/listen.rs::plaintext_listener_refuses_non_loopback`、`::tls_listener_never_serves_plaintext`。
 - **未签发 token 也接受 Bearer** / **Bearer 在明文监听器上被接受**（A31） → 守卫：`tests/peer_token.rs::no_token_issued_rejects_all_bearer`、`::bearer_rejected_on_plaintext_listener`、`::revoked_token_rejected_immediately`、`::plaintext_never_stored`。
 - **TOFU 或指纹不匹配时降级为"离线"** → 中间人静默成功。守卫：`tests/peer_tls.rs::fingerprint_mismatch_is_refused_not_stale`、`::no_pin_no_connect`。

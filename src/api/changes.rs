@@ -129,7 +129,7 @@ pub async fn diff(
     let id = match forward::hop(&state, &principal, &gid)? {
         forward::Hop::Local(id) => id,
         forward::Hop::Peer(t) => {
-            return forward::terminal(&principal, t, &gid, "/diff", uri.query(), ws).await;
+            return forward::terminal(&state, &principal, t, &gid, "/diff", uri.query(), ws).await;
         }
     };
     let size = q.size();
@@ -166,6 +166,7 @@ pub async fn diff(
         ],
     };
     let log_id = principal.log_id();
+    let revoked = super::auth::until_revoked(state, principal);
     Ok(ws.on_upgrade(move |socket| async move {
         tracing::info!(component = "gateway", principal = %log_id, session = %id, %cwd, "diff attach (read-only)");
         let pty = match AttachedPty::spawn(&spec, size) {
@@ -183,7 +184,7 @@ pub async fn diff(
             }
         };
         let pid = pty.pid();
-        let released = super::terminal::bridge(socket, pty, false).await;
+        let released = super::terminal::bridge(socket, pty, false, revoked).await;
         tracing::info!(component = "gateway", principal = %log_id, session = %id, pid, released, "diff detach");
     }))
 }

@@ -649,3 +649,34 @@ async fn unreachable_peer_is_reported_by_type() {
     assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
     assert_eq!(r.body["error"], "needs_confirmation");
 }
+
+/// 转发桥的浏览器一侧同样复查（agora-0jt）：A 吊销了这台设备，A 上的桥以 `4401 revoked` 关浏览器、
+/// 关到 B 的上游；B 那边的 attach 随之被收走。
+#[tokio::test]
+async fn revoked_browser_device_closes_forwarded_terminal() {
+    let (mut a, b, _c, _) = chain();
+    a.state.revoke_check = common::FAST_REVOKE_CHECK;
+    *b.rt.attach_argv.lock().unwrap() =
+        vec!["sh".into(), "-c".into(), "echo READY; read -r l".into()];
+    let s = b.create_session("term").await;
+    let gid = gid_of(&s);
+    let cookie = a.cookie();
+    let addr = listen(&a).await;
+    let mut ws = connect(&addr, &format!("/api/sessions/{gid}/terminal"), &cookie)
+        .await
+        .expect("同源 + cookie 应升级成功");
+    next_json(&mut ws, |v| {
+        v["type"] == "output" && v["data"].as_str().unwrap().contains("READY")
+    })
+    .await;
+
+    let device = a.auth.list_devices().unwrap().remove(0).id;
+    a.auth.revoke(&device).unwrap();
+    let reason = common::expect_close_code(
+        &mut ws,
+        agora::api::REVOKED_CLOSE_CODE,
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(reason, "revoked");
+}

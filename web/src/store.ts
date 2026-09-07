@@ -18,12 +18,17 @@ export class SessionStore {
   onNotification: ((n: Incoming) => void) | null = null;
   /** WS 每次连上的出口；Workspace 挂 api_version 比对（web/src/health.ts 的 VersionWatcher）。 */
   onOpen: (() => void) | null = null;
+  /** 服务端以 4401 关流（本设备被吊销，agora-0jt）的出口；App 据此回到配对门。 */
+  onRevoked: (() => void) | null = null;
 
-  constructor(opts: Omit<EventsClientOptions, "onChange" | "onUnregistered" | "onNotification" | "onOpen"> = {}) {
+  constructor(
+    opts: Omit<EventsClientOptions, "onChange" | "onUnregistered" | "onNotification" | "onOpen" | "onRevoked"> = {},
+  ) {
     this.client = new EventsClient({
       ...opts,
       onNotification: (n) => this.onNotification?.(n),
       onOpen: () => this.onOpen?.(),
+      onRevoked: () => this.onRevoked?.(),
       onChange: (map) => {
         this.changes += 1;
         this.rows = [...map.values()];
