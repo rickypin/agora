@@ -13,6 +13,10 @@ Environment=LANG=C.UTF-8
 Environment=AGORA_HOME=@AGORA_HOME@
 Environment=PATH=@PATH@
 ExecStart=@AGORA_HOME@/bin/agora serve
+# 只对 daemon 主进程发 SIGTERM。tmux server 由 daemon 起、daemonize 后仍在这个 cgroup 里，
+# 默认的 KillMode=control-group 会在 stop / restart（含 agora upgrade）时把它连同全部 agent 一起杀——
+# 2026-09-07 zuan 实测 reconcile missing=3、tmux -L agora ls 无 server（agora-x1z；不变量 3、A39）。
+KillMode=process
 Restart=on-failure
 RestartSec=2
 

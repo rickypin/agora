@@ -116,6 +116,11 @@ fn install_writes_config_link_and_unit_idempotently() {
     let text = fs::read_to_string(&unit).unwrap();
     assert!(text.contains("C.UTF-8"), "{text}");
     assert!(text.contains("LANG"), "{text}");
+    // systemd 默认 KillMode=control-group 会在 stop / restart 时把 daemon 起的 tmux server 与全部
+    // agent 一起杀（2026-09-07 zuan 实测，agora-x1z；不变量 3）。这一行没了就是 A39 升级杀光会话。
+    if cfg!(target_os = "linux") {
+        assert!(text.contains("KillMode=process"), "{text}");
+    }
     let link_real = link.parent().unwrap().canonicalize().unwrap().join("agora");
     assert!(
         text.contains(&format!("{} serve", link_real.display()))
