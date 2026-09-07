@@ -835,14 +835,19 @@ async fn forwarded_kill_returns_before_the_grace_period() {
         "tmux 独立作证：还活着"
     );
 
-    // 宽限满后 B 自己 SIGKILL：agora 与 tmux 都说死了，且是"用户杀的"。
+    // 宽限满后 B 自己 SIGKILL：agora 与 tmux 都说死了，且是"用户杀的"。等到退出码也收集到了再
+    // 断言：pane 刚死、SIGCHLD 还没到的那一两个 tick 是设计内的瞬时 UNKNOWN，只等 !alive 在
+    // Linux CI 上会踩进去（2026-09-07 ubuntu-22.04 红过，macOS 撞不上）。
     let deadline = Instant::now() + agora::session::manager::KILL_GRACE + Duration::from_secs(5);
     let dead = loop {
         let v = b.sessions.get(&on_b_id).unwrap();
-        if !v.alive {
+        if !v.alive && v.exit.is_some() {
             break v;
         }
-        assert!(Instant::now() < deadline, "宽限满后没被 SIGKILL: {v:?}");
+        assert!(
+            Instant::now() < deadline,
+            "宽限满后没被 SIGKILL（或退出码一直没收集到）: {v:?}"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     assert!(!b.pane_alive(&dead));

@@ -176,13 +176,19 @@ fn kill_returns_before_grace_when_process_ignores_term() {
     );
     assert!(after.alive, "TERM 被忽略，返回时进程应还活着: {after:?}");
     assert!(after.record.killed_at.is_some(), "{after:?}");
+    // 等到"死了且退出码已收集"：tmux 先报 pane 死、退出码要等 SIGCHLD 才有，中间那一两个 tick
+    // 是设计内的瞬时 UNKNOWN（"exit status not yet collected"）。只等 !alive 就断言 FINISHED 在
+    // Linux CI 上会踩进这个窗口（2026-09-07 ubuntu-24.04 红过，macOS 撞不上）。
     let deadline = Instant::now() + KILL_GRACE + Duration::from_secs(5);
     let dead = loop {
         let v = m.get(&id).unwrap();
-        if !v.alive {
+        if !v.alive && v.exit.is_some() {
             break v;
         }
-        assert!(Instant::now() < deadline, "宽限满后没被 SIGKILL: {v:?}");
+        assert!(
+            Instant::now() < deadline,
+            "宽限满后没被 SIGKILL（或退出码一直没收集到）: {v:?}"
+        );
         std::thread::sleep(POLL);
     };
     assert_eq!(dead.assessment.status, Status::Finished, "{dead:?}");
