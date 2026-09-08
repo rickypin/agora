@@ -676,6 +676,7 @@ MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终�
 - [ ] **A43** 从 `bd ready` 选任务起会话：预填仓库 / worktree / 名字与首条 prompt；agora 对 beads 零写入，有守卫测试
 - [ ] **A44** 对话框可新建 worktree：base 默认主 worktree 当前 checked-out 分支、路径按 `worktree_root` 约定（§6.4）；agora 不做合并与销毁
 - [ ] **A45** New Agent 的 Node 下拉列本机与在线的 peer；选 peer 后 Project / Worktree / Task / Agent 从该节点取、创建与新建 worktree 经一跳转发在该节点执行，会话行带 `@ <node>`；stale / 版本不兼容的 peer 不可选而不是报错（§6.4，§1 第 3 步。2026-09-07 补：§6.4 早有此句但 §12 无编号，M2 拆分按编号核对时漏掉，见 §1.5「拆分」）
+- [ ] **A46** 侧栏收纳：FINISHED 行不再与 WAITING 同档——external 来源的 FINISHED 直接进默认折叠的 Finished 区，agora / adopted 来源的 FINISHED 在用户看过（选中展开过）之后进；Finished 计数一键批量 Delete metadata；external FINISHED 行超过 `sessions.external_finished_ttl` 自动删记录；折叠与否不改变 Alt/Option+N 的序号（§4.6「看过」的三条证据、§6.3，§1 第 1、5 步。2026-09-08 现场：58 行里 39 行 external FINISHED 占满第一屏）
 
 编号全局唯一、不复用：A13 / A19 / A28 / A35 / A37 在 §11 手机条目。
 
