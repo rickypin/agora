@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
-import { partitionByAttention, sortByAttention } from "./attention";
+import { loadSeen, partitionByAttention, sortByAttention, storeSeen } from "./attention";
 import { ChangesApiContext } from "./Changes";
 import { CommandPalette } from "./CommandPalette";
 import { fuzzyFilter } from "./fuzzy";
@@ -177,11 +177,49 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     [api, store],
   );
 
+  // 「看过」的 FINISHED 行（MISSION §4.6 证据 ①；A46，agora-j4w.1）：浏览器视图状态，localStorage 记着、
+  // 不进服务端。记的时机是**离开**那一行（切到别的行 / 关闭视图）而不是选中的那一刻：选中期间它得留在
+  // NEEDS ATTENTION 原位——记在选中那一刻它会立刻掉进收起的 Finished 区，主区还开着它的终端、侧栏却找不到
+  // 这一行（2026-09-08 实现时先这么写过）。离开时看它**当时**的状态：选中时还在跑、离开后才 FINISHED 的
+  // 不算看过（结果是离开之后才出现的）。
+  const [seen, setSeen] = useState<Set<string>>(() => loadSeen());
+  const byIdRef = useRef(byId);
+  byIdRef.current = byId;
+  const prevViewId = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevViewId.current;
+    const cur = view?.id ?? null;
+    prevViewId.current = cur;
+    if (prev === null || prev === cur) return;
+    const left = byIdRef.current.get(prev);
+    // external 的 FINISHED 不看 seen 就已经收起（finishedCollapsed），记它只是往 localStorage 里攒垃圾。
+    if (!left || left.status !== "finished" || left.origin === "external") return;
+    setSeen((s) => {
+      if (s.has(prev)) return s;
+      const next = new Set(s).add(prev);
+      storeSeen(next);
+      return next;
+    });
+  }, [view?.id]);
+  // 看过的记号跟着"这一次完成"走：行被删了（Delete metadata）就忘掉，行又跑起来了（Restart）也忘掉——
+  // 下一次 FINISHED 是新结果，得再进一次 NEEDS ATTENTION。首个快照到达之前列表是空的，别把整个集合清掉。
+  useEffect(() => {
+    if (byId.size === 0) return;
+    setSeen((s) => {
+      const kept = [...s].filter((id) => byId.get(id)?.status === "finished");
+      if (kept.length === s.size) return s;
+      const next = new Set(kept);
+      storeSeen(next);
+      return next;
+    });
+  }, [byId]);
+
   // 侧栏显示顺序：先按 attention 排（MISSION §6.3），过滤只删不换序（空 query 同分稳定），
-  // 再把 NEEDS ATTENTION 提到 RUNNING 前面；Alt/Option+N 跳的就是这个顺序（agora-xqa.14 验收）。
+  // 再拼成 NEEDS ATTENTION → RUNNING → FINISHED 三段；Alt/Option+N 跳的就是这个顺序（agora-xqa.14 验收），
+  // Finished 段收起时行不画、序号照数（A46）。
   const visible = useMemo(
-    () => partitionByAttention(fuzzyFilter(sortByAttention(rows), filter, rowHaystack)),
-    [rows, filter],
+    () => partitionByAttention(fuzzyFilter(sortByAttention(rows), filter, rowHaystack), seen),
+    [rows, filter, seen],
   );
 
   useEffect(() => {
@@ -245,6 +283,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     <div className="workspace">
       <Sidebar
         rows={visible}
+        seen={seen}
         nodes={nodes}
         localNode={localNode ?? undefined}
         all={rows}

@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, type ReactNode, type RefObject } from "react";
 import type { AdoptBody } from "./api";
-import { countByStatus, needsAttention, taskLabel } from "./attention";
+import { countByStatus, sectionOf, taskLabel, type SeenSet } from "./attention";
 import type { SessionRow, UnregisteredRow } from "./events";
 import { Header, type NodeStatus } from "./Header";
 import { rowName, SidebarRow, str } from "./SessionRow";
@@ -56,9 +56,11 @@ function CountsLine({ rows }: { rows: SessionRow[] }) {
 }
 
 interface SidebarProps {
-  /** 已经按 attention 排好、NEEDS ATTENTION 在前的显示顺序——Alt/Option+N 跳的就是这个顺序
-   * （agora-xqa.14 验收）；本组件只在分区交界处插标题。 */
+  /** 已经按 attention 排好、NEEDS ATTENTION → RUNNING → FINISHED 三段拼好的显示顺序——Alt/Option+N 跳的
+   * 就是这个顺序（agora-xqa.14 验收）；本组件只在分区交界处插标题、把 Finished 段折起来。 */
   rows: SessionRow[];
+  /** 看过的 FINISHED 行（MISSION §4.6；A46）：与 Workspace 拼 rows 时用的是同一个集合，交界才对得上。 */
+  seen?: SeenSet;
   /** 过滤前的全部行：header 计数用。 */
   all?: SessionRow[];
   /** Header 上本机与每个 peer 的状态（MISSION §10.3）；只透传给 Header。 */
@@ -148,6 +150,7 @@ function UnknownRow({ row, onAdopt }: UnknownProps) {
 
 export function Sidebar({
   rows,
+  seen,
   all = rows,
   nodes,
   localNode,
@@ -166,8 +169,16 @@ export function Sidebar({
   onOpenDiff,
 }: SidebarProps) {
   const now = useNowSeconds();
-  const firstRunning = rows.findIndex((r) => !needsAttention(r));
-  const hasAttention = rows.length > 0 && needsAttention(rows[0]);
+  // 三段的交界：rows 已经按 attention → running → finished 拼好（partitionByAttention），这里只在交界处插标题。
+  const sections = rows.map((r) => sectionOf(r, seen));
+  const firstRunning = sections.indexOf("running");
+  const firstFinished = sections.indexOf("finished");
+  const hasAttention = sections[0] === "attention";
+  const finishedCount = firstFinished < 0 ? 0 : rows.length - firstFinished;
+  // Finished 区默认收起（A46：2026-09-08 现场 58 行里 39 行是 external FINISHED，摊开就是它们占满第一屏）；
+  // 折叠状态只活在这个组件里，刷新页面回到收起。收起时行不画但序号照数：Alt/Option+N 的第 N 条与
+  // 展开时一样（MISSION §6.5；折叠不改变序号）。
+  const [finishedOpen, setFinishedOpen] = useState(false);
   return (
     <aside className="sidebar">
       <Header agents={filter ? `${rows.length}/${total}` : total} nodes={nodes} />
@@ -209,6 +220,21 @@ export function Sidebar({
                 <span className="muted">RUNNING</span>
               </li>
             )}
+            {i === firstFinished && (
+              <li className="section-row finished-head">
+                <button
+                  type="button"
+                  className="finished-toggle muted"
+                  aria-expanded={finishedOpen}
+                  data-testid="section-finished"
+                  title={finishedOpen ? "收起已完成的会话" : "展开已完成的会话"}
+                  onClick={() => setFinishedOpen((v) => !v)}
+                >
+                  {finishedOpen ? "▾" : "▸"} FINISHED {finishedCount}
+                </button>
+              </li>
+            )}
+            {sections[i] === "finished" && !finishedOpen ? null : (
             <SidebarRow
               row={r}
               active={r.id === active}
@@ -220,6 +246,7 @@ export function Sidebar({
               localNode={localNode}
               onOpenDiff={onOpenDiff}
             />
+            )}
           </Fragment>
         ))}
       </ul>

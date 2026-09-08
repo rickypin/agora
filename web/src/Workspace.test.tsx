@@ -124,6 +124,8 @@ async function online(t: ReturnType<typeof setup>) {
 
 afterEach(() => {
   cleanup();
+  // 「看过」集合存在 localStorage（agora-j4w.1）：别让一个用例的记号漏到下一个。
+  localStorage.clear();
   mounted.length = 0;
   unmounted.length = 0;
   sockets.length = 0;
@@ -410,6 +412,56 @@ describe("Workspace", () => {
     fireEvent.keyDown(window, { code: "Digit2", altKey: true });
     expect(screen.getByTestId("term-n:p1")).toBeTruthy();
     expect(screen.getByTestId("crumb").textContent).toContain("@ n");
+  });
+
+  it("an agora FINISHED row stays in NEEDS ATTENTION until it has been opened and left; external ones start collapsed (A46)", async () => {
+    // MISSION §4.6「看过」证据 ①：选中展开过一次。记在离开那一行的时刻：选中期间它留在原位。
+    const t = setup([
+      { ...row("n:ext", "finished"), origin: "external" },
+      { ...row("n:own", "finished"), origin: "agora" },
+      row("n:run"),
+      row("n:wait", "waiting"),
+    ]);
+    await online(t);
+    const order = () =>
+      Array.from(screen.getByTestId("section-attention").parentElement!.querySelectorAll("[data-testid]"))
+        .map((el) => el.getAttribute("data-testid")!)
+        .filter((id) => id.startsWith("section-") || id.startsWith("row-"));
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-running", "row-n:run", "section-finished"]);
+    expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
+    // 点开 own：它还在 NEEDS ATTENTION（主区开着它的终端，侧栏不能让它消失进折叠区）。
+    fireEvent.click(screen.getByTestId("row-n:own"));
+    expect(screen.getByTestId("term-n:own")).toBeTruthy();
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-running", "row-n:run", "section-finished"]);
+    // 再点别的行：own 进折叠区，计数 +1；localStorage 记下了。
+    fireEvent.click(screen.getByTestId("row-n:wait"));
+    expect(order()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:run", "section-finished"]);
+    expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 2");
+    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:own"]);
+    // Alt/Option+N 的序号跟着三段拼接走：折叠区收着时第 3 条仍是 ext（wait, run, ext, own）。
+    fireEvent.keyDown(window, { code: "Digit3", altKey: true });
+    expect(screen.getByTestId("no-terminal")).toBeTruthy();
+    expect(screen.getByTestId("crumb").textContent).toContain("ext");
+    // 选中 running 行再离开不算看过；它之后 FINISHED 时回到 NEEDS ATTENTION。
+    fireEvent.click(screen.getByTestId("row-n:run"));
+    fireEvent.click(screen.getByTestId("row-n:wait"));
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:run", status: "finished", source: "process", reason: "exited", alive: false }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:run", "section-finished"]);
+    // 看过的行又跑起来（Restart）：记号作废，下一次 FINISHED 是新结果。
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:own", status: "running", source: "process", reason: "restarted", alive: true }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual([]);
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:own", status: "finished", source: "process", reason: "exited", alive: false }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    // 两条都是 FINISHED、都没有 status_since：稳定排序保持快照里的原顺序（own 在 run 前）。
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own", "row-n:run", "section-finished"]);
   });
 
   it("shows the two hook lines, or one pane preview line when the session has no hooks", async () => {
