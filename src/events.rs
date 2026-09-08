@@ -544,7 +544,7 @@ mod tests {
         let n = |origin, source, reason| {
             notification_for(Transition {
                 id: "n:1",
-                agent_type: "claude",
+                agent_type: "myagent",
                 name: "ext",
                 node: "mac",
                 origin,
