@@ -13,7 +13,7 @@
 | M2b | `agora-s4r` | 安装运维与收口 | `agora-dvh` | MISSION §12：A26、A29、A39；补齐 A36 中不变量 8、11 的测试。 | closed  |
 | M2c | `agora-3j0` | 在 peer 上起会话（New Agent 选节点） | `agora-s4r`, `agora-7ku` | MISSION §12：A45。 | closed  |
 | M3 | `agora-h1k` | 产出与起会话增强 | `agora-dvh` | MISSION §12：A40–A44。 | closed  |
-| M3b | `agora-j4w` | 侧栏收纳（FINISHED 行看过即收、external 行自动过期） | `agora-h1k` | MISSION §12：A46。 | open 0/3 |
+| M3b | `agora-j4w` | 侧栏收纳（FINISHED 行看过即收、external 行自动过期） | `agora-h1k` | MISSION §12：A46。 | open 2/3 |
 | V2-1 | `agora-thc` | 手机客户端与 PWA（iOS / Android） | `agora-7ku`, `agora-s4r` | MISSION §11 手机条目：A13、A19、A28、A35、A37。 | open 0/8 |
 
 ## 演示剧本（epic 的 design 字段；agent 先代检，人只看 👁 步骤与代检报告后关闭 epic，MISSION §1.5）
