@@ -334,7 +334,7 @@ Display name 可任意修改，运行时身份不变。一行显示的名字有�
 
 **已退出会话的清理**：FINISHED / FAILED / 被 Kill 的运行时会话在用户看过之后清理（Dashboard 里确认或 Delete Metadata 时一并清掉保留的输出）。这不是 kill——进程已经不在——所以不需要确认，但不得在用户看到结果之前发生；V1 不做定时回收。external 行没有运行时会话与输出，只有 agora 的两行记录；FINISHED 超过 `sessions.external_finished_ttl` 自动删记录，不算回收。策略细节见 ADR-001 D4。
 
-**「看过」的三条证据**（A46；上一段的"用户看过"与 §6.3 的 Finished 折叠区都按这里判）：① 该行在 Dashboard 里被选中展开过一次——这是浏览器的视图状态（与主区选中行同一个集合，localStorage 记着），不是服务端字段，换个浏览器就从头算；② 人在终端里自己结束了会话——`external` 行的 SessionEnd（bd memories `external-exit-hooks-ctrlc-vs-hup` 的实测表：Claude 两次 Ctrl+C 与关窗口、Grok 两种、Codex 两次 Ctrl+C 都发；Codex 关窗口不发、只能靠进程探活变 process gone），这类会话的工作面从来不在 agora 里，结束即视为看过，不按 reason 分；③ TURN_DONE 之后又来了新 prompt——人已经读过上一轮的结果才会接着说，已隐含在 TURN_DONE → RUNNING 的转换里，不另记。
+**「看过」的三条证据**（A46；上一段的"用户看过"与 §6.3 的 Finished 折叠区都按这里判）：① 该行在 Dashboard 里被选中展开过一次——这是浏览器的视图状态（选中集合与主区选中行是同一个，只在内存；「看过」集合另存 localStorage，刷新不丢），不是服务端字段，换个浏览器就从头算；② 人在终端里自己结束了会话——`external` 行的 SessionEnd（bd memories `external-exit-hooks-ctrlc-vs-hup` 的实测表：Claude 两次 Ctrl+C 与关窗口、Grok 两种、Codex 两次 Ctrl+C 都发；Codex 关窗口不发、只能靠进程探活变 process gone），这类会话的工作面从来不在 agora 里，结束即视为看过，不按 reason 分；③ TURN_DONE 之后又来了新 prompt——人已经读过上一轮的结果才会接着说，已隐含在 TURN_DONE → RUNNING 的转换里，不另记。
 
 主区显示的是侧栏当前选中行的终端，这是浏览器的视图状态，而不是 agent 生命周期；页面只有这一个选中集合——曾经的顶栏 Tabs 是第二个选中集合（标签页管主区、侧栏行管展开区，二者可不一致），用户 2026-09-07 反馈"只有左侧栏时很容易上手，加上顶栏就不知道该如何操作"，去掉（agora-a46）。切换行 / 关闭终端视图不允许：restart session、recreate 运行时会话、丢失 agent 状态、终止 PTY 拥有的进程。
 
