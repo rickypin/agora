@@ -22,7 +22,8 @@ vi.mock("@xterm/xterm", () => {
   class Terminal {
     cols = 80;
     rows = 24;
-    private textarea: HTMLTextAreaElement | null = null;
+    /** 真 xterm 也把 helper textarea 公开成 `textarea`（TerminalView 在上面挂 input 监听）。 */
+    textarea: HTMLTextAreaElement | null = null;
     private root: HTMLDivElement | null = null;
     constructor(_opts: unknown) {}
     loadAddon(): void {}
@@ -205,5 +206,28 @@ describe("TerminalView passes the browser platform to the key layer (agora-hhu)"
     const r = altArrow("ArrowRight");
     expect(handler!(r)).toBe(false);
     expect(sock.sent).toEqual([JSON.stringify({ type: "input", data: left }), JSON.stringify({ type: "input", data: right })]);
+  });
+
+  it("IME punctuation: the keypress is left to the browser and the character the IME actually inserts is sent (agora-n0l)", async () => {
+    pretendPlatform("MacIntel");
+    setup();
+    await attached();
+    sock.sent.length = 0;
+    // macOS Chrome + 中文输入法（2026-09-08 控制台实测）：keydown 的 key 是半角 `,`，xterm 6.0 会在
+    // 这里就发字节并 preventDefault，输入法随后 insertText 的 `，` 就没了。这一层放行 keydown 与 keypress……
+    for (const type of ["keydown", "keypress"]) {
+      const ev = new KeyboardEvent(type, { key: ",", cancelable: true });
+      expect(xterm.keyHandler!(ev)).toBe(false);
+      expect(ev.defaultPrevented).toBe(false);
+    }
+    expect(sock.sent).toEqual([]);
+    // ……再从 textarea 的 input 事件里发输入法真正插入的字符。
+    const ta = helper();
+    ta.dispatchEvent(new InputEvent("input", { data: "，", inputType: "insertText", bubbles: true }));
+    expect(sock.sent).toEqual([JSON.stringify({ type: "input", data: "，" })]);
+    // 组合中的 CJK 正文归 xterm 的 CompositionHelper，这里不重复发。
+    ta.dispatchEvent(new InputEvent("input", { data: "中", inputType: "insertCompositionText", bubbles: true }));
+    ta.dispatchEvent(new InputEvent("input", { data: "中", inputType: "insertText", bubbles: true }));
+    expect(sock.sent).toHaveLength(1);
   });
 });

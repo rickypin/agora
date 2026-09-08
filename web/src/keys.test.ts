@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   handleTerminalKey,
   isDesktop,
+  isImePunctuation,
+  isImePunctuationKey,
   matchShortcut,
   terminalKey,
   TERMINAL_CTRL_KEYS,
@@ -226,5 +228,33 @@ describe("环境", () => {
   // 装上时传的平台判断对不对，由 TerminalView.test.tsx 用替身 xterm 守。
   it("没有 window 的环境（node）当桌面处理", () => {
     expect(isDesktop()).toBe(true);
+  });
+});
+
+describe("输入法标点（agora-n0l）", () => {
+  it("不带修饰键的标点键（keydown 与 keypress）交给浏览器 / 输入法，xterm 不发半角字节", () => {
+    // 2026-09-08 控制台实测：xterm 6.0 在 keydown 就发 ev.key 并 preventDefault，keypress / input 都不再来。
+    for (const type of ["keydown", "keypress"]) {
+      for (const ch of [",", ".", ";", ":", "?", "!", "(", ")"]) {
+        const ev = { ...evt(ch), type };
+        let sent = "";
+        expect(handleTerminalKey(ev, (d) => (sent += d), MAC)).toBe(false);
+        expect(sent).toBe("");
+        expect(ev.prevented).toBe(0);
+      }
+    }
+  });
+
+  it("带 Ctrl/Alt/Meta 的标点、字母数字都照旧交回 xterm", () => {
+    expect(isImePunctuationKey({ ...evt(","), type: "keyup" })).toBe(false);
+    expect(isImePunctuationKey({ ...evt(",", { ctrlKey: true }), type: "keypress" })).toBe(false);
+    expect(isImePunctuationKey({ ...evt(",", { metaKey: true }), type: "keypress" })).toBe(false);
+    expect(isImePunctuationKey({ ...evt("a"), type: "keypress" })).toBe(false);
+    expect(isImePunctuationKey({ ...evt("1"), type: "keypress" })).toBe(false);
+  });
+
+  it("input 事件只放行半角标点与输入法改写出的全角标点，不放行 CJK 正文", () => {
+    for (const ch of [",", "，", "。", "；", "（", "）", "…"]) expect(isImePunctuation(ch)).toBe(true);
+    for (const ch of ["中", "a", "，，", ""]) expect(isImePunctuation(ch)).toBe(false);
   });
 });

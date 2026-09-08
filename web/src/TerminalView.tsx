@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { handleTerminalKey } from "./keys";
+import { handleTerminalKey, isImePunctuation } from "./keys";
 import { TerminalClient, type ExitInfo, type TerminalClientOptions } from "./terminal";
 
 /** scrollback 与运行时的 history-limit 对齐（ADR-001 D6）。 */
@@ -83,6 +83,14 @@ export function TerminalView({ sessionId, connect, focusRef, readOnly = false }:
     // 其余一律交回 xterm，终端里的 Ctrl+C/D/Z/R/A/E 不经过任何 agora 的判断（MISSION §6.5）。
     const keyOpts = { mac: isMacLike() };
     term.attachCustomKeyEventHandler((ev) => handleTerminalKey(ev, send, keyOpts));
+    // 标点键的 keydown 让给了浏览器 / 输入法（keys.ts isImePunctuationKey，agora-n0l）：
+    // 字符真正落进 xterm 的 textarea 时从 input 事件里发出去。xterm 自己的 input 处理对"见过
+    // keydown"的插入不发字节，也不会重复；输入法组合中的 insertCompositionText 仍归 CompositionHelper。
+    const onInput = (ev: Event) => {
+      const { data, inputType, isComposing } = ev as InputEvent;
+      if (inputType === "insertText" && data && !isComposing && isImePunctuation(data)) send(data);
+    };
+    term.textarea?.addEventListener("input", onInput);
     const resize = term.onResize(({ cols, rows }) => client.sendResize(cols, rows));
     const ro = new ResizeObserver(() => fit.fit());
     ro.observe(el);
@@ -101,6 +109,7 @@ export function TerminalView({ sessionId, connect, focusRef, readOnly = false }:
 
     return () => {
       if (focusRef) focusRef.current = null;
+      term.textarea?.removeEventListener("input", onInput);
       el.removeEventListener("pointerdown", onPointerDown);
       el.removeEventListener("mousedown", onMouseDown);
       ro.disconnect();

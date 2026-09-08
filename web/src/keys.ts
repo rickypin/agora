@@ -182,11 +182,46 @@ export function handleTerminalKey(ev: Preventable, send: (data: string) => void,
     send(bytes);
     return false;
   }
+  if (isImePunctuationKey(ev)) return false;
   // 2026-09-05 agent-browser 实测：焦点在 xterm 时 Ctrl+K 进了 pane 成 ^K、面板没开；xterm 对
   // Ctrl+字母与（非 mac 的）Alt+字母都会 cancel 事件。这里不 preventDefault：由全局层自己做，
   // 它没装（手机断点）时键就按浏览器缺省走。Ctrl 组合永远不让——MISSION §6.5 的硬约束。
   if (!ev.ctrlKey && matchShortcut(ev) !== null) return false;
   return true;
+}
+
+/**
+ * 中文 / 日文输入法会把这些半角键改写成全角标点（，。；：？！（）「」…）。
+ * 见 isImePunctuationKey。
+ */
+export const IME_PUNCTUATION = ",.;:?!()<>[]{}'\"~^$\\";
+
+/**
+ * 输入法开着时按标点键（agora-n0l，2026-09-08 截图：Claude / grok 会话里「，。；」全成了「,.;」）：
+ * 浏览器控制台实测（macOS Chrome + 中文输入法，2026-09-08）keydown 的 key 是半角 `,`、keyCode 188，
+ * 事件在 keydown 就被 preventDefault，之后没有 keypress 也没有 input——xterm.js 6.0 的
+ * evaluateKeyboardEvent 对不带修饰键、keyCode ≥ 48 的单字符键直接把 `ev.key` 发给 pane 并 cancel，
+ * 输入法要在 input 阶段插入的全角 `，` 从没机会出现。所以这些键的 keydown（保险起见 keypress 也一样）
+ * 这里返回 false 让 xterm 什么都不做、也不 preventDefault，浏览器 / 输入法照常往 textarea 里插字，
+ * TerminalView 在 textarea 的 input 事件里把实际插入的字符发出去——没开输入法就是半角，开了就是
+ * 全角，跟着输入法走。xterm 自己的 _inputEvent 对见过 keydown 的插入不发字节，不会重复。只认不带
+ * 修饰键的：Ctrl/Alt/Meta 组合一律不碰，输入法组合中（keyCode 229）的键也到不了这里。
+ */
+export function isImePunctuationKey(ev: KeyLike): boolean {
+  if (ev.type !== "keydown" && ev.type !== "keypress") return false;
+  if (ev.ctrlKey || ev.altKey || ev.metaKey) return false;
+  return ev.key.length === 1 && IME_PUNCTUATION.includes(ev.key);
+}
+
+/** 输入法把 IME_PUNCTUATION 改写出来的全角标点（简 / 繁中文与日文各家的默认映射并集）。 */
+export const IME_PUNCTUATION_FULLWIDTH = "，。；：？！（）〈〉《》［］【】｛｝「」『』‘’“”～＾￥、·…—　";
+
+/**
+ * TerminalView 从 textarea 的 input 事件里放行的单字符：半角标点本身，或输入法改写出的全角标点。
+ * 只认这两组——CJK 正文由 CompositionHelper 走 composition 事件发，这里放行会发两遍。
+ */
+export function isImePunctuation(data: string): boolean {
+  return data.length === 1 && (IME_PUNCTUATION.includes(data) || IME_PUNCTUATION_FULLWIDTH.includes(data));
 }
 
 /** 桌面断点（index.css 的侧栏宽度也是照这个来的）。 */
