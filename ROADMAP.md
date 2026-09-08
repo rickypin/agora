@@ -16,6 +16,7 @@
 | M3b | `agora-j4w` | 侧栏收纳（FINISHED 行看过即收、external 行自动过期） | `agora-h1k` | MISSION §12：A46。 | open 3/3 |
 | M4a | `agora-uvd` | 侧栏树视图（节点 / 仓库 / worktree）、视图切换与行身份 | `agora-j4w` | MISSION §12：A47、A48、A49。 | open 0/8 |
 | M4b | `agora-4yr` | 回答区进主区（就地 respond / 验收 / 改动在主区渲染）与「需要我」视图的重排稳定 | `agora-j4w` | MISSION §12：A50、A51。 | open 0/5 |
+| T1 | `agora-bvs` | 执行代理 plugin（handoff）：Claude 编排、Claude / Grok / Codex 可插拔执行，一 issue 一 worktree 一契约 | — | 由人关闭（MISSION §1.5）：(1) ~/code/handoff 含 CLAUDE.md、plugin.json、skills/run、agents（runner / verifier / integrator）、workflows、workers、bin、schemas、hooks、tests，npm test 绿且含独立性检查与版本对齐检查；(2) 两次端到端试跑各用骨架关闭了一个真实 agora issue（一次 worker=claude、一次 worker=grok），close reason 含契约字段（outcome、tests、commit、复核 verdict；Grok 那次含 session_id 与 cost_usd），close 发生在 ff 合入之后；(3) bd 垫片、CLI deny、事后审计的拒绝 / 见红各有一次原文证据；(4) agora 仓库只多 .claude/handoff.json 与 AGENTS.md 一行，doc-lint 绿；(5) 符号链接安装后不带 --plugin-dir 的会话里 /handoff:run、/handoff:batch 与三个代理可见，args 能到达脚本，改源码后生效方式有实测表；(6) bd memories handoff 有 Grok 校准结论；(7) 演示剧本 👁 第 7 步由人看。 | open 1/11 |
 | V2-1 | `agora-thc` | 手机客户端与 PWA（iOS / Android） | `agora-7ku`, `agora-s4r` | MISSION §11 手机条目：A13、A19、A28、A35、A37。 | open 0/8 |
 
 ## 演示剧本（epic 的 design 字段；agent 先代检，人只看 👁 步骤与代检报告后关闭 epic，MISSION §1.5）
@@ -135,6 +136,21 @@ M4b 演示剧本（agent 代检为主；👁 一步；人按 MISSION §1「一�
 4. 「需要我」视图：把指针停在侧栏上，让一个 RUNNING 行变 WAITING → 顺序不变、状态符号变 ⚠；指针移出侧栏并等过冻结窗口 → 行落到 NEEDS ATTENTION 顶部并短暂高亮；冻结期间 Alt/Option+2 跳的是眼睛看到的第 2 行（A51；agora-4yr.4）。
 5. 👁 markdown 排版与折叠在真浏览器里读得顺（可读性是主观判断；代检只能断言 DOM 里有 h2 / table / pre 元素与面板高度上限）。
 6. CI 绿；MISSION §6.2 / §6.3「就地」措辞、§6.9 手机段、A50 / A51 回写，docs/spec/ux.md 线框重画（agora-4yr.5）；Respond.test / SessionRow.test / Workspace.test 迁移后的守卫逐条关掉变红。
+
+### T1 `agora-bvs`
+
+T1 演示剧本（agent 代检为主；👁 一步；人看完代检报告后关闭 epic，MISSION §1.5）
+场景：以后拿到任何一个 ready 的 issue，一句 /handoff:run 就能按仓库纪律做完，执行者随手换。
+前置：~/code/handoff 存在且 npm test 绿；agora 有 .claude/handoff.json；主仓干净且已 push；bd ready 里至少有两个单文件小 issue（试跑用）。
+
+1. `claude --plugin-dir ~/code/handoff` 起会话，`/handoff:run <P4 单文件 issue> worker=claude 授权本批 commit` → 主会话复述 ready / blocked 与解析出的 args（ids、每个 issue 的 worker、verify=claude）并起 Workflow；/workflows 里能看到 准备 → 执行 → 复核 → 集成 的分组；结束时报告列出：合入 main 的 commit、关闭的 issue、待人眼条款、是否要 push（T1.5 / T1.7）。
+2. `git log main -2` 是 ROADMAP 重生成提交与该 issue 的 ff 提交；`bd show <issue>` 状态 closed，close reason 含 tests、commit、复核 verdict 与复核者自己跑的门禁；主仓 `git status --porcelain` 为空；`$HOME/.handoff/runs/agora/<ts>/<issue>/` 下有 prompt、契约、raw（T1.3 / T1.4 / T1.7）。
+3. `/handoff:run <P3 issue> worker=grok 授权本批 commit` → 报告里有 Grok 的 session_id 与费用、复核者重跑门禁的结果；`grok -r <sid>` 能回看该会话；Grok 被要求 `bd close` 时原始 JSON 里有垫片的「只读」拒绝原文，被要求 `git push --dry-run` 时有 deny 拒绝原文（T1.2 / T1.8）。
+4. 阶段门未开的 epic：`/handoff:run epic=agora-uvd` → 主会话报告「ready 为空，blocked_by agora-j4w」，不起任何工人（T1.5）。
+5. 没有 .claude/handoff.json 的仓库里 `/handoff:run x` → 拒绝并说明缺哪个文件；schema_version 不一致 → 拒绝并给迁移办法（T1.5 / T1.6）。
+6. `ln -s /Users/ricky/code/handoff ~/.claude/skills/handoff` 后不带 --plugin-dir 起 claude → /handoff:run 与 /handoff:batch 可见、三个代理在 Agent 类型列表里；改一行 SKILL.md 后重开会话，改动可见——这就是「可更新」（T1.9）。
+7. 👁 批末报告一眼能看懂：合入了什么、关了什么、差什么、下一步问什么（主观可读性，代检只能断言字段齐全）。
+8. `bd memories handoff` 能查到 Grok 在 agora 上的校准结论（T1.8）。
 
 ### V2-1 `agora-thc`
 
