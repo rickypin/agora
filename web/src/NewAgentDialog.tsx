@@ -341,6 +341,7 @@ export function NewAgentDialog({ api, catalog, nodes, onClose, onCreated }: Prop
             disabled={busy}
             project={project.trim()}
             // MISSION §6.4：worktree 名默认 issue id，无 bd（没选任务）用 Name。
+            // 撞上已有目录名 / 分支时 WorktreeSelect 换成 -2（agora-h5x），这里仍传原始默认。
             defaultName={taskPick || name}
             // 选了 peer 就在那台机器的仓库里建（A45）。
             create={(path, wtName) => catalog.createWorktree(path, wtName, undefined, target)}

@@ -14,7 +14,8 @@ interface Props {
   project: string;
   /**
    * 名字输入框的默认值：Name 栏（MISSION §6.4：名字默认 issue id，无 bd 用 Name；issue id
-   * 随 A43 的 Task 下拉落地后由它填进 Name）。
+   * 随 A43 的 Task 下拉落地后由它填进 Name）。打开框时若与已有 worktree 目录名 / 分支撞了，
+   * `suggestWorktreeName` 会换成 -2，不把这个值原样送进 POST。
    */
   defaultName: string;
   /** 真正去建的那一步（`catalogApi().createWorktree`）；注进来是为了测试不开网络。 */
@@ -23,6 +24,40 @@ interface Props {
   onCreated: (created: WorktreeInfo) => void;
   /** 名字框打开着（填名字 / 等 POST）时为 true：父组件据此先别让 Create 起会话。 */
   onCreatingChange?: (creating: boolean) => void;
+}
+
+/** 路径最后一段：节点判 worktree_exists 用的就是这个（`Path::file_name`）。 */
+function worktreeDirName(path: string): string {
+  const trimmed = path.replace(/[/\\]+$/, "");
+  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return slash >= 0 ? trimmed.slice(slash + 1) : trimmed;
+}
+
+/**
+ * 打开「新建…」时填进名字框的默认值。
+ *
+ * 节点把已有 worktree 的目录名和分支都算进「同名已登记」（`src/project/worktree.rs`：
+ * `file_name == name` 或 `branch == name` → 409 `worktree_exists`）。没选任务时
+ * `defaultName` = Name 栏 = 项目名，几乎总会和主 worktree 目录撞——2026-09-07 代检
+ * agora-fna 在 `~/code/demo` 上就是 demo vs demo，用户每次都得手改，和 §6.4「2–3 次
+ * 操作起会话」相悖。撞了就换成 `name-2`、`-3`…（issue 点名的那条；留空会禁用「建」）。
+ * 空串原样：建按钮本就会因空禁用。
+ */
+export function suggestWorktreeName(desired: string, worktrees: WorktreeInfo[]): string {
+  const taken = new Set<string>();
+  for (const w of worktrees) {
+    const dir = worktreeDirName(w.path);
+    if (dir) taken.add(dir);
+    if (w.branch) taken.add(w.branch);
+  }
+  const base = desired.trim();
+  if (!base) return "";
+  if (!taken.has(base)) return base;
+  for (let n = 2; n < 100; n++) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  return "";
 }
 
 /** 失败按错误类型给文案（docs/spec/api.md），不做字符串匹配（MISSION §2.3 规则 10）。 */
@@ -78,7 +113,7 @@ export function WorktreeSelect({
 
   function pick(v: string) {
     if (v === NEW_WORKTREE) {
-      setNewName(defaultName);
+      setNewName(suggestWorktreeName(defaultName, worktrees));
       setMode(true);
       return;
     }

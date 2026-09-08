@@ -318,13 +318,14 @@ it("picking a peer re-lists everything from it and creates the session and the w
     "/home/z/code/beta",
   ]);
 
-  // 新建 worktree 也在 zuan 上建。
+  // 新建 worktree 也在 zuan 上建。Name 栏 = 项目名 beta，主 worktree 目录也是 beta，
+  // 默认换成 beta-2（agora-h5x），否则节点回 409 worktree_exists。
   fireEvent.change(field("na-worktree"), { target: { value: NEW_WORKTREE } });
-  expect(field("na-worktree-name").value).toBe("beta");
+  expect(field("na-worktree-name").value).toBe("beta-2");
   fireEvent.click(screen.getByTestId("worktree-create"));
   await waitFor(() => expect(field("na-worktree").value).toBe("/home/z/code/beta-wt/beta"));
   const wt = requests.find((r) => r.method === "POST" && r.url === "/api/projects/worktrees")!;
-  expect(JSON.parse(wt.body!)).toEqual({ path: "/home/z/code/beta", name: "beta", node: "zuan" });
+  expect(JSON.parse(wt.body!)).toEqual({ path: "/home/z/code/beta", name: "beta-2", node: "zuan" });
 
   fireEvent.click(screen.getByTestId("create"));
   await waitFor(() => expect(onCreated).toHaveBeenCalledWith("zuan:new7"));

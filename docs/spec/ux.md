@@ -173,7 +173,9 @@ Node（A45，agora-fna；`web/src/NewAgentDialog.tsx`）：第一项本机（名
 V1 的取舍（agora-xqa.12）：Project 是可输入的下拉
 （`<input list>`）——列表来自扫描并按最近使用排序，但 `project_roots` 默认为空，只给下拉的话
 新装的 agora 一个会话都起不了；Worktree 列现有的，末尾一项「新建…」（A44，agora-h1k.1）：选中后
-出现名字输入框（默认取 Name 栏的值；issue id 默认随 A43）与「建」按钮，`POST /api/projects/worktrees`
+出现名字输入框（默认取 Name 栏的值；issue id 默认随 A43；与已有 worktree 的目录名或分支同名则换成
+`name-2`、`-3`…——没选任务时 Name = 项目名，几乎总会和主 worktree 目录撞，原样 POST 是 409
+`worktree_exists`，agora-h5x）与「建」按钮，`POST /api/projects/worktrees`
 成功后重拉列表并选中新项，失败按错误类型给文案（同名 worktree / 分支 / 目录已存在、名字不合法、git
 失败）；选主 worktree 等于选仓库本身；Agent 的名字与默认命令来自 `GET /api/agents`，
 末尾多一项 `custom`——它没有 Adapter，Command 必填。Name 与 Command 有默认值，用户手改过之后
@@ -184,7 +186,7 @@ V1 的取舍（agora-xqa.12）：Project 是可输入的下拉
 有任务时 Task 是下拉（`<select id="na-task">`）：第一项「一句话…」（选它时下面出现原来的自由文本框
 `na-task-text`），其余每项 `<id> · <title>`，顺序照 bd 给的。选中一个任务 → `task_ref` = issue id、
 Name = issue 标题（用户手改过 Name 就不覆盖，沿用上面的规则）、Worktree「新建…」的默认名 = issue id
-（这就是 A44 留给 A43 的入口；没选任务时仍是 Name）、Prompt 框（`na-prompt`，只在所选 agent 的
+（这就是 A44 留给 A43 的入口；没选任务时仍是 Name；撞名时 WorktreeSelect 再换成 -2，agora-h5x）、Prompt 框（`na-prompt`，只在所选 agent 的
 `prompt` 标志为 true 时显示——Claude / Codex 有，Grok / shell / custom 没有）预填下面的模板，用户可改，
 非空才随 `POST /api/sessions` 的 `prompt` 发；换回「一句话…」时没改过的 Name 回项目名、Prompt 清空。
 没有任务（`reason` 非空）时 Task 保持一句话输入，旁边一行灰字**按 `reason` 的类型**给文案（MISSION §2.3

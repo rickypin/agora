@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, expect, it, vi } from "vitest";
 import { catalogApi, sessionApi, type FetchLike, type WorktreeInfo } from "./api";
 import { NewAgentDialog } from "./NewAgentDialog";
-import { describeWorktreeError, NEW_WORKTREE, WorktreeSelect } from "./WorktreeSelect";
+import { describeWorktreeError, NEW_WORKTREE, suggestWorktreeName, WorktreeSelect } from "./WorktreeSelect";
 
 afterEach(cleanup);
 
@@ -24,18 +24,21 @@ const NEW: WorktreeInfo = {
 
 const field = (id: string) => document.getElementById(id) as HTMLInputElement | HTMLSelectElement;
 
-function renderSelect(create: (path: string, name: string) => Promise<Awaited<ReturnType<ReturnType<typeof catalogApi>["createWorktree"]>>>) {
+function renderSelect(
+  create: (path: string, name: string) => Promise<Awaited<ReturnType<ReturnType<typeof catalogApi>["createWorktree"]>>>,
+  opts: { defaultName?: string; worktrees?: WorktreeInfo[] } = {},
+) {
   const onChange = vi.fn();
   const onCreated = vi.fn();
   const onCreatingChange = vi.fn();
   render(
     <WorktreeSelect
-      worktrees={[MAIN]}
+      worktrees={opts.worktrees ?? [MAIN]}
       value={MAIN.path}
       onChange={onChange}
       disabled={false}
       project={MAIN.path}
-      defaultName="agora-h1k.1"
+      defaultName={opts.defaultName ?? "agora-h1k.1"}
       create={create}
       onCreated={onCreated}
       onCreatingChange={onCreatingChange}
@@ -133,8 +136,8 @@ it("对话框里：新建成功后重拉列表并选中新项，起会话就落�
   await waitFor(() => expect(screen.getByRole("option", { name: "新建…" })).toBeTruthy());
 
   fireEvent.change(field("na-worktree"), { target: { value: NEW_WORKTREE } });
-  // 默认名字 = Name 栏（此时是项目名）。
-  expect(field("na-worktree-name").value).toBe("agora");
+  // 默认名字本是 Name 栏（项目名 agora），但主 worktree 目录也叫 agora，换成 agora-2。
+  expect(field("na-worktree-name").value).toBe("agora-2");
   // 名字框开着时 Create 禁用：别在 worktree 还没建好时把会话起在仓库本身。
   expect((screen.getByTestId("create") as HTMLButtonElement).disabled).toBe(true);
 
@@ -151,4 +154,34 @@ it("对话框里：新建成功后重拉列表并选中新项，起会话就落�
   await waitFor(() => expect(onCreated).toHaveBeenCalledWith("mac:new1"));
   const session = requests.find((r) => r.method === "POST" && r.url === "/api/sessions")!;
   expect(JSON.parse(session.body!)).toMatchObject({ working_directory: NEW.path, worktree: "h1k" });
+});
+
+it("suggestWorktreeName skips names already taken as a directory or branch", () => {
+  // 节点判冲突看 path 的 file_name 和 branch（src/project/worktree.rs），前端预判同一套。
+  expect(suggestWorktreeName("agora", [MAIN])).toBe("agora-2");
+  expect(suggestWorktreeName("agora-h1k.1", [MAIN])).toBe("agora-h1k.1");
+  expect(suggestWorktreeName("main", [MAIN])).toBe("main-2");
+  expect(suggestWorktreeName("  ", [MAIN])).toBe("");
+  const taken2: WorktreeInfo = {
+    path: "/Users/r/code/agora-wt/agora-2",
+    branch: "agora-2",
+    head: "abc",
+    main: false,
+    locked: false,
+  };
+  expect(suggestWorktreeName("agora", [MAIN, taken2])).toBe("agora-3");
+});
+
+it("默认名与主 worktree 目录名相同时换成 -2，确认时按换过的名字建", async () => {
+  // 2026-09-07 代检 agora-fna：没选任务 → Name = 项目名 = 主 worktree 目录名，一按「建」
+  // 就 409 worktree_exists。守卫：名字框打开时不能还是那个目录名，也不用手改就能 POST。
+  const create = vi.fn(async () => ({ ok: true as const, value: NEW }));
+  const { onCreated } = renderSelect(create, { defaultName: "agora" });
+  fireEvent.change(field("na-worktree"), { target: { value: NEW_WORKTREE } });
+  expect(field("na-worktree-name").value).toBe("agora-2");
+  expect((screen.getByTestId("worktree-create") as HTMLButtonElement).disabled).toBe(false);
+
+  fireEvent.click(screen.getByTestId("worktree-create"));
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith(NEW));
+  expect(create).toHaveBeenCalledWith(MAIN.path, "agora-2");
 });
