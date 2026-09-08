@@ -334,6 +334,8 @@ Display name 可任意修改，运行时身份不变。一行显示的名字有�
 
 **已退出会话的清理**：FINISHED / FAILED / 被 Kill 的运行时会话在用户看过之后清理（Dashboard 里确认或 Delete Metadata 时一并清掉保留的输出）。这不是 kill——进程已经不在——所以不需要确认，但不得在用户看到结果之前发生；V1 不做定时回收。external 行没有运行时会话与输出，只有 agora 的两行记录；FINISHED 超过 `sessions.external_finished_ttl` 自动删记录，不算回收。策略细节见 ADR-001 D4。
 
+**「看过」的三条证据**（A46；上一段的"用户看过"与 §6.3 的 Finished 折叠区都按这里判）：① 该行在 Dashboard 里被选中展开过一次——这是浏览器的视图状态（与主区选中行同一个集合，localStorage 记着），不是服务端字段，换个浏览器就从头算；② 人在终端里自己结束了会话——`external` 行的 SessionEnd（bd memories `external-exit-hooks-ctrlc-vs-hup` 的实测表：Claude 两次 Ctrl+C 与关窗口、Grok 两种、Codex 两次 Ctrl+C 都发；Codex 关窗口不发、只能靠进程探活变 process gone），这类会话的工作面从来不在 agora 里，结束即视为看过，不按 reason 分；③ TURN_DONE 之后又来了新 prompt——人已经读过上一轮的结果才会接着说，已隐含在 TURN_DONE → RUNNING 的转换里，不另记。
+
 主区显示的是侧栏当前选中行的终端，这是浏览器的视图状态，而不是 agent 生命周期；页面只有这一个选中集合——曾经的顶栏 Tabs 是第二个选中集合（标签页管主区、侧栏行管展开区，二者可不一致），用户 2026-09-07 反馈"只有左侧栏时很容易上手，加上顶栏就不知道该如何操作"，去掉（agora-a46）。切换行 / 关闭终端视图不允许：restart session、recreate 运行时会话、丢失 agent 状态、终止 PTY 拥有的进程。
 
 ---
@@ -435,7 +437,7 @@ MVP 依赖运行时 scrollback，不自行构建 terminal transcript database。
 FAILED 100   WAITING 90   TURN_DONE 85   FINISHED 80   UNKNOWN 40   IDLE 30   STARTING 20   RUNNING 10
 ```
 
-原则：**凡是卡在人身上的（FAILED / WAITING / TURN_DONE / FINISHED）都高于不需要人的（RUNNING / STARTING）**——跑着的 agent 什么都不需要，做完的 agent 正在等你；UNKNOWN 排中间（看不清，值得瞟一眼）。同分先按任务优先级（bd 的 P0–P4；无 bd 视为 P2），再按等待时长、状态变化与未读通知微调。用户打开页面最先看到**需要自己处理的 agent**，而不是最近创建的。
+原则：**凡是卡在人身上的（FAILED / WAITING / TURN_DONE / FINISHED）都高于不需要人的（RUNNING / STARTING）**——跑着的 agent 什么都不需要，做完的 agent 正在等你；UNKNOWN 排中间（看不清，值得瞟一眼）。FINISHED 再分来源（A46）：`external` 来源的（§5.4，工作面在别的窗口、人在终端里自己结束的）不算"等你"，直接进侧栏末尾默认折叠的 Finished 区；`agora` / `adopted` 来源的在用户**看过**（§4.6 的三条证据）之后才进去；折叠与否不改变 Alt/Option+N 的序号（§6.5）。同分先按任务优先级（bd 的 P0–P4；无 bd 视为 P2），再按等待时长、状态变化与未读通知微调。用户打开页面最先看到**需要自己处理的 agent**，而不是最近创建的。
 
 每一行的第一列是**任务**而不是进程名：issue id + 标题 > 首条 prompt 摘要 > display name。行下面再带两行，回答"它现在到哪了"：`❯` 是用户最后输入的那一条；`↳` 是 agent 正在做什么或它最后说了什么，两者互为兜底。这两行读自 **agent 的 hook 事件**（`prompt.submitted`、`turn.ended` 的最后一条回复、`activity` 的当前工具，ADR-002 D8），不读 pane，也不解析 transcript（V1 只存路径）；没有 hook 的会话保持一行 pane preview。所有客户端形态用同一条规则渲染同样的两行。
 

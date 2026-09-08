@@ -77,6 +77,16 @@ NEEDS ATTENTION
 ✓ agora-3la 测试骨架       / Claude @ mac    finished 9m
 RUNNING
 ● 重构 sglog parser        / Codex @ zuan
+▸ FINISHED 3
+```
+
+展开 `▸ FINISHED 3` 之后（收起时这三行不画，但 Alt/Option+N 的序号照数）：
+
+```
+▾ FINISHED 3
+✓ 回一句 closewin          / Claude external   finished 1m
+✓ 回一句 ctrlc             / Claude external   finished 1m
+✓ own-kill                 / shell             finished 9m
 ```
 
 侧栏选中行下方是就地 respond 区（MISSION §6.3 §7.3，`web/src/Respond.tsx`）：WAITING 且 `reason = permission`、`respond_via = hook` → 问题文本（`pending_decision.summary`，形如 `Bash: git push origin main`——工具名 + `tool_input` 主参数的首行，截到 200 字符加 `…`；载荷没带 `tool_input` 才只剩工具名，`src/adapter/hooks.rs permission_summary`）+ Allow / Deny / 打开终端，`respond_within_secs` 短于 5 分钟（Codex 20 s）时再加一行"N 秒内没答会交回终端"；WAITING 的其它情形（`question`，或 `respond_via = terminal`）→ 只有问题文本与"打开终端"；TURN_DONE → `↳` 最后一条回复 + "下一条指令"输入框（发 text，尾部带换行）。Allow / Deny 撞上 `no_pending_decision`（终端先答了 / 过期）只显示一行提示，行状态随事件自己变。
@@ -107,7 +117,9 @@ diff --git a/src/session/manager.rs b/src/session/manager.rs
 +    pub acceptance: Option<String>,
 ```
 
-实现（`web/src/attention.ts`，agora-dvh.10）：侧栏就是 Dashboard——行按分数降序 → bd 优先级升序（`task.priority`，无 bd 视为 P2）→ `status_since` 早的在前排好，再把 NEEDS ATTENTION（分数 ≥ FINISHED）整体提到 RUNNING 前面；过滤只删不换序，所以 Alt/Option+N 跳的第 N 条永远等于眼睛看到的第 N 条。第一列 `taskLabel`：`task.id + title` > `task_ref`（issue id 或首条 prompt 摘要）> 名字。header 下一行是各状态计数。
+实现（`web/src/attention.ts`，agora-dvh.10）：侧栏就是 Dashboard——行按分数降序 → bd 优先级升序（`task.priority`，无 bd 视为 P2）→ `status_since` 早的在前排好，再拼成三段：NEEDS ATTENTION（分数 ≥ FINISHED，除去下面收起来的）→ RUNNING → FINISHED 折叠区；过滤只删不换序、折叠只是不画不是不数，所以 Alt/Option+N 跳的第 N 条永远等于眼睛看到的第 N 条。第一列 `taskLabel`：`task.id + title` > `task_ref`（issue id 或首条 prompt 摘要）> 名字。header 下一行是各状态计数。
+
+**FINISHED 分来源与「看过」**（MISSION §4.6「看过」的三条证据、§6.3 排序表；A46，agora-j4w.1；`finishedCollapsed` / `sectionOf`）：`origin = external` 的 FINISHED 一律直接进折叠区——它的工作面在别的窗口，人是在终端里自己结束的会话（证据 ②），agora 这边没有 pane 也没有 Restart，能给的只有两行摘要；不按 `reason` 分（Claude / Grok 连关窗口都发 SessionEnd、Codex 关窗口不发，分不可靠也不必要）。`origin = agora / adopted` 的 FINISHED 先留在 NEEDS ATTENTION，**看过**（证据 ①：在本浏览器里被选中展开过一次）之后才进折叠区。「看过」是浏览器视图状态，不加服务端字段：`Workspace` 在**离开**那一行（切到别的行 / 关闭视图）的时刻记下——记在选中那一刻它会立刻掉进收起的折叠区、主区还开着它的终端而侧栏找不到这一行；离开时看它当时的状态，选中时还在跑、离开后才 FINISHED 的不算看过。集合存 `localStorage`（键 `agora.seen-finished`，读写都包 try/catch，丢了的代价只是几行回到 NEEDS ATTENTION 再看一眼）；行被删（Delete metadata）或又跑起来（Restart）记号作废，下一次 FINISHED 是新结果。折叠区标题 `▸ FINISHED N` 是按钮（`data-testid="section-finished"`，`aria-expanded`），默认收起、刷新回到收起，N 是折叠区里的行数（Header 计数行里的 `Finished` 仍按状态数、不变——它变成一键清理的按钮是 agora-j4w.2）。守卫 `web/src/attention.test.ts`（external FINISHED 不 needsAttention、agora FINISHED 看过前后、三段拼接顺序等于 sortByAttention 顺序且与过滤可交换）、`web/src/Sidebar.test.tsx`（默认折叠带计数、展开后可选中且序号连续、NEEDS ATTENTION 无 external FINISHED）、`web/src/Workspace.test.tsx`「an agora FINISHED row stays in NEEDS ATTENTION until it has been opened and left」。不做 Archive（MISSION §11）、不按项目 / 节点分组（与 Alt+N 序号冲突，agora-a46 的教训）。
 
 行上的 `@ <node>`（MISSION §3.5 "每行标明节点"；`web/src/SessionRow.tsx`，agora-7ku.5）只给 **node ≠ 本机** 的行：单机满屏 `@ mac` 是噪音，上面线框里本机的 `@ mac` 在实现里不显示；本机 id 取 `/api/system` 的 `node`（与 Header 本机那一枚同源），还没拉到之前谁都不标——先满屏 `@` 再消失更难看。peer 断线后行带 `stale: true` 与 `last_seen`（`docs/spec/api.md`「peer 视图」；agora-7ku.6）：行**不消失**，整行淡显（`li.stale`，hover / 选中回到可读），`.meta` 里 `@ zuan` 之后多一段 `○ 上次见到 23:10`——黄点与 `clockText`（本地时区 HH:MM）都与 Header 那一枚 stale 节点同源，完整 UTC 放 title；非 stale 行没有这一段。点开 stale 行与点开别的行没有区别（建终端 WS、就地 respond 照常）：节点看到人碰了 stale peer 的会话就插一次重连（`docs/spec/architecture.md`「立即重试」），恢复后事件流把行刷回正常、淡显消失，浏览器不用多做任何事。
 
