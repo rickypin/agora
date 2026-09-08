@@ -1275,8 +1275,11 @@ impl SessionManager {
     /// external 且 FINISHED（hook 结束、superseded、进程消失都算）的行，结束距今 ≥ ttl → 删 metadata
     /// （与 `DELETE /api/sessions/:id` 同一条路径：hook 检查点、状态机、挂起一起清），不看节流。
     /// 只碰 external：agora / adopted 的 FINISHED 行有运行时会话与 scrollback，MISSION §4.6「不得在
-    /// 用户看到结果之前清理」对它们仍成立。结束时刻取 `ended_at`，external 行没有它（进程退出没人
-    /// 报）就取 `status_since`——hook 结束的行它随检查点过重启，进程消失的行 daemon 重启后从头计。
+    /// 用户看到结果之前清理」对它们仍成立。结束时刻就是 `status_since`：hook 结束的行它随检查点过重启
+    /// （进程之后退了也不重置——同状态、不更有把握的进程事实不盖 hook 的结论，`Machine::observe`，
+    /// agora-rzh / agora-ec4），只靠进程消失结束的行 daemon 重启后从头计。下面的 `ended_at` 分支对
+    /// external 行是死路——它们 `runtime_ref` 恒 NULL、`mark_ended_at` 不会写；留着只为与 agora 行
+    /// 同一条算法，别把注释改回「结束时刻取 ended_at」（2026-09-08 agora-ec4 复核）。
     pub fn expire_external_finished(&self, now: i64) -> Result<Vec<String>, SessionError> {
         let ttl = self.external_finished_ttl.as_secs() as i64;
         if ttl == 0 {

@@ -8,12 +8,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::collections::BTreeMap;
+
 use agora::clock::now_secs;
 use agora::events::{Differ, Event};
+use agora::hook::{Delivery, Envelope, Inbox, Receiver};
 use agora::runtime::{Exit, Runtime, Size};
 use agora::session::{Db, ExternalSession, NewSession, Origin, SessionManager};
-use agora::status::{AgoraEvent, Status};
+use agora::status::{AgoraEvent, Source, Status};
 use common::FakeRuntime;
+use serde_json::json;
 
 const DAY: i64 = 86_400;
 
@@ -206,4 +210,111 @@ fn expiry_takes_the_delete_metadata_path_and_drops_the_hook_checkpoint() {
     assert_eq!(m.sweep(now_secs() + 25 * 3600).unwrap(), vec![id.clone()]);
     assert!(!m.has_hook_checkpoint(&id), "检查点随 metadata 一起删");
     assert!(m.get(&id).is_err());
+}
+
+/// hook 报来的 external 投递（Terminal.app 里裸跑的 claude，CLAUDE_PID 是它的进程号）。
+fn external_delivery(
+    agent_session: &str,
+    pid: u32,
+    ms: u64,
+    payload: serde_json::Value,
+) -> Delivery {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    Delivery {
+        envelope: Envelope {
+            host: "claude".into(),
+            agora_session_id: None,
+            agora_epoch: None,
+            agent_session_id: agent_session.into(),
+            agent_env: BTreeMap::from([("CLAUDE_PID".to_owned(), pid.to_string())]),
+            runtime_env: BTreeMap::new(),
+            ppid: 1,
+            received_at: String::new(),
+            received_unix_ms: now_ms + ms,
+        },
+        payload,
+    }
+}
+
+fn checkpoint_path(home: &std::path::Path, id: &str) -> std::path::PathBuf {
+    let key: String = id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    home.join("hooks/state").join(format!("{key}.json"))
+}
+
+#[test]
+fn hook_finished_external_row_keeps_its_end_time_across_daemon_restart_and_expires() {
+    // agora-ec4（2026-09-08 对抗审查）：SessionEnd 之后 claude 进程立刻退出，几乎所有 external FINISHED
+    // 行都是「hook 说结束、进程也没了」。daemon 重启重建时进程层报 (Finished, Process) 若盖掉检查点里的
+    // (Finished, Hook)，(status, source) 变了 set_at 就重置成重启时刻——开发机一天重启几次 daemon，这些行
+    // 永远到不了 24h。守卫：重启后 status_since 仍是 SessionEnd 那一刻（检查点里的 set_at），ttl 到期照删。
+    // 关掉 machine.rs observe 里 process_fact_is_no_better 的判断 → status_since 断言红、sweep 不删。
+    let home = tempfile::tempdir().unwrap();
+    let rt = Arc::new(FakeRuntime::default());
+    let ttl = Duration::from_secs(3600);
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let id = {
+        let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+        let s = Arc::new(
+            SessionManager::new(db, rt.clone() as Arc<dyn Runtime>).with_external_finished_ttl(ttl),
+        );
+        let r = Receiver::new(home.path(), s.clone());
+        let inbox = Inbox::new(home.path());
+        let events = [
+            json!({"hook_event_name":"SessionStart","session_id":"ext-ec4","cwd":"/work/agora","source":"startup"}),
+            json!({"hook_event_name":"Stop","session_id":"ext-ec4","last_assistant_message":"done"}),
+            json!({"hook_event_name":"SessionEnd","session_id":"ext-ec4","reason":"prompt_input_exit"}),
+        ];
+        let mut id = None;
+        for (i, ev) in events.into_iter().enumerate() {
+            let path = inbox
+                .write(&external_delivery("ext-ec4", child.id(), i as u64 + 1, ev))
+                .unwrap();
+            if let Some(got) = r.ingest(&path).unwrap() {
+                id = Some(got.session_key);
+            }
+        }
+        let id = id.unwrap();
+        let v = s.get(&id).unwrap();
+        assert_eq!(
+            (v.assessment.status, v.assessment.source),
+            (Status::Finished, Source::Hook),
+            "{:?}",
+            v.assessment
+        );
+        inbox.prune_done(Duration::ZERO);
+        id
+    };
+    // 把检查点里的结束时刻拨回两小时前（真实世界里是 daemon 停了两小时），再让进程退出。
+    let path = checkpoint_path(home.path(), &id);
+    let mut cp: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let ended = cp["set_at"].as_i64().expect("检查点带 set_at") - 2 * 3600;
+    cp["set_at"] = json!(ended);
+    std::fs::write(&path, cp.to_string()).unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    // 重启：进程层此刻只知道「进程没了」（Finished, Process, 0.8），不比 hook 的 SessionEnd 更有把握，
+    // 不许盖掉 hook 的结论，结束的起点仍是 SessionEnd 那一刻。
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let s =
+        Arc::new(SessionManager::new(db, rt as Arc<dyn Runtime>).with_external_finished_ttl(ttl));
+    Receiver::new(home.path(), s.clone()).replay().unwrap();
+    let v = s.get(&id).unwrap();
+    assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
+    assert_eq!(
+        v.status_since, ended,
+        "重启后 status_since 必须还是 SessionEnd 那一刻，不是重启时刻"
+    );
+    assert_eq!(
+        s.sweep(now_secs()).unwrap(),
+        vec![id.clone()],
+        "两小时前结束、ttl 一小时：第一次 sweep 就删"
+    );
+    assert!(s.get(&id).is_err(), "行已删");
 }
