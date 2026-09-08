@@ -4,8 +4,10 @@
 //! 进程事实 + 文本判定 + 活动样本，吐出当前 [`Assessment`]。裁决顺序：
 //!
 //! 1. 进程退出压倒一切：FINISHED / FAILED 之后 hook 事件只当 metadata。hook 自己的 SessionEnd 给的是
-//!    低一档的 FINISHED（conf 0.8，`reason=clear` 例外）：进程事实到了盖过它，没有进程事实的外部会话
-//!    靠它结束（agora-vfi）。
+//!    低一档的 FINISHED（conf 0.8，`reason=clear` 例外）：带退出码的进程事实（conf 1.0）到了盖过它，
+//!    没有进程事实的外部会话靠它结束（agora-vfi）。同状态、不比它更有把握的进程事实（external 行的
+//!    `external process gone`，同样 0.8）**不盖**：行上保留 hook 的说法（source hook、reason
+//!    `session ended (hook)`），只有 alive 变假——人自己在终端结束的与终端被关 / 崩溃的要分得开（agora-rzh）。
 //! 2. 有 hook 的会话：WAITING / TURN_DONE 只来自 hook；文本层永远抬不上去，活动层不产生 IDLE。
 //!    hook 沉默（`silence_after` 无事件）而屏幕像在等人 → UNKNOWN `hooks silent`，不猜 WAITING。
 //!    hook 层的 STARTING 在 `startup_grace` 内没有后续事件 → TURN_DONE `awaiting first prompt`
@@ -393,6 +395,16 @@ impl Machine {
         self.unknown_from_screen() || self.unknown_from_handleless_silence()
     }
 
+    /// 进程层这条结论与 hook 已写的同状态、且把握不比 hook 大：换上去只会丢 hook 的 reason
+    /// （SessionEnd → `external process gone`，agora-rzh）。只对 hook 层的当前结论成立；进程层带退出码的
+    /// FINISHED / FAILED（conf 1.0）或状态不同的结论都不算，照旧覆盖。
+    fn process_fact_is_no_better(&self, process: &Assessment) -> bool {
+        self.current.source == Source::Hook
+            && process.source == Source::Process
+            && process.status == self.current.status
+            && process.confidence <= self.current.confidence
+    }
+
     /// Restart：新一代进程，旧状态、旧驻留全部作废。
     fn reset(&mut self, epoch: i64, now: i64) {
         let cfg = self.cfg.clone();
@@ -528,8 +540,9 @@ impl Machine {
             AgoraEvent::Idle => (self.current.status == Status::Running
                 || self.unknown_awaiting_hook())
             .then(|| hook(Status::TurnDone, 0.9, Some("idle"))),
-            // 会话结束（MISSION §5.6 session.ended）：hook 层的 FINISHED，conf 0.8——进程退出的事实到了
-            // 会以 1.0 覆盖（observe 第 1 步）；没有进程事实的 external 会话则只有这一条能让它离开
+            // 会话结束（MISSION §5.6 session.ended）：hook 层的 FINISHED，conf 0.8——带退出码的进程事实
+            // 到了会以 1.0 覆盖（observe 第 1 步；external 行同分的 `process gone` 不覆盖，reason 留着
+            // 说明是人结束的，agora-rzh）；没有进程事实的 external 会话则只有这一条能让它离开
             // UNKNOWN / TURN_DONE：Codex Desktop 的线程里 hook 的 ppid 是所有线程共用的 app-server，
             // 永远活着，靠探活它永远不会结束（2026-09-05 devcenter 那一行，agora-vfi）。
             // reason 例外表（2026-09-06）：只有 Claude 的 `clear` 不改状态——/clear 之后进程活着，同一秒
@@ -614,7 +627,17 @@ impl Machine {
                 }
                 return self.current.clone();
             }
-            self.set(obs.process, now);
+            // 同状态、不比 hook 更有把握的进程事实不盖 hook 的说法（agora-rzh，2026-09-08 现场：6 行
+            // external 探针 5 行宿主发了 SessionEnd，行上却全是 `external process gone (no exit status)`，
+            // 与唯一没发 SessionEnd 的那行（Codex 关窗口）分不开）。external 行的进程层 FINISHED 只知道
+            // "进程没了"、没有退出码，conf 0.8 与 hook 的 SessionEnd 同分，换掉 reason 只会丢信息；
+            // 保留 hook 的 FINISHED 连 set_at 也不动——结束的起点仍是 SessionEnd 那一刻。agora 起的会话
+            // 进程层带退出码、conf 1.0，照旧覆盖（`process_fact_is_no_better` 为假），所以"进程退出
+            // 压倒一切"对它们不变。不能改成"hook 的 FINISHED 一律不盖"：那会把 FAILED（退出码非零）
+            // 也吞掉——status 不同就该换。
+            if !self.process_fact_is_no_better(&obs.process) {
+                self.set(obs.process, now);
+            }
             return self.current.clone();
         }
         let output_changed = self.sample_activity(obs.runtime, now);

@@ -735,3 +735,96 @@ async fn a_new_conversation_on_the_same_process_supersedes_the_old_external_row(
     other.kill().unwrap();
     other.wait().unwrap();
 }
+
+#[tokio::test]
+async fn hook_session_end_survives_the_agent_process_going_away() {
+    // agora-rzh（2026-09-08 现场：6 行 external 探针里 5 行宿主发了 SessionEnd，GET /api/sessions 却
+    // 6 行全是 `external process gone (no exit status)`，与唯一没发 SessionEnd 的那行——Codex 关窗口——
+    // 分不开）。守卫：有进程号的 external 行先收 SessionEnd(hook) 变 FINISHED，随后探活报进程消失，
+    // 行的 source 仍 hook、reason 仍 `session ended (hook)`、alive 变假；对照：从没收到 SessionEnd、
+    // 只有进程消失的行 reason 是 `external process gone`、source process。
+    // 关掉 Machine::observe 第 1 步的 process_fact_is_no_better 判断 → 第一行的 reason 断言红。
+    let (fx, receiver, home) = with_hooks();
+    let cookie = fx.cookie();
+    let spawn = || {
+        std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap()
+    };
+    let mut by_hand = spawn();
+    let mut by_hup = spawn();
+    let env_of = |child: &std::process::Child| [("CLAUDE_PID", child.id().to_string())];
+    let stop = |sid: &str| json!({ "hook_event_name": "Stop", "session_id": sid, "last_assistant_message": "done" });
+
+    let hand_env = env_of(&by_hand);
+    let hand = ingest(
+        &receiver,
+        home.path(),
+        &delivery("by-hand", session_start("by-hand"), &hand_env, &[]),
+    )
+    .unwrap();
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery("by-hand", stop("by-hand"), &hand_env, &[]),
+    );
+    let hup_env = env_of(&by_hup);
+    let hup = ingest(
+        &receiver,
+        home.path(),
+        &delivery("by-hup", session_start("by-hup"), &hup_env, &[]),
+    )
+    .unwrap();
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery("by-hup", stop("by-hup"), &hup_env, &[]),
+    );
+    let path_of = |id: &str| format!("/api/sessions/{}:{}", common::NODE, id);
+    for id in [&hand, &hup] {
+        let (status, body) = call(&fx, &cookie, Method::GET, &path_of(id), None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["status"], "turn_done", "{body}");
+        assert_eq!(body["alive"], true, "{body}");
+    }
+
+    // 人在提示符上两次 Ctrl+C：Claude 发 SessionEnd(prompt_input_exit)，进程随即退出。
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "by-hand",
+            session_end("by-hand", "prompt_input_exit"),
+            &hand_env,
+            &[],
+        ),
+    );
+    let (_, body) = call(&fx, &cookie, Method::GET, &path_of(&hand), None).await;
+    assert_eq!(body["status"], "finished", "{body}");
+    assert_eq!(body["reason"], "session ended (hook)", "{body}");
+    let since = body["status_since"].as_i64().unwrap();
+    by_hand.kill().unwrap();
+    by_hand.wait().unwrap();
+    let (_, body) = call(&fx, &cookie, Method::GET, &path_of(&hand), None).await;
+    assert_eq!(body["status"], "finished", "{body}");
+    assert_eq!(body["alive"], false, "进程确实没了：{body}");
+    assert_eq!(body["source"], "hook", "进程消失不换掉 hook 的说法：{body}");
+    assert_eq!(body["reason"], "session ended (hook)", "{body}");
+    assert_eq!(
+        body["status_since"], since,
+        "结束的起点仍是 SessionEnd 那一刻：{body}"
+    );
+
+    // 对照：窗口被关、宿主一个事件都没发（Codex 的行为），只有探活能说它结束了。
+    by_hup.kill().unwrap();
+    by_hup.wait().unwrap();
+    let (_, body) = call(&fx, &cookie, Method::GET, &path_of(&hup), None).await;
+    assert_eq!(body["status"], "finished", "{body}");
+    assert_eq!(body["alive"], false, "{body}");
+    assert_eq!(body["source"], "process", "{body}");
+    assert_eq!(
+        body["reason"], "external process gone (no exit status)",
+        "{body}"
+    );
+}

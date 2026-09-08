@@ -928,3 +928,99 @@ fn handleless_external_silence_falls_to_unknown() {
     obs.now = 90000;
     assert_eq!(m.observe(obs).status, Status::Finished);
 }
+
+#[test]
+fn process_gone_does_not_overwrite_the_hook_session_end() {
+    // agora-rzh（2026-09-08 现场：6 行 external 探针，5 行宿主发了 SessionEnd，行上却全是
+    // `external process gone (no exit status)`）：external 行的进程层 FINISHED 与 hook 的 SessionEnd
+    // 同状态同分（0.8），observe 第 1 步无条件 set 把 hook 的 reason 换掉了，人自己结束的与终端被关 /
+    // 崩溃的分不开。守卫：hook FINISHED 之后进程消失，source 仍 hook、reason 仍 `session ended (hook)`、
+    // 起点仍是 SessionEnd 那一刻；对照：从没收到 SessionEnd 的行 reason 是 `external process gone`；
+    // agora 起的会话进程层带退出码（conf 1.0）照旧覆盖，FAILED 也照旧覆盖。
+    // 关掉 observe 第 1 步的 process_fact_is_no_better 判断 → 第一段 source / reason 断言红。
+    let gone = || {
+        Assessment::new(
+            Status::Finished,
+            Source::Process,
+            0.8,
+            Some("external process gone (no exit status)"),
+        )
+    };
+    let dead = |process, now| Observation {
+        process,
+        liveness: Liveness::Dead,
+        text: None,
+        runtime: None,
+        epoch: 1,
+        now,
+    };
+    let alive = |now| Observation {
+        process: Assessment::unknown("external session: process alive, hook only"),
+        liveness: Liveness::Alive,
+        text: None,
+        runtime: None,
+        epoch: 1,
+        now,
+    };
+
+    // 人在提示符上两次 Ctrl+C：Claude 发 SessionEnd(prompt_input_exit)，紧接着进程退出。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::TurnEnded(None), 1, 1);
+    assert_eq!(m.observe(alive(2)).status, Status::TurnDone);
+    m.apply(
+        &AgoraEvent::SessionEnded(Some("prompt_input_exit".into())),
+        1,
+        10,
+    );
+    for now in [11, 12, 600] {
+        let a = m.observe(dead(gone(), now));
+        assert_eq!(
+            (a.status, a.source),
+            (Status::Finished, Source::Hook),
+            "{a:?}"
+        );
+        assert_eq!(a.reason.as_deref(), Some("session ended (hook)"), "{a:?}");
+        assert_eq!(m.status_since(), 10, "结束的起点仍是 SessionEnd 那一刻");
+    }
+
+    // 对照：hook 从没说过结束（Codex 关窗口一个事件都不发），进程没了就只有进程层能说。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::TurnEnded(None), 1, 1);
+    let a = m.observe(dead(gone(), 11));
+    assert_eq!(
+        (a.status, a.source),
+        (Status::Finished, Source::Process),
+        "{a:?}"
+    );
+    assert_eq!(
+        a.reason.as_deref(),
+        Some("external process gone (no exit status)")
+    );
+    assert_eq!(m.status_since(), 11);
+
+    // agora 起的会话：进程层带退出码、conf 1.0，SessionEnd 之后照旧被它覆盖（"进程退出压倒一切"不变）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionEnded(Some("other".into())), 1, 10);
+    let exited = rt(false, Some(9));
+    let a = m.observe(Observation {
+        process: agora::status::process_layer(Some(&exited), None, false),
+        liveness: Liveness::Dead,
+        text: None,
+        runtime: Some(&exited),
+        epoch: 1,
+        now: 11,
+    });
+    assert_eq!(
+        (a.status, a.source, a.confidence),
+        (Status::Finished, Source::Process, 1.0),
+        "{a:?}"
+    );
+    // 状态不同（退出码非零 → FAILED）更不能被 hook 的 FINISHED 挡住。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionEnded(Some("other".into())), 1, 10);
+    let a = m.observe(dead(
+        Assessment::new(Status::Failed, Source::Process, 1.0, Some("exit code 3")),
+        11,
+    ));
+    assert_eq!((a.status, a.source), (Status::Failed, Source::Process));
+}
