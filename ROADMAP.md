@@ -14,6 +14,8 @@
 | M2c | `agora-3j0` | 在 peer 上起会话（New Agent 选节点） | `agora-s4r`, `agora-7ku` | MISSION §12：A45。 | closed  |
 | M3 | `agora-h1k` | 产出与起会话增强 | `agora-dvh` | MISSION §12：A40–A44。 | closed  |
 | M3b | `agora-j4w` | 侧栏收纳（FINISHED 行看过即收、external 行自动过期） | `agora-h1k` | MISSION §12：A46。 | open 3/3 |
+| M4a | `agora-uvd` | 侧栏树视图（节点 / 仓库 / worktree）、视图切换与行身份 | `agora-j4w` | MISSION §12：A47、A48、A49。 | open 0/8 |
+| M4b | `agora-4yr` | 回答区进主区（就地 respond / 验收 / 改动在主区渲染）与「需要我」视图的重排稳定 | `agora-j4w` | MISSION §12：A50、A51。 | open 0/5 |
 | V2-1 | `agora-thc` | 手机客户端与 PWA（iOS / Android） | `agora-7ku`, `agora-s4r` | MISSION §11 手机条目：A13、A19、A28、A35、A37。 | open 0/8 |
 
 ## 演示剧本（epic 的 design 字段；agent 先代检，人只看 👁 步骤与代检报告后关闭 epic，MISSION §1.5）
@@ -107,6 +109,32 @@ M3b 演示剧本（agent 代检，无 👁 步骤；人按 MISSION §1「一天�
 4. 把 external_finished_ttl 调成 1m，再起一个 external 会话 Ctrl+C 结束 → 不到两个 sweep 周期后该行从 GET /api/sessions 消失，daemon.log 一行说明；agora 起的 FINISHED 行不受影响。
 5. agora-rzh 修完后：第 1 步里 Ctrl+C 与 /clear 结束的会话不弹 finished 通知，关窗口（Codex）那条弹。
 6. CI 绿；MISSION §4.6「看过」三条证据、§6.3 排序表、§11 Archive 段、§12 A46 回写；attention.test.ts / Sidebar.test.tsx / tests 里的 sweep 用例是守卫。
+
+### M4a `agora-uvd`
+
+M4a 演示剧本（agent 代检为主；👁 一步；人按 MISSION §1「一天的形态」第 1、2、3 步走一遍后关闭 epic，§1.5）
+场景：§1 第 1 步「打开侧栏」——这次要能回答「谁在哪台机器、哪个仓库、哪个 worktree、哪家 agent」；第 2 步「逐个处理」——行别在我看的时候跑掉；第 3 步「起新会话」——从 worktree 组头一步起。
+前置：M3b 剧本通过；本机 + zuan 各有 agora 仓库 clone，zuan 是本机的 peer（M2a）；本机有 ≥ 2 个 worktree（`git worktree add`）；claude / codex / grok / shell 各至少一个会话，其中一个在 zuan 上，一个 external（Terminal.app 裸起 claude）。
+1. 侧栏头部有视图切换控件（默认「需要我」）；点「按项目」→ 侧栏变成 节点(mac ●) → 仓库(agora) → worktree(main ⎇ main / agora-wt/xxx ⎇ xxx) → 会话行；zuan 节点组在下面、组头带在线点；external 会话按 hook 的 cwd 落到对应仓库组；一个在 /tmp 起的 shell 落到「其它目录」。刷新页面仍是「按项目」；Alt/Option+G 切回「需要我」（A47 A48；agora-uvd.2 / .3）。
+2. 树视图里让一个 RUNNING 的会话变 WAITING（fake-agent 或真 claude 权限请求）→ 行不动、状态符号变 ⚠、所在 worktree 组头（折叠时）显示「1 需要关注」；切到「需要我」→ 它在 NEEDS ATTENTION 顶部（A48）。
+3. 折叠 zuan 节点组 → 行不画；Alt/Option+N 跳到折叠区里的行时组自动展开一次（与 A46 Finished 区同一规则）；过滤框输入 "grok" → 两种视图都只剩匹配行，树视图只留有匹配行的组（A47）。
+4. 每一行（两种视图）都能看到：品牌徽标（Claude / Codex / Grok / shell 四种肉眼可分）、节点 chip（本机 `mac` 也标，zuan 的颜色不同）、`agora ⎇ agora-xxx` 仓库 · 分支一行；在该 worktree 里 `git checkout -b other` 后 TTL 内分支文字跟着变；curl GET /api/sessions 每行有 `project: { repo, name, worktree, branch, main }`，agora.db 里没有这些字段（A49；agora-uvd.1 / .5）。
+5. 在某个 worktree 组头点「+」→ New Agent 对话框 Node / Project / Worktree 已填成这一组、只需选 Agent；点「开 shell」→ 直接多一行 shell 会话在这一组里、pane 的 `pwd` 是该 worktree；zuan 节点组头的「+」→ 对话框 Node 已是 zuan（A48；agora-uvd.4）。
+6. 拖侧栏右缘 → 宽度变，刷新后保持；缩到 < 700 px 时仍是 drawer（thc.5 未做前只验不塌）（agora-uvd.5）。
+7. 👁 品牌徽标 / 节点颜色在真浏览器里一眼可分（主观视觉判断，代检只能断言 DOM 上的 data-agent / data-node 属性与 CSS 变量存在，分不分得清要人看）。
+8. CI 绿；tests/arch_boundary.rs 的 git 只读白名单加一条 `git merge` 变红；MISSION §6.1 / §6.3 / §6.5 / §4.2 与 docs/spec/ux.md、api.md 回写（agora-uvd.6）。
+
+### M4b `agora-4yr`
+
+M4b 演示剧本（agent 代检为主；👁 一步；人按 MISSION §1「一天的形态」第 1、2 步走一遍后关闭 epic，§1.5）
+场景：§1 第 2 步「逐个处理：切到会话回答 / 看结果」——回答与看结果发生在主区、读得清、输入框不用找；第 1 步「首页按需要我排序」——我在看的时候行别跑。
+前置：M3b 剧本通过；本机 claude hook 已装；一个会话的最后一条回复是长 markdown（含二级标题、表格、代码块，≥ 200 行）。
+1. 点该 TURN_DONE 行 → 侧栏行只高亮、不展开；主区从上到下：crumb → 回答面板（顶部「下一条指令」输入框；其下最后一条回复按 markdown 排版——标题成标题、表格成表格、代码块等宽——默认折叠只露前几行 + 「展开全文」）→ 终端仍在下面可打字（A50；agora-4yr.1 / .2）。在输入框敲一句回车 → pane 里出现该句、行变 RUNNING、面板随状态变化消失或换内容。
+2. 让一个会话进 WAITING（权限请求）→ 主区面板显示 `Bash: git push …` + Allow / Deny / 打开终端，点 Allow → 与今天一样经 hook 返回、行退出 WAITING；Grok 的权限请求只有「打开终端」；点「打开终端」焦点进终端（A50）。
+3. 有 beads 任务的 TURN_DONE 行 → 面板里「验收标准」「改动 · <分支>」两个折叠段在回答区之下，内容与 bd show / GET /changes 一致，「看 diff」仍切主区为只读 diff（A50；agora-4yr.3）。侧栏里 grep 不到 acceptance- / changes- / respond- testid（守卫）。
+4. 「需要我」视图：把指针停在侧栏上，让一个 RUNNING 行变 WAITING → 顺序不变、状态符号变 ⚠；指针移出侧栏并等过冻结窗口 → 行落到 NEEDS ATTENTION 顶部并短暂高亮；冻结期间 Alt/Option+2 跳的是眼睛看到的第 2 行（A51；agora-4yr.4）。
+5. 👁 markdown 排版与折叠在真浏览器里读得顺（可读性是主观判断；代检只能断言 DOM 里有 h2 / table / pre 元素与面板高度上限）。
+6. CI 绿；MISSION §6.2 / §6.3「就地」措辞、§6.9 手机段、A50 / A51 回写，docs/spec/ux.md 线框重画（agora-4yr.5）；Respond.test / SessionRow.test / Workspace.test 迁移后的守卫逐条关掉变红。
 
 ### V2-1 `agora-thc`
 

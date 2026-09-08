@@ -636,7 +636,7 @@ RBAC                         Teams                        Cloud service
 
 ## 12. MVP Acceptance Criteria
 
-MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终端底座 → M1b Agent 感知 → M2a peer 核心 / M2b 安装运维与收口**（两者阶段门同为 M1b，M2b 的收口任务以任务级依赖等 M2a；2026-09-05 由 M2 拆出，为的是更早到人眼验收点）；**M3 产出与起会话增强** 在 M1b 之后、与 M2a / M2b 并行；**M2c 在 peer 上起会话** 在 M2a / M2b 之后（2026-09-07 补，A45）；手机是 V2 首批（§11）。阶段门用 blocks 表达，每个 epic 的 `--acceptance` **引用下列编号**而不复制文本；每个 epic 的演示剧本写在 design 字段（§1.5），在把该 epic 拆成任务时一并写好——拆分是前一阶段的收尾任务（M0 的 `agora-90t.5` 拆 M1a / M1b，M1b 收尾拆 M2 / M3）。
+MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终端底座 → M1b Agent 感知 → M2a peer 核心 / M2b 安装运维与收口**（两者阶段门同为 M1b，M2b 的收口任务以任务级依赖等 M2a；2026-09-05 由 M2 拆出，为的是更早到人眼验收点）；**M3 产出与起会话增强** 在 M1b 之后、与 M2a / M2b 并行；**M2c 在 peer 上起会话** 在 M2a / M2b 之后（2026-09-07 补，A45）；**M4a 侧栏树视图与行身份 / M4b 回答区进主区** 在 M3b 之后、二者并行（2026-09-08 用户反馈拆出，A47–A51）；手机是 V2 首批（§11）。阶段门用 blocks 表达，每个 epic 的 `--acceptance` **引用下列编号**而不复制文本；每个 epic 的演示剧本写在 design 字段（§1.5），在把该 epic 拆成任务时一并写好——拆分是前一阶段的收尾任务（M0 的 `agora-90t.5` 拆 M1a / M1b，M1b 收尾拆 M2 / M3）。
 
 - [ ] **A1** 可以通过浏览器查看所有运行时中的 agent session
 - [ ] **A2** 可以创建 Claude Code session
@@ -679,6 +679,11 @@ MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终�
 - [ ] **A44** 对话框可新建 worktree：base 默认主 worktree 当前 checked-out 分支、路径按 `worktree_root` 约定（§6.4）；agora 不做合并与销毁
 - [ ] **A45** New Agent 的 Node 下拉列本机与在线的 peer；选 peer 后 Project / Worktree / Task / Agent 从该节点取、创建与新建 worktree 经一跳转发在该节点执行，会话行带 `@ <node>`；stale / 版本不兼容的 peer 不可选而不是报错（§6.4，§1 第 3 步。2026-09-07 补：§6.4 早有此句但 §12 无编号，M2 拆分按编号核对时漏掉，见 §1.5「拆分」）
 - [ ] **A46** 侧栏收纳：FINISHED 行不再与 WAITING 同档——external 来源的 FINISHED 直接进默认折叠的 Finished 区，agora / adopted 来源的 FINISHED 在用户看过（选中展开过）之后进；Finished 计数一键批量 Delete metadata；external FINISHED 行超过 `sessions.external_finished_ttl` 自动删记录；折叠与否不改变 Alt/Option+N 的序号（§4.6「看过」的三条证据、§6.3，§1 第 1、5 步。2026-09-08 现场：58 行里 39 行 external FINISHED 占满第一屏）
+- [ ] **A47** 侧栏有两种视图可切换：「需要我」（§6.3 的 attention 排序）与「按项目」（节点 → 仓库 → worktree → 会话的树）；切换控件在侧栏头部，命令面板与 Alt/Option+G 也能切，选择存浏览器、刷新后保持；过滤在两种视图下都可用；两种视图下 Alt/Option+N 跳的第 N 条都等于眼睛看到的第 N 条（折叠只是不画不是不数，与 A46 同一条规则）（§6.1、§6.3、§6.5；§1 第 1、2 步。2026-09-08 用户反馈：行随状态自己换位置，人跟不上）
+- [ ] **A48** 「按项目」树：节点组（在线 / stale 点）→ 仓库组 → worktree 组（分支 chip、主 worktree 标记）→ 会话行按创建顺序、位置只随创建 / 删除变、不随状态变；不在任何 git 仓库里的会话归该节点下的「其它目录」组；组可折叠且记住；折叠的组头显示组内需要关注的行数；worktree 组头可就地「+ 在此起 agent」（对话框预填节点 / 仓库 / worktree）与「开 shell」，节点组头的「+」预填节点（§6.1、§6.4；§1 第 2、3 步）
+- [ ] **A49** 每行明示三件身份：agent 品牌（每个 adapter 一个可辨的徽标与颜色，shell / custom 与 agent 区分）、节点（本机也标，颜色按节点；反转 agora-7ku.5「本机不标」的决定）、仓库与分支（服务端会话行新增只读 `project` 字段：仓库根 / 名字 / worktree 路径 / 分支，异步补齐、TTL 重查，git 只读——`tests/arch_boundary.rs` 白名单守卫）；两种视图同源同字段（§6.1、§4.2；§1 第 1 步。2026-09-08 用户反馈：在哪个项目 / worktree、本机还是 zuan、哪家 agent 都看不清）
+- [ ] **A50** 就地 respond 搬进主区：主区结构是 crumb → 回答面板 → 终端；WAITING 的问题与 Allow / Deny / 打开终端、TURN_DONE 的最后一条回复（按 markdown 排版：标题 / 列表 / 代码块 / 表格，不渲染 HTML）与「下一条指令」输入框（在面板顶部、不用滚到底）、验收标准与改动列表都在这个面板里，可折叠、有高度上限；侧栏行不再展开，只剩行本身；手机 drawer（§6.9）下同一面板（§6.2、§6.3；§1 第 2 步。agora-03k：窄列里塞几百行 markdown 读不了）
+- [ ] **A51** 「需要我」视图的重排让人跟得上：指针在侧栏内或最近一次侧栏交互后的短暂窗口内不重排（新行仍插入、状态符号照变），窗口过后再按 attention 顺序落位，换了位置的行短暂高亮；Alt/Option+N 按冻结期间眼睛看到的顺序跳（§6.3、§6.5；§1 第 1 步）
 
 编号全局唯一、不复用：A13 / A19 / A28 / A35 / A37 在 §11 手机条目。
 
