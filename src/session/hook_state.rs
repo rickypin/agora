@@ -1,5 +1,6 @@
 //! hook 观测检查点：一个会话一份，0700 目录 / 0600 文件，先 sync 再原子替换。
-//! 不进 SQLite，也不保存进程事实；done 的 24 h 排障保留期不影响长期等待的会话。
+//! 不进 SQLite，也不保存存活结论（信封里报来的 agent 进程号是 hook 事实，v2 起随之落盘，活没活
+//! 每 tick 现算；agora-tql）；done 的 24 h 排障保留期不影响长期等待的会话。
 use crate::status::machine::HookSnapshot;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};

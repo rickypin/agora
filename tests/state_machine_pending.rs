@@ -22,6 +22,7 @@ fn cfg() -> MachineConfig {
         text_ticks: 2,
         tick: Duration::from_secs(2),
         startup_grace: Duration::from_secs(10),
+        external_silent_after: Duration::from_secs(2 * 3600),
     }
 }
 

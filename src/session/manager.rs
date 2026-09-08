@@ -20,7 +20,8 @@ use crate::runtime::{
     RuntimeStatus, Size, TerminateSignal,
 };
 use crate::status::{
-    self, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation, Status,
+    self, AgentProcess, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation,
+    Status,
 };
 use crate::task::{TaskIndex, TaskInfo};
 
@@ -202,9 +203,10 @@ pub struct SessionManager {
     hook_state_dir: Mutex<Option<PathBuf>>,
     decisions: Mutex<HashMap<String, Vec<PendingDecision>>>,
     status_cfg: MachineConfig,
-    /// external 会话最近一次 hook 报来的 agent 进程号：`kill(pid, 0)` 判存活（ADR-002 D4）。
-    /// 内存态：daemon 重启后要等下一条 hook 才再知道，之前活性 UNKNOWN。
-    external_pids: Mutex<HashMap<String, u32>>,
+    /// external 会话最近一次 hook 报来的 agent 进程：`kill(pid, 0)` 判存活（ADR-002 D4）。
+    /// 内存态，但随 hook 检查点落盘、重启时从检查点回填（agora-tql）：2026-09-08 现场 11 行 external
+    /// 僵尸——daemon 重启后这张表是空的，agent 早退了的行永远钉在 TURN_DONE。
+    external_pids: Mutex<HashMap<String, AgentProcess>>,
     /// 任务标签（只读 beads）。
     tasks: Arc<TaskIndex>,
 }
@@ -305,6 +307,10 @@ impl SessionManager {
             if delivery.is_some_and(|name| !m.accepts_delivery(name, epoch)) {
                 return Ok(false);
             }
+            // 信封里的 agent 进程随这条事件一起进检查点（agora-tql）。
+            if let Some(p) = lock(&self.external_pids).get(id).cloned() {
+                m.note_agent_process(p);
+            }
             for e in events {
                 if !m.apply_at(e, epoch, now, at) {
                     tracing::debug!(
@@ -388,9 +394,27 @@ impl SessionManager {
                     )
                 });
                 m.restore_hook(snapshot);
+                if let Some(p) = m.agent_process().cloned() {
+                    lock(&self.external_pids).insert(rec.id.clone(), p);
+                }
             }
         }
         Ok(())
+    }
+
+    /// 恢复出来的检查点是 v2 之前写的（不带进程号；可能写于 agora-s3r 之前）。
+    pub fn hook_checkpoint_is_legacy(&self, id: &str) -> bool {
+        lock(&self.machines)
+            .get(id)
+            .is_some_and(|m| m.restored_legacy_checkpoint())
+    }
+
+    /// 丢掉这一行恢复出来的 hook 观测，让接下来从归档重建：agora-tql——v1 检查点可能停在 s3r 修复前的
+    /// 结论（无句柄 external 行的 SessionEnd(clear) 当时不改状态），而去重水位会拒掉归档里那条
+    /// SessionEnd，所以要先清掉再按序重放。只在 receiver 确认归档里有这一行的投递时调用。
+    pub fn forget_hook_state(&self, id: &str) {
+        lock(&self.machines).remove(id);
+        lock(&self.external_pids).remove(id);
     }
 
     pub fn has_hook_checkpoint(&self, id: &str) -> bool {
@@ -706,9 +730,66 @@ impl SessionManager {
         Ok(id)
     }
 
-    /// external 会话最近一次 hook 报来的 agent 进程号。
-    pub fn note_external_pid(&self, id: &str, pid: u32) {
-        lock(&self.external_pids).insert(id.to_owned(), pid);
+    /// external 会话最近一次 hook 报来的 agent 进程号；顺手记下它的启动时刻与这条 hook 的时刻
+    /// （`seen_at`，unix 秒），重启恢复后探活时对一下（agora-tql）。同一个号再报一次不动。
+    pub fn note_external_pid(&self, id: &str, pid: u32, seen_at: i64) {
+        let mut pids = lock(&self.external_pids);
+        if pids.get(id).is_some_and(|p| p.pid == pid) {
+            return;
+        }
+        pids.insert(
+            id.to_owned(),
+            AgentProcess {
+                pid,
+                started_at: process_started_at(pid),
+                seen_at,
+            },
+        );
+    }
+
+    /// 一个 CLI agent 进程一次只跑一个对话：同一宿主的两个无句柄 external 行报来同一个进程号，
+    /// 先看到它的那行（`seen_at` 早）已经被后一行取代——Grok 的 /clear、Codex TUI 的 /new 换 id
+    /// 不发 SessionEnd，Claude 的 /clear 发（s3r 已处理，这里再落一次无害）。旧行合成
+    /// `Superseded` → FINISHED(hook)。返回被结束的行 id。登记新 external 行后与启动重放完各调一次
+    /// （2026-09-08 现场：一个 Grok 进程占了三行 TURN_DONE；agora-tql）。
+    pub fn supersede_external_rows(&self) -> Result<Vec<String>, SessionError> {
+        let pids: Vec<(String, AgentProcess)> = lock(&self.external_pids)
+            .iter()
+            .map(|(id, p)| (id.clone(), p.clone()))
+            .collect();
+        let mut newest: HashMap<(String, u32), (String, i64)> = HashMap::new();
+        let mut rows = Vec::new();
+        for (id, p) in pids {
+            let Ok(rec) = self.record(&id) else {
+                continue;
+            };
+            if rec.origin != Origin::External || rec.runtime_ref.is_some() {
+                continue;
+            }
+            let key = (rec.agent_type.clone(), p.pid);
+            match newest.get(&key) {
+                Some((_, seen)) if *seen >= p.seen_at => {}
+                _ => {
+                    newest.insert(key.clone(), (id.clone(), p.seen_at));
+                }
+            }
+            rows.push((id, rec, key));
+        }
+        let mut ended = Vec::new();
+        for (id, rec, key) in rows {
+            if newest.get(&key).is_some_and(|(n, _)| *n == id) {
+                continue;
+            }
+            let finished = lock(&self.machines)
+                .get(&id)
+                .is_some_and(|m| matches!(m.current().status, Status::Finished | Status::Failed));
+            if finished {
+                continue;
+            }
+            self.apply_hook(&id, rec.epoch, &[AgoraEvent::Superseded])?;
+            ended.push(id);
+        }
+        Ok(ended)
     }
 
     // ---------- 读 ----------
@@ -792,9 +873,10 @@ impl SessionManager {
                 )),
                 Liveness::Dead,
             ),
-            (Origin::External, None) => match lock(&self.external_pids).get(&rec.id).copied() {
+            (Origin::External, None) => match lock(&self.external_pids).get(&rec.id).cloned() {
                 // 没有退出码可拿：进程没了就只知道"结束了"，不分 FINISHED / FAILED。
-                Some(pid) if !process_alive(pid) => (
+                // 号还在但启动时刻对不上：号被别的进程复用了，原来那个也是没了（agora-tql）。
+                Some(p) if !agent_process_alive(&p) => (
                     Assessment::new(
                         Status::Finished,
                         status::Source::Process,
@@ -1330,6 +1412,68 @@ fn process_alive(pid: u32) -> bool {
     // SAFETY: 信号 0 不投递，只做存在性检查。
     let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
     r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// 检查点里的 agent 进程还是不是当初那个：记下的进程不晚于报来它的那条 hook（否则记的时候号就已经
+/// 是别人的了——从归档重建时读到的启动时刻可能是复用者的），号活着，且启动时刻（两边都读得到时）
+/// 一致。读不到启动时刻的平台只看号——退化为 v1 的行为，不会更差。多给 1 s 容忍秒级取整。
+fn agent_process_alive(p: &AgentProcess) -> bool {
+    if p.started_at.is_some_and(|s| s > p.seen_at + 1) {
+        return false;
+    }
+    if !process_alive(p.pid) {
+        return false;
+    }
+    match (p.started_at, process_started_at(p.pid)) {
+        (Some(recorded), Some(now)) => recorded == now,
+        _ => true,
+    }
+}
+
+/// 进程启动时刻（unix 秒）：macOS 走 `proc_pidinfo(PROC_PIDTBSDINFO)` 的 `pbi_start_tvsec`
+/// （libc 0.2.189 没绑 `kinfo_proc`，sysctl 那条路走不通，2026-09-08），Linux 读 `/proc/<pid>/stat`
+/// 第 22 字段（自开机的 tick）加 `/proc/stat` 的 `btime`；其余平台 None。
+/// 精确到秒就够：pid 复用要撞上同一秒的概率可以不管。
+#[cfg(target_os = "macos")]
+fn process_started_at(pid: u32) -> Option<i64> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: info 是本函数栈上的值，长度按 proc_pidinfo 的约定传；返回值是实际填充的字节数。
+    let r = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    (r == size).then_some(info.pbi_start_tvsec as i64)
+}
+
+#[cfg(target_os = "linux")]
+fn process_started_at(pid: u32) -> Option<i64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // comm 里可能有空格和括号：从最后一个 ')' 之后再按空格切，starttime 是其后第 20 个字段。
+    let rest = &stat[stat.rfind(')')? + 1..];
+    let ticks: i64 = rest.split_whitespace().nth(19)?.parse().ok()?;
+    let btime: i64 = std::fs::read_to_string("/proc/stat")
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("btime "))?
+        .trim()
+        .parse()
+        .ok()?;
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if hz <= 0 {
+        return None;
+    }
+    Some(btime + ticks / hz)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_started_at(_pid: u32) -> Option<i64> {
+    None
 }
 
 /// pane 进程的后代里第一个认得的 adapter 名（离 shell 最近的优先）；后代都认不出才看 pane

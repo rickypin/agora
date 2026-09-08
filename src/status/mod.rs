@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::runtime::{Exit, RuntimeSession};
 
-pub use machine::{Liveness, Machine, MachineConfig, Observation};
+pub use machine::{
+    AgentProcess, Liveness, Machine, MachineConfig, Observation, EXTERNAL_SILENT_REASON,
+    HOOK_SNAPSHOT_VERSION, SUPERSEDED_REASON,
+};
 
 /// agent 经 hook 自报的事件（MISSION §5.6；ADR-002 D2）。Adapter 把宿主 payload 映射成它。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +48,11 @@ pub enum AgoraEvent {
     /// agent 自报空闲：TURN_DONE 的确认 / 补漏。
     Idle,
     SessionEnded(Option<String>),
+    /// agora 自己合成的（不是 hook 发的）：同一个 agent 进程报来了**另一个**对话 id，这一行的对话到此
+    /// 为止——一个 CLI agent 进程一次只跑一个对话，Grok 的 /clear、Codex TUI 的 /new 换 id 却不发
+    /// SessionEnd，旧行会带着活着的进程号永远 TURN_DONE（2026-09-08 现场：一个 Grok 进程占了三行；
+    /// agora-tql）。
+    Superseded,
 }
 
 /// 文本层 / 活动层的判定（ADR-002 D6 的 `DetectionResult`）：Adapter 的兜底给出，核心裁决。

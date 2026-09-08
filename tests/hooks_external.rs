@@ -37,8 +37,14 @@ fn delivery_for(
     agent_env: &[(&str, String)],
     runtime_env: &[(&str, String)],
 ) -> Delivery {
-    // 每条投递须有不同文件名；真实 hook 每进程只写一条，测试用递增时间模拟。
+    // 每条投递须有不同文件名；真实 hook 每进程只写一条，测试用递增时间模拟。时刻从"现在"起算：
+    // external 行的进程号要与报来它的 hook 时刻对一下（进程不得晚于 hook，agora-tql），从 1 ms 起算
+    // 会把测试进程当成比 hook 还新的复用者。
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
     let to_map = |kv: &[(&str, String)]| -> BTreeMap<String, String> {
         kv.iter()
             .map(|(k, v)| ((*k).to_owned(), v.clone()))
@@ -54,7 +60,7 @@ fn delivery_for(
             runtime_env: to_map(runtime_env),
             ppid: 1,
             received_at: String::new(),
-            received_unix_ms: SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            received_unix_ms: now_ms + SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         },
         payload,
     }
@@ -522,4 +528,210 @@ async fn user_chosen_agent_type_beats_the_process_hint() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(body["agent_type"], "codex");
+}
+
+#[tokio::test]
+async fn legacy_checkpoint_of_a_handleless_external_row_is_rebuilt_from_the_archive() {
+    // agora-tql：agora-s3r（2026-09-07）之前写下的检查点停在修复前的结论——无句柄 external 行的
+    // SessionEnd(reason=clear) 当时不改状态，行钉在 TURN_DONE；s3r 只管之后到达的事件，去重水位又
+    // 拒掉归档里那条 SessionEnd。守卫：v1 检查点 + 归档里还有这一行的投递 → 丢掉检查点、从归档
+    // 按序重建（clear 同样改写成普通结束）→ FINISHED；v1 检查点但归档里什么都没有 → 原样恢复。
+    // 关掉 restore_archive 的 legacy 分支 → 第一段 finished 断言红（停在 turn_done）；
+    // 关掉重建路上的 clear_ends_external_row → 同一断言红。
+    let (fx, receiver, home) = with_hooks();
+    let env = [("CLAUDE_PID", std::process::id().to_string())];
+    let inbox = Inbox::new(home.path());
+    let stop = |sid: &str| json!({ "hook_event_name": "Stop", "session_id": sid, "last_assistant_message": "done" });
+    let old = ingest(
+        &receiver,
+        home.path(),
+        &delivery("old-id", session_start("old-id"), &env, &[]),
+    )
+    .unwrap();
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery("old-id", stop("old-id"), &env, &[]),
+    );
+    // lone-id 是另一个进程的对话：同一进程报来第二个对话会把 old-id 取代掉（superseded），那是另一条规则。
+    let mut lone_proc = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let lone_env = [("CLAUDE_PID", lone_proc.id().to_string())];
+    let lone = ingest(
+        &receiver,
+        home.path(),
+        &delivery("lone-id", session_start("lone-id"), &lone_env, &[]),
+    )
+    .unwrap();
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery("lone-id", stop("lone-id"), &lone_env, &[]),
+    );
+    // 修复前的 daemon 消费了 SessionEnd(clear)：文件进了 done/，检查点没变。这里不经 receiver，直接落
+    // 到 done/ 模拟；再把两份检查点降成 v1（去掉 agent_process）。
+    let clear = inbox
+        .write(&delivery(
+            "old-id",
+            session_end("old-id", "clear"),
+            &env,
+            &[],
+        ))
+        .unwrap();
+    inbox.done(&clear).unwrap();
+    for id in [&old, &lone] {
+        let key: String = id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+        let path = home.path().join("hooks/state").join(format!("{key}.json"));
+        let mut cp: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(cp["status"], Value::Null);
+        assert_eq!(cp["current"]["status"], "turn_done", "{cp}");
+        cp["version"] = json!(1);
+        cp.as_object_mut().unwrap().remove("agent_process");
+        std::fs::write(&path, cp.to_string()).unwrap();
+    }
+    // lone-id 的归档清掉：只剩检查点。
+    for path in inbox.completed().unwrap() {
+        if path.to_string_lossy().contains("lone-id") {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    // 重启。
+    let restarted = Arc::new(agora::session::SessionManager::new(
+        fx.db.clone(),
+        fx.rt.clone() as Arc<dyn agora::runtime::Runtime>,
+    ));
+    Receiver::new(home.path(), restarted.clone())
+        .replay()
+        .unwrap();
+    let v = restarted.get(&old).unwrap();
+    assert_eq!(
+        v.assessment.status,
+        Status::Finished,
+        "从归档重建，clear 当普通结束：{:?}",
+        v.assessment
+    );
+    assert_eq!(v.assessment.source, Source::Hook);
+    let v = restarted.get(&lone).unwrap();
+    assert_eq!(
+        v.assessment.status,
+        Status::TurnDone,
+        "没有归档的 v1 检查点原样恢复：{:?}",
+        v.assessment
+    );
+    // 重建后的检查点是 v2 且带回了进程号。
+    let key: String = old.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    let cp: Value = serde_json::from_slice(
+        &std::fs::read(home.path().join("hooks/state").join(format!("{key}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(cp["version"], 2, "{cp}");
+    assert_eq!(cp["agent_process"]["pid"], std::process::id(), "{cp}");
+    lone_proc.kill().unwrap();
+    lone_proc.wait().unwrap();
+}
+
+#[tokio::test]
+async fn a_new_conversation_on_the_same_process_supersedes_the_old_external_row() {
+    // agora-tql（2026-09-08 现场）：一个 grok 进程先后跑了三个对话 id（/clear 不发 session_end），
+    // 三行都 TURN_DONE 且 alive——进程确实活着，但它早就在跑别的对话了。守卫：同一宿主、同一进程号
+    // 的两个无句柄 external 行，后到的取代先到的（FINISHED，reason superseded）；daemon 重启恢复后
+    // 同样收敛。关掉 supersede_external_rows 的两个调用点 → 两段 finished 断言各自红。
+    let (fx, receiver, home) = with_hooks();
+    let env = [("CLAUDE_PID", std::process::id().to_string())];
+    let stop = |sid: &str| json!({ "hook_event_name": "Stop", "session_id": sid, "last_assistant_message": "done" });
+    let first = ingest(
+        &receiver,
+        home.path(),
+        &delivery("conv-1", session_start("conv-1"), &env, &[]),
+    )
+    .unwrap();
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery("conv-1", stop("conv-1"), &env, &[]),
+    );
+    assert_eq!(
+        fx.sessions.get(&first).unwrap().assessment.status,
+        Status::TurnDone
+    );
+    // 同一进程报来第二个对话：旧行到此为止，新行照常。
+    let second = ingest(
+        &receiver,
+        home.path(),
+        &delivery("conv-2", session_start("conv-2"), &env, &[]),
+    )
+    .unwrap();
+    assert_ne!(first, second);
+    let v = fx.sessions.get(&first).unwrap();
+    assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
+    assert_eq!(v.assessment.source, Source::Hook);
+    assert!(
+        v.assessment
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("superseded"),
+        "{:?}",
+        v.assessment
+    );
+    assert_eq!(
+        fx.sessions.get(&second).unwrap().assessment.status,
+        Status::Starting
+    );
+    // 另一个进程的对话不受影响。
+    let mut other = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let other_env = [("CLAUDE_PID", other.id().to_string())];
+    let third = ingest(
+        &receiver,
+        home.path(),
+        &delivery("conv-3", session_start("conv-3"), &other_env, &[]),
+    )
+    .unwrap();
+    assert_eq!(
+        fx.sessions.get(&second).unwrap().assessment.status,
+        Status::Starting,
+        "别的进程的新对话不取代它"
+    );
+    assert_eq!(
+        fx.sessions.get(&third).unwrap().assessment.status,
+        Status::Starting
+    );
+
+    // 重启恢复：把 conv-2 的检查点改成 turn_done 之前的老样子——直接构造"两行共享一个进程号、都没结束"
+    // 的检查点局面：conv-1 的 current 改回 turn_done。重放完 supersede 再跑一遍 → conv-1 仍 FINISHED。
+    let key: String = first
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let path = home.path().join("hooks/state").join(format!("{key}.json"));
+    let mut cp: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    cp["current"]["status"] = json!("turn_done");
+    std::fs::write(&path, cp.to_string()).unwrap();
+    let restarted = Arc::new(agora::session::SessionManager::new(
+        fx.db.clone(),
+        fx.rt.clone() as Arc<dyn agora::runtime::Runtime>,
+    ));
+    Receiver::new(home.path(), restarted.clone())
+        .replay()
+        .unwrap();
+    let v = restarted.get(&first).unwrap();
+    assert_eq!(
+        v.assessment.status,
+        Status::Finished,
+        "重启后同样收敛：{:?}",
+        v.assessment
+    );
+    assert_eq!(
+        restarted.get(&second).unwrap().assessment.status,
+        Status::Starting
+    );
+    other.kill().unwrap();
+    other.wait().unwrap();
 }

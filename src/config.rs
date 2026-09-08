@@ -173,6 +173,8 @@ pub struct HooksSection {
     /// 装了 hook 的会话在启动宽限后有过终端活动、之后这么久还没听到任何 hook 事件 → 行上提示
     /// "hook 没接上"（agora-dvh.15）。
     pub unheard_after: String,
+    /// 没有可信进程号的 external 行 hook 沉默这么久 → UNKNOWN（agora-tql）。
+    pub external_silent_after: String,
     pub hold_timeout: String,
     pub hold_per_session: u32,
     pub hold_per_node: u32,
@@ -184,6 +186,7 @@ impl Default for HooksSection {
         HooksSection {
             silence_after: "10m".into(),
             unheard_after: "90s".into(),
+            external_silent_after: "2h".into(),
             hold_timeout: "55m".into(),
             hold_per_session: 8,
             hold_per_node: 256,
@@ -297,6 +300,7 @@ pub struct Settings {
     pub idle_after: Duration,
     pub hook_silence_after: Duration,
     pub hook_unheard_after: Duration,
+    pub hook_external_silent_after: Duration,
     pub auth: crate::auth::AuthConfig,
     pub raw: Config,
 }
@@ -366,6 +370,10 @@ impl Config {
         let idle_after = parse_duration("status.idle_after", &self.status.idle_after)?;
         let hook_silence_after = parse_duration("hooks.silence_after", &self.hooks.silence_after)?;
         let hook_unheard_after = parse_duration("hooks.unheard_after", &self.hooks.unheard_after)?;
+        let hook_external_silent_after = parse_duration(
+            "hooks.external_silent_after",
+            &self.hooks.external_silent_after,
+        )?;
         // 其余时长字段现在没有消费者，但语法先卡住，免得日后消费时才在运行中炸。
         for (field, value) in [
             ("hooks.hold_timeout", &self.hooks.hold_timeout),
@@ -382,6 +390,7 @@ impl Config {
             idle_after,
             hook_silence_after,
             hook_unheard_after,
+            hook_external_silent_after,
             auth,
             raw: self,
         })

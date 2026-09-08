@@ -46,6 +46,10 @@ pub struct MachineConfig {
     /// 本代起始的启动宽限（默认 [`STARTUP_GRACE_SECS`]）：① "hook 没接上"只认宽限之后的终端
     /// 输出（dvh.15）；② hook 层的 STARTING 在宽限内没有后续事件即降为 TURN_DONE（agora-okr）。
     pub startup_grace: Duration,
+    /// 没有可信进程号的 external 行（`Liveness::Unknown`）hook 沉默多久后退到 UNKNOWN
+    /// （`hooks.external_silent_after`，agora-tql）：没有 pane 沉默规则够不着，没有进程号进程层说不了
+    /// 结束，agent 早退了的行会永远钉在 TURN_DONE。
+    pub external_silent_after: Duration,
 }
 
 impl Default for MachineConfig {
@@ -58,6 +62,7 @@ impl Default for MachineConfig {
             text_ticks: 2,
             tick: Duration::from_secs(2),
             startup_grace: Duration::from_secs(STARTUP_GRACE_SECS as u64),
+            external_silent_after: Duration::from_secs(2 * 3600),
         }
     }
 }
@@ -67,6 +72,11 @@ impl Default for MachineConfig {
 /// 没提问就没有事件，不能算异常。所以只认本代起始宽限之后的真实输出（用户敲了东西、agent 在答）
 /// 为起点。hook 层 STARTING 的衰减（agora-okr）共用同一宽限。
 pub const STARTUP_GRACE_SECS: i64 = 10;
+
+/// 无句柄 external 行 hook 沉默兜底的 reason（agora-tql）；`apply_at` 据它认出这种 UNKNOWN。
+pub const EXTERNAL_SILENT_REASON: &str = "hooks silent; no process handle";
+/// 同一进程换了对话、旧行结束的 reason（`AgoraEvent::Superseded`，agora-tql）。
+pub const SUPERSEDED_REASON: &str = "superseded: the same process moved on to a new conversation";
 
 /// 进程活着与否的三值：外部会话（无运行时）是 Unknown，只有 hook 能说话。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,13 +125,32 @@ fn protected(a: &Assessment) -> bool {
     a.source != Source::None && !(a.source == Source::Process && a.status == Status::Running)
 }
 
-/// 仅保存 hook 观测，不保存进程存活、退出码或活动采样；恢复后仍由运行时裁决。
+/// external 行最近一条 hook 信封里报来的 agent 进程（agora-tql）：`pid` 是 `AgentHooks::agent_pid`
+/// 给的（Claude 的 `CLAUDE_PID`、Codex / Grok 的 hook ppid），`started_at` 是当时读到的进程启动时刻
+/// （unix 秒；读不到就 None），重启恢复后再探活时对一下，免得把复用了同一个号的别的进程当成它。
+/// 这是"最后一次看到的进程号"这个 hook 事实，不是存活结论：活没活每 tick 现算。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentProcess {
+    pub pid: u32,
+    pub started_at: Option<i64>,
+    /// 报来这个号的那条 hook 的时刻（信封 `received_unix_ms`，unix 秒）。进程必须早于它：号上的进程比
+    /// hook 还新，就是号被复用了、原进程已没——从归档重建时读到的启动时刻本来就可能是别人的。
+    #[serde(default)]
+    pub seen_at: i64,
+}
+
+/// 检查点格式版本。1 = 不带 `agent_process`（2026-09-08 之前）；2 = 带。
+pub const HOOK_SNAPSHOT_VERSION: u32 = 2;
+
+/// 仅保存 hook 观测（含信封里的 agent 进程号），不保存进程存活、退出码或活动采样；恢复后仍由运行时裁决。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookSnapshot {
     pub version: u32,
     pub epoch: i64,
     #[serde(default)]
     last_delivery: Option<String>,
+    #[serde(default)]
+    agent_process: Option<AgentProcess>,
     current: Assessment,
     set_at: i64,
     last_hook_at: i64,
@@ -170,6 +199,8 @@ pub struct Machine {
     /// 当前的 UNKNOWN 是"提示消失"规则给的：进程层的 RUNNING 不得盖掉它，直到下一条 hook 事件写出新状态。
     /// （沉默规则的 UNKNOWN 不设此标记，仍按原样每 tick 重判。）
     screen_released: bool,
+    /// external 行最近一条信封报来的 agent 进程（进检查点；agora-tql）。
+    agent_process: Option<AgentProcess>,
 }
 
 impl Machine {
@@ -199,6 +230,7 @@ impl Machine {
             pending_prompt_gone_ticks: 0,
             pending_prompt_gone_at: 0,
             screen_released: false,
+            agent_process: None,
         }
     }
 
@@ -222,12 +254,13 @@ impl Machine {
     }
 
     pub fn restore_hook(&mut self, snapshot: HookSnapshot) {
-        if snapshot.version != 1
+        if !(1..=HOOK_SNAPSHOT_VERSION).contains(&snapshot.version)
             || snapshot.epoch != self.epoch
             || snapshot.current.source != Source::Hook
         {
             return;
         }
+        self.agent_process = snapshot.agent_process.clone();
         self.current = snapshot.current.clone();
         self.set_at = snapshot.set_at;
         self.last_hook_at = Some(snapshot.last_hook_at);
@@ -237,6 +270,29 @@ impl Machine {
         self.progress = snapshot.progress.clone();
         self.pending = snapshot.pending.clone();
         self.snapshot = Some(snapshot);
+    }
+
+    /// 记下信封里的 agent 进程；下一次写检查点带上它。同一个进程再报一次不动。
+    pub fn note_agent_process(&mut self, p: AgentProcess) {
+        if self.agent_process.as_ref() == Some(&p) {
+            return;
+        }
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.agent_process = Some(p.clone());
+        }
+        self.agent_process = Some(p);
+    }
+
+    pub fn agent_process(&self) -> Option<&AgentProcess> {
+        self.agent_process.as_ref()
+    }
+
+    /// 恢复出来的检查点是 v2 之前写的：不带进程号，而且可能写于 agora-s3r（2026-09-07）之前——
+    /// 那时无句柄 external 行的 SessionEnd(clear) 不改状态，检查点停在修复前的结论。
+    pub fn restored_legacy_checkpoint(&self) -> bool {
+        self.snapshot
+            .as_ref()
+            .is_some_and(|s| s.version < HOOK_SNAPSHOT_VERSION)
     }
 
     pub fn hooks_silent(&self, now: i64) -> bool {
@@ -322,6 +378,19 @@ impl Machine {
     /// 运行时降级的 UNKNOWN 是 `Source::Process`，都不在这里。
     fn unknown_from_screen(&self) -> bool {
         self.current.status == Status::Unknown && self.current.source == Source::Text
+    }
+
+    /// 当前是"没有进程号、hook 沉默"给的 UNKNOWN（agora-tql）：与屏幕给的 UNKNOWN 一样，hook 的下一条
+    /// 事件在它身上就是可信证据——Idle 落 TURN_DONE、DecisionResolved 抬 RUNNING。
+    fn unknown_from_handleless_silence(&self) -> bool {
+        self.current.status == Status::Unknown
+            && self.current.source == Source::Hook
+            && self.current.reason.as_deref() == Some(EXTERNAL_SILENT_REASON)
+    }
+
+    /// 没有任何可观测事实、只有时间的 UNKNOWN：屏幕给的与无句柄沉默给的。
+    fn unknown_awaiting_hook(&self) -> bool {
+        self.unknown_from_screen() || self.unknown_from_handleless_silence()
     }
 
     /// Restart：新一代进程，旧状态、旧驻留全部作废。
@@ -430,7 +499,7 @@ impl Machine {
                 }
                 // 从 WAITING 回 RUNNING；也从"提示消失"规则给的 UNKNOWN（source=text）回——终端放行、
                 // 工具跑完后 PostToolUse 才到的那条路，行不该停在 UNKNOWN（agora-9cd）。
-                let released_by_screen = self.unknown_from_screen();
+                let released_by_screen = self.unknown_awaiting_hook();
                 ((self.current.status == Status::Waiting || released_by_screen)
                     && self.pending.is_empty())
                 .then(|| hook(Status::Running, 0.95, Some("decision resolved")))
@@ -457,7 +526,7 @@ impl Machine {
             // 正是 TURN_DONE 的可信证据。沉默规则的 UNKNOWN 同理：hook 活着、agent 停在提示符；不接它
             // 的话下一个 tick 沉默解除、进程层会把它猜成 RUNNING。
             AgoraEvent::Idle => (self.current.status == Status::Running
-                || self.unknown_from_screen())
+                || self.unknown_awaiting_hook())
             .then(|| hook(Status::TurnDone, 0.9, Some("idle"))),
             // 会话结束（MISSION §5.6 session.ended）：hook 层的 FINISHED，conf 0.8——进程退出的事实到了
             // 会以 1.0 覆盖（observe 第 1 步）；没有进程事实的 external 会话则只有这一条能让它离开
@@ -478,6 +547,11 @@ impl Machine {
                 (reason.as_deref() != Some("clear"))
                     .then(|| hook(Status::Finished, 0.8, Some("session ended (hook)")))
             }
+            // 与 SessionEnded 同一档：进程还在，但它已经在跑别的对话了。
+            AgoraEvent::Superseded => {
+                self.pending.clear();
+                Some(hook(Status::Finished, 0.8, Some(SUPERSEDED_REASON)))
+            }
         };
         // 挂起集合一变（新挂起、答了一个、全清）屏幕证据重新收集：上一条提示见没见过说不了下一条。
         if self.pending != pending_before {
@@ -491,9 +565,10 @@ impl Machine {
         }
         if self.current.source == Source::Hook {
             self.snapshot = Some(HookSnapshot {
-                version: 1,
+                version: HOOK_SNAPSHOT_VERSION,
                 epoch: self.epoch,
                 last_delivery: self.snapshot.as_ref().and_then(|s| s.last_delivery.clone()),
+                agent_process: self.agent_process.clone(),
                 current: self.current.clone(),
                 set_at: self.set_at,
                 last_hook_at: now,
@@ -516,6 +591,27 @@ impl Machine {
         if obs.liveness == Liveness::Dead || obs.process.source == Source::None {
             if obs.liveness != Liveness::Dead && self.current.source == Source::Hook {
                 // 外部会话：没有退出事实（进程号活着 / 根本不知道），hook 说什么就是什么。
+                // 例外（agora-tql，2026-09-08 现场 11 行僵尸）：根本不知道进程活没活（Codex Desktop 的
+                // 共用 app-server、daemon 重启后丢了进程号的旧检查点）而 hook 又沉默了
+                // `external_silent_after` 以上 → UNKNOWN。这一行没有 pane，D1 的沉默规则够不着；没有
+                // 进程号，进程层永远说不了"结束"；agent 早退了的行会永远钉在 TURN_DONE、排在 NEEDS
+                // ATTENTION。进程号活着的（Liveness::Alive）不动：人离开几小时再回来是正常的。
+                // reason 不嵌沉默秒数（agora-385）；`set` 只在 (status, source) 变时刷新起点。
+                if obs.liveness == Liveness::Unknown
+                    && !matches!(self.current.status, Status::Finished | Status::Failed)
+                    && now - self.last_hook_at.unwrap_or(self.since)
+                        >= self.cfg.external_silent_after.as_secs() as i64
+                {
+                    self.set(
+                        Assessment::new(
+                            Status::Unknown,
+                            Source::Hook,
+                            0.5,
+                            Some(EXTERNAL_SILENT_REASON),
+                        ),
+                        now,
+                    );
+                }
                 return self.current.clone();
             }
             self.set(obs.process, now);

@@ -227,6 +227,7 @@ async fn serve() -> i32 {
             idle_after: settings.idle_after,
             silence_after: settings.hook_silence_after,
             unheard_after: settings.hook_unheard_after,
+            external_silent_after: settings.hook_external_silent_after,
             tick: settings.detector_interval,
             ..agora::status::MachineConfig::default()
         }),

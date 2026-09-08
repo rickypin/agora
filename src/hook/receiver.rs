@@ -15,7 +15,7 @@ use tokio::sync::oneshot;
 use crate::adapter::{self, AgentHooks, Decision, Release};
 use crate::events::{global_id, Event, EventBus};
 use crate::local::Response;
-use crate::session::{ExternalSession, PendingDecision, SessionManager};
+use crate::session::{ExternalSession, Origin, PendingDecision, SessionManager};
 use crate::status::AgoraEvent;
 
 use super::inbox::{Delivery, Inbox, DONE_RETENTION};
@@ -177,6 +177,13 @@ impl Receiver {
                 }
             }
         }
+        match self.sessions.supersede_external_rows() {
+            Ok(ended) if !ended.is_empty() => {
+                tracing::info!(component = "hook", rows = ?ended, "同一进程换了对话，旧行结束");
+            }
+            Ok(_) => {}
+            Err(err) => tracing::warn!(component = "hook", %err, "取代旧行失败"),
+        }
         self.inbox.prune_done(DONE_RETENTION);
         Ok(n)
     }
@@ -207,19 +214,41 @@ impl Receiver {
             let Some(rec) = rec else {
                 continue;
             };
-            let selected = *restore
-                .entry(rec.id.clone())
-                .or_insert_with(|| !self.sessions.has_hook_checkpoint(&rec.id));
+            let handleless_external = rec.origin == Origin::External && rec.runtime_ref.is_none();
+            let selected = *restore.entry(rec.id.clone()).or_insert_with(|| {
+                if !self.sessions.has_hook_checkpoint(&rec.id) {
+                    return true;
+                }
+                // agora-tql：无句柄 external 行的 v1 检查点可能停在 s3r 修复前的结论（SessionEnd(clear)
+                // 当时不改状态，2026-09-08 现场 8 行僵尸），归档里还有它的投递就丢掉检查点、
+                // 从归档按序重建——重建走下面同一条路，`clear` 同样被改写成普通结束。
+                let legacy = handleless_external && self.sessions.hook_checkpoint_is_legacy(&rec.id);
+                if legacy {
+                    tracing::info!(component = "hook", session = %rec.id, "v1 检查点的 external 行从归档重建");
+                    self.sessions.forget_hook_state(&rec.id);
+                }
+                legacy
+            });
             if !selected || env.agora_epoch.is_some_and(|epoch| epoch != rec.epoch) {
                 continue;
             }
+            if env.agora_session_id.is_none() {
+                if let Some(pid) = hooks.agent_pid(&env.agent_env, env.ppid) {
+                    self.sessions
+                        .note_external_pid(&rec.id, pid, env.received_unix_secs());
+                }
+            }
+            let events = hooks.parse(&delivery.payload);
+            let events: Cow<'_, [AgoraEvent]> = if handleless_external {
+                Cow::Owned(clear_ends_external_row(&events))
+            } else {
+                Cow::Borrowed(&events)
+            };
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if let Err(err) = self.sessions.apply_delivered_hook(
-                &rec.id,
-                rec.epoch,
-                &hooks.parse(&delivery.payload),
-                &name,
-            ) {
+            if let Err(err) = self
+                .sessions
+                .apply_delivered_hook(&rec.id, rec.epoch, &events, &name)
+            {
                 tracing::warn!(component = "hook", %err, "归档恢复失败");
             }
         }
@@ -331,6 +360,7 @@ impl Receiver {
         if env.agent_session_id == "unknown" {
             return None;
         }
+        let mut registered = false;
         let found = match self
             .sessions
             .find_by_agent_session(&env.host, &env.agent_session_id)
@@ -365,6 +395,7 @@ impl Receiver {
                     Ok(id) => {
                         tracing::info!(component = "hook", session = %id, host = %env.host,
                             terminal = spec.runtime_ref.is_some(), "登记外部会话");
+                        registered = true;
                         Some(id)
                     }
                     Err(err) => {
@@ -379,7 +410,18 @@ impl Receiver {
             }
         };
         if let (Some(id), Some(pid)) = (&found, hooks.agent_pid(&env.agent_env, env.ppid)) {
-            self.sessions.note_external_pid(id, pid);
+            self.sessions
+                .note_external_pid(id, pid, env.received_unix_secs());
+            if registered {
+                match self.sessions.supersede_external_rows() {
+                    Ok(ended) if !ended.is_empty() => {
+                        tracing::info!(component = "hook", session = %id, rows = ?ended,
+                            "同一进程换了对话，旧行结束");
+                    }
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!(component = "hook", %err, "取代旧行失败"),
+                }
+            }
         }
         found
     }

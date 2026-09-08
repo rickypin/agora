@@ -20,6 +20,7 @@ fn cfg() -> MachineConfig {
         text_ticks: 2,
         tick: Duration::from_secs(2),
         startup_grace: Duration::from_secs(10),
+        external_silent_after: Duration::from_secs(2 * 3600),
     }
 }
 
@@ -873,4 +874,57 @@ fn idle_notification_after_silent_hooks_unknown_lands_on_turn_done() {
     assert_eq!(m.status_since(), at);
     let a = tick(&mut m, 608, &r, None);
     assert_eq!((a.status, a.source), (Status::TurnDone, Source::Hook));
+}
+
+#[test]
+fn handleless_external_silence_falls_to_unknown() {
+    // agora-tql（2026-09-08 现场 11 行 external 僵尸）：没有 pane、没有可信进程号（Liveness::Unknown）
+    // 的 external 行只跟 hook 走，agent 早退了也永远钉在 TURN_DONE。守卫：沉默 external_silent_after
+    // 以上 → UNKNOWN（source hook，固定 reason），起点稳定；进程号活着（Liveness::Alive）的不动；
+    // hook 一出声立刻回到事件给的状态。关掉 observe 第 1 步里的沉默兜底 → 第一段 UNKNOWN 断言红。
+    let external = |liveness| Observation {
+        process: Assessment::unknown("external session: no runtime, hook only"),
+        liveness,
+        text: None,
+        runtime: None,
+        epoch: 1,
+        now: 0,
+    };
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::TurnEnded(Some("done".into())), 1, 0);
+    let mut obs = external(Liveness::Unknown);
+    obs.now = 7199;
+    assert_eq!(m.observe(obs).status, Status::TurnDone, "阈值未到不动");
+    let mut obs = external(Liveness::Unknown);
+    obs.now = 7200;
+    let a = m.observe(obs);
+    assert_eq!(
+        (a.status, a.source),
+        (Status::Unknown, Source::Hook),
+        "{a:?}"
+    );
+    assert_eq!(a.reason.as_deref(), Some("hooks silent; no process handle"));
+    let since = m.status_since();
+    for now in [7202, 7300, 90000] {
+        let mut obs = external(Liveness::Unknown);
+        obs.now = now;
+        let a = m.observe(obs);
+        assert_eq!(a.status, Status::Unknown);
+        assert_eq!(m.status_since(), since, "起点不随 tick 漂（agora-385）");
+    }
+    // Idle 在这种 UNKNOWN 上是可信的证据：agent 停在提示符 → TURN_DONE。
+    m.apply(&AgoraEvent::Idle, 1, 90001);
+    assert_eq!(m.current().status, Status::TurnDone);
+    // 进程号活着的：hook 说什么就是什么，几小时不出声也还是 TURN_DONE。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::TurnEnded(None), 1, 0);
+    let mut obs = external(Liveness::Alive);
+    obs.now = 90000;
+    assert_eq!(m.observe(obs).status, Status::TurnDone);
+    // 已经结束的不再动：FINISHED(hook) 不会被沉默改成 UNKNOWN。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionEnded(Some("other".into())), 1, 0);
+    let mut obs = external(Liveness::Unknown);
+    obs.now = 90000;
+    assert_eq!(m.observe(obs).status, Status::Finished);
 }

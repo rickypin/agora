@@ -47,6 +47,7 @@ status:
 hooks:
   silence_after: "10m"
   unheard_after: "90s"
+  external_silent_after: "2h"
   hold_timeout: "55m"
   hold_per_session: 8
   hold_per_node: 256

@@ -305,7 +305,7 @@ fn corrupt_checkpoint_does_not_block_other_sessions_or_new_inbox() {
         0o600
     );
     let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-    assert_eq!(saved["version"], 1);
+    assert_eq!(saved["version"], 2, "v2 = 带 agent_process（agora-tql）");
     assert!(saved.get("alive").is_none() && saved.get("exit").is_none());
     std::fs::write(&file, "broken").unwrap();
     inbox
@@ -412,4 +412,150 @@ fn starting_decays_through_session_manager_and_after_checkpoint_restore() {
         .as_deref()
         .unwrap()
         .contains("awaiting first prompt"));
+}
+
+/// 无句柄 external 行的投递件：没有 AGORA_*，身份是 (host, agent_session_id)，进程号在 CLAUDE_PID。
+/// 时刻从"现在"起算（`ms` 只是序号）：进程号要与报来它的 hook 时刻对一下，进程不得晚于 hook。
+fn external_delivery(
+    agent_session: &str,
+    pid: u32,
+    ms: u64,
+    payload: serde_json::Value,
+) -> Delivery {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let ms = now_ms + ms;
+    Delivery {
+        envelope: Envelope {
+            host: "claude".into(),
+            agora_session_id: None,
+            agora_epoch: None,
+            agent_session_id: agent_session.into(),
+            agent_env: BTreeMap::from([("CLAUDE_PID".to_owned(), pid.to_string())]),
+            runtime_env: BTreeMap::new(),
+            ppid: 1,
+            received_at: String::new(),
+            received_unix_ms: ms,
+        },
+        payload,
+    }
+}
+
+fn checkpoint_path(home: &std::path::Path, id: &str) -> std::path::PathBuf {
+    let key: String = id.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    home.join("hooks/state").join(format!("{key}.json"))
+}
+
+#[test]
+fn external_agent_pid_survives_daemon_restart_and_guards_pid_reuse() {
+    // agora-tql（2026-09-08 现场）：external 行的存活靠 hook 报来的进程号，原来只在内存里，daemon 一
+    // 重启就丢，agent 早退了的行永远钉在 TURN_DONE。守卫：进程号随检查点落盘，重启后 alive 仍可判、
+    // 进程一没就 FINISHED；检查点里的启动时刻对不上（号被复用）也算没了。
+    // 关掉 HookSnapshot.agent_process 的恢复 → 第一段 alive 断言红；关掉 agent_process_alive 的启动
+    // 时刻比对 → 最后一段 finished 断言红。
+    let home = tempfile::tempdir().unwrap();
+    let rt = Arc::new(common::FakeRuntime::default());
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let id = {
+        let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+        let s = Arc::new(SessionManager::new(db, rt.clone()));
+        let r = Receiver::new(home.path(), s.clone());
+        let inbox = Inbox::new(home.path());
+        let start = json!({"hook_event_name":"SessionStart","session_id":"ext-1","cwd":"/work/agora","source":"startup"});
+        let path = inbox
+            .write(&external_delivery("ext-1", child.id(), 1, start))
+            .unwrap();
+        let id = r.ingest(&path).unwrap().unwrap().session_key;
+        let stop =
+            json!({"hook_event_name":"Stop","session_id":"ext-1","last_assistant_message":"done"});
+        let path = inbox
+            .write(&external_delivery("ext-1", child.id(), 2, stop))
+            .unwrap();
+        r.ingest(&path).unwrap();
+        let v = s.get(&id).unwrap();
+        assert_eq!((v.assessment.status, v.alive), (Status::TurnDone, true));
+        inbox.prune_done(Duration::ZERO);
+        id
+    };
+    // 重启：归档已清，只有检查点。进程号从检查点回填 → alive 照旧可判。
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let s = Arc::new(SessionManager::new(db, rt.clone()));
+    Receiver::new(home.path(), s.clone()).replay().unwrap();
+    let v = s.get(&id).unwrap();
+    assert_eq!(v.assessment.status, Status::TurnDone, "{:?}", v.assessment);
+    assert!(v.alive, "重启后进程号从检查点回填，alive 仍可判");
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let v = s.get(&id).unwrap();
+    assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
+    assert_eq!(v.assessment.source, Source::Process);
+    assert!(
+        v.assessment
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("process gone"),
+        "{:?}",
+        v.assessment
+    );
+    drop(s);
+
+    // 号被复用：检查点里的启动时刻改成别的值，进程虽活着也不是当初那个 → FINISHED。
+    let mut other = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let id2 = {
+        let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+        let s = Arc::new(SessionManager::new(db, rt.clone()));
+        let r = Receiver::new(home.path(), s.clone());
+        let inbox = Inbox::new(home.path());
+        let start = json!({"hook_event_name":"SessionStart","session_id":"ext-2","cwd":"/work/agora","source":"startup"});
+        let path = inbox
+            .write(&external_delivery("ext-2", other.id(), 3, start))
+            .unwrap();
+        let id2 = r.ingest(&path).unwrap().unwrap().session_key;
+        assert!(s.get(&id2).unwrap().alive);
+        inbox.prune_done(Duration::ZERO);
+        id2
+    };
+    let path = checkpoint_path(home.path(), &id2);
+    let mut cp: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(cp["version"], 2, "{cp}");
+    assert_eq!(cp["agent_process"]["pid"], other.id(), "{cp}");
+    let started = cp["agent_process"]["started_at"]
+        .as_i64()
+        .expect("本机能读到进程启动时刻");
+    cp["agent_process"]["started_at"] = json!(started - 1000);
+    std::fs::write(&path, cp.to_string()).unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let s = Arc::new(SessionManager::new(db, rt));
+    Receiver::new(home.path(), s.clone()).replay().unwrap();
+    let v = s.get(&id2).unwrap();
+    assert!(!v.alive, "启动时刻对不上 = 号被复用，不算活着");
+    assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
+    drop(s);
+
+    // 从归档重建时读到的启动时刻可能是复用者的：hook 时刻早于号上进程的启动时刻 → 也不算活着。
+    // 模拟：检查点里 seen_at 改成进程启动之前。
+    let mut cp: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    cp["agent_process"]["started_at"] = json!(started);
+    cp["agent_process"]["seen_at"] = json!(started - 60);
+    std::fs::write(&path, cp.to_string()).unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let s = Arc::new(SessionManager::new(
+        db,
+        Arc::new(common::FakeRuntime::default()),
+    ));
+    Receiver::new(home.path(), s.clone()).replay().unwrap();
+    let v = s.get(&id2).unwrap();
+    assert!(!v.alive, "进程比报来它的 hook 还新 = 号被复用");
+    assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
+    other.kill().unwrap();
+    other.wait().unwrap();
 }
