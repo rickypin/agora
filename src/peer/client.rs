@@ -52,7 +52,52 @@ enum Disconnect {
     /// [`Wake::reconnect`]：不算失败，不标 stale、不退避，立刻重来。
     Forced,
     /// 真的失败 / 断开：记类型、标 stale、退避。
-    Failed(PeerError),
+    Failed(Failure),
+}
+
+/// 一次失败：给状态模型的类型，加上**只有日志需要**的细节。`PeerError` 是 `/api/health` 的枚举，
+/// 故意不带数据（`Copy` + 序列化成 snake_case 字符串），所以 `TransportError::FingerprintMismatch
+/// { expected, actual }` 经 `From` 映射后两个指纹就没了——2026-09-07 实机代检（agora-7ku.10.1 ④）
+/// 改错 cert_fingerprint 后 daemon.log 只有 `error=FingerprintMismatch`，人得另外 openssl 才知道
+/// 对端真实指纹（agora-btf）。于是 [`PeerClient::classify`] 在映射之前把它们留在这里，跟着
+/// `Disconnect::Failed` 走到 `run` 的那条「断开，退避后重试」WARN 打成 `expected=` / `actual=`。
+/// 指纹是公开的（`agora node fingerprint` 就是给人抄的），不是秘密，进日志没有顾虑。
+struct Failure {
+    kind: PeerError,
+    /// 只有指纹不匹配带：配置里写的（expected）与对端证书真实的（actual）。
+    fingerprints: Option<Fingerprints>,
+}
+
+struct Fingerprints {
+    expected: String,
+    actual: String,
+}
+
+impl From<PeerError> for Failure {
+    fn from(kind: PeerError) -> Self {
+        Failure {
+            kind,
+            fingerprints: None,
+        }
+    }
+}
+
+/// 传输错误 → 状态类型（`PeerError: From<TransportError>`，state.rs）+ 指纹不匹配时把两个指纹
+/// 留下。配置错误的分档日志不在这里，在 [`PeerClient::classify`]（要看前一个状态）。
+impl From<TransportError> for Failure {
+    fn from(err: TransportError) -> Self {
+        let fingerprints = match &err {
+            TransportError::FingerprintMismatch { expected, actual } => Some(Fingerprints {
+                expected: expected.clone(),
+                actual: actual.clone(),
+            }),
+            _ => None,
+        };
+        Failure {
+            kind: err.into(),
+            fingerprints,
+        }
+    }
 }
 
 pub struct PeerClient {
@@ -108,7 +153,8 @@ impl PeerClient {
                 Disconnect::Forced => {
                     tracing::info!(component = "peer", peer = %self.name, "按要求断开重连");
                 }
-                Disconnect::Failed(err) => {
+                Disconnect::Failed(failure) => {
+                    let err = failure.kind;
                     self.peers.failed(&self.name, err);
                     // "上次见到"写到每条 stale 行上：就是 PeerState.last_seen（/api/health peers 段
                     // 给 Header 的那个值），一只表、一个数字，侧栏行与 Header 不会各说各话。
@@ -131,14 +177,7 @@ impl PeerClient {
                         delay
                     } else {
                         let delay = backoff.next_delay(random_jitter());
-                        tracing::warn!(
-                            component = "peer",
-                            peer = %self.name,
-                            error = ?err,
-                            failures = backoff.failures(),
-                            retry_in_ms = delay.as_millis() as u64,
-                            "peer 断开，退避后重试"
-                        );
+                        warn_disconnected(&self.name, &failure, backoff.failures(), delay);
                         delay
                     };
                     tokio::select! {
@@ -169,7 +208,7 @@ impl PeerClient {
             ),
             Err(err) => {
                 tracing::warn!(component = "peer", peer = %self.name, %err, "peer API 版本不兼容，不并入它的会话");
-                return Disconnect::Failed(PeerError::IncompatibleVersion);
+                return Disconnect::Failed(PeerError::IncompatibleVersion.into());
             }
         }
         if let Some(node) = system.get("node").and_then(Value::as_str) {
@@ -207,21 +246,21 @@ impl PeerClient {
                         }
                     }
                     Some(Ok(WsMessage::Close(_))) | None => {
-                        return Disconnect::Failed(PeerError::Unreachable);
+                        return Disconnect::Failed(PeerError::Unreachable.into());
                     }
                     Some(Ok(_)) => last_rx = Instant::now(),
                     Some(Err(err)) => {
                         tracing::debug!(component = "peer", peer = %self.name, %err, "事件流出错");
-                        return Disconnect::Failed(PeerError::Unreachable);
+                        return Disconnect::Failed(PeerError::Unreachable.into());
                     }
                 },
                 _ = tick.tick() => {
                     if last_rx.elapsed() > DEAD_AFTER {
                         tracing::warn!(component = "peer", peer = %self.name, "事件流 65 s 没有入站帧，当作断开");
-                        return Disconnect::Failed(PeerError::Unreachable);
+                        return Disconnect::Failed(PeerError::Unreachable.into());
                     }
                     if ws.send(WsMessage::Text("{\"type\":\"ping\"}".into())).await.is_err() {
-                        return Disconnect::Failed(PeerError::Unreachable);
+                        return Disconnect::Failed(PeerError::Unreachable.into());
                     }
                 }
                 force = self.wake.wait() => {
@@ -236,7 +275,7 @@ impl PeerClient {
     }
 
     /// 一帧 = 一个事件数组（服务端攒批）。任何一条要求 resync 就整帧应用完再重拉一次。
-    async fn handle_frame(&self, text: &str) -> Result<(), PeerError> {
+    async fn handle_frame(&self, text: &str) -> Result<(), Failure> {
         let batch = match serde_json::from_str::<Value>(text) {
             Ok(Value::Array(a)) => a,
             Ok(other) => vec![other],
@@ -260,11 +299,11 @@ impl PeerClient {
     }
 
     /// `GET /api/sessions` 全量进视图；差分事件发进本机总线。
-    async fn snapshot(&self) -> Result<(), PeerError> {
+    async fn snapshot(&self) -> Result<(), Failure> {
         let body = self.get_json("/api/sessions").await?;
         let Some(rows) = body.get("sessions").and_then(Value::as_array) else {
             tracing::warn!(component = "peer", peer = %self.name, "GET /api/sessions 的响应不是 {{ sessions: [...] }}");
-            return Err(PeerError::Unreachable);
+            return Err(PeerError::Unreachable.into());
         };
         self.publish(self.views.replace(&self.name, rows.clone()));
         self.peers.seen(&self.name, self.views.now());
@@ -275,7 +314,9 @@ impl PeerClient {
     /// （前一个状态不是它）warn 一条，正文是 `TransportError` 的 Display——token_file 那类就是
     /// `TokenFileError` 的原话，含 `chmod 600 <path>`；仍在配置错误里的每次重读只 debug，10 s 一条
     /// 也不该刷屏。要在 `PeerStates::failed` 之前调，那时 `last_error` 还是前一个状态。
-    fn classify(&self, err: TransportError) -> PeerError {
+    /// 指纹不匹配不在这里打日志：两个指纹留在 [`Failure`] 里（`From<TransportError>`），由 `run`
+    /// 的断开 WARN 一并打出。
+    fn classify(&self, err: TransportError) -> Failure {
         if let TransportError::Config(detail) = &err {
             let was = self.peers.get(&self.name).and_then(|p| p.last_error);
             if was == Some(PeerError::Misconfigured) {
@@ -296,10 +337,10 @@ impl PeerClient {
     /// 发一个 GET：传输错误按类型映射（`classify`），401 是未授权，其它非 2xx 当
     /// 不可达；200 但不是 JSON 给 `Null`，让调用方按自己的语义判（`/api/system` 不是 JSON 就是
     /// "不是本协议的节点" → 不兼容；`/api/sessions` 不是 JSON → 不可达，保留旧视图）。
-    async fn get_json(&self, path: &str) -> Result<Value, PeerError> {
+    async fn get_json(&self, path: &str) -> Result<Value, Failure> {
         let req = Request::get(path)
             .body(Body::empty())
-            .map_err(|_| PeerError::Unreachable)?;
+            .map_err(|_| Failure::from(PeerError::Unreachable))?;
         let resp = self
             .transport
             .request(req)
@@ -307,15 +348,15 @@ impl PeerClient {
             .map_err(|e| self.classify(e))?;
         let status = resp.status();
         if status == StatusCode::UNAUTHORIZED {
-            return Err(PeerError::Unauthorized);
+            return Err(PeerError::Unauthorized.into());
         }
         if !status.is_success() {
             tracing::warn!(component = "peer", peer = %self.name, path, %status, "peer 返回非 2xx");
-            return Err(PeerError::Unreachable);
+            return Err(PeerError::Unreachable.into());
         }
         let bytes = axum::body::to_bytes(resp.into_body(), BODY_LIMIT)
             .await
-            .map_err(|_| PeerError::Unreachable)?;
+            .map_err(|_| Failure::from(PeerError::Unreachable))?;
         Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
 
@@ -326,6 +367,23 @@ impl PeerClient {
     }
 }
 
+/// 断开进退避时的那条 WARN。指纹不匹配时多两个字段 `expected=`（配置里写的）/ `actual=`（对端证书
+/// 真实的），其它类型这两个字段不出现（`Option` 为 `None` 时 tracing 不记该字段）——人排障时
+/// `grep actual= daemon.log` 就能拿到该抄进 `cert_fingerprint` 的值，不必另外 openssl（agora-btf）。
+/// 抽成自由函数是为了让单测能在自己的 subscriber 下捕获这一行。
+fn warn_disconnected(peer: &str, failure: &Failure, failures: u32, retry_in: Duration) {
+    tracing::warn!(
+        component = "peer",
+        peer,
+        error = ?failure.kind,
+        expected = failure.fingerprints.as_ref().map(|f| f.expected.as_str()),
+        actual = failure.fingerprints.as_ref().map(|f| f.actual.as_str()),
+        failures,
+        retry_in_ms = retry_in.as_millis() as u64,
+        "peer 断开，退避后重试"
+    );
+}
+
 /// `main.rs`：为 `state.registry` 里的每个 peer 起一个客户端任务。
 pub fn spawn_all(state: &AppState) -> Vec<tokio::task::JoinHandle<()>> {
     state
@@ -333,4 +391,74 @@ pub fn spawn_all(state: &AppState) -> Vec<tokio::task::JoinHandle<()>> {
         .peers()
         .map(|t| tokio::spawn(PeerClient::new(t.clone(), state).run()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    /// 把一个 tracing fmt subscriber 的输出攒进内存，跑完 `f` 后整段交回。只装在当前线程
+    /// （`set_default`），不影响别的测试。
+    fn capture_logs(f: impl FnOnce()) -> String {
+        let buf: Arc<Mutex<Vec<u8>>> = Arc::default();
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl Write for Sink {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let sink = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || Sink(sink.clone()))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        f();
+        let bytes = buf.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    /// 守卫（agora-btf）：指纹不匹配的断开 WARN 必须把配置里的与对端真实的两个指纹都打出来，
+    /// 人不用另外 openssl。改坏法：`warn_disconnected` 去掉 `expected` / `actual` 两个字段，或
+    /// `From<TransportError> for Failure` 不再填 `fingerprints`——两种都红。
+    #[test]
+    fn fingerprint_mismatch_warn_carries_both_fingerprints() {
+        let expected = format!("sha256:{}", "ab".repeat(32));
+        let actual = format!("sha256:{}", "cd".repeat(32));
+        // 不经 PeerClient（要一整个 AppState）：`classify` 除了配置错误的日志就只是这一个 From。
+        let failure = Failure::from(TransportError::FingerprintMismatch {
+            expected: expected.clone(),
+            actual: actual.clone(),
+        });
+        assert_eq!(failure.kind, PeerError::FingerprintMismatch);
+        let out =
+            capture_logs(|| warn_disconnected("zuan", &failure, 3, Duration::from_millis(4000)));
+        assert!(out.contains("WARN"), "{out}");
+        assert!(out.contains("peer 断开，退避后重试"), "{out}");
+        assert!(out.contains("peer=\"zuan\""), "{out}");
+        assert!(out.contains("error=FingerprintMismatch"), "{out}");
+        assert!(
+            out.contains(&format!("expected=\"{expected}\"")),
+            "缺 expected：{out}"
+        );
+        assert!(
+            out.contains(&format!("actual=\"{actual}\"")),
+            "缺 actual：{out}"
+        );
+        assert!(out.contains("failures=3"), "{out}");
+        assert!(out.contains("retry_in_ms=4000"), "{out}");
+
+        // 其它类型的断开：两个字段根本不出现，不是打成 expected=None 之类的噪音。
+        let plain = Failure::from(PeerError::Unreachable);
+        let out = capture_logs(|| warn_disconnected("zuan", &plain, 1, Duration::from_secs(1)));
+        assert!(out.contains("error=Unreachable"), "{out}");
+        assert!(!out.contains("expected"), "{out}");
+        assert!(!out.contains("actual"), "{out}");
+    }
 }
