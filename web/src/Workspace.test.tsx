@@ -351,6 +351,22 @@ describe("Workspace", () => {
     ]);
   });
 
+  it("clearing the Finished section from the counts line sends one DELETE per folded row and nothing for an unseen agora FINISHED row (agora-j4w.2)", async () => {
+    const t = setup([
+      row("n:wait", "waiting"),
+      { ...row("n:ext", "finished"), origin: "external" },
+      { ...row("n:own", "finished"), origin: "agora" },
+    ]);
+    await online(t);
+    // own 没看过：折叠区只有 ext 一行。
+    expect(screen.getByTestId("clear-finished").textContent).toBe("Finished 2");
+    fireEvent.click(screen.getByTestId("clear-finished"));
+    fireEvent.click(screen.getByText("Delete 1"));
+    await flush();
+    expect(t.requests.filter((r) => r.method === "DELETE").map((r) => r.url)).toEqual(["/api/sessions/n%3Aext"]);
+    expect(screen.getByTestId("clear-finished-note").textContent).toBe("已清理 1 行");
+  });
+
   it("unregistered runtime sessions show as Unknown Agent and adopt with the user's choices (7cu)", async () => {
     const t = setup([row("n:a")], [
       {

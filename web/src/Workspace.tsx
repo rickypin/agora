@@ -305,6 +305,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         unregistered={unregistered}
         onAdopt={adopt}
         onOpenDiff={openDiff}
+        onDeleteMetadata={api.deleteMetadata}
       />
       <section className="main">
         {degraded !== null && (

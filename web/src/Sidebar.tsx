@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState, type ReactNode, type RefObject } from "react";
-import type { AdoptBody } from "./api";
+import type { AdoptBody, WriteResult } from "./api";
 import { countByStatus, sectionOf, taskLabel, type SeenSet } from "./attention";
+import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow, UnregisteredRow } from "./events";
 import { Header, type NodeStatus } from "./Header";
 import { rowName, SidebarRow, str } from "./SessionRow";
@@ -33,8 +34,12 @@ function useNowSeconds(periodMs = 30_000): number {
   return now;
 }
 
-/** header 的计数行（docs/spec/ux.md 线框：Running 5 · Needs Input 2 · …）。 */
-function CountsLine({ rows }: { rows: SessionRow[] }) {
+/**
+ * header 的计数行（docs/spec/ux.md 线框：Running 5 · Needs Input 2 · …）。`Finished N` 仍按状态数，但折叠区
+ * 里有行时它是按钮——一键清理（A46，agora-j4w.2）：点了弹确认框，确认后对折叠区里的每一行各发一次
+ * DELETE metadata。没有可清理的行就是普通文字。
+ */
+function CountsLine({ rows, clearable, onClear }: { rows: SessionRow[]; clearable: number; onClear?: () => void }) {
   const c = countByStatus(rows);
   const parts: [string, number][] = [
     ["Running", c.running],
@@ -45,14 +50,32 @@ function CountsLine({ rows }: { rows: SessionRow[] }) {
     ["Idle", c.idle],
     ["Unknown", c.unknown],
   ];
+  const shown = parts.filter(([, n]) => n > 0);
   return (
     <p className="counts muted" data-testid="counts">
-      {parts
-        .filter(([, n]) => n > 0)
-        .map(([label, n]) => `${label} ${n}`)
-        .join(" · ") || "no agents"}
+      {shown.length === 0 && "no agents"}
+      {shown.map(([label, n], i) => (
+        <Fragment key={label}>
+          {i > 0 && " · "}
+          {label === "Finished" && clearable > 0 && onClear ? (
+            <button type="button" className="clear-finished" data-testid="clear-finished" title={`清理 Finished 区里的 ${clearable} 行（删记录，不 kill）`} onClick={onClear}>
+              {label} {n}
+            </button>
+          ) : (
+            `${label} ${n}`
+          )}
+        </Fragment>
+      ))}
     </p>
   );
+}
+
+/** 一键清理跑完的一句话：清了几行、跳过几行（peer 离线）、失败几行。 */
+export function clearSummary(r: { removed: number; skipped: number; failed: number }): string {
+  const parts = [`已清理 ${r.removed} 行`];
+  if (r.skipped > 0) parts.push(`跳过 ${r.skipped} 行（节点离线）`);
+  if (r.failed > 0) parts.push(`失败 ${r.failed} 行`);
+  return parts.join("，");
 }
 
 interface SidebarProps {
@@ -86,6 +109,8 @@ interface SidebarProps {
   onAdopt?: (body: AdoptBody) => void;
   /** 「看 diff」（agora-h1k.5）；只透传给每一行。 */
   onOpenDiff?: (id: string) => void;
+  /** 一键清理用的 DELETE metadata（agora-j4w.2）；不给就没有清理按钮。 */
+  onDeleteMetadata?: (id: string) => Promise<WriteResult<unknown>>;
 }
 
 interface UnknownProps {
@@ -167,8 +192,37 @@ export function Sidebar({
   unregistered = [],
   onAdopt,
   onOpenDiff,
+  onDeleteMetadata,
 }: SidebarProps) {
   const now = useNowSeconds();
+  // 一键清理的对象是折叠区的定义本身（已看过的 agora / adopted FINISHED + 全部 external FINISHED），按过滤
+  // 前的 all 算——过滤只是暂时少画几行，不改变哪些行「可以清」；NEEDS ATTENTION 里没看过的 FINISHED 不碰
+  // （MISSION §4.6「不得在用户看到结果之前清理」）。没有批量端点也不加：逐行 DELETE /api/sessions/:id
+  // （MISSION §11 不引入 Archive）；peer stale 的行跳过（一跳转发到不了）并在结果里说明。
+  const clearable = all.filter((r) => sectionOf(r, seen) === "finished");
+  const [clearAsk, setClearAsk] = useState(false);
+  const [clearNote, setClearNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (clearNote === null) return;
+    const t = setTimeout(() => setClearNote(null), 8000);
+    return () => clearTimeout(t);
+  }, [clearNote]);
+  async function clearFinished() {
+    setClearAsk(false);
+    if (!onDeleteMetadata) return;
+    const result = { removed: 0, skipped: 0, failed: 0 };
+    for (const r of clearable) {
+      if (r.stale) {
+        result.skipped += 1;
+        continue;
+      }
+      const w = await onDeleteMetadata(r.id);
+      if (w.ok) result.removed += 1;
+      else result.failed += 1;
+    }
+    setClearNote(clearSummary(result));
+  }
+  const ownClearable = clearable.filter((r) => r.origin !== "external").length;
   // 三段的交界：rows 已经按 attention → running → finished 拼好（partitionByAttention），这里只在交界处插标题。
   const sections = rows.map((r) => sectionOf(r, seen));
   const firstRunning = sections.indexOf("running");
@@ -190,7 +244,21 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <Header agents={filter ? `${rows.length}/${total}` : total} nodes={nodes} />
-      <CountsLine rows={all} />
+      <CountsLine rows={all} clearable={clearable.length} onClear={onDeleteMetadata ? () => setClearAsk(true) : undefined} />
+      {clearNote !== null && (
+        <p className="muted pad clear-note" data-testid="clear-finished-note" role="status">
+          {clearNote}
+        </p>
+      )}
+      {clearAsk && (
+        <ConfirmDialog
+          title="清理 Finished 区"
+          body={`将删除 Finished 区里 ${clearable.length} 行的记录${ownClearable > 0 ? `（其中 ${ownClearable} 行是 agora 起的会话，它们已退出的运行时会话与输出会一并清掉）` : ""}。只删记录、不 kill；NEEDS ATTENTION 里没看过的 FINISHED 行不动。不可撤销。`}
+          confirmLabel={`Delete ${clearable.length}`}
+          onConfirm={() => void clearFinished()}
+          onCancel={() => setClearAsk(false)}
+        />
+      )}
       <input
         ref={filterRef}
         className="filter"

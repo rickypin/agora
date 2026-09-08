@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { partitionByAttention, sortByAttention, type SeenSet } from "./attention";
 import type { SessionRow } from "./events";
@@ -103,4 +103,47 @@ it("auto-expands the collapsed Finished section when the active row lives in it 
   expect(screen.queryByTestId("row-n:ext2")).toBeNull();
   rerender(<Sidebar {...props} active="n:ext1" renderExpanded={expanded} />);
   expect(screen.getByTestId("row-n:ext1").closest("li")!.classList.contains("selected")).toBe(true);
+});
+
+it("the Finished count clears the collapsed section after confirmation: one DELETE per folded row, unseen agora rows and stale peer rows untouched (agora-j4w.2)", async () => {
+  const seen: SeenSet = new Set(["n:own"]);
+  const rows = [...ROWS, row("z:peer", "finished", { origin: "external", node: "z", stale: true })];
+  const deleted: string[] = [];
+  const onDeleteMetadata = vi.fn(async (id: string) => {
+    deleted.push(id);
+    return { ok: true as const, value: undefined };
+  });
+  const visible = partitionByAttention(sortByAttention(rows), seen);
+  render(<Sidebar rows={visible} seen={seen} all={rows} total={rows.length} active={null} onOpen={() => {}} filter="" onFilter={() => {}} onDeleteMetadata={onDeleteMetadata} />);
+  // 计数行文字不变，Finished 那一段是按钮。
+  expect(screen.getByTestId("counts").textContent).toBe("Running 1 · Needs Input 1 · Finished 4");
+  const btn = screen.getByTestId("clear-finished");
+  expect(btn.textContent).toBe("Finished 4");
+  // 取消：不发。
+  fireEvent.click(btn);
+  const dialog = screen.getByRole("dialog");
+  expect(dialog.textContent).toContain("4 行");
+  expect(dialog.textContent).toContain("其中 1 行是 agora 起的会话");
+  fireEvent.click(screen.getByText("Cancel"));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(onDeleteMetadata).not.toHaveBeenCalled();
+  // 确认：折叠区四行——ext1 / ext2 / 看过的 own / stale 的 peer 行——只有前三行各发一次 DELETE，peer 行跳过。
+  fireEvent.click(btn);
+  fireEvent.click(screen.getByText("Delete 4"));
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  expect(deleted.sort()).toEqual(["n:ext1", "n:ext2", "n:own"]);
+  expect(screen.getByTestId("clear-finished-note").textContent).toBe("已清理 3 行，跳过 1 行（节点离线）");
+});
+
+it("no clear button without deletable rows or without the DELETE callback", () => {
+  // 只有没看过的 agora FINISHED：折叠区是空的，Finished 计数只是文字。
+  mount([row("n:own", "finished", { origin: "agora" })]);
+  expect(screen.getByTestId("counts").textContent).toBe("Finished 1");
+  expect(screen.queryByTestId("clear-finished")).toBeNull();
+  cleanup();
+  // 没给 onDeleteMetadata（mount 不传）：external FINISHED 也不出按钮。
+  mount([row("n:e", "finished", { origin: "external" })]);
+  expect(screen.queryByTestId("clear-finished")).toBeNull();
 });
