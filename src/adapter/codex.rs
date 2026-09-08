@@ -17,6 +17,20 @@
 //! - `SessionStart` 在**第一条 prompt 提交时**才 fire（与 UserPromptSubmit 相隔几十毫秒），不是
 //!   TUI 启动时（2026-09-05 真 daemon 端到端）：起会话后到用户第一次提问之前状态停在进程层，
 //!   自报 id 也要等到那时——Restart 在此之前只能退化为原命令（"还没自报过对话 id"）。
+//!   external 行同理：没提交过 prompt 就退出的会话只会留一条孤儿 SessionEnd，不登记（agora-vfi）。
+//!
+//! 宿主退出时发不发 `SessionEnd`（2026-09-08 本机 1.0.6，在独立终端里起 CLI 实测；三家对照见
+//! `claude.rs` / `grok.rs`，原始记录 `bd memories external-exit-hooks-ctrlc-vs-hup`）：
+//!
+//! | 怎么退 | 事件 | agora 上的结果 |
+//! |---|---|---|
+//! | 提示符上两次 Ctrl+C | `SessionEnd(reason = other)` | FINISHED（hook，`session ended (hook)`）|
+//! | 关窗口（终端给 SIGHUP） | **不发任何事件** | 只能靠进程探活：进程没了 → FINISHED（process，`external process gone (no exit status)`）；没有可信进程号的（Codex Desktop）等 `hooks.external_silent_after` 沉默兜底 |
+//! | `/clear`、`/new` | 只发新 id 的 `SessionStart(source = clear)`，旧 id 不发 SessionEnd | 旧 external 行靠"同一进程换了对话"结束（`superseded`，agora-tql）|
+//!
+//! 关窗口不发 SessionEnd 是宿主行为（实测 SIGHUP 时 Codex 一个 hook 都不跑），不是 agora 丢了投递；这也是
+//! `process gone` 这个 reason 必须与 `session ended (hook)` 分开的原因——它是唯一能说明"不是人自己
+//! 结束的"的证据（agora-rzh）。
 
 use std::path::PathBuf;
 use std::time::Duration;

@@ -18,6 +18,18 @@
 //! - hook 进程的父进程：安装命令用 `exec`，所以 ppid 就是 grok 本体（`agent_pid`）；
 //!   环境里的 `CLAUDE_PID` 是从起 grok 的 shell 继承来的（本机在 Claude Code 里起过），不能用。
 //!
+//! 宿主退出时发不发 `session_end`（2026-09-08 本机 1.0.13，在独立终端里起 CLI 实测；三家对照见
+//! `claude.rs` / `codex.rs`，原始记录 `bd memories external-exit-hooks-ctrlc-vs-hup`）：
+//!
+//! | 怎么退 | 事件 | agora 上的结果 |
+//! |---|---|---|
+//! | 提示符上两次 Ctrl+C | `session_end(reason = shutdown)`（同时 `stop(reason = shutdown)`，不算一轮结束）| FINISHED（hook，`session ended (hook)`）|
+//! | 关窗口（终端给 SIGHUP） | `session_end(reason = shutdown)` | 同上 |
+//! | `/clear` | 只发新 id 的 `session_start(source = new)` | 旧 external 行靠"同一进程换了对话"结束（`superseded`，agora-tql）|
+//!
+//! 两种退法都发，reason 也一样，所以 Grok 行上的 `session ended (hook)` 只说明宿主正常走完了退出
+//! 流程；`external process gone` 才是 hook 没来、只剩探活（agora-rzh）。
+//!
 //! fixture 在 `testdata/grok/1.0.13/hooks/`，回放器见 `super::replay`。
 
 use std::path::PathBuf;

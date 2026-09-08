@@ -4,6 +4,19 @@
 //! Claude Code hooks 文档：键全是 snake_case，`session_id` 是对话 id，`transcript_path` 只存
 //! 路径不解析（D8）。实测反直觉处：`PermissionRequest` 没有 `tool_use_id`，只有 `tool_name`。
 //! fixture 在 `testdata/claude/<version>/hooks/`，回放器见 `super::replay`。
+//!
+//! 宿主退出时发不发 `SessionEnd`（2026-09-08 本机 2.1.x，在独立终端里起 CLI 实测；三家对照见
+//! `codex.rs` / `grok.rs`，原始记录 `bd memories external-exit-hooks-ctrlc-vs-hup`）：
+//!
+//! | 怎么退 | 事件 | agora 上的结果 |
+//! |---|---|---|
+//! | 提示符上两次 Ctrl+C | `SessionEnd(reason = prompt_input_exit)` | FINISHED（hook，`session ended (hook)`）|
+//! | 关窗口（终端给 SIGHUP） | `SessionEnd(reason = other)` | 同上 |
+//! | `/clear` | `SessionEnd(reason = clear)` + 新 id 的 `SessionStart(source = clear)` | 同一行不改状态；无句柄 external 行另起一行、旧行结束（agora-s3r）|
+//! | `/resume`、`/logout` | `SessionEnd(reason = resume / logout)` | FINISHED，resume 之后同一进程再发 SessionStart 回 STARTING |
+//!
+//! 两种退法 hook 都到，所以 Claude 的 external 行 reason 是 `session ended (hook)` 就说明 SessionEnd
+//! 到过、只是分不出人按的还是窗口关的；`external process gone` 才是 hook 没来、只剩探活（agora-rzh）。
 
 use std::path::PathBuf;
 use std::time::Duration;
