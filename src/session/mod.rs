@@ -8,6 +8,7 @@ pub mod db;
 mod hook_state;
 pub mod manager;
 pub mod model;
+pub mod throttle;
 
 pub use db::{Db, DbError};
 pub use manager::{
@@ -15,3 +16,4 @@ pub use manager::{
     SessionManager, SessionView, Unregistered,
 };
 pub use model::{Origin, SessionRecord};
+pub use throttle::Throttle;

@@ -17,6 +17,27 @@ fn missing_file_means_defaults() {
     assert_eq!(s.node_id, "local");
     assert_eq!(s.detector_interval.as_secs(), 2);
     assert_eq!(s.auth.session_idle.as_secs(), 30 * 86_400);
+    assert_eq!(
+        s.external_finished_ttl.as_secs(),
+        86_400,
+        "默认 24h（agora-j4w.3）"
+    );
+}
+
+#[test]
+fn external_finished_ttl_zero_turns_expiry_off_and_garbage_is_rejected() {
+    // sessions.external_finished_ttl：裸 0 = 关闭；其余按时长语法卡在启动（agora-j4w.3）。
+    let s = load(Some("sessions:\n  external_finished_ttl: \"0\"\n")).unwrap();
+    assert!(s.external_finished_ttl.is_zero());
+    let s = load(Some("sessions:\n  external_finished_ttl: \"1m\"\n")).unwrap();
+    assert_eq!(s.external_finished_ttl.as_secs(), 60);
+    assert!(matches!(
+        load(Some("sessions:\n  external_finished_ttl: \"1 day\"\n")),
+        Err(ConfigError::Duration {
+            field: "sessions.external_finished_ttl",
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -44,6 +65,8 @@ terminal:
 status:
   idle_after: "60s"
   detector_interval: "2s"
+sessions:
+  external_finished_ttl: "24h"
 hooks:
   silence_after: "10m"
   unheard_after: "90s"

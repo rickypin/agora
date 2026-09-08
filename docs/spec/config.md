@@ -27,6 +27,8 @@ terminal:
 status:
   idle_after: "60s"
   detector_interval: "2s"
+sessions:                     # §4.6「已退出会话的清理」
+  external_finished_ttl: "24h"  # external 来源的 FINISHED 行（hook 结束 / superseded / 进程消失）结束这么久后自动删 metadata；"0" 关闭。只碰 external：它没有运行时会话与输出，删的只是 agora 的两行记录，不算回收；agora / adopted 行仍由人清理（agora-j4w.3）
 hooks:                        # ADR-002 D1 / D5 / D3
   silence_after: "10m"        # 有 hook 的 agent 无事件超过此时长且屏幕像在等人 → UNKNOWN（hook 沉默规则）
   unheard_after: "90s"        # 装了 hook 却一条事件没收到过、终端在启动 10 s 宽限后又活动了这么久 → 行上"hook 没接上"提示
@@ -58,6 +60,8 @@ agents:                       # Adapter 默认命令的覆盖（§5.2）；存�
   grok:   { command: "grok" }
   pi:     { command: "pi" }
 ```
+
+`sessions.external_finished_ttl` 的扫描挂在 `status.detector_interval` 的轮询上，但节流到每小时一次（ttl 比一小时短就按 ttl，`src/session/throttle.rs`），所以一行在到期后至多再多留一个周期；到期以 `ended_at` 算，external 行没有它（进程退出没人报）就以 `status_since` 算——hook 结束的行它随检查点过重启，进程消失的行 daemon 重启后从头计。删除走 `DELETE /api/sessions/:id` 同一条路径（hook 检查点、状态机一起清），事件流经求差器发 `session_removed`，`daemon.log` 每行一条 info。守卫 `tests/external_expiry.rs`、`tests/config.rs::external_finished_ttl_zero_turns_expiry_off_and_garbage_is_rejected`。
 
 机器 token 由被访问的节点签发（§8），存在对方的 `token_file` 里；本节点只存哈希。浏览器一次只连一个节点，只记住最近打开的地址（不变量 6：可丢弃）。
 

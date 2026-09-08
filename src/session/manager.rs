@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use super::db::{Db, DbError};
 use super::model::{Origin, SessionRecord};
+use super::throttle::Throttle;
 use crate::runtime::{
     proctree, AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession,
     RuntimeStatus, Size, TerminateSignal,
@@ -42,6 +43,10 @@ pub const KILL_GRACE: Duration = Duration::from_secs(5);
 pub const KILL_QUICK_WAIT: Duration = Duration::from_secs(1);
 /// 运行时名前缀（MISSION §4.5；config 里运行时段的 `prefix`）。
 pub const RUNTIME_NAME_PREFIX: &str = "ag-";
+/// external FINISHED 行过期扫描的节流上限（agora-j4w.3）：ttl 是 24 h 时每小时扫一次，行在到期后
+/// 一小时内被删；ttl 比它短（代检把 ttl 调成 1m）就按 ttl 扫，否则"不到两个 sweep 周期"这句话
+/// 对短 ttl 不成立。
+pub const EXTERNAL_EXPIRY_SWEEP_EVERY: Duration = Duration::from_secs(3600);
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -209,6 +214,10 @@ pub struct SessionManager {
     external_pids: Mutex<HashMap<String, AgentProcess>>,
     /// 任务标签（只读 beads）。
     tasks: Arc<TaskIndex>,
+    /// external FINISHED 行结束多久后自动删 metadata（`sessions.external_finished_ttl`）；ZERO = 关闭。
+    external_finished_ttl: Duration,
+    /// 上面那件事的节流：轮询每 tick 来问一次，真扫描按 [`EXTERNAL_EXPIRY_SWEEP_EVERY`] 与 ttl 取小。
+    external_expiry: Throttle,
 }
 
 impl SessionManager {
@@ -229,7 +238,25 @@ impl SessionManager {
             status_cfg: MachineConfig::default(),
             external_pids: Mutex::new(HashMap::new()),
             tasks: Arc::new(TaskIndex::default()),
+            // 默认关闭：只有 daemon 按配置显式打开。库与 API 层的测试造出来的行不该在自己脚下消失。
+            external_finished_ttl: Duration::ZERO,
+            external_expiry: Throttle::new(EXTERNAL_EXPIRY_SWEEP_EVERY),
         }
+    }
+
+    /// external FINISHED 行的自动过期（`sessions.external_finished_ttl`，agora-j4w.3）；ZERO 关闭。
+    pub fn with_external_finished_ttl(mut self, ttl: Duration) -> Self {
+        self.external_finished_ttl = ttl;
+        self.external_expiry = Throttle::new(if ttl.is_zero() {
+            EXTERNAL_EXPIRY_SWEEP_EVERY
+        } else {
+            ttl.min(EXTERNAL_EXPIRY_SWEEP_EVERY)
+        });
+        self
+    }
+
+    pub fn external_finished_ttl(&self) -> Duration {
+        self.external_finished_ttl
     }
 
     /// 任务标签的数据源（测试塞同步的假 bd）。
@@ -1232,6 +1259,58 @@ impl SessionManager {
         }
         self.mark_ended_at(id, exited_at)?;
         Ok(())
+    }
+
+    // ---------- 周期扫描 ----------
+
+    /// 轮询每 tick 调一次（`events::watch`），真扫描按节流走；返回本次删掉的行 id。`now` 是 unix 秒，
+    /// 由调用方给，测试拨表不用真等 24 h。
+    pub fn sweep(&self, now: i64) -> Result<Vec<String>, SessionError> {
+        if self.external_finished_ttl.is_zero() || !self.external_expiry.due(now) {
+            return Ok(Vec::new());
+        }
+        self.expire_external_finished(now)
+    }
+
+    /// external 且 FINISHED（hook 结束、superseded、进程消失都算）的行，结束距今 ≥ ttl → 删 metadata
+    /// （与 `DELETE /api/sessions/:id` 同一条路径：hook 检查点、状态机、挂起一起清），不看节流。
+    /// 只碰 external：agora / adopted 的 FINISHED 行有运行时会话与 scrollback，MISSION §4.6「不得在
+    /// 用户看到结果之前清理」对它们仍成立。结束时刻取 `ended_at`，external 行没有它（进程退出没人
+    /// 报）就取 `status_since`——hook 结束的行它随检查点过重启，进程消失的行 daemon 重启后从头计。
+    pub fn expire_external_finished(&self, now: i64) -> Result<Vec<String>, SessionError> {
+        let ttl = self.external_finished_ttl.as_secs() as i64;
+        if ttl == 0 {
+            return Ok(Vec::new());
+        }
+        let mut removed = Vec::new();
+        for v in self.list()? {
+            if v.record.origin != Origin::External
+                || !matches!(v.assessment.status, Status::Finished)
+            {
+                continue;
+            }
+            let ended = v
+                .record
+                .ended_at
+                .as_deref()
+                .and_then(clock::parse_utc_secs)
+                .unwrap_or(v.status_since);
+            let age = now - ended;
+            if age < ttl {
+                continue;
+            }
+            self.delete_metadata(&v.record.id)?;
+            tracing::info!(
+                component = "session",
+                id = %v.record.id,
+                agent = %v.record.agent_type,
+                finished_for_secs = age,
+                reason = v.assessment.reason.as_deref().unwrap_or_default(),
+                "external FINISHED 行超过 sessions.external_finished_ttl，删 metadata"
+            );
+            removed.push(v.record.id);
+        }
+        Ok(removed)
     }
 
     // ---------- daemon 重启 ----------

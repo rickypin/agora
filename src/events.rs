@@ -371,8 +371,27 @@ pub async fn watch(
     loop {
         tick.tick().await;
         let s = sessions.clone();
-        // list 会起运行时子进程：放 blocking 线程（ADR-001 D8）。
-        match tokio::task::spawn_blocking(move || s.list()).await {
+        // list 会起运行时子进程：放 blocking 线程（ADR-001 D8）。先 sweep 再 list：sweep 删掉的行
+        // 在同一 tick 的求差里就消失，求差器发的 `session_removed` 与 DELETE /api/sessions/:id
+        // 之后客户端看到的是同一条事件，这里不另发一条（agora-j4w.3）。
+        match tokio::task::spawn_blocking(move || {
+            match s.sweep(crate::clock::now_secs()) {
+                Ok(removed) if !removed.is_empty() => {
+                    tracing::info!(
+                        component = "session",
+                        removed = removed.len(),
+                        "过期 external 行已删"
+                    )
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::warn!(component = "session", %err, "过期扫描失败，下个周期再试")
+                }
+            }
+            s.list()
+        })
+        .await
+        {
             Ok(Ok(views)) => {
                 for e in differ.step(&node, &views) {
                     bus.publish(e);

@@ -230,7 +230,8 @@ async fn serve() -> i32 {
             external_silent_after: settings.hook_external_silent_after,
             tick: settings.detector_interval,
             ..agora::status::MachineConfig::default()
-        }),
+        })
+        .with_external_finished_ttl(settings.external_finished_ttl),
     );
     sessions.runtime_status().observe(&version_probe);
     // reconcile 会起子进程：放 blocking 线程，不占 tokio worker。

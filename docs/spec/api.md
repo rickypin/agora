@@ -14,7 +14,7 @@ POST   /api/sessions/:id/input     # 不经终端的 respond：文本 / 选项�
 POST   /api/sessions/:id/restart   # body 可选 { confirmed: bool }；会杀且未确认 → 409 needs_confirmation；响应多一个 restart 字段（见下）
 POST   /api/sessions/:id/kill      # 同上；确认跟着"杀"走（MISSION §8）：FINISHED / FAILED / 会话已不在 → 直接执行。发 SIGTERM 后最多同步等 1 s：agent 退了响应里的行就是 FINISHED；没退（交互式 shell 忽略 TERM）立即返回仍 alive 的行（killed_at 已写），5 s 宽限满后 daemon 后台 SIGKILL，行经事件流变 FINISHED——不这样经 peer 转发的 Kill 会撞上 5 s 转发超时报 502（agora-284；守卫 tests/invariants_peer.rs::forwarded_kill_returns_before_the_grace_period）
 POST   /api/sessions/:id/cleanup   # 回收已退出会话保留的运行时会话与输出（ADR-001 D4 清理）；进程还活着 → 错误类型 StillAlive
-DELETE /api/sessions/:id           # 只删 metadata；已退出的顺手清理
+DELETE /api/sessions/:id           # 只删 metadata；已退出的顺手清理。external 来源的 FINISHED 行结束超过 sessions.external_finished_ttl 后 daemon 自动走同一条路径删掉，session_removed 由求差器在同一 tick 发出（docs/spec/config.md；agora-j4w.3）
 POST   /api/sessions/adopt         # { runtime_ref, display_name?, project?, agent_type? }：采纳可采纳运行时里的未注册会话（§5.5）→ 201；已登记 → 409 already_registered
 GET    /api/projects               # ?node=：project_roots 扫描结果，按最近使用排序（§6.4）；node 是 peer → 那台机器的（「在 peer 上起会话」）
 GET    /api/projects/worktrees     # ?path=<repo>&node=：该仓库现有 worktree（§6.4）；path 不是已知项目 → 400 bad_request

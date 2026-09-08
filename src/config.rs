@@ -56,6 +56,7 @@ pub struct Config {
     pub runtime: RuntimeSection,
     pub terminal: TerminalSection,
     pub status: StatusSection,
+    pub sessions: SessionsSection,
     pub hooks: HooksSection,
     pub notifications: NotificationsSection,
     pub tls: TlsSection,
@@ -162,6 +163,23 @@ impl Default for StatusSection {
         StatusSection {
             idle_after: "60s".into(),
             detector_interval: "2s".into(),
+        }
+    }
+}
+
+/// 会话行的收纳（MISSION §4.6「已退出会话的清理」）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SessionsSection {
+    /// external 来源的 FINISHED 行结束多久后自动删 metadata（agora-j4w.3）；`"0"` 关闭。
+    /// 只对 external 行：它没有运行时会话与输出，删的只是 agora 的两行记录，不算回收。
+    pub external_finished_ttl: String,
+}
+
+impl Default for SessionsSection {
+    fn default() -> Self {
+        SessionsSection {
+            external_finished_ttl: "24h".into(),
         }
     }
 }
@@ -279,6 +297,7 @@ impl Default for Config {
             runtime: RuntimeSection::default(),
             terminal: TerminalSection::default(),
             status: StatusSection::default(),
+            sessions: SessionsSection::default(),
             hooks: HooksSection::default(),
             notifications: NotificationsSection::default(),
             tls: TlsSection::default(),
@@ -301,6 +320,8 @@ pub struct Settings {
     pub hook_silence_after: Duration,
     pub hook_unheard_after: Duration,
     pub hook_external_silent_after: Duration,
+    /// `Duration::ZERO` = 关闭。
+    pub external_finished_ttl: Duration,
     pub auth: crate::auth::AuthConfig,
     pub raw: Config,
 }
@@ -374,6 +395,10 @@ impl Config {
             "hooks.external_silent_after",
             &self.hooks.external_silent_after,
         )?;
+        let external_finished_ttl = parse_ttl(
+            "sessions.external_finished_ttl",
+            &self.sessions.external_finished_ttl,
+        )?;
         // 其余时长字段现在没有消费者，但语法先卡住，免得日后消费时才在运行中炸。
         for (field, value) in [
             ("hooks.hold_timeout", &self.hooks.hold_timeout),
@@ -391,6 +416,7 @@ impl Config {
             hook_silence_after,
             hook_unheard_after,
             hook_external_silent_after,
+            external_finished_ttl,
             auth,
             raw: self,
         })
@@ -417,9 +443,26 @@ pub fn parse_duration(field: &'static str, value: &str) -> Result<Duration, Conf
     Ok(Duration::from_secs(n * mult))
 }
 
+/// 可关闭的时长：裸 `0` 表示关闭（`Duration::ZERO`），其余形态同 [`parse_duration`]。
+/// `0s` 也算关闭——两种写法都是零，不为了一致性拒绝其中一种。
+pub fn parse_ttl(field: &'static str, value: &str) -> Result<Duration, ConfigError> {
+    if value.trim() == "0" {
+        return Ok(Duration::ZERO);
+    }
+    parse_duration(field, value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ttl_accepts_bare_zero_as_off() {
+        assert_eq!(parse_ttl("x", "0").unwrap(), Duration::ZERO);
+        assert_eq!(parse_ttl("x", "0s").unwrap(), Duration::ZERO);
+        assert_eq!(parse_ttl("x", "24h").unwrap(), Duration::from_secs(86_400));
+        assert!(parse_ttl("x", "24").is_err());
+    }
 
     #[test]
     fn durations_parse_units_and_reject_garbage() {

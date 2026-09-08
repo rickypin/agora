@@ -332,7 +332,7 @@ Display name 可任意修改，运行时身份不变。一行显示的名字有�
 | **Delete Metadata** | 移除 agora metadata，但不杀运行时会话 |
 | **Restart** | kill 现有进程 + 在**同一个运行时会话**内重建，并 resume 原对话——依据是 agent 自报的当前对话 id（§5.6），**绝不用 `--continue` / `--last`**（那会静默恢复成另一段对话）。只在真的会杀掉正在运行的 agent 时才必须显式确认（§8） |
 
-**已退出会话的清理**：FINISHED / FAILED / 被 Kill 的运行时会话在用户看过之后清理（Dashboard 里确认或 Delete Metadata 时一并清掉保留的输出）。这不是 kill——进程已经不在——所以不需要确认，但不得在用户看到结果之前发生；V1 不做定时回收。策略细节见 ADR-001 D4。
+**已退出会话的清理**：FINISHED / FAILED / 被 Kill 的运行时会话在用户看过之后清理（Dashboard 里确认或 Delete Metadata 时一并清掉保留的输出）。这不是 kill——进程已经不在——所以不需要确认，但不得在用户看到结果之前发生；V1 不做定时回收。external 行没有运行时会话与输出，只有 agora 的两行记录；FINISHED 超过 `sessions.external_finished_ttl` 自动删记录，不算回收。策略细节见 ADR-001 D4。
 
 主区显示的是侧栏当前选中行的终端，这是浏览器的视图状态，而不是 agent 生命周期；页面只有这一个选中集合——曾经的顶栏 Tabs 是第二个选中集合（标签页管主区、侧栏行管展开区，二者可不一致），用户 2026-09-07 反馈"只有左侧栏时很容易上手，加上顶栏就不知道该如何操作"，去掉（agora-a46）。切换行 / 关闭终端视图不允许：restart session、recreate 运行时会话、丢失 agent 状态、终止 PTY 拥有的进程。
 
