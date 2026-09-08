@@ -758,7 +758,7 @@ impl SessionManager {
     }
 
     /// external 会话最近一次 hook 报来的 agent 进程号；顺手记下它的启动时刻与这条 hook 的时刻
-    /// （`seen_at`，unix 秒），重启恢复后探活时对一下（agora-tql）。同一个号再报一次不动。
+    /// （`seen_at`，unix 毫秒），重启恢复后探活时对一下（agora-tql）。同一个号再报一次不动。
     pub fn note_external_pid(&self, id: &str, pid: u32, seen_at: i64) {
         let mut pids = lock(&self.external_pids);
         if pids.get(id).is_some_and(|p| p.pid == pid) {
@@ -779,6 +779,8 @@ impl SessionManager {
     /// 不发 SessionEnd，Claude 的 /clear 发（s3r 已处理，这里再落一次无害）。旧行合成
     /// `Superseded` → FINISHED(hook)。返回被结束的行 id。登记新 external 行后与启动重放完各调一次
     /// （2026-09-08 现场：一个 Grok 进程占了三行 TURN_DONE；agora-tql）。
+    /// `seen_at` 是毫秒：/clear 的 SessionEnd 与新对话的 SessionStart 常落在同一秒，秒级的话平局
+    /// 由 `external_pids`（HashMap）的迭代顺序定，谁被结束是随机的（agora-2nh）。
     pub fn supersede_external_rows(&self) -> Result<Vec<String>, SessionError> {
         let pids: Vec<(String, AgentProcess)> = lock(&self.external_pids)
             .iter()
@@ -1498,9 +1500,10 @@ fn process_alive(pid: u32) -> bool {
 
 /// 检查点里的 agent 进程还是不是当初那个：记下的进程不晚于报来它的那条 hook（否则记的时候号就已经
 /// 是别人的了——从归档重建时读到的启动时刻可能是复用者的），号活着，且启动时刻（两边都读得到时）
-/// 一致。读不到启动时刻的平台只看号——退化为 v1 的行为，不会更差。多给 1 s 容忍秒级取整。
+/// 一致。读不到启动时刻的平台只看号——退化为 v1 的行为，不会更差。多给 1 s 容忍秒级取整
+/// （`started_at` 是秒，`seen_at` 是毫秒）。
 fn agent_process_alive(p: &AgentProcess) -> bool {
-    if p.started_at.is_some_and(|s| s > p.seen_at + 1) {
+    if p.started_at.is_some_and(|s| s > p.seen_at / 1000 + 1) {
         return false;
     }
     if !process_alive(p.pid) {

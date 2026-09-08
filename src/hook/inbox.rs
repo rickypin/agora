@@ -39,13 +39,6 @@ pub struct Envelope {
     pub received_unix_ms: u64,
 }
 
-impl Envelope {
-    /// hook 进程写下这条事件的时刻，unix 秒。
-    pub fn received_unix_secs(&self) -> i64 {
-        (self.received_unix_ms / 1000) as i64
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Delivery {
     pub envelope: Envelope,

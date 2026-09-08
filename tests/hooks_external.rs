@@ -621,13 +621,13 @@ async fn legacy_checkpoint_of_a_handleless_external_row_is_rebuilt_from_the_arch
         "没有归档的 v1 检查点原样恢复：{:?}",
         v.assessment
     );
-    // 重建后的检查点是 v2 且带回了进程号。
+    // 重建后的检查点是当前版本（v3）且带回了进程号。
     let key: String = old.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
     let cp: Value = serde_json::from_slice(
         &std::fs::read(home.path().join("hooks/state").join(format!("{key}.json"))).unwrap(),
     )
     .unwrap();
-    assert_eq!(cp["version"], 2, "{cp}");
+    assert_eq!(cp["version"], 3, "{cp}");
     assert_eq!(cp["agent_process"]["pid"], std::process::id(), "{cp}");
     lone_proc.kill().unwrap();
     lone_proc.wait().unwrap();
@@ -639,6 +639,8 @@ async fn a_new_conversation_on_the_same_process_supersedes_the_old_external_row(
     // 三行都 TURN_DONE 且 alive——进程确实活着，但它早就在跑别的对话了。守卫：同一宿主、同一进程号
     // 的两个无句柄 external 行，后到的取代先到的（FINISHED，reason superseded）；daemon 重启恢复后
     // 同样收敛。关掉 supersede_external_rows 的两个调用点 → 两段 finished 断言各自红。
+    // 两条投递只差 1–2 ms：`seen_at` 若是秒级，同秒平局落到 HashMap 顺序，本用例稳定红（agora-2nh；
+    // 把 note_external_pid 传的时刻改回 `received_unix_ms / 1000` 就能看见）。
     let (fx, receiver, home) = with_hooks();
     let env = [("CLAUDE_PID", std::process::id().to_string())];
     let stop = |sid: &str| json!({ "hook_event_name": "Stop", "session_id": sid, "last_assistant_message": "done" });

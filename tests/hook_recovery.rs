@@ -305,7 +305,10 @@ fn corrupt_checkpoint_does_not_block_other_sessions_or_new_inbox() {
         0o600
     );
     let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-    assert_eq!(saved["version"], 2, "v2 = 带 agent_process（agora-tql）");
+    assert_eq!(
+        saved["version"], 3,
+        "v2 = 带 agent_process（agora-tql）；v3 = seen_at 毫秒（agora-2nh）"
+    );
     assert!(saved.get("alive").is_none() && saved.get("exit").is_none());
     std::fs::write(&file, "broken").unwrap();
     inbox
@@ -526,7 +529,7 @@ fn external_agent_pid_survives_daemon_restart_and_guards_pid_reuse() {
     };
     let path = checkpoint_path(home.path(), &id2);
     let mut cp: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(cp["version"], 2, "{cp}");
+    assert_eq!(cp["version"], 3, "{cp}");
     assert_eq!(cp["agent_process"]["pid"], other.id(), "{cp}");
     let started = cp["agent_process"]["started_at"]
         .as_i64()
@@ -542,10 +545,10 @@ fn external_agent_pid_survives_daemon_restart_and_guards_pid_reuse() {
     drop(s);
 
     // 从归档重建时读到的启动时刻可能是复用者的：hook 时刻早于号上进程的启动时刻 → 也不算活着。
-    // 模拟：检查点里 seen_at 改成进程启动之前。
+    // 模拟：检查点里 seen_at（v3 起是毫秒）改成进程启动之前。
     let mut cp: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     cp["agent_process"]["started_at"] = json!(started);
-    cp["agent_process"]["seen_at"] = json!(started - 60);
+    cp["agent_process"]["seen_at"] = json!((started - 60) * 1000);
     std::fs::write(&path, cp.to_string()).unwrap();
     let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
     let s = Arc::new(SessionManager::new(
@@ -558,4 +561,73 @@ fn external_agent_pid_survives_daemon_restart_and_guards_pid_reuse() {
     assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
     other.kill().unwrap();
     other.wait().unwrap();
+}
+
+#[test]
+fn v2_checkpoint_seen_at_in_seconds_is_upgraded_to_millis_on_restore() {
+    // agora-2nh：v3 起 `agent_process.seen_at` 是毫秒（同一进程两个对话谁新谁旧靠它分）。升级前写下
+    // 的 v2 检查点里是秒；不换算就被当成 1970 年的毫秒，与启动时刻一比就成了"进程比 hook 还新 = 号被
+    // 复用"，daemon 升级后一重启，现存的 external 行全判 FINISHED。守卫：检查点降成 v2（seen_at 改回
+    // 秒），重启后行仍 alive；下一条 hook 写出的检查点是 v3、seen_at 是换算后的毫秒。
+    // 关掉 Machine::restore_hook 里的 ×1000 → alive 断言红。
+    let home = tempfile::tempdir().unwrap();
+    let rt = Arc::new(common::FakeRuntime::default());
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let id = {
+        let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+        let s = Arc::new(SessionManager::new(db, rt.clone()));
+        let r = Receiver::new(home.path(), s.clone());
+        let inbox = Inbox::new(home.path());
+        let start = json!({"hook_event_name":"SessionStart","session_id":"ext-v2","cwd":"/work/agora","source":"startup"});
+        let path = inbox
+            .write(&external_delivery("ext-v2", child.id(), 1, start))
+            .unwrap();
+        let id = r.ingest(&path).unwrap().unwrap().session_key;
+        assert!(s.get(&id).unwrap().alive);
+        inbox.prune_done(Duration::ZERO);
+        id
+    };
+    let path = checkpoint_path(home.path(), &id);
+    let mut cp: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(cp["version"], 3, "{cp}");
+    let seen_ms = cp["agent_process"]["seen_at"].as_i64().unwrap();
+    assert!(
+        seen_ms > 1_000_000_000_000,
+        "v3 的 seen_at 是毫秒：{seen_ms}"
+    );
+    cp["version"] = json!(2);
+    cp["agent_process"]["seen_at"] = json!(seen_ms / 1000);
+    std::fs::write(&path, cp.to_string()).unwrap();
+
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let s = Arc::new(SessionManager::new(db, rt));
+    let r = Receiver::new(home.path(), s.clone());
+    r.replay().unwrap();
+    let v = s.get(&id).unwrap();
+    assert!(
+        v.alive,
+        "v2 检查点的秒级 seen_at 换算后进程仍算活着：{:?}",
+        v.assessment
+    );
+    assert_ne!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
+
+    // 下一条 hook 把检查点写成 v3，seen_at 已是毫秒（秒 ×1000，毫秒尾数丢了是预期）。
+    let stop =
+        json!({"hook_event_name":"Stop","session_id":"ext-v2","last_assistant_message":"done"});
+    let path_stop = Inbox::new(home.path())
+        .write(&external_delivery("ext-v2", child.id(), 2, stop))
+        .unwrap();
+    r.ingest(&path_stop).unwrap();
+    let cp: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(cp["version"], 3, "{cp}");
+    assert_eq!(
+        cp["agent_process"]["seen_at"],
+        seen_ms / 1000 * 1000,
+        "{cp}"
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
 }

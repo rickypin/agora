@@ -235,7 +235,7 @@ impl Receiver {
             if env.agora_session_id.is_none() {
                 if let Some(pid) = hooks.agent_pid(&env.agent_env, env.ppid) {
                     self.sessions
-                        .note_external_pid(&rec.id, pid, env.received_unix_secs());
+                        .note_external_pid(&rec.id, pid, env.received_unix_ms as i64);
                 }
             }
             let events = hooks.parse(&delivery.payload);
@@ -411,7 +411,7 @@ impl Receiver {
         };
         if let (Some(id), Some(pid)) = (&found, hooks.agent_pid(&env.agent_env, env.ppid)) {
             self.sessions
-                .note_external_pid(id, pid, env.received_unix_secs());
+                .note_external_pid(id, pid, env.received_unix_ms as i64);
             if registered {
                 match self.sessions.supersede_external_rows() {
                     Ok(ended) if !ended.is_empty() => {

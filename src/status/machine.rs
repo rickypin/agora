@@ -135,14 +135,22 @@ fn protected(a: &Assessment) -> bool {
 pub struct AgentProcess {
     pub pid: u32,
     pub started_at: Option<i64>,
-    /// 报来这个号的那条 hook 的时刻（信封 `received_unix_ms`，unix 秒）。进程必须早于它：号上的进程比
-    /// hook 还新，就是号被复用了、原进程已没——从归档重建时读到的启动时刻本来就可能是别人的。
+    /// 报来这个号的那条 hook 的时刻（信封 `received_unix_ms`，unix **毫秒**）。进程必须早于它：号上
+    /// 的进程比 hook 还新，就是号被复用了、原进程已没——从归档重建时读到的启动时刻本来就可能是别人的。
+    /// 毫秒而不是秒：同一进程先后两个对话谁新谁旧靠它分（`supersede_external_rows`），两条 hook 常在
+    /// 同一秒内（2026-09-08 agora-2nh：秒级时同秒平局落到 HashMap 迭代顺序，守卫测试稳定红）。
+    /// v2 检查点里存的是秒，`restore_hook` 加载时换算。
     #[serde(default)]
     pub seen_at: i64,
 }
 
-/// 检查点格式版本。1 = 不带 `agent_process`（2026-09-08 之前）；2 = 带。
-pub const HOOK_SNAPSHOT_VERSION: u32 = 2;
+/// 检查点格式版本。1 = 不带 `agent_process`（2026-09-08 之前）；2 = 带，`seen_at` 是秒；
+/// 3 = `seen_at` 是毫秒（2026-09-09 agora-2nh）。
+pub const HOOK_SNAPSHOT_VERSION: u32 = 3;
+/// 从这个版本起检查点带 `agent_process`；更早的是 v1（不带进程号，且可能写于 agora-s3r 之前）。
+const HOOK_SNAPSHOT_WITH_AGENT_PROCESS: u32 = 2;
+/// 从这个版本起 `agent_process.seen_at` 是毫秒；v2 是秒，加载时 ×1000。
+const HOOK_SNAPSHOT_SEEN_AT_MS: u32 = 3;
 
 /// 仅保存 hook 观测（含信封里的 agent 进程号），不保存进程存活、退出码或活动采样；恢复后仍由运行时裁决。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,12 +263,19 @@ impl Machine {
         self.snapshot.as_ref()
     }
 
-    pub fn restore_hook(&mut self, snapshot: HookSnapshot) {
+    pub fn restore_hook(&mut self, mut snapshot: HookSnapshot) {
         if !(1..=HOOK_SNAPSHOT_VERSION).contains(&snapshot.version)
             || snapshot.epoch != self.epoch
             || snapshot.current.source != Source::Hook
         {
             return;
+        }
+        // v2 的 `seen_at` 是秒：不换算就会被当成毫秒（约 1970 年），启动时刻一比就成了"进程比 hook
+        // 还新 = 号被复用"，重启后现存的每一行 external 都会被判成 FINISHED。
+        if snapshot.version < HOOK_SNAPSHOT_SEEN_AT_MS {
+            if let Some(p) = &mut snapshot.agent_process {
+                p.seen_at = p.seen_at.saturating_mul(1000);
+            }
         }
         self.agent_process = snapshot.agent_process.clone();
         self.current = snapshot.current.clone();
@@ -294,7 +309,7 @@ impl Machine {
     pub fn restored_legacy_checkpoint(&self) -> bool {
         self.snapshot
             .as_ref()
-            .is_some_and(|s| s.version < HOOK_SNAPSHOT_VERSION)
+            .is_some_and(|s| s.version < HOOK_SNAPSHOT_WITH_AGENT_PROCESS)
     }
 
     pub fn hooks_silent(&self, now: i64) -> bool {
