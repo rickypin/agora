@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
-import { loadSeen, partitionByAttention, sortByAttention, storeSeen } from "./attention";
+import { loadSeen, partitionByAttention, seenKey, sortByAttention, storeSeen } from "./attention";
 import { ChangesApiContext } from "./Changes";
 import { CommandPalette } from "./CommandPalette";
 import { fuzzyFilter } from "./fuzzy";
@@ -194,19 +194,25 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     const left = byIdRef.current.get(prev);
     // external 的 FINISHED 不看 seen 就已经收起（finishedCollapsed），记它只是往 localStorage 里攒垃圾。
     if (!left || left.status !== "finished" || left.origin === "external") return;
+    const key = seenKey(left);
     setSeen((s) => {
-      if (s.has(prev)) return s;
-      const next = new Set(s).add(prev);
+      if (s.has(key)) return s;
+      const next = new Set(s).add(key);
       storeSeen(next);
       return next;
     });
   }, [view?.id]);
   // 看过的记号跟着"这一次完成"走：行被删了（Delete metadata）就忘掉，行又跑起来了（Restart）也忘掉——
-  // 下一次 FINISHED 是新结果，得再进一次 NEEDS ATTENTION。首个快照到达之前列表是空的，别把整个集合清掉。
+  // 下一次 FINISHED 是新结果，得再进一次 NEEDS ATTENTION。记号是 `<id>@<status_since>`（`seenKey`）：
+  // 中间的 running 被同一批事件或 resync 跳过时 byId 里从没出现过它，只看"当前是不是 finished"清不掉；
+  // 新一次 FINISHED 的 status_since 不同，键对不上就是旧记号（agora-23h）。首个快照到达之前列表是空的，
+  // 别把整个集合清掉。
   useEffect(() => {
     if (byId.size === 0) return;
     setSeen((s) => {
-      const kept = [...s].filter((id) => byId.get(id)?.status === "finished");
+      const current = new Set<string>();
+      for (const r of byId.values()) if (r.status === "finished") current.add(seenKey(r));
+      const kept = [...s].filter((key) => current.has(key));
       if (kept.length === s.size) return s;
       const next = new Set(kept);
       storeSeen(next);

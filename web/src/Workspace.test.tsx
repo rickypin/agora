@@ -453,7 +453,7 @@ describe("Workspace", () => {
     fireEvent.click(screen.getByTestId("row-n:wait"));
     expect(order()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:run", "section-finished"]);
     expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 2");
-    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:own"]);
+    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:own@"]);
     // Alt/Option+N 的序号跟着三段拼接走：折叠区收着时第 3 条仍是 ext（wait, run, ext, own）。
     fireEvent.keyDown(window, { code: "Digit3", altKey: true });
     expect(screen.getByTestId("no-terminal")).toBeTruthy();
@@ -483,6 +483,42 @@ describe("Workspace", () => {
     });
     // 两条都是 FINISHED、都没有 status_since：稳定排序保持快照里的原顺序（own 在 run 前）。
     expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own", "row-n:run", "section-finished"]);
+  });
+
+  it("a seen mark dies with its completion: running+finished in one batch, or a resync with a newer status_since, put the row back in NEEDS ATTENTION (agora-23h)", async () => {
+    // fetchSnapshot 每次都读这个数组：改它再发 resync 就是"重连后拿到的全量"。
+    const rows: SessionRow[] = [row("n:wait", "waiting"), { ...row("n:own", "finished"), origin: "agora", status_since: 100 }];
+    const t = setup(rows);
+    await online(t);
+    const order = () =>
+      Array.from(screen.getByTestId("section-attention").parentElement!.querySelectorAll("[data-testid]"))
+        .map((el) => el.getAttribute("data-testid")!)
+        .filter((id) => id.startsWith("section-") || id.startsWith("row-"));
+    // 看过 own：进折叠区，记号带着这一次完成的 status_since。
+    fireEvent.click(screen.getByTestId("row-n:own"));
+    fireEvent.click(screen.getByTestId("row-n:wait"));
+    expect(order()).toEqual(["section-attention", "row-n:wait", "section-finished"]);
+    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:own@100"]);
+    // Restart 后 running 与新的 finished 在同一批到达（合并窗）：中间态从没进过 byId，靠 status_since 认出是新结果。
+    await act(async () => {
+      t.sock.send([
+        { type: "status_changed", id: "n:own", status: "running", source: "process", reason: "restarted", alive: true, status_since: 150 },
+        { type: "status_changed", id: "n:own", status: "finished", source: "process", reason: "exited", alive: false, status_since: 200 },
+      ]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own"]);
+    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual([]);
+    // 再看一次，然后断线重连 resync 直接拿到又一次完成（status_since 更新）：同样回到 NEEDS ATTENTION。
+    fireEvent.click(screen.getByTestId("row-n:own"));
+    fireEvent.click(screen.getByTestId("row-n:wait"));
+    expect(order()).toEqual(["section-attention", "row-n:wait", "section-finished"]);
+    rows[1] = { ...row("n:own", "finished"), origin: "agora", status_since: 300 };
+    await act(async () => {
+      t.sock.send([{ type: "resync" }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own"]);
   });
 
   it("shows the two hook lines, or one pane preview line when the session has no hooks", async () => {

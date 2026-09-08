@@ -38,10 +38,20 @@ export function attentionScore(status: string): number {
 /**
  * 「看过」的 FINISHED 行集合（MISSION §4.6 三条证据的第 ①；A46，agora-j4w.1）：会话 id 的集合，
  * 是浏览器视图状态，不是服务端字段。空集 = 谁都没看过。
+ *
+ * 集合里的元素是 `seenKey`（`<id>@<status_since>`）而不是裸 id（agora-23h，2026-09-08 对抗审查）：记号
+ * 得跟着"这一次完成"走。Restart 之后 running → finished 若被同一批事件（EventsClient 300 ms 合并窗）或
+ * 断线重连的 resync 跳过中间态，裸 id 的记号没机会作废，新结果直接落进收起的 Finished 区而没人看过。
+ * 新一次 FINISHED 的 status_since 必然不同（set_at 随 (status, source) 变刷新），键带上它就能认出是新结果。
  */
 export type SeenSet = ReadonlySet<string>;
 
 const NO_SEEN: SeenSet = new Set();
+
+/** 「看过」集合的键：这一行的这一次完成。没有 status_since 的行（旧节点 / 测试桩）退化为 `<id>@`。 */
+export function seenKey(row: { id: string; status_since?: unknown }): string {
+  return `${row.id}@${typeof row.status_since === "number" ? row.status_since : ""}`;
+}
 
 /**
  * FINISHED 行分来源（MISSION §6.3 排序表；A46）：
@@ -53,7 +63,7 @@ const NO_SEEN: SeenSet = new Set();
  */
 export function finishedCollapsed(row: SessionRow, seen: SeenSet = NO_SEEN): boolean {
   if (row.status !== "finished") return false;
-  return row.origin === "external" || seen.has(row.id);
+  return row.origin === "external" || seen.has(seenKey(row));
 }
 
 /** NEEDS ATTENTION 区：分数 ≥ FINISHED 的都是"等你"的——除了已收进 Finished 区的 FINISHED 行（`finishedCollapsed`）。 */

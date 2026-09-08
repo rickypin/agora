@@ -69,7 +69,7 @@ it("expands the Finished section on click; rows keep attention order, stay selec
 });
 
 it("moves an agora FINISHED row into the Finished section once it is in the seen set; running-only lists get no Finished head", () => {
-  mount(ROWS, new Set(["n:own"]));
+  mount(ROWS, new Set(["n:own@20"]));
   expect(listOrder()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:run", "section-finished"]);
   expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 3");
   cleanup();
@@ -106,7 +106,7 @@ it("auto-expands the collapsed Finished section when the active row lives in it 
 });
 
 it("the Finished count clears the collapsed section after confirmation: one DELETE per folded row, unseen agora rows and stale peer rows untouched (agora-j4w.2)", async () => {
-  const seen: SeenSet = new Set(["n:own"]);
+  const seen: SeenSet = new Set(["n:own@20"]);
   const rows = [...ROWS, row("z:peer", "finished", { origin: "external", node: "z", stale: true })];
   const deleted: string[] = [];
   const onDeleteMetadata = vi.fn(async (id: string) => {

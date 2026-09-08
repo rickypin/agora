@@ -4,6 +4,7 @@ import {
   finishedCollapsed,
   formatAgo,
   loadSeen,
+  seenKey,
   needsAttention,
   partitionByAttention,
   sectionOf,
@@ -51,12 +52,16 @@ describe("attention", () => {
     expect(needsAttention(own, none)).toBe(true);
     expect(needsAttention(adopted, none)).toBe(true);
     expect(finishedCollapsed(own, none)).toBe(false);
-    const seen = new Set(["own"]);
+    const seen = new Set([seenKey(own)]);
     expect(needsAttention(own, seen)).toBe(false);
     expect(finishedCollapsed(own, seen)).toBe(true);
     expect(needsAttention(adopted, seen)).toBe(true);
+    // 记号跟着这一次完成走（agora-23h）：同一行、新的 status_since 就是新结果，旧记号不算。
+    expect(seenKey(own)).toBe("own@");
+    expect(seenKey(row("own", "finished", { status_since: 7 }))).toBe("own@7");
+    expect(finishedCollapsed(row("own", "finished", { origin: "agora", status_since: 7 }), seen)).toBe(false);
     // 看过只对 FINISHED 有意义：WAITING 行在集合里也照样"等你"，RUNNING 行也不会因此进 Finished 区。
-    expect(needsAttention(row("w", "waiting"), new Set(["w"]))).toBe(true);
+    expect(needsAttention(row("w", "waiting"), new Set(["w@"]))).toBe(true);
     expect(finishedCollapsed(row("r", "running", { origin: "external" }))).toBe(false);
     expect(sectionOf(ext)).toBe("finished");
     expect(sectionOf(own, none)).toBe("attention");
@@ -76,7 +81,7 @@ describe("attention", () => {
       row("ext-fin-2", "finished", { origin: "external", status_since: 4 }),
       row("fail", "failed"),
     ];
-    const seen = new Set(["seen-fin"]);
+    const seen = new Set(["seen-fin@2"]);
     const sorted = sortByAttention(rows);
     const shown = partitionByAttention(sorted, seen);
     // 三段各自等于 sortByAttention 顺序按段过滤的结果，拼起来就是显示顺序。
