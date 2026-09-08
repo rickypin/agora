@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "default_worker": "claude",
+  "worktree_root": "../agora-wt",
+  "prepare": [
+    "cp -Rc {{repo}}/target target",
+    "cp -Rc {{repo}}/web/node_modules web/node_modules",
+    "npm --prefix web run build",
+    "cargo build"
+  ],
+  "gates": [
+    {
+      "name": "typecheck",
+      "command": "npm --prefix web run typecheck",
+      "when": "always"
+    },
+    {
+      "name": "unit",
+      "command": "npm --prefix web test",
+      "when": "always"
+    },
+    {
+      "name": "cargo",
+      "command": "cargo test",
+      "when": "src"
+    },
+    {
+      "name": "doclint",
+      "command": "scripts/doc-lint.sh",
+      "when": "md"
+    }
+  ],
+  "merge": {
+    "base": "main",
+    "after": [
+      "scripts/roadmap-view.sh"
+    ]
+  },
+  "extra_rules": "热点文件规矩（AGENTS.md「并行施工」摘录）：`docs/spec/api.md` 只在自己端点的小节里追加；侧栏行 / Header / New Agent 对话框谁先碰谁先把那块抽成独立组件（抽取单独一个 commit、不改行为），后来者只改新组件；要改别人归属的文件先看对方分支有没有未合入的改动。\n隔离 daemon（AGENTS.md「并行施工」摘录）：手工起 daemon 用独立 `AGORA_HOME`、`server.listen` 端口与 `runtime.tmux.socket`（并把 `adopt_sockets` 设成 `[]`）——socket 沿用默认的 `agora` 会和开发机上真的 daemon 共用一个 tmux server、把它的会话列成 unregistered（2026-09-06 agora-oir 踩过），别碰开发机上真的 agora（:7680、默认 tmux socket）。\n新 worktree 里先 `npm --prefix web run build` 再 cargo（rust-embed 编译期读 web/dist）；`ROADMAP.md` 由 `scripts/roadmap-view.sh` 生成，不手改；`docs/spec/` 随代码改，文档改完跑 `scripts/doc-lint.sh`。\ncommit subject 末尾带 (issue id)。"
+}
