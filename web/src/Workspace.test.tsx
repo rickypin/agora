@@ -442,6 +442,11 @@ describe("Workspace", () => {
     fireEvent.keyDown(window, { code: "Digit3", altKey: true });
     expect(screen.getByTestId("no-terminal")).toBeTruthy();
     expect(screen.getByTestId("crumb").textContent).toContain("ext");
+    // 选中的行落在收起的折叠区里：折叠区自动展开，侧栏能看到它高亮（agora-4nk）。
+    expect(screen.getByTestId("row-n:ext").closest("li")!.classList.contains("selected")).toBe(true);
+    expect(screen.getByTestId("section-finished").getAttribute("aria-expanded")).toBe("true");
+    // 手动收回去，下面继续看收起态的分区。
+    fireEvent.click(screen.getByTestId("section-finished"));
     // 选中 running 行再离开不算看过；它之后 FINISHED 时回到 NEEDS ATTENTION。
     fireEvent.click(screen.getByTestId("row-n:run"));
     fireEvent.click(screen.getByTestId("row-n:wait"));

@@ -82,3 +82,25 @@ it("moves an agora FINISHED row into the Finished section once it is in the seen
   expect(listOrder()).toEqual(["section-finished"]);
   expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
 });
+
+it("auto-expands the collapsed Finished section when the active row lives in it (agora-4nk)", () => {
+  // Alt/Option+N、finished 通知点击、命令面板都是从外面改 active：收起时选中折叠区里的行，该行必须画出来。
+  const seen: SeenSet = new Set();
+  const visible = partitionByAttention(sortByAttention(ROWS), seen);
+  const props = { rows: visible, seen, all: ROWS, total: ROWS.length, onOpen: vi.fn(), filter: "", onFilter: () => {} };
+  const expanded = (r: SessionRow) => <div data-testid={`expanded-${r.id}`} />;
+  const { rerender } = render(<Sidebar {...props} active="n:wait" renderExpanded={expanded} />);
+  expect(screen.queryByTestId("row-n:ext2")).toBeNull();
+  rerender(<Sidebar {...props} active="n:ext2" renderExpanded={expanded} />);
+  const li = screen.getByTestId("row-n:ext2").closest("li")!;
+  expect(li.classList.contains("selected")).toBe(true);
+  expect(screen.getByTestId("expanded-n:ext2")).toBeTruthy();
+  expect(screen.getByTestId("section-finished").getAttribute("aria-expanded")).toBe("true");
+  // 序号不随展开变：ext2 仍是第 5 条。
+  expect(screen.getByTestId("row-n:ext2").querySelector(".ord")?.textContent).toBe("5");
+  // 人可以再手动收起（active 还在里面也收得起来）；换到折叠区里另一行又展开。
+  fireEvent.click(screen.getByTestId("section-finished"));
+  expect(screen.queryByTestId("row-n:ext2")).toBeNull();
+  rerender(<Sidebar {...props} active="n:ext1" renderExpanded={expanded} />);
+  expect(screen.getByTestId("row-n:ext1").closest("li")!.classList.contains("selected")).toBe(true);
+});

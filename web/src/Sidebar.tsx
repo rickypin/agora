@@ -179,6 +179,14 @@ export function Sidebar({
   // 折叠状态只活在这个组件里，刷新页面回到收起。收起时行不画但序号照数：Alt/Option+N 的第 N 条与
   // 展开时一样（MISSION §6.5；折叠不改变序号）。
   const [finishedOpen, setFinishedOpen] = useState(false);
+  // 选中行落进收起的 Finished 区时自动展开（agora-4nk，2026-09-08 对抗审查实证）：Alt/Option+N、finished
+  // 通知点击、命令面板都能选中折叠区里的行，收起时那一行不画——主区 crumb 有它、侧栏没有 selected 行、
+  // 展开区也不渲染。只在 active 变化时展开一次而不是派生成「active 在里面就一直开」：后者会让人点标题
+  // 收不起来（点了 aria-expanded 还是 true）。人展开后再手动收起是人的选择，行不画但序号照数。
+  const activeInFinished = active !== null && sections[rows.findIndex((r) => r.id === active)] === "finished";
+  useEffect(() => {
+    if (activeInFinished) setFinishedOpen(true);
+  }, [active, activeInFinished]);
   return (
     <aside className="sidebar">
       <Header agents={filter ? `${rows.length}/${total}` : total} nodes={nodes} />
