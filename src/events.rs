@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-use crate::session::{SessionManager, SessionView};
+use crate::session::{Origin, SessionManager, SessionView};
 use crate::status::{Source, Status};
 
 /// 每个订阅者能落后的事件数；超过就 Resync。
@@ -195,6 +195,11 @@ impl Default for Differ {
 /// `killed by user…`）即使从 RUNNING 落到 FINISHED 也不通知：是他自己干的。
 /// 驻留时间在状态层已经处理（ADR-002 D1），这里看到的转换都是稳定的；同一会话每次真的从
 /// RUNNING 落到这四态各发一条，不去重——每次权限请求都需要人。
+/// external 行人自己在终端里结束的（SessionEnd / `/clear` 的 superseded 走 hook 层，`source = hook`）
+/// 同 Kill 一个道理——是他自己干的，不通知（agora-j4w.4；MISSION §4.6 证据 ②）；只有进程消失
+/// （`source = process`，`external process gone`：崩溃、被杀、Codex 关窗口——Codex 关窗口不发
+/// SessionEnd，bd memories `external-exit-hooks-ctrlc-vs-hup` 2026-09-08 实测，接受它被当成意外通知一次）
+/// 才通知。agora / adopted 行的 FINISHED 通知不变。
 /// 一次状态转换的事实（求差器已比对过的那一行）。
 #[derive(Debug, Clone, Copy)]
 pub struct Transition<'a> {
@@ -203,8 +208,11 @@ pub struct Transition<'a> {
     /// 用户起的名字（display_name），不是 pane title。
     pub name: &'a str,
     pub node: &'a str,
+    pub origin: Origin,
     pub prev: Status,
     pub next: Status,
+    /// 转换后这条结论的来源层（ADR-002 D1）。
+    pub source: Source,
     pub reason: Option<&'a str>,
     pub detail: Option<&'a str>,
 }
@@ -215,14 +223,19 @@ pub fn notification_for(t: Transition<'_>) -> Option<Event> {
         agent_type,
         name,
         node,
+        origin,
         prev,
         next,
+        source,
         reason,
         detail,
     } = t;
     if !matches!(prev, Status::Running | Status::Idle)
         || reason.is_some_and(|r| r.starts_with("killed by user"))
     {
+        return None;
+    }
+    if origin == Origin::External && next == Status::Finished && source != Source::Process {
         return None;
     }
     let verb = match next {
@@ -315,8 +328,10 @@ impl Differ {
                         agent_type: &v.record.agent_type,
                         name,
                         node,
+                        origin: v.record.origin,
                         prev: prev.status,
                         next: s.status,
+                        source: s.source,
                         reason: s.reason.as_deref(),
                         detail: s.detail.as_deref(),
                     }));
@@ -451,8 +466,10 @@ mod tests {
                 agent_type: "myagent",
                 name: "frontend",
                 node: "zuan",
+                origin: Origin::Agora,
                 prev,
                 next,
+                source: Source::Hook,
                 reason: None,
                 detail: Some("Bash: rm -rf x\n第二行"),
             })
@@ -506,14 +523,65 @@ mod tests {
                 agent_type: "myagent",
                 name: "f",
                 node: "z",
+                origin: Origin::Agora,
                 prev: Running,
                 next: Finished,
+                source: Source::Process,
                 reason: Some("killed by user (exit code 143)"),
                 detail: None,
             })
             .is_none(),
             "用户自己 Kill 的不通知"
         );
+    }
+
+    #[test]
+    fn external_rows_ended_by_hook_do_not_notify_but_process_gone_does() {
+        // agora-j4w.4：人在终端里自己结束的 external 会话（SessionEnd / `/clear` 的 superseded，source hook）
+        // 不弹 "finished"；只有进程消失（source process）才弹。agora / adopted 行的 FINISHED 照旧。
+        // 守卫：关掉 notification_for 里的 origin/source 判断 → 第一段 is_none 断言红。
+        use Status::*;
+        let n = |origin, source, reason| {
+            notification_for(Transition {
+                id: "n:1",
+                agent_type: "claude",
+                name: "ext",
+                node: "mac",
+                origin,
+                prev: Running,
+                next: Finished,
+                source,
+                reason: Some(reason),
+                detail: None,
+            })
+        };
+        assert!(
+            n(Origin::External, Source::Hook, "session ended (hook)").is_none(),
+            "external 的 SessionEnd 是人自己结束的"
+        );
+        assert!(
+            n(
+                Origin::External,
+                Source::Hook,
+                "superseded by a new conversation"
+            )
+            .is_none(),
+            "/clear 换了对话也是人自己干的"
+        );
+        assert!(
+            n(
+                Origin::External,
+                Source::Process,
+                "external process gone (no exit status)"
+            )
+            .is_some(),
+            "进程消失（崩溃 / Codex 关窗口）才是意外，要通知"
+        );
+        assert!(
+            n(Origin::Agora, Source::Hook, "session ended (hook)").is_some(),
+            "agora 起的行不受影响"
+        );
+        assert!(n(Origin::Adopted, Source::Process, "exited").is_some());
     }
 
     #[test]

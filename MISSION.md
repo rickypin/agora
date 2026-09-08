@@ -468,7 +468,7 @@ Project 列表**不靠手写配置**：从 `project_roots`（§9.1）扫描 git 
 | RUNNING → FINISHED | "Codex / tests @ mac finished" |
 | RUNNING → FAILED | "Codex / migration @ mac failed" |
 
-点击 notification 直接导航至对应会话（WAITING → 就地回答，不是终端）。V1 桌面用浏览器通知（A18）。
+点击 notification 直接导航至对应会话（WAITING → 就地回答，不是终端）。V1 桌面用浏览器通知（A18）。人自己干的不通知：Kill、以及 `external` 行在终端里自己结束的（SessionEnd / `/clear`，§4.6 证据 ②）；external 行只有进程消失（崩溃、关窗口）才弹 "finished"。
 
 手机阶段（§11）：通知要在浏览器关闭时也能到达，因此 PWA 需要 Web Push（iOS 需加到主屏）。**推送由承载 PWA 的那个节点发出**（它经 peer 链路看得见全部事件），推送订阅只注册在那一个节点；节点到不了推送端点（如 FCM）时降级为"PWA 打开期间实时更新"，并在 health（§10.3）显示原因；不做经其它节点的推送中转。
 

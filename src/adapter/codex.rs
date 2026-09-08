@@ -30,7 +30,9 @@
 //!
 //! 关窗口不发 SessionEnd 是宿主行为（实测 SIGHUP 时 Codex 一个 hook 都不跑），不是 agora 丢了投递；这也是
 //! `process gone` 这个 reason 必须与 `session ended (hook)` 分开的原因——它是唯一能说明"不是人自己
-//! 结束的"的证据（agora-rzh）。
+//! 结束的"的证据（agora-rzh）。finished 通知也按这条线分（agora-j4w.4，`events::notification_for`）：
+//! external 行 hook 结束的不弹，进程消失的弹——所以 Codex 关窗口会被当成意外弹一次，已知且接受，
+//! 宿主不发 SessionEnd 就分不出来，别为了压掉它把 process gone 也静音。
 
 use std::path::PathBuf;
 use std::time::Duration;
