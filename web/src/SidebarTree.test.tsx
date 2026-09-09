@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { SessionRow } from "./events";
 import type { NodeStatus } from "./Header";
@@ -157,6 +157,78 @@ it("clicking a group header toggles it and persists to localStorage", () => {
   expect(screen.getByTestId("tree-group-node:zuan").getAttribute("aria-expanded")).toBe("false");
   expect(screen.queryByTestId("row-zuan:z")).toBeNull();
   expect(screen.getByTestId("tree-group-node:mac").getAttribute("aria-expanded")).toBe("true");
+});
+
+it("the worktree + button opens the dialog prefilled with node/project/worktree without toggling the group (A48)", () => {
+  // MISSION §6.4「常用项目最多 2–3 次操作」：树已经站在这个 worktree 上，「+」把三个下拉都带过去，
+  // 对话框里只剩选 Agent。点按钮不折叠这一组（它在组头按钮外面，且显式挡了冒泡）。
+  const onNewAgent = vi.fn();
+  mount({ onNewAgent, nodes: [node("mac", { local: true }), node("zuan")] });
+  fireEvent.click(screen.getByTestId(`tree-new-agent-wt:mac:${WT3}`));
+  expect(onNewAgent).toHaveBeenCalledWith({ node: null, project: AGORA, worktree: WT3 });
+  expect(screen.getByTestId(`tree-group-wt:mac:${WT3}`).getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByTestId("row-mac:w")).toBeTruthy();
+  // peer 上的 worktree 同样支持：node 带过去，POST 由节点一跳转发（A45）。
+  fireEvent.click(screen.getByTestId(`tree-new-agent-wt:zuan:${AGORA}`));
+  expect(onNewAgent).toHaveBeenLastCalledWith({ node: "zuan", project: AGORA, worktree: AGORA });
+  // 节点组头只预填 Node；「其它目录」组头没有按钮（不是一个能在里面干活的目录）。
+  fireEvent.click(screen.getByTestId("tree-new-agent-node-mac"));
+  expect(onNewAgent).toHaveBeenLastCalledWith({ node: null });
+  fireEvent.click(screen.getByTestId("tree-new-agent-node-zuan"));
+  expect(onNewAgent).toHaveBeenLastCalledWith({ node: "zuan" });
+  expect(screen.queryByTestId("tree-new-agent-other:mac")).toBeNull();
+  expect(screen.queryByTestId("tree-new-shell-other:mac")).toBeNull();
+  expect(screen.queryByTestId(`tree-new-shell-repo:mac:${AGORA}`)).toBeNull();
+});
+
+it("the shell button posts one shell session in that worktree and reports failure inline (A48)", async () => {
+  // 「shell」不开对话框、不问名字（取舍）：名字 = worktree 目录名，cwd = 该 worktree，
+  // worktree 字段是分支名（docs/spec/api.md）。成功交给 onCreated，失败在组头下一行说清楚。
+  const create = vi.fn().mockResolvedValue({ ok: true, value: { id: "mac:new9" } });
+  const onCreated = vi.fn();
+  mount({ api: { create }, onCreated });
+  fireEvent.click(screen.getByTestId(`tree-new-shell-wt:mac:${WT3}`));
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith("mac:new9"));
+  expect(create).toHaveBeenCalledTimes(1);
+  expect(create).toHaveBeenCalledWith({
+    display_name: "agora-uvd.3",
+    agent_type: "shell",
+    working_directory: WT3,
+    worktree: "agora-uvd.3",
+  });
+  // 主 worktree：worktree 字段留空（仓库本身），与 New Agent 对话框同一条规则。
+  fireEvent.click(screen.getByTestId(`tree-new-shell-wt:mac:${AGORA}`));
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+  expect(create).toHaveBeenLastCalledWith({
+    display_name: "agora",
+    agent_type: "shell",
+    working_directory: AGORA,
+    worktree: null,
+  });
+  expect(screen.queryByTestId(`tree-shell-error-wt:mac:${AGORA}`)).toBeNull();
+
+  // 失败：按 WriteResult 的错误类型 + message 在组头下一行显示，不弹窗、不静默。
+  create.mockResolvedValue({ ok: false, needsConfirmation: false, error: { error: "runtime", message: "tmux 没起来" } });
+  fireEvent.click(screen.getByTestId(`tree-new-shell-wt:mac:${WT3}`));
+  const err = await screen.findByTestId(`tree-shell-error-wt:mac:${WT3}`);
+  expect(err.textContent).toBe("runtime: tmux 没起来");
+  expect(onCreated).toHaveBeenCalledTimes(2);
+});
+
+it("group header buttons on a stale node are disabled (A48)", () => {
+  // zuan 离线（stale）：一跳转发到不了，按了只会得到 502——按钮就是灰的，不弹错误。本机的照常。
+  const onNewAgent = vi.fn();
+  mount({ onNewAgent, api: { create: vi.fn() } });
+  const disabled = (id: string) => (screen.getByTestId(id) as HTMLButtonElement).disabled;
+  expect(disabled("tree-new-agent-node-zuan")).toBe(true);
+  expect(disabled(`tree-new-agent-wt:zuan:${AGORA}`)).toBe(true);
+  expect(disabled(`tree-new-shell-wt:zuan:${AGORA}`)).toBe(true);
+  expect(screen.getByTestId(`tree-new-shell-wt:zuan:${AGORA}`).getAttribute("title")).toBe("节点离线");
+  expect(disabled("tree-new-agent-node-mac")).toBe(false);
+  expect(disabled(`tree-new-agent-wt:mac:${WT3}`)).toBe(false);
+  expect(screen.getByTestId(`tree-new-shell-wt:mac:${WT3}`).getAttribute("title")).toBe("在此开 shell");
+  fireEvent.click(screen.getByTestId(`tree-new-agent-wt:zuan:${AGORA}`));
+  expect(onNewAgent).not.toHaveBeenCalled();
 });
 
 it("the active row inside a collapsed group expands it once", () => {

@@ -168,6 +168,16 @@ li.stale > .row:hover, li.stale > .row.selected { opacity: 0.8; }
 .tree .tree-group.depth-0 .tree-head { padding-top: 10px; font-size: 13px; }
 .tree .tree-group.depth-1 .tree-head { padding-left: 14px; }
 .tree .tree-group.depth-2 .tree-head { padding-left: 26px; }
+/* 组头的就地动作（A48，agora-uvd.4）：按钮排在组头按钮右边（不能嵌在里面——按钮不能套按钮），
+   平时淡、hover 时显出来——不用 opacity: 0 藏起来：手机上没有 hover，藏了就等于没有（§6.9）。
+   失败一行灰字占组头下一行。 */
+.tree .tree-head-row { display: flex; align-items: baseline; gap: 2px; }
+.tree .tree-head-row .tree-head { flex: 1; min-width: 0; }
+.tree .tree-action { flex: none; background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 11px; padding: 2px 5px; border-radius: 4px; opacity: 0.6; }
+.tree .tree-head-row:hover .tree-action, .tree .tree-action:focus-visible { opacity: 1; }
+.tree .tree-action:hover:not(:disabled) { background: var(--panel-2); color: var(--fg); }
+.tree .tree-action:disabled { cursor: default; opacity: 0.3; }
+.tree .tree-shell-error { margin: 0 6px 4px 26px; font-size: 11px; }
 .tree .tree-row > ul { padding: 0; }
 .tree .tree-row.depth-2 > ul { padding-left: 14px; }
 .tree .tree-row.depth-3 > ul { padding-left: 26px; }

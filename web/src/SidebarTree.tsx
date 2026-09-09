@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import type { SessionApi } from "./api";
 import { needsAttention, type SeenSet } from "./attention";
 import type { SessionRow } from "./events";
 import { describeNode, type NodeStatus } from "./Header";
+import type { NewAgentInitial } from "./NewAgentDialog";
 import { SidebarRow } from "./SessionRow";
 import { buildTree, flattenTree, loadCollapsed, rowGroupKeys, storeCollapsed, type TreeGroup } from "./sidebarTreeModel";
 
@@ -11,6 +13,11 @@ import { buildTree, flattenTree, loadCollapsed, rowGroupKeys, storeCollapsed, ty
  * localStorage），折叠时组头右侧显示这组里 needsAttention 的行数（按过滤前的 all 算——过滤只是少画几行）；
  * 行复用 <SidebarRow> 原样，序号是 DFS 序，折叠的组行不画序号照数（MISSION §6.5，与 A46 Finished 区同一规则）。
  * FINISHED 行不搬家：留在原组里淡显（`li.done`）。不画三段标题、没有 Finished 折叠区（取舍）。
+ *
+ * 组头的就地动作（A48，agora-uvd.4；MISSION §6.4「常用项目最多 2–3 次操作」）：worktree 组头右侧「+」
+ * 带着 Node / Project / Worktree 打开 New Agent 对话框（只剩选 Agent 一步），「shell」连对话框都不开、
+ * 直接在这个 worktree 里 POST 一条 shell 会话；节点组头「+」只预填 Node；「其它目录」没有按钮。
+ * stale 节点上一律禁用（一跳转发到不了）。
  */
 interface Props {
   /** 已过滤、已按 treeOrder 排好的显示顺序（Workspace 的 visible）。 */
@@ -27,6 +34,12 @@ interface Props {
   onOpenDiff?: (id: string) => void;
   /** 选中行的展开区；M4b（agora-4yr.1）合入前仍要透传，4yr.3 会删。 */
   renderExpanded?: (row: SessionRow) => ReactNode;
+  /** 组头「+」：带着这个组的 Node / Project / Worktree 打开 New Agent 对话框（A48，agora-uvd.4）。 */
+  onNewAgent?: (initial?: NewAgentInitial) => void;
+  /** 组头「shell」直接起会话用的写端点；不给就没有这两个按钮。 */
+  api?: Pick<SessionApi, "create">;
+  /** 起成功了：交给 Workspace 的 pendingOpen，会话进列表后自动选中（同 New Agent 对话框）。 */
+  onCreated?: (id: string) => void;
 }
 
 /** 组头文字：节点组是同 Header 的点 + 名字；仓库组是 name；worktree 组是 `label ⎇ branch [主]`。 */
@@ -53,8 +66,32 @@ function GroupLabel({ group, nodes }: { group: TreeGroup; nodes?: NodeStatus[] }
   return <span className="tree-label">{group.label}</span>;
 }
 
-export function SidebarTree({ rows, all, nodes, localNode, active, seen, onOpen, onRowRender, now, onOpenDiff, renderExpanded }: Props) {
+export function SidebarTree({
+  rows,
+  all,
+  nodes,
+  localNode,
+  active,
+  seen,
+  onOpen,
+  onRowRender,
+  now,
+  onOpenDiff,
+  renderExpanded,
+  onNewAgent,
+  api,
+  onCreated,
+}: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsed());
+  // 「shell」失败：组头下一行灰字，5 s 后自己消失（一次只留最后一条——同时点两个组头不是真实用法）。
+  const [shellError, setShellError] = useState<{ key: string; message: string } | null>(null);
+  // 正在 POST 的那个组：按钮禁用，免得连点起出两个 shell。
+  const [shellBusy, setShellBusy] = useState<string | null>(null);
+  useEffect(() => {
+    if (shellError === null) return;
+    const t = setTimeout(() => setShellError(null), 5000);
+    return () => clearTimeout(t);
+  }, [shellError]);
   const tree = useMemo(() => buildTree(rows, nodes, localNode), [rows, nodes, localNode]);
   const flat = useMemo(() => flattenTree(tree, collapsed), [tree, collapsed]);
   // 每个组（含祖先）里需要关注的行数，按过滤前的 all 算；只在折叠时显示。
@@ -66,6 +103,44 @@ export function SidebarTree({ rows, all, nodes, localNode, active, seen, onOpen,
     }
     return count;
   }, [all, seen]);
+
+  /** 组头动作里 create body / 预填的 `node`：本机不发这个键（与 New Agent 对话框同一口径）。 */
+  function nodeOf(group: TreeGroup): string | null {
+    return group.node === localNode ? null : group.node;
+  }
+
+  /** stale 的节点上不给起会话：一跳转发到不了，按了只会得到 502，不如按钮就是灰的（取舍）。 */
+  function offline(group: TreeGroup): boolean {
+    const n = nodes?.find((x) => x.name === group.node);
+    // 本机「探测中」（health 还没回来）不算离线：那是页面自己刚打开，不是节点掉了。
+    return n !== undefined && n.local !== true && !n.online;
+  }
+
+  /**
+   * 「shell」：不开对话框、不问名字（取舍）——名字就是 worktree 目录名，要改名走 Settings。
+   * 直接 POST 一条 shell 会话，成功交给 onCreated（Workspace 的 pendingOpen，行进列表后自动选中）。
+   */
+  async function openShell(group: TreeGroup) {
+    if (!api || shellBusy !== null) return;
+    const node = nodeOf(group);
+    setShellBusy(group.key);
+    setShellError(null);
+    const r = await api.create({
+      ...(node ? { node } : {}),
+      display_name: group.label,
+      agent_type: "shell",
+      // `worktree` 字段存的是分支名而不是路径（docs/spec/api.md「看结果」段）；主 worktree 留空，
+      // 与 New Agent 对话框同一条规则。cwd 才是这个 worktree 的路径。
+      working_directory: group.title,
+      worktree: group.main ? null : (group.branch ?? group.title),
+    });
+    setShellBusy(null);
+    if (r.ok) {
+      onCreated?.(r.value.id);
+      return;
+    }
+    setShellError({ key: group.key, message: r.needsConfirmation ? "需要确认" : `${r.error.error}: ${r.error.message}` });
+  }
 
   function toggle(key: string) {
     setCollapsed((prev) => {
@@ -105,24 +180,81 @@ export function SidebarTree({ rows, all, nodes, localNode, active, seen, onOpen,
           const g = e.group;
           const open = !collapsed.has(g.key);
           const n = open ? 0 : (attention.get(g.key) ?? 0);
+          // 组头右侧的就地动作（A48，agora-uvd.4）：worktree 组两个（起 agent / 开 shell）、节点组一个；
+          // 「其它目录」没有——它不是一个可以在里面干活的目录，只是"没有仓库"的兜底。
+          const stale = offline(g);
+          const staleTitle = stale ? "节点离线" : undefined;
           return (
             <li key={g.key} className={`tree-group depth-${g.depth} ${g.kind}`}>
-              <button
-                type="button"
-                className="tree-head"
-                aria-expanded={open}
-                data-testid={`tree-group-${g.key}`}
-                title={g.title}
-                onClick={() => toggle(g.key)}
-              >
-                <span className="tree-caret muted">{open ? "▾" : "▸"}</span>
-                <GroupLabel group={g} nodes={nodes} />
-                {n > 0 && (
-                  <span className="tree-attention" data-testid={`tree-group-attention-${g.key}`}>
-                    {n} 需要关注
-                  </span>
+              <div className="tree-head-row">
+                <button
+                  type="button"
+                  className="tree-head"
+                  aria-expanded={open}
+                  data-testid={`tree-group-${g.key}`}
+                  title={g.title}
+                  onClick={() => toggle(g.key)}
+                >
+                  <span className="tree-caret muted">{open ? "▾" : "▸"}</span>
+                  <GroupLabel group={g} nodes={nodes} />
+                  {n > 0 && (
+                    <span className="tree-attention" data-testid={`tree-group-attention-${g.key}`}>
+                      {n} 需要关注
+                    </span>
+                  )}
+                </button>
+                {g.kind === "worktree" && onNewAgent && (
+                  <button
+                    type="button"
+                    className="tree-action"
+                    data-testid={`tree-new-agent-${g.key}`}
+                    title={staleTitle ?? "在此起 agent"}
+                    disabled={stale}
+                    // 动作不是折叠：按钮在组头按钮外面，仍显式挡一次冒泡（将来整行可点也不会连带折叠）。
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onNewAgent({ node: nodeOf(g), project: g.repo, worktree: g.title });
+                    }}
+                  >
+                    +
+                  </button>
                 )}
-              </button>
+                {g.kind === "worktree" && api && (
+                  <button
+                    type="button"
+                    className="tree-action"
+                    data-testid={`tree-new-shell-${g.key}`}
+                    title={staleTitle ?? "在此开 shell"}
+                    disabled={stale || shellBusy !== null}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void openShell(g);
+                    }}
+                  >
+                    shell
+                  </button>
+                )}
+                {g.kind === "node" && onNewAgent && (
+                  <button
+                    type="button"
+                    className="tree-action"
+                    data-testid={`tree-new-agent-node-${g.node}`}
+                    title={staleTitle ?? "在此节点起 agent"}
+                    disabled={stale}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onNewAgent({ node: nodeOf(g) });
+                    }}
+                  >
+                    +
+                  </button>
+                )}
+              </div>
+              {shellError?.key === g.key && (
+                <p className="muted tree-shell-error" role="status" data-testid={`tree-shell-error-${g.key}`}>
+                  {shellError.message}
+                </p>
+              )}
             </li>
           );
         }

@@ -6,7 +6,7 @@ import { CommandPalette } from "./CommandPalette";
 import { nodeStatuses } from "./Header";
 import { HealthWatcher, versionBlocked, VersionWatcher } from "./health";
 import { isDesktop, matchShortcut } from "./keys";
-import { NewAgentDialog } from "./NewAgentDialog";
+import { NewAgentDialog, type NewAgentInitial } from "./NewAgentDialog";
 import { browserDeps, Notifier, type NotifierDeps, type Permission } from "./notify";
 import { Respond } from "./Respond";
 import { SessionSettings } from "./SessionSettings";
@@ -103,6 +103,9 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   const [view, setView] = useState<View | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newAgentOpen, setNewAgentOpen] = useState(false);
+  // 打开对话框时的预填（A48，agora-uvd.4）：树视图组头「+」带来的 Node / Project / Worktree；
+  // 别的入口（按钮、Alt/Option+N、命令面板）不传，关掉就清空——下次打开不该还记着上次站在哪。
+  const [newAgentInitial, setNewAgentInitial] = useState<NewAgentInitial | undefined>(undefined);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const filterInput = useRef<HTMLInputElement>(null);
@@ -172,7 +175,14 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
 
   const active = view ? byId.get(view.id) : undefined;
   const showDiff = view?.kind === "diff";
-  const openNewAgent = useCallback(() => setNewAgentOpen(true), []);
+  const openNewAgent = useCallback((initial?: NewAgentInitial) => {
+    setNewAgentInitial(initial);
+    setNewAgentOpen(true);
+  }, []);
+  const closeNewAgent = useCallback(() => {
+    setNewAgentOpen(false);
+    setNewAgentInitial(undefined);
+  }, []);
   // 「看 diff」（MISSION §6.3 看结果；agora-h1k.5）：把主区切成该行的只读 diff——不发请求、不进会话列表，
   // 里面的 TerminalView 以 diff socket 连 `WS /api/sessions/:id/diff`，关掉 diff / 点别的行即关 WS。
   const openDiff = useCallback((id: string) => setView({ id, kind: "diff" }), []);
@@ -256,7 +266,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           filterInput.current?.select();
           break;
         case "new":
-          setNewAgentOpen(true);
+          openNewAgent();
           break;
         case "next":
         case "prev": {
@@ -279,7 +289,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [paletteOpen, newAgentOpen, visible, view?.id, openTab, toggleMode]);
+  }, [paletteOpen, newAgentOpen, visible, view?.id, openTab, toggleMode, openNewAgent]);
 
   if (blocked !== null) {
     // 节点与页面不是同一个 API major（或读不出版本）：只留横幅，侧栏 / 终端一概不挂——
@@ -327,6 +337,9 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         onAdopt={adopt}
         onOpenDiff={openDiff}
         onDeleteMetadata={api.deleteMetadata}
+        // 树视图组头「shell」直接起会话（agora-uvd.4）：成功走 pendingOpen，行进列表后自动选中。
+        api={api}
+        onCreated={setPendingOpen}
       />
       <section className="main">
         {degraded !== null && (
@@ -401,8 +414,9 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         <NewAgentDialog
           api={api}
           catalog={catalog}
+          initial={newAgentInitial}
           nodes={nodes}
-          onClose={() => setNewAgentOpen(false)}
+          onClose={closeNewAgent}
           onCreated={(id) => setPendingOpen(id)}
         />
       )}

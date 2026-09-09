@@ -1,9 +1,10 @@
 import { Fragment, useEffect, useState, type ReactNode, type RefObject } from "react";
-import type { AdoptBody, WriteResult } from "./api";
+import type { AdoptBody, SessionApi, WriteResult } from "./api";
 import { countByStatus, sectionOf, type SeenSet } from "./attention";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow, UnregisteredRow } from "./events";
 import { Header, type NodeStatus } from "./Header";
+import type { NewAgentInitial } from "./NewAgentDialog";
 import { SidebarRow } from "./SessionRow";
 import type { SidebarMode } from "./sidebarMode";
 import { SidebarTree } from "./SidebarTree";
@@ -84,7 +85,8 @@ interface SidebarProps {
   localNode?: string;
   active: string | null;
   onOpen: (id: string) => void;
-  onNewAgent?: () => void;
+  /** 打开 New Agent 对话框；树视图的组头带一份预填过来（A48，agora-uvd.4），别处不传参、行为不变。 */
+  onNewAgent?: (initial?: NewAgentInitial) => void;
   onRowRender?: (id: string) => void;
   filter: string;
   onFilter: (v: string) => void;
@@ -103,6 +105,10 @@ interface SidebarProps {
   onOpenDiff?: (id: string) => void;
   /** 一键清理用的 DELETE metadata（agora-j4w.2）；不给就没有清理按钮。 */
   onDeleteMetadata?: (id: string) => Promise<WriteResult<unknown>>;
+  /** 树视图组头「shell」用的写端点（agora-uvd.4）；只透传给 <SidebarTree>，不给就没有那个按钮。 */
+  api?: Pick<SessionApi, "create">;
+  /** 组头「shell」起成功了：交给 Workspace 的 pendingOpen（同 New Agent 对话框的 onCreated）。 */
+  onCreated?: (id: string) => void;
 }
 
 interface UnknownProps {
@@ -187,6 +193,8 @@ export function Sidebar({
   onAdopt,
   onOpenDiff,
   onDeleteMetadata,
+  api,
+  onCreated,
 }: SidebarProps) {
   const now = useNowSeconds();
   // 一键清理的对象是折叠区的定义本身（已看过的 agora / adopted FINISHED + 全部 external FINISHED），按过滤
@@ -294,7 +302,8 @@ export function Sidebar({
           }
         }}
       />
-      <button className="new-agent" onClick={onNewAgent}>
+      {/* 不写成 onClick={onNewAgent}：那会把 MouseEvent 当预填传进去（agora-uvd.4 加了参数之后）。 */}
+      <button className="new-agent" onClick={() => onNewAgent?.()}>
         + New Agent
       </button>
       {total === 0 && unregistered.length === 0 && <p className="muted pad">还没有会话。</p>}
@@ -317,6 +326,9 @@ export function Sidebar({
           now={now}
           onOpenDiff={onOpenDiff}
           renderExpanded={renderExpanded}
+          onNewAgent={onNewAgent}
+          api={api}
+          onCreated={onCreated}
         />
       ) : (
       <ul>
