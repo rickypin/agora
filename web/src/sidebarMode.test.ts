@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { partitionByAttention, sortByAttention } from "./attention";
 import type { SessionRow } from "./events";
 import { fuzzyFilter } from "./fuzzy";
-import { rowHaystack } from "./Sidebar";
+import { rowHaystack } from "./SessionRow";
 import { loadMode, MODE_STORAGE_KEY, storeMode, visibleOrder } from "./sidebarMode";
 
 function row(id: string, status: string, extra: Record<string, unknown> = {}): SessionRow {

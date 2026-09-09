@@ -53,6 +53,22 @@ export function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
+/** 侧栏过滤匹配的字段（docs/spec/ux.md：name / node / agent / preview）：任务标签与两行预览也算。
+ * 从 Sidebar.tsx 挪来（agora-uvd.2）：sidebarMode.ts 要它，不能再从 Sidebar 进，否则 uvd.3 一加运行时
+ * import 就成环。Sidebar 原样再导出，调用方一行不改。 */
+export function rowHaystack(s: SessionRow): string {
+  return [
+    taskLabel(s),
+    rowName(s),
+    String(s.agent_type ?? ""),
+    s.node,
+    String(s.reason ?? s.status),
+    str(s.prompt),
+    str(s.progress),
+    str(s.preview),
+  ].join(" ");
+}
+
 /**
  * 展开区里的验收标准（MISSION §6.3「看结果」；A40；agora-h1k.3）：`task.acceptance` 是 `bd show`
  * 的 acceptance_criteria 全文，读自 beads、不复制进 agora 的库（不变量 12）。位置在就地 respond

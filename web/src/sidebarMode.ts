@@ -7,7 +7,7 @@
 import { partitionByAttention, sortByAttention, type SeenSet } from "./attention";
 import type { SessionRow } from "./events";
 import { fuzzyFilter } from "./fuzzy";
-import { rowHaystack } from "./Sidebar";
+import { rowHaystack } from "./SessionRow";
 
 export type SidebarMode = "attention" | "tree";
 

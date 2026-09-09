@@ -1,29 +1,16 @@
 import { Fragment, useEffect, useState, type ReactNode, type RefObject } from "react";
 import type { AdoptBody, WriteResult } from "./api";
-import { countByStatus, sectionOf, taskLabel, type SeenSet } from "./attention";
+import { countByStatus, sectionOf, type SeenSet } from "./attention";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow, UnregisteredRow } from "./events";
 import { Header, type NodeStatus } from "./Header";
-import { rowName, SidebarRow, str } from "./SessionRow";
+import { SidebarRow } from "./SessionRow";
 import type { SidebarMode } from "./sidebarMode";
 
 // 行组件与它的两个小工具搬去了 SessionRow.tsx（agora-h1k.3 接缝，2026-09-06）；CommandPalette /
-// SessionSettings 仍从这里 import，所以原样再导出一次，调用方一行不改。
-export { rowName, SidebarRow, statusSymbol } from "./SessionRow";
-
-/** 侧栏过滤匹配的字段（docs/spec/ux.md：name / node / agent / preview）：任务标签与两行预览也算。 */
-export function rowHaystack(s: SessionRow): string {
-  return [
-    taskLabel(s),
-    rowName(s),
-    String(s.agent_type ?? ""),
-    s.node,
-    String(s.reason ?? s.status),
-    str(s.prompt),
-    str(s.progress),
-    str(s.preview),
-  ].join(" ");
-}
+// SessionSettings 仍从这里 import，所以原样再导出一次，调用方一行不改。rowHaystack 也住在
+// SessionRow（agora-uvd.2：sidebarMode 不能从本文件进，否则 uvd.3 一加运行时 import 就成环）。
+export { rowHaystack, rowName, SidebarRow, statusSymbol } from "./SessionRow";
 
 /** 每 30 s 走一次的时钟，只为"waiting 3m"这种时长文案。 */
 function useNowSeconds(periodMs = 30_000): number {

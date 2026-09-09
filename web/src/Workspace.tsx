@@ -112,6 +112,13 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     setMode(next);
     storeMode(next);
   }, []);
+  const toggleMode = useCallback(() => {
+    setMode((m) => {
+      const next = m === "attention" ? "tree" : "attention";
+      storeMode(next);
+      return next;
+    });
+  }, []);
   // 刚创建的会话：等它随事件流进列表再选中。POST 的响应先于 `session_created` 到达，
   // 这时就选中会被下面"行没了就清空"的 effect（列表里还没有这一行）立刻清掉。
   const [pendingOpen, setPendingOpen] = useState<string | null>(null);
@@ -266,17 +273,13 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           break;
         }
         case "mode":
-          setMode((m) => {
-            const next = m === "attention" ? "tree" : "attention";
-            storeMode(next);
-            return next;
-          });
+          toggleMode();
           break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [paletteOpen, newAgentOpen, visible, view?.id, openTab]);
+  }, [paletteOpen, newAgentOpen, visible, view?.id, openTab, toggleMode]);
 
   if (blocked !== null) {
     // 节点与页面不是同一个 API major（或读不出版本）：只留横幅，侧栏 / 终端一概不挂——
@@ -411,13 +414,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           nodes={nodes}
           onOpen={openTab}
           onNewAgent={openNewAgent}
-          onToggleMode={() =>
-            setMode((m) => {
-              const next = m === "attention" ? "tree" : "attention";
-              storeMode(next);
-              return next;
-            })
-          }
+          onToggleMode={toggleMode}
           onCreated={(id) => setPendingOpen(id)}
           onClose={() => setPaletteOpen(false)}
         />
