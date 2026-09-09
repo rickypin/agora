@@ -194,9 +194,14 @@ fn failed_checkpoint_keeps_delivery_pending() {
 fn silent_hook_fallback_runs_through_session_manager_and_recovers() {
     for agent in ["claude", "codex", "grok"] {
         let rt = Arc::new(common::FakeRuntime::default());
+        // silence_after 从 1 s 提到 3 s（sleep 跟着走）：apply_hook 与紧接着的 get 之间只要超过
+        // silence_after，"刚收到 hook 应该是 RUNNING"这条断言就会读到 UNKNOWN——满载的机器上线程
+        // 被调度器晾一秒是常事（agora-p3l 那类偶发）。3 s 是本文件已经选过的抖动容限（agora-q8x
+        // 的 GRACE 同一条理由）。代价是这条测试从 3.3 s 变成 9.3 s，买的是它不再随负载翻脸。
+        const SILENCE: Duration = Duration::from_secs(3);
         let s = SessionManager::new(Arc::new(Db::open_in_memory().unwrap()), rt.clone())
             .with_status_config(MachineConfig {
-                silence_after: Duration::from_secs(1),
+                silence_after: SILENCE,
                 ..Default::default()
             });
         let id = create(&s, agent);
@@ -208,7 +213,7 @@ fn silent_hook_fallback_runs_through_session_manager_and_recovers() {
         s.apply_hook(&id, 1, &[AgoraEvent::Activity("working".into())])
             .unwrap();
         assert_eq!(s.get(&id).unwrap().assessment.status, Status::Running);
-        std::thread::sleep(Duration::from_millis(1100));
+        std::thread::sleep(SILENCE + Duration::from_millis(100));
         let v = s.get(&id).unwrap();
         assert_eq!(v.assessment.status, Status::Unknown, "{agent}");
         assert!(v.assessment.reason.unwrap().contains("hooks silent"));
