@@ -20,6 +20,11 @@ function hueStyle(hue: number): CSSProperties {
  * 节点 chip：`localNode` 已知之后每一行都标（本机 class=local 不着色，peer class=peer 按
  * nodeHue 着色）；还没拉到 `/api/system` 的 node 时谁都不标——先满屏 chip 再把本机改成不着色
  * 更难看。stale「上次见到」段不变。
+ *
+ * 徽标为什么是两个 span（agora-8lb）：glyph 与 label 曾经在同一个 span 里，`.meta` 的省略号从
+ * label 一路吃到 glyph，2026-09-09 截图里 zuan 行成了「✧ Gro」、本机 external 行只剩半个 glyph。
+ * 拆开之后 `.badge-glyph` 是 flex: none（永远整个可见，一眼分辨靠它），只有 `.badge-label` 收缩带
+ * 省略号；全名放 badge 的 title，窄侧栏下 hover 仍读得到。别再合回一个 span。
  */
 
 /** stale 行 `.meta` 里那一段的文案与 title；非 stale 行返回 null（不占位）。 */
@@ -79,9 +84,11 @@ export function RowIdentity({
         <span
           className="badge"
           data-agent={agentType}
+          title={badge.label || undefined}
           style={badge.hue ? hueStyle(badge.hue) : undefined}
         >
-          {badge.glyph} {badge.label}
+          <span className="badge-glyph">{badge.glyph}</span>
+          {badge.label && <span className="badge-label">{badge.label}</span>}
         </span>
         {localNode !== undefined && (
           <span

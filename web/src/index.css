@@ -40,10 +40,19 @@ select:disabled { opacity: 0.5; }
 .row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.3; }
 .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* meta 一行到底（agora-k9r，2026-09-05 截图：external 行的 "@ local" 折成两行、徽标撑成两行高）：
-   每一项 nowrap、不收缩，放不下时只让第一项（agent 类型）截断，徽标 / 节点 / 状态永远整段可见。 */
+   每一项 nowrap，放不下时收缩而不是换行。
+   2026-09-09 反例（agora-8lb）：这里原来是 `.row .meta > span:first-child { flex: 0 1 auto; …
+   text-overflow: ellipsis }`——按**位置**点名，写的时候第一项恰好是 agent 类型文字；agora-uvd.7 把
+   品牌徽标插到第一位之后，被省略号吃掉的就成了徽标（「✦ Claude」→「‹」）。还有另一半后果：全场能
+   让位的只有那一项，它缩到底仍然不够时，.meta 的 overflow: hidden 直接从右边硬裁，行尾 state 成了
+   「finishe」。谁排第一是布局的事，谁可以截断是语义的事——改成按**类名**点名，让位顺序也写死：
+   徽标先让（且只牺牲文字标签，见下面 .badge），不够再让节点名 / origin / stale 那一段；.state 与
+   .badge-glyph 是两个永不让位的锚点（这行要不要我管、是哪个 agent，正是侧栏存在的理由）。 */
 .row .meta { display: flex; gap: 6px; color: var(--muted); font-size: 12px; min-width: 0; overflow: hidden; white-space: nowrap; }
 .row .meta > span { flex: none; }
-.row .meta > span:first-child { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 徽标让完还不够时兜底让位的三项：节点名有颜色与 data-node、origin / stale 短且行上有 title，
+   硬裁（inline-flex 上 text-overflow 不生效，只能硬裁）不致命；state 被裁才是致命的。 */
+.row .meta > .node, .row .meta > .origin, .row .meta > .stale-seen { flex: 0 1 auto; min-width: 0; overflow: hidden; }
 .row .origin { border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
 .unknown .dot { color: var(--muted); }
 .adopt { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px 8px 28px; font-size: 12px; }
@@ -53,7 +62,7 @@ select:disabled { opacity: 0.5; }
 .row .preview { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .line-prompt, .row .line-progress { color: var(--fg); opacity: 0.85; }
 .row .hooks-unheard { color: var(--warn); }
-.row .meta .state { margin-left: auto; white-space: nowrap; }
+.row .meta .state { flex: none; margin-left: auto; white-space: nowrap; }
 .sidebar .counts { margin: 0 10px 6px; font-size: 12px; }
 /* 侧栏视图切换（A47，agora-uvd.2）：一行两钮，选中态走 aria-pressed。 */
 .sidebar-mode { display: flex; gap: 4px; margin: 0 10px 6px; }
@@ -207,7 +216,25 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 
 /* 行身份：agent 品牌徽标 + 节点 chip（A49，agora-uvd.7）。颜色靠 --hue；没设 --hue 的
    （shell / 未知 agent）继承 .meta 的 muted。本机节点 muted 边框 + 正常文字，不着色。 */
-.row .badge { display: inline-flex; align-items: center; border-radius: 3px; border: 1px solid var(--border); font-size: 11px; padding: 0 4px; color: hsl(var(--hue) 60% 70%); }
+/* 徽标 = 永不截断的 glyph + 可截断的文字标签（agora-8lb）。四条都非显然，别好心「整理」掉：
+   - `min-width: 1em`（box-sizing 是默认的 content-box，所以这 1em 是**内容框**的下限）就是 glyph
+     的护栏，`.badge-glyph` 又写死 `width: 1em`，两者必然对得上。不能靠 `min-width: auto` 白拿
+     min-content 保护：Chromium 把 `.badge-label` 的 min-content 也算进了徽标的 min-content
+     （2026-09-09 实测 59.3px = 整个「✦ Claude」，尽管 label 自己 min-width: 0），徽标于是一格都
+     不收缩，行尾 state 照样被裁。
+   - 反过来也别在 .badge 上写 `overflow: hidden` + `min-width: 0` 求收缩：flex item 的
+     `min-width: auto` 只在 overflow 是 visible 时才解析成 min-content，一写 overflow: hidden
+     自动最小尺寸就变 0，徽标被压得比 glyph 还窄、再由它自己的 overflow 把 glyph 削掉（同日实测：
+     260px 侧栏 external 行 badge 只剩 10px = 光剩内边距，「✦」整个没了）。这一种裁剪量 .meta 是
+     量不出来的——得量 .badge 自己，本 issue 的守卫因此两头都量。
+   - flex-shrink 给 100，让徽标在 meta 里第一个让位：全名被省略号吃掉还有 title 兜底，比节点名硬裁
+     体面；跟上面兜底那三项 1:100 的悬殊比例保证「先吃完全名，再动别人」。
+   - 选择器必须写满 `.row .meta > .badge`：上面 `.row .meta > span { flex: none }` 特异性 (0,2,1)，
+     光写 `.row .badge` 是 (0,2,0) 会输，徽标一格都不收缩（实测过，state 反而比修之前裁得更多）。 */
+.row .badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 3px; border: 1px solid var(--border); font-size: 11px; padding: 0 4px; color: hsl(var(--hue) 60% 70%); }
+.row .meta > .badge { flex: 0 100 auto; min-width: 1em; }
+.row .badge-glyph { flex: none; width: 1em; text-align: center; }
+.row .badge-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .row .node.peer { display: inline-flex; align-items: center; border-radius: 3px; border: 1px solid var(--border); font-size: 11px; padding: 0 4px; color: hsl(var(--hue) 60% 70%); }
 .row .node.local { display: inline-flex; align-items: center; border-radius: 3px; border: 1px solid var(--muted); font-size: 11px; padding: 0 4px; color: var(--fg); }
 
