@@ -143,6 +143,8 @@ export function SidebarTree({ rows, all, nodes, localNode, active, seen, onOpen,
                 now={now}
                 localNode={localNode}
                 onOpenDiff={onOpenDiff}
+                // 组头已经说明仓库与分支，行上再画一遍「name ⎇ branch」是噪音（agora-uvd.8 / agora-s7o）。
+                showProject={false}
               />
             </ul>
           </li>

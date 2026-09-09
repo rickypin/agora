@@ -132,6 +132,12 @@ it("a finished row stays in place with the done class (A48)", () => {
   expect(screen.queryByTestId("section-finished")).toBeNull();
 });
 
+it("tree rows draw no project line: the group header already says repo and branch (agora-uvd.8 / agora-s7o)", () => {
+  mount();
+  expect(document.querySelector("[data-testid^='project-']")).toBeNull();
+  expect(screen.getByTestId("row-mac:a")).toBeTruthy();
+});
+
 it("clicking a group header toggles it and persists to localStorage", () => {
   mount();
   const head = screen.getByTestId(`tree-group-wt:mac:${WT3}`);
