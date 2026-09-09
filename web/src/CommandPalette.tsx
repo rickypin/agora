@@ -33,11 +33,13 @@ interface Props {
   nodes?: NodeStatus[];
   onOpen: (id: string) => void;
   onNewAgent: () => void;
+  /** 切换侧栏视图 attention ↔ tree（A47，agora-uvd.2）。 */
+  onToggleMode?: () => void;
   onCreated: (id: string) => void;
   onClose: () => void;
 }
 
-export function CommandPalette({ rows, api, catalog, nodes, onOpen, onNewAgent, onCreated, onClose }: Props) {
+export function CommandPalette({ rows, api, catalog, nodes, onOpen, onNewAgent, onToggleMode, onCreated, onClose }: Props) {
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
@@ -114,9 +116,12 @@ export function CommandPalette({ rows, api, catalog, nodes, onOpen, onNewAgent, 
         }
       }
     }
+    if (onToggleMode) {
+      list.push({ kind: "action", label: "切换侧栏视图（需要我 / 按项目）", run: onToggleMode });
+    }
     list.push({ kind: "action", label: "New Agent…（完整对话框）", run: onNewAgent });
     return list;
-  }, [rows, projects, agents, node, remote, onNewAgent]);
+  }, [rows, projects, agents, node, remote, onNewAgent, onToggleMode]);
 
   const hits = useMemo(() => fuzzyFilter(entries, query, (e) => e.label), [entries, query]);
   const shown = hits.slice(0, 20);

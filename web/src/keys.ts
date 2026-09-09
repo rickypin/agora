@@ -44,7 +44,7 @@ export type ShortcutAction =
   | { action: "mode" };
 
 /**
- * 全局快捷键（Cmd/Ctrl+K/F、Alt/Option+K/F、Alt/Option+1…9、Alt/Option+]/[、Alt/Option+N）。
+ * 全局快捷键（Cmd/Ctrl+K/F、Alt/Option+K/F、Alt/Option+1…9、Alt/Option+]/[、Alt/Option+N、Alt/Option+G）。
  *
  * Alt/Option+K / F 是面板与过滤在终端聚焦时的入口（agora-82g）：Ctrl+K / F 那时归 pane，macOS 还有
  * Cmd 可用，Linux / Windows 只剩 Alt。Alt+F 在 Linux 的 readline 里是 forward-word（Alt+→ 同义，
@@ -61,8 +61,8 @@ export function matchShortcut(ev: KeyLike): ShortcutAction | null {
   if (ev.type && ev.type !== "keydown") return null;
   const mod = ev.metaKey || ev.ctrlKey;
 
-  // Alt/Option 系：数字跳转、上下一个、新建。都不带 Cmd/Ctrl，靠 code 认——macOS 上
-  // Option+] 的 key 是 `‘`、Option+N 是死键 `Dead`，只有 code 还认得出（见 KeyLike.code）。
+  // Alt/Option 系：数字跳转、上下一个、新建、切视图。都不带 Cmd/Ctrl，靠 code 认——macOS 上
+  // Option+] 的 key 是 `‘`、Option+N 是死键 `Dead`、Option+G 是 `©`，只有 code 还认得出（见 KeyLike.code）。
   if (ev.altKey && !mod) {
     const d = digit(ev);
     if (d !== null) return { action: "jump", index: d - 1 };
@@ -77,6 +77,8 @@ export function matchShortcut(ev: KeyLike): ShortcutAction | null {
         return { action: "palette" };
       case "KeyF":
         return { action: "filter" };
+      case "KeyG":
+        return { action: "mode" };
       default:
         return null;
     }

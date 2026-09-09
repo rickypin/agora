@@ -152,6 +152,7 @@ describe("终端聚焦时全局快捷键也按得动（agora-82g）", () => {
         evt("£", { altKey: true, code: "Digit3" }),
         evt("‘", { altKey: true, code: "BracketRight" }),
         evt("Dead", { altKey: true, code: "KeyN" }),
+        evt("©", { altKey: true, code: "KeyG" }),
       ];
       for (const e of deferred) {
         expect(handleTerminalKey(e, () => expect.unreachable("这一层不该发字节"), opts)).toBe(false);
@@ -220,6 +221,14 @@ describe("键位表（docs/spec/ux.md）", () => {
 
   it("没带修饰键的普通输入一概不认", () => {
     for (const k of ["k", "f", "n", "1", "Enter", "a"]) expect(matchShortcut(key(k))).toBeNull();
+  });
+
+  it("Alt+G is a mode action by code, and Cmd/Ctrl+G is not", () => {
+    // macOS 上 Option+G 的 key 是 `©`：只认 code。
+    expect(matchShortcut(key("©", { altKey: true, code: "KeyG" }))).toEqual({ action: "mode" });
+    expect(matchShortcut(key("g", { altKey: true, code: "KeyG" }))).toEqual({ action: "mode" });
+    expect(matchShortcut(key("g", { metaKey: true, code: "KeyG" }))).toBeNull();
+    expect(matchShortcut(key("g", { ctrlKey: true, code: "KeyG" }))).toBeNull();
   });
 });
 

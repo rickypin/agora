@@ -73,6 +73,37 @@ it("offers a New <agent> in <project> @ <peer> entry per online peer and creates
   expect(body).toMatchObject({ node: "zuan", display_name: "beta", agent_type: "zb", working_directory: "/home/z/beta", command: "zb-bin" });
 });
 
+it("the palette lists a toggle-sidebar-view action that calls onToggleMode", async () => {
+  const onToggleMode = vi.fn();
+  const onClose = vi.fn();
+  const f: FetchLike = async (url) => {
+    const body = url.startsWith("/api/projects")
+      ? { projects: [] }
+      : url.startsWith("/api/agents")
+        ? { agents: [] }
+        : { node: "mac" };
+    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  render(
+    <CommandPalette
+      rows={[]}
+      api={sessionApi(f)}
+      catalog={catalogApi(f)}
+      onOpen={vi.fn()}
+      onNewAgent={vi.fn()}
+      onToggleMode={onToggleMode}
+      onCreated={vi.fn()}
+      onClose={onClose}
+    />,
+  );
+  await waitFor(() => expect(labels()).toContain("切换侧栏视图（需要我 / 按项目）"));
+  expect(labels().indexOf("切换侧栏视图（需要我 / 按项目）")).toBeLessThan(labels().indexOf("New Agent…（完整对话框）"));
+  fireEvent.change(screen.getByTestId("palette-input"), { target: { value: "切换侧栏" } });
+  fireEvent.click(screen.getByTestId("palette-0"));
+  expect(onToggleMode).toHaveBeenCalledTimes(1);
+  expect(onClose).toHaveBeenCalled();
+});
+
 it("without nodes there is only the local group and the body carries no node", async () => {
   const { requests, onCreated } = setup();
   await waitFor(() => expect(labels()).toContain("New a1 in agora @ mac"));

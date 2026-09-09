@@ -54,6 +54,10 @@ select:disabled { opacity: 0.5; }
 .row .hooks-unheard { color: var(--warn); }
 .row .meta .state { margin-left: auto; white-space: nowrap; }
 .sidebar .counts { margin: 0 10px 6px; font-size: 12px; }
+/* 侧栏视图切换（A47，agora-uvd.2）：一行两钮，选中态走 aria-pressed。 */
+.sidebar-mode { display: flex; gap: 4px; margin: 0 10px 6px; }
+.sidebar-mode button { flex: 1; }
+.sidebar-mode button[aria-pressed="true"] { border-color: var(--accent); }
 /* 计数行里的 Finished 变按钮（一键清理，agora-j4w.2）：长得还是那一段文字，只多一条下划线提示能点。 */
 .sidebar .counts .clear-finished { background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; text-decoration: underline dotted; cursor: pointer; }
 .sidebar .counts .clear-finished:hover { color: var(--fg); }

@@ -10,7 +10,7 @@ import { NewAgentDialog } from "./NewAgentDialog";
 import { browserDeps, Notifier, type NotifierDeps, type Permission } from "./notify";
 import { Respond } from "./Respond";
 import { SessionSettings } from "./SessionSettings";
-import { visibleOrder } from "./sidebarMode";
+import { loadMode, storeMode, visibleOrder, type SidebarMode } from "./sidebarMode";
 import { rowName, Sidebar } from "./Sidebar";
 import { SessionStore, useSessions, useUnregistered } from "./store";
 import { defaultDiffSocket, type TerminalClientOptions } from "./terminal";
@@ -106,6 +106,12 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [filter, setFilter] = useState("");
   const filterInput = useRef<HTMLInputElement>(null);
+  // 侧栏视图（A47，agora-uvd.2）：浏览器视图状态，默认 attention（MISSION §6.3 首页原则）。
+  const [mode, setMode] = useState<SidebarMode>(() => loadMode());
+  const applyMode = useCallback((next: SidebarMode) => {
+    setMode(next);
+    storeMode(next);
+  }, []);
   // 刚创建的会话：等它随事件流进列表再选中。POST 的响应先于 `session_created` 到达，
   // 这时就选中会被下面"行没了就清空"的 effect（列表里还没有这一行）立刻清掉。
   const [pendingOpen, setPendingOpen] = useState<string | null>(null);
@@ -221,10 +227,9 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   }, [byId]);
 
   // 侧栏显示顺序：visibleOrder 一条（A47，agora-uvd.2）。attention 分支原样 =
-  // partitionByAttention(fuzzyFilter(sortByAttention))；Alt/Option+N 跳的就是这个顺序
-  // （agora-xqa.14 验收），Finished 段收起时行不画、序号照数（A46）。本步先钉 attention，
-  // 视图切换的 mode 状态下一刀再接。
-  const visible = useMemo(() => visibleOrder("attention", rows, filter, seen), [rows, filter, seen]);
+  // partitionByAttention(fuzzyFilter(sortByAttention))；tree 分支本任务先按创建序平铺
+  // （uvd.3 换成 DFS）。Alt/Option+N / ]/[ / 过滤框 Enter 都走这条 visible。
+  const visible = useMemo(() => visibleOrder(mode, rows, filter, seen), [mode, rows, filter, seen]);
 
   useEffect(() => {
     // 手机端没有键盘：全局快捷键与命令面板只在桌面装（MISSION §6.5）。
@@ -260,6 +265,13 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           if (target) openTab(target.id);
           break;
         }
+        case "mode":
+          setMode((m) => {
+            const next = m === "attention" ? "tree" : "attention";
+            storeMode(next);
+            return next;
+          });
+          break;
       }
     };
     window.addEventListener("keydown", onKey);
@@ -287,6 +299,8 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     <div className="workspace">
       <Sidebar
         rows={visible}
+        mode={mode}
+        onMode={applyMode}
         seen={seen}
         nodes={nodes}
         localNode={localNode ?? undefined}
@@ -397,6 +411,13 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           nodes={nodes}
           onOpen={openTab}
           onNewAgent={openNewAgent}
+          onToggleMode={() =>
+            setMode((m) => {
+              const next = m === "attention" ? "tree" : "attention";
+              storeMode(next);
+              return next;
+            })
+          }
           onCreated={(id) => setPendingOpen(id)}
           onClose={() => setPaletteOpen(false)}
         />

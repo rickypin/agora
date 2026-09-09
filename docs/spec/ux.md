@@ -35,6 +35,7 @@
 | Alt/Option + 1…9 | 跳到侧栏第 N 条（按当前过滤后的显示顺序） |
 | Alt/Option + ] / [ | Next / Previous Agent |
 | Alt/Option + N | New Agent |
+| Alt/Option + G | 切换侧栏视图 |
 
 **终端有焦点时 Ctrl 组合一律归 pane**（agora-82g，2026-09-05 代检：Ctrl+K / F 曾被 xterm 吞成 `^K` / `^F`，面板与过滤开不了）：Ctrl+K 是 readline 的 kill-line、Ctrl+F 是 vim / less 的翻页，agora 不抢——§6.5 的硬约束不只那六个键。终端里开面板 / 过滤用 Alt/Option+K / F（macOS 上 Cmd+K / F 也行）；焦点在侧栏、过滤框或 body 上时 Ctrl+K / F 照旧。实现：终端层（`handleTerminalKey`）把 `matchShortcut` 认的、不带 Ctrl 的键返回 false 让 xterm 别碰，事件照常冒泡到 window 由全局层处理——不然 xterm 处理完 Alt+字母（Linux / Windows 发 `ESC x`）也会 stopPropagation，Alt 系键位在终端聚焦时同样按不动。Alt+F 在 Linux 的 readline 里是 forward-word，Alt+→ 同义且照发；macOS 上 Option+F 本来只会打出 `ƒ`。Chrome 在 Windows / Linux 把 Alt+F 当菜单加速键，页面 `preventDefault` 能不能压住它只有人在真浏览器里按过才算数（验证纪律见下）。
 
@@ -65,6 +66,8 @@ Command Palette 支持 fuzzy search sessions / projects / nodes / actions（`New
 关键词：**fast、dense、keyboard-first、low visual noise、dark-mode-first**。风格参考 Linear + Warp + 现代终端管理器 + tmux。可用 shadcn/ui，但不应演化为传统 enterprise dashboard。
 
 ## Attention Dashboard 线框（MISSION §6.3）
+
+**两种视图**（A47，agora-uvd.2，2026-09-09）：默认永远是「需要我」（今天的 attention 排序，MISSION §6.3 首页原则）。「按项目」是树——组头、折叠与 DFS 序号见 agora-uvd.3；本任务树的显示顺序先按 `created_at` 升序平铺（同秒按 id），过滤只删不换序。切换入口三处：侧栏头部 segment（「需要我」/「按项目」）、命令面板「切换侧栏视图（需要我 / 按项目）」、Alt/Option+G。记忆键 `agora.sidebar-mode`（localStorage，读写包 try/catch，读不到或不合法 → attention）。两种视图共用同一个过滤框与 `rowHaystack`，Alt/Option+N / ]/[ / 过滤框 Enter 都走同一条 `visible`。
 
 ```
 mac ● zuan ●          Agents: 12

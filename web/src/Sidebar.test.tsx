@@ -147,3 +147,31 @@ it("no clear button without deletable rows or without the DELETE callback", () =
   mount([row("n:e", "finished", { origin: "external" })]);
   expect(screen.queryByTestId("clear-finished")).toBeNull();
 });
+
+it("the mode switch toggles aria-pressed and calls onMode (A47)", () => {
+  const onMode = vi.fn();
+  const visible = partitionByAttention(sortByAttention(ROWS), new Set());
+  const props = { rows: visible, seen: new Set<string>(), all: ROWS, total: ROWS.length, active: null as string | null, onOpen: vi.fn(), filter: "", onFilter: () => {}, onMode };
+  const { rerender } = render(<Sidebar {...props} mode="attention" />);
+  const att = screen.getByTestId("sidebar-mode-attention");
+  const tree = screen.getByTestId("sidebar-mode-tree");
+  expect(att.getAttribute("aria-pressed")).toBe("true");
+  expect(tree.getAttribute("aria-pressed")).toBe("false");
+  fireEvent.click(tree);
+  expect(onMode).toHaveBeenCalledWith("tree");
+  rerender(<Sidebar {...props} mode="tree" />);
+  expect(screen.getByTestId("sidebar-mode-tree").getAttribute("aria-pressed")).toBe("true");
+  expect(screen.getByTestId("sidebar-mode-attention").getAttribute("aria-pressed")).toBe("false");
+  fireEvent.click(screen.getByTestId("sidebar-mode-attention"));
+  expect(onMode).toHaveBeenCalledWith("attention");
+});
+
+it("tree mode renders no section headings (A47)", () => {
+  const visible = partitionByAttention(sortByAttention(ROWS), new Set());
+  render(<Sidebar rows={visible} mode="tree" onMode={() => {}} all={ROWS} total={ROWS.length} active={null} onOpen={() => {}} filter="" onFilter={() => {}} />);
+  expect(screen.queryByTestId("section-attention")).toBeNull();
+  expect(screen.queryByTestId("section-running")).toBeNull();
+  expect(screen.queryByTestId("section-finished")).toBeNull();
+  // 平铺全部行，Finished 折叠不生效。
+  expect(listOrder()).toEqual(["row-n:wait", "row-n:own", "row-n:run", "row-n:ext1", "row-n:ext2"]);
+});

@@ -217,6 +217,22 @@ describe("Command Palette", () => {
   });
 });
 
+describe("侧栏视图切换（A47）", () => {
+  it("Alt/Option+G toggles the sidebar mode, also while the terminal has focus (A47)", async () => {
+    const t = setup([row("mac:a")]);
+    await online(t);
+    expect(screen.getByTestId("sidebar-mode-attention").getAttribute("aria-pressed")).toBe("true");
+    expect(press({ key: "©", code: "KeyG", altKey: true })).toBe(true);
+    expect(screen.getByTestId("sidebar-mode-tree").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("sidebar-mode-attention").getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(screen.getByTestId("row-mac:a"));
+    const term = screen.getByTestId("term-mac:a");
+    term.focus();
+    expect(press({ key: "©", code: "KeyG", altKey: true }, term)).toBe(true);
+    expect(screen.getByTestId("sidebar-mode-attention").getAttribute("aria-pressed")).toBe("true");
+  });
+});
+
 describe("窄屏（手机没有键盘）", () => {
   it("桌面断点以下不装全局快捷键", async () => {
     const wide = window.innerWidth;

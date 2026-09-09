@@ -5,6 +5,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow, UnregisteredRow } from "./events";
 import { Header, type NodeStatus } from "./Header";
 import { rowName, SidebarRow, str } from "./SessionRow";
+import type { SidebarMode } from "./sidebarMode";
 
 // 行组件与它的两个小工具搬去了 SessionRow.tsx（agora-h1k.3 接缝，2026-09-06）；CommandPalette /
 // SessionSettings 仍从这里 import，所以原样再导出一次，调用方一行不改。
@@ -82,6 +83,9 @@ interface SidebarProps {
   /** 已经按 attention 排好、NEEDS ATTENTION → RUNNING → FINISHED 三段拼好的显示顺序——Alt/Option+N 跳的
    * 就是这个顺序（agora-xqa.14 验收）；本组件只在分区交界处插标题、把 Finished 段折起来。 */
   rows: SessionRow[];
+  /** 侧栏视图（A47，agora-uvd.2）：缺省 attention，既有测试一行不改。tree 时不画三段标题、平铺全部行。 */
+  mode?: SidebarMode;
+  onMode?: (mode: SidebarMode) => void;
   /** 看过的 FINISHED 行（MISSION §4.6；A46）：与 Workspace 拼 rows 时用的是同一个集合，交界才对得上。 */
   seen?: SeenSet;
   /** 过滤前的全部行：header 计数用。 */
@@ -175,6 +179,8 @@ function UnknownRow({ row, onAdopt }: UnknownProps) {
 
 export function Sidebar({
   rows,
+  mode = "attention",
+  onMode,
   seen,
   all = rows,
   nodes,
@@ -224,6 +230,8 @@ export function Sidebar({
   }
   const ownClearable = clearable.filter((r) => r.origin !== "external").length;
   // 三段的交界：rows 已经按 attention → running → finished 拼好（partitionByAttention），这里只在交界处插标题。
+  // tree 视图不画分区标题、不折叠（A47：平铺全部行；uvd.3 接手组头）。
+  const showSections = mode !== "tree";
   const sections = rows.map((r) => sectionOf(r, seen));
   const firstRunning = sections.indexOf("running");
   const firstFinished = sections.indexOf("finished");
@@ -245,6 +253,24 @@ export function Sidebar({
     <aside className="sidebar">
       <Header agents={filter ? `${rows.length}/${total}` : total} nodes={nodes} />
       <CountsLine rows={all} clearable={clearable.length} onClear={onDeleteMetadata ? () => setClearAsk(true) : undefined} />
+      <div className="sidebar-mode" role="group" aria-label="侧栏视图">
+        <button
+          type="button"
+          aria-pressed={mode === "attention"}
+          data-testid="sidebar-mode-attention"
+          onClick={() => onMode?.("attention")}
+        >
+          需要我
+        </button>
+        <button
+          type="button"
+          aria-pressed={mode === "tree"}
+          data-testid="sidebar-mode-tree"
+          onClick={() => onMode?.("tree")}
+        >
+          按项目
+        </button>
+      </div>
       {clearNote !== null && (
         <p className="muted pad clear-note" data-testid="clear-finished-note" role="status">
           {clearNote}
@@ -283,7 +309,7 @@ export function Sidebar({
       </button>
       {total === 0 && unregistered.length === 0 && <p className="muted pad">还没有会话。</p>}
       {total > 0 && rows.length === 0 && <p className="muted pad">没有匹配的会话。</p>}
-      {hasAttention && (
+      {showSections && hasAttention && (
         <div className="sidebar-head section" data-testid="section-attention">
           <span className="muted">NEEDS ATTENTION</span>
         </div>
@@ -291,12 +317,12 @@ export function Sidebar({
       <ul>
         {rows.map((r, i) => (
           <Fragment key={r.id}>
-            {i === firstRunning && hasAttention && (
+            {showSections && i === firstRunning && hasAttention && (
               <li className="section-row" data-testid="section-running">
                 <span className="muted">RUNNING</span>
               </li>
             )}
-            {i === firstFinished && (
+            {showSections && i === firstFinished && (
               <li className="section-row finished-head">
                 <button
                   type="button"
@@ -310,7 +336,7 @@ export function Sidebar({
                 </button>
               </li>
             )}
-            {sections[i] === "finished" && !finishedOpen ? null : (
+            {showSections && sections[i] === "finished" && !finishedOpen ? null : (
             <SidebarRow
               row={r}
               active={r.id === active}

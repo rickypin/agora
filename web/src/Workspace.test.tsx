@@ -521,6 +521,46 @@ describe("Workspace", () => {
     expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own"]);
   });
 
+  it("the sidebar mode survives a remount via localStorage (A47)", async () => {
+    const mem = new Map<string, string>();
+    const fake: Storage = {
+      get length() {
+        return mem.size;
+      },
+      clear() {
+        mem.clear();
+      },
+      getItem(k) {
+        return mem.get(k) ?? null;
+      },
+      key(i) {
+        return [...mem.keys()][i] ?? null;
+      },
+      removeItem(k) {
+        mem.delete(k);
+      },
+      setItem(k, v) {
+        mem.set(k, v);
+      },
+    };
+    vi.stubGlobal("localStorage", fake);
+    try {
+      const t = setup([row("n:a")]);
+      await online(t);
+      expect(screen.getByTestId("sidebar-mode-attention").getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(screen.getByTestId("sidebar-mode-tree"));
+      expect(screen.getByTestId("sidebar-mode-tree").getAttribute("aria-pressed")).toBe("true");
+      expect(fake.getItem("agora.sidebar-mode")).toBe("tree");
+      t.ui.unmount();
+      const t2 = setup([row("n:a")]);
+      await online(t2);
+      expect(screen.getByTestId("sidebar-mode-tree").getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByTestId("sidebar-mode-attention").getAttribute("aria-pressed")).toBe("false");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("shows the two hook lines, or one pane preview line when the session has no hooks", async () => {
     const t = setup([
       { ...row("n:h", "waiting"), prompt: "把 sidebar 换掉", progress: "Edit Sidebar.tsx", status_since: Math.floor(Date.now() / 1000) - 200 },
