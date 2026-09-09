@@ -57,9 +57,19 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
   }, [row.id, row.status, row.reason, row.pending_decision?.request_id]);
   useEffect(() => {
     if (!focusRequest) return;
-    // TURN_DONE 落在输入框，WAITING 落在第一个按钮（Allow，或只有"打开终端"时就是它）。
-    (inputRef.current ?? rootRef.current?.querySelector("button"))?.focus();
-    onFocusHandled?.();
+    // 推迟一个宏任务再抢焦点，不能在 effect 里直接 focus。TerminalView 的挂载 effect 末尾有一句
+    // term.focus()，而它在树里排在面板后面——同一次 commit 里面板先聚焦、终端后聚焦，最后焦点
+    // 还是终端的。2026-09-10 agent-browser 0.33.2 代检实测：点通知切到另一行，crumb 换成了那一行、
+    // 面板也画出来了，document.activeElement 仍是 xterm 的 helper TEXTAREA。jsdom 里 TerminalView
+    // 是个不会 focus 的替身，这条测不出来，别因为单测绿就把 setTimeout 拿掉。
+    // 之后 WS「attached」到达时那一次 focus 有 TerminalView 自己的 typingElsewhere 挡着（活动元素
+    // 是别处的 input 就不抢），所以只需要赢下挂载这一次。
+    const t = setTimeout(() => {
+      // TURN_DONE 落在输入框，WAITING 落在第一个按钮（Allow，或只有"打开终端"时就是它）。
+      (inputRef.current ?? rootRef.current?.querySelector("button"))?.focus();
+      onFocusHandled?.();
+    }, 0);
+    return () => clearTimeout(t);
   }, [focusRequest, onFocusHandled]);
 
   const pending = row.pending_decision;

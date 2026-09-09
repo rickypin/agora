@@ -216,6 +216,8 @@ describe("Workspace", () => {
     await act(async () => {
       n.created[0]!.note.onclick?.({});
     });
+    // 聚焦推迟了一个宏任务（面板要赢过 TerminalView 挂载时的 term.focus()，见 RespondPanel 注释）。
+    await flush();
     expect(document.activeElement).toBe(screen.getByTestId("next-input"));
   });
 
@@ -230,15 +232,18 @@ describe("Workspace", () => {
     // 点行的焦点归终端（agora-p29 / agora-vcc 不变）：面板不抢，Alt/Option+R 才抢。
     expect(document.activeElement).not.toBe(screen.getByTestId("next-input"));
     fireEvent.keyDown(window, { code: "KeyR", altKey: true });
+    await flush(); // 聚焦推迟一个宏任务，见 RespondPanel 里那段注释
     expect(document.activeElement).toBe(screen.getByTestId("next-input"));
     // WAITING 行落在第一个按钮上（Allow）：那一刻要按的就是它。
     fireEvent.click(screen.getByTestId("row-n:w"));
     fireEvent.keyDown(window, { code: "KeyR", altKey: true });
+    await flush();
     expect(document.activeElement).toBe(screen.getByTestId("allow"));
     // RUNNING 行没有面板：什么都不做，焦点原地不动。
     fireEvent.click(screen.getByTestId("row-n:b"));
     const before = document.activeElement;
     fireEvent.keyDown(window, { code: "KeyR", altKey: true });
+    await flush();
     expect(screen.queryByTestId("next-input")).toBeNull();
     expect(document.activeElement).toBe(before);
   });
