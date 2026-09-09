@@ -39,12 +39,13 @@
 | Alt/Option + ] / [ | Next / Previous Agent |
 | Alt/Option + N | New Agent |
 | Alt/Option + G | 切换侧栏视图 |
+| Alt/Option + R | 聚焦回答面板的输入框（TURN_DONE）或第一个按钮（WAITING）；面板不在时不做事 |
 
 **终端有焦点时 Ctrl 组合一律归 pane**（agora-82g，2026-09-05 代检：Ctrl+K / F 曾被 xterm 吞成 `^K` / `^F`，面板与过滤开不了）：Ctrl+K 是 readline 的 kill-line、Ctrl+F 是 vim / less 的翻页，agora 不抢——§6.5 的硬约束不只那六个键。终端里开面板 / 过滤用 Alt/Option+K / F（macOS 上 Cmd+K / F 也行）；焦点在侧栏、过滤框或 body 上时 Ctrl+K / F 照旧。实现：终端层（`handleTerminalKey`）把 `matchShortcut` 认的、不带 Ctrl 的键返回 false 让 xterm 别碰，事件照常冒泡到 window 由全局层处理——不然 xterm 处理完 Alt+字母（Linux / Windows 发 `ESC x`）也会 stopPropagation，Alt 系键位在终端聚焦时同样按不动。Alt+F 在 Linux 的 readline 里是 forward-word，Alt+→ 同义且照发；macOS 上 Option+F 本来只会打出 `ƒ`。Chrome 在 Windows / Linux 把 Alt+F 当菜单加速键，页面 `preventDefault` 能不能压住它只有人在真浏览器里按过才算数（验证纪律见下）。
 
 浏览器全局快捷键必须避免吞掉终端内 Ctrl+C / Ctrl+D / Ctrl+Z / Ctrl+R / Ctrl+A / Ctrl+E 等常见操作。**能留给 agora 的只有浏览器自己没占的组合**：Cmd/Ctrl+数字（标签页）、Cmd/Ctrl+Shift+] / [（下/上一个标签页）、Cmd/Ctrl+N（新窗口）都在浏览器 UI 层被吃掉，页面连 keydown 都收不到，`preventDefault` 也救不回来（macOS Chrome 人眼实测 2026-09-04，agora-rzn：这三类原先都写在本表里，按下去响应的是 Chrome）。所以除了面板与过滤这两个 Cmd/Ctrl 组合，其余一律走 Alt/Option。**验证纪律**：jsdom 没有保留键这回事，agent-browser 经 CDP 把按键直接注入渲染进程、绕过浏览器的加速键处理——两者对 Cmd/Ctrl 系键位都只会给出假阳性，只有人在真浏览器里按过才算数。
 
-实现落在 `web/src/keys.ts` 一层（终端侧接在 TerminalView 的 `attachCustomKeyEventHandler`，全局侧接在 Workspace 的 window keydown）：那六个 Ctrl 组合被写成名单，全局层一律不认，哪怕将来给它们绑了动作。Alt/Option 系一律认 `event.code`（`Digit3` / `BracketRight` / `KeyN` / `KeyG`）而不是 `event.key`——macOS 上 Option+3 的 key 是 `£`、Option+] 是 `‘`、Option+N 是死键 `Dead`、Option+G 是 `©`。
+实现落在 `web/src/keys.ts` 一层（终端侧接在 TerminalView 的 `attachCustomKeyEventHandler`，全局侧接在 Workspace 的 window keydown）：那六个 Ctrl 组合被写成名单，全局层一律不认，哪怕将来给它们绑了动作。Alt/Option 系一律认 `event.code`（`Digit3` / `BracketRight` / `KeyN` / `KeyG` / `KeyR`）而不是 `event.key`——macOS 上 Option+3 的 key 是 `£`、Option+] 是 `‘`、Option+N 是死键 `Dead`、Option+G 是 `©`、Option+R 是 `®`。
 
 ### 终端要回来的键（agora-xqa.3）
 
@@ -126,16 +127,28 @@ RUNNING
 ✓ own-kill                 $ shell  @ mac            finished 9m
 ```
 
-侧栏选中行下方是就地 respond 区（MISSION §6.3 §7.3，`web/src/Respond.tsx`）：WAITING 且 `reason = permission`、`respond_via = hook` → 问题文本（`pending_decision.summary`，形如 `Bash: git push origin main`——工具名 + `tool_input` 主参数的首行，截到 200 字符加 `…`；载荷没带 `tool_input` 才只剩工具名，`src/adapter/hooks.rs permission_summary`）+ Allow / Deny / 打开终端，`respond_within_secs` 短于 5 分钟（Codex 20 s）时再加一行"N 秒内没答会交回终端"；WAITING 的其它情形（`question`，或 `respond_via = terminal`）→ 只有问题文本与"打开终端"；TURN_DONE → `↳` 最后一条回复 + "下一条指令"输入框（发 text，尾部带换行）。Allow / Deny 撞上 `no_pending_decision`（终端先答了 / 过期）只显示一行提示，行状态随事件自己变。
+主区 crumb 之下、终端之上是**回答面板**（MISSION §6.3 §7.3，`web/src/RespondPanel.tsx`；A50，agora-4yr.1，2026-09-10 从侧栏选中行的展开区搬来——260 px 的窄列装不下几百行的 TURN_DONE 回复，输入框还沉在全文底下，agora-03k）：WAITING 且 `reason = permission`、`respond_via = hook` → 问题文本（`pending_decision.summary`，形如 `Bash: git push origin main`——工具名 + `tool_input` 主参数的首行，截到 200 字符加 `…`；载荷没带 `tool_input` 才只剩工具名，`src/adapter/hooks.rs permission_summary`）+ Allow / Deny / 打开终端，`respond_within_secs` 短于 5 分钟（Codex 20 s）时再加一行"N 秒内没答会交回终端"；WAITING 的其它情形（`question`，或 `respond_via = terminal`）→ 只有问题文本与"打开终端"；TURN_DONE → **"下一条指令"输入框在最上面**（发 text，尾部带换行），其下是 `↳` 最后一条回复（纯文本 `white-space: pre-wrap`，最多 40vh、内部滚动；markdown 排版与「展开全文」折叠归 agora-4yr.2）。Allow / Deny 撞上 `no_pending_decision`（终端先答了 / 过期）只显示一行提示，行状态随事件自己变。
 
-选中行的展开区从上到下（`web/src/SessionRow.tsx`；agora-h1k.3 定）：① 就地 respond（上一段，WAITING / TURN_DONE 才有）；② **验收标准**折叠块——`task.acceptance`（`docs/spec/api.md`，读自 beads 的 acceptance_criteria、不复制进 agora 的库，不变量 12）全文、多行原样，一行 summary `▾ 验收标准 · agora-h1k.3` 可折叠，默认展开（行展开就是为了看"做完算什么"，MISSION §6.3 看结果 / A40）；没有任务或 beads 里没写不占位。respond 在上：回答问题 / 给下一条指令是先做的事，对照验收是看结果时的事；③ **改动文件**（`web/src/Changes.tsx`；A41，agora-h1k.5）接在验收标准之后，两者并排对照——`GET /api/sessions/:id/changes`（`docs/spec/api.md`「只读产出」，该 worktree 的只读 `git status`）的列表 `<单字母> <path>`（M / A / D / R / C / T / U / ?，与 `git status --short` 同一习惯），标题带分支名，空列表一行「无改动」，`reason` 按类型一行灰字（`not_a_repo` 不是 git 仓库、`no_directory` 工作目录不存在、`no_git` 本机没有 git、`timeout` git status 超时、`git` git 失败——只按类型不按文本，MISSION §2.3 规则 10）；status 是 TURN_DONE / FINISHED / FAILED（做完了看结果）或 RUNNING（瞄一眼进度）时显示，每次 status 变化拉一次、**不轮询**，WAITING / IDLE / STARTING / UNKNOWN 不占位——此刻该做的是回答问题。旁边的「看 diff」把主区切成这一行的 diff 视图（agora-a46 之后没有标签页，主区一次只显示选中行的终端或它的 diff）：crumb 是 `git diff / <会话名>` 带「关闭 diff」、没有 Settings（它不是会话），里面是同一个 TerminalView 以 `WS /api/sessions/:id/diff` 挂的**只读**终端——在该 worktree 跑 `git --no-pager diff HEAD`，连接状态显示「只读」，键入不发也不进 PTY（两边各守一半），跑完显示退出码、按钮「重新运行」再跑一次；「关闭 diff」或再点这一行回到它的终端，点别的行则切到那一行的终端，三者都关 WS、git 进程被收走；侧栏不多一行、`GET /api/sessions` 行数不变；会话被删时主区回到空。`reason` 非空时按钮禁用（没有可 diff 的仓库）。在 beads 里改了验收标准，`TaskIndex` 的 TTL（5 min）到期重查后展开区跟着变。守卫 `web/src/SessionRow.test.tsx`、`web/src/Changes.test.tsx`、`web/src/Workspace.test.tsx`（看 diff 一节）。
+状态既不是 WAITING 也不是 TURN_DONE 时面板一格都不占；看 diff 时不画（那一格在看结果，不在回答）。「打开终端」在主区里的意思是**把焦点交给下面的终端**（面板与终端本来就上下相邻，不再是切标签页）；external 会话没有终端可交（MISSION §5.5），这个按钮不画，经 hook 的 Allow / Deny 照旧。输入框里按 Escape 同样把焦点还给终端。终端焦点规则（agora-p29 / agora-vcc）不变：点行仍然聚焦终端，面板只在 Alt/Option+R 与通知点击两条路径上拿焦点。守卫 `web/src/RespondPanel.test.tsx`、`web/src/Workspace.test.tsx`（crumb → 面板 → pane 的 DOM 顺序、diff 视图不画、通知点击与 Alt/Option+R 的落点）、`web/src/Sidebar.test.tsx`（侧栏一个 `respond-` testid 都没有）、`web/src/keys.test.ts`（Alt+R 认 code）。
+
+```
+agora-03k 侧栏展开区可读性差 / claude @ mac        [Settings] [关闭]
+┌ 回答面板 ───────────────────────────────────────────────┐
+│ [下一条指令                                    ] [发送] │
+│ ↳ 结论先说：可以做局部性能优化…                         │
+│   ## 1. 总判 …（最多 40vh，内部滚动）                   │
+└─────────────────────────────────────────────────────────┘
+┌ TERMINAL ───────────────────────────────────────────────┐
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+选中行下方还剩两段（`web/src/SessionRow.tsx`；agora-h1k.3 定。就地 respond 曾是这里的第 ①，2026-09-10 搬进主区成了上一段的回答面板；余下两段进主区归 agora-4yr.3）：① **验收标准**折叠块——`task.acceptance`（`docs/spec/api.md`，读自 beads 的 acceptance_criteria、不复制进 agora 的库，不变量 12）全文、多行原样，一行 summary `▾ 验收标准 · agora-h1k.3` 可折叠，默认展开（行展开就是为了看"做完算什么"，MISSION §6.3 看结果 / A40）；没有任务或 beads 里没写不占位。回答面板在主区、在这两段之上：回答问题 / 给下一条指令是先做的事，对照验收是看结果时的事；② **改动文件**（`web/src/Changes.tsx`；A41，agora-h1k.5）接在验收标准之后，两者并排对照——`GET /api/sessions/:id/changes`（`docs/spec/api.md`「只读产出」，该 worktree 的只读 `git status`）的列表 `<单字母> <path>`（M / A / D / R / C / T / U / ?，与 `git status --short` 同一习惯），标题带分支名，空列表一行「无改动」，`reason` 按类型一行灰字（`not_a_repo` 不是 git 仓库、`no_directory` 工作目录不存在、`no_git` 本机没有 git、`timeout` git status 超时、`git` git 失败——只按类型不按文本，MISSION §2.3 规则 10）；status 是 TURN_DONE / FINISHED / FAILED（做完了看结果）或 RUNNING（瞄一眼进度）时显示，每次 status 变化拉一次、**不轮询**，WAITING / IDLE / STARTING / UNKNOWN 不占位——此刻该做的是回答问题。旁边的「看 diff」把主区切成这一行的 diff 视图（agora-a46 之后没有标签页，主区一次只显示选中行的终端或它的 diff）：crumb 是 `git diff / <会话名>` 带「关闭 diff」、没有 Settings（它不是会话），里面是同一个 TerminalView 以 `WS /api/sessions/:id/diff` 挂的**只读**终端——在该 worktree 跑 `git --no-pager diff HEAD`，连接状态显示「只读」，键入不发也不进 PTY（两边各守一半），跑完显示退出码、按钮「重新运行」再跑一次；「关闭 diff」或再点这一行回到它的终端，点别的行则切到那一行的终端，三者都关 WS、git 进程被收走；侧栏不多一行、`GET /api/sessions` 行数不变；会话被删时主区回到空。`reason` 非空时按钮禁用（没有可 diff 的仓库）。在 beads 里改了验收标准，`TaskIndex` 的 TTL（5 min）到期重查后展开区跟着变。守卫 `web/src/SessionRow.test.tsx`、`web/src/Changes.test.tsx`、`web/src/Workspace.test.tsx`（看 diff 一节）。
 
 ```
 ◆ agora-h1k.3 会话行展开显示任务的验收标准 [Claude] [mac]    turn done 2m
   ❯ 做 h1k.3
   ↳ 改完了，vitest 全绿
-  │ ↳ 改完了，vitest 全绿
-  │ [下一条指令            ] [发送]
   │ ▾ 验收标准 · agora-h1k.3
   │ tests/task_info.rs::acceptance_is_read_not_stored（库里无该字段、API 有）；
   │ 前端 vitest：展开显示与折叠；docs/spec/api.md task 形态回写。
@@ -158,7 +171,7 @@ diff --git a/src/session/manager.rs b/src/session/manager.rs
 
 **FINISHED 分来源与「看过」**（MISSION §4.6「看过」的三条证据、§6.3 排序表；A46，agora-j4w.1；`finishedCollapsed` / `sectionOf`）：`origin = external` 的 FINISHED 一律直接进折叠区——它的工作面在别的窗口，人是在终端里自己结束的会话（证据 ②），agora 这边没有 pane 也没有 Restart，能给的只有两行摘要；不按 `reason` 分（Claude / Grok 连关窗口都发 SessionEnd、Codex 关窗口不发，分不可靠也不必要）。`origin = agora / adopted` 的 FINISHED 先留在 NEEDS ATTENTION，**看过**（证据 ①：在本浏览器里被选中展开过一次）之后才进折叠区。「看过」是浏览器视图状态，不加服务端字段：`Workspace` 在**离开**那一行（切到别的行 / 关闭视图）的时刻记下——记在选中那一刻它会立刻掉进收起的折叠区、主区还开着它的终端而侧栏找不到这一行；离开时看它当时的状态，选中时还在跑、离开后才 FINISHED 的不算看过。集合存 `localStorage`（键 `agora.seen-finished`，读写都包 try/catch，丢了的代价只是几行回到 NEEDS ATTENTION 再看一眼）；元素是 `seenKey` = `<id>@<status_since>` 而不是裸 id（agora-23h）：记号跟着"这一次完成"走——行被删（Delete metadata）或又跑起来（Restart）记号作废，而 Restart 后 running → finished 被同一批事件（300 ms 合并窗）或断线重连的 resync 跳过中间态时，新一次 FINISHED 的 `status_since` 不同、旧键对不上，同样回到 NEEDS ATTENTION（守卫 `Workspace.test.tsx`「a seen mark dies with its completion」）。折叠区标题 `▸ FINISHED N` 是按钮（`data-testid="section-finished"`，`aria-expanded`），默认收起、刷新回到收起，选中行落进收起的折叠区（Alt/Option+N、finished 通知点击、命令面板都能从外面选中它）时自动展开一次、人仍能手动收回（agora-4nk；守卫 `Sidebar.test.tsx`「auto-expands the collapsed Finished section」），N 是折叠区里的行数。**一键清理**（A46，agora-j4w.2）：Header 计数行里的 `Finished N` 仍按状态数，但折叠区里有行时它是按钮（`data-testid="clear-finished"`，下划线提示）——点了弹 ConfirmDialog，写明将删的行数与其中 agora / adopted 来源的行数（它们已退出的运行时会话与输出会随 DELETE 一并清掉，MISSION §4.6「已退出的顺手清理」），确认后对折叠区里的每一行各发一次 `DELETE /api/sessions/:id`（没有批量端点，也不加：MISSION §11 不引入 Archive），NEEDS ATTENTION 里没看过的 FINISHED 行不发；清理的对象按过滤前的全部行算（过滤只是暂时少画几行，不改变哪些行「可以清」）；peer stale 的行跳过（一跳转发到不了）；跑完计数行下面一句 `已清理 N 行[，跳过 S 行（节点离线）][，失败 F 行]`（`data-testid="clear-finished-note"`，8 s 后消失）。不可逆所以要确认；不是 kill，不走 Kill 的「正在结束…」面板。守卫 `web/src/attention.test.ts`（external FINISHED 不 needsAttention、agora FINISHED 看过前后、三段拼接顺序等于 sortByAttention 顺序且与过滤可交换）、`web/src/Sidebar.test.tsx`（默认折叠带计数、展开后可选中且序号连续、NEEDS ATTENTION 无 external FINISHED、一键清理只对折叠区每行各发一次 DELETE 且 stale 行跳过 / 取消不发）、`web/src/Workspace.test.tsx`「an agora FINISHED row stays in NEEDS ATTENTION until it has been opened and left」。不做 Archive（MISSION §11）。2026-09-08 反转（agora-uvd.3）：这里以前写死侧栏一律平铺、不做分组，理由是分组会与 Alt+N 的序号打架（agora-a46 的教训）——「按项目」视图的序号按 DFS 顺序数，与折叠照数同一条规则，那个冲突不存在；「需要我」视图本身仍然平铺，分组只发生在另一种视图里。
 
-行上的节点 chip（MISSION §3.5 "每行标明节点"；A49，agora-uvd.7；`web/src/RowIdentity.tsx`）**本机也标**：两台机常态并行，用户反馈「在本机还是 zuan 不明显」，2026-09-09 反转 agora-7ku.5（当时判断满屏 `@ mac` 是噪音——那是单机场景）。chip 带 `data-node`，peer 按节点名字符码求和映射到 8 档色板着色（`nodeHue`，相邻 45°），本机 muted 边框 + 正常文字不着色。还没拉到 `/api/system` 的 `node`（与 Header 本机那一枚同源）之前谁都不标——先满屏 chip 再把本机改成不着色更难看。同一行前面是 agent 品牌徽标（`agentBadge`：每个 adapter 一个 glyph + 短标签 + 色相，`data-agent`；shell / custom 不着色）。peer 断线后行带 `stale: true` 与 `last_seen`（`docs/spec/api.md`「peer 视图」；agora-7ku.6）：行**不消失**，整行淡显（`li.stale`，hover / 选中回到可读），`.meta` 里 `@ zuan` 之后多一段 `○ 上次见到 23:10`——黄点与 `clockText`（本地时区 HH:MM）都与 Header 那一枚 stale 节点同源，完整 UTC 放 title；非 stale 行没有这一段。点开 stale 行与点开别的行没有区别（建终端 WS、就地 respond 照常）：节点看到人碰了 stale peer 的会话就插一次重连（`docs/spec/architecture.md`「立即重试」），恢复后事件流把行刷回正常、淡显消失，浏览器不用多做任何事。
+行上的节点 chip（MISSION §3.5 "每行标明节点"；A49，agora-uvd.7；`web/src/RowIdentity.tsx`）**本机也标**：两台机常态并行，用户反馈「在本机还是 zuan 不明显」，2026-09-09 反转 agora-7ku.5（当时判断满屏 `@ mac` 是噪音——那是单机场景）。chip 带 `data-node`，peer 按节点名字符码求和映射到 8 档色板着色（`nodeHue`，相邻 45°），本机 muted 边框 + 正常文字不着色。还没拉到 `/api/system` 的 `node`（与 Header 本机那一枚同源）之前谁都不标——先满屏 chip 再把本机改成不着色更难看。同一行前面是 agent 品牌徽标（`agentBadge`：每个 adapter 一个 glyph + 短标签 + 色相，`data-agent`；shell / custom 不着色）。peer 断线后行带 `stale: true` 与 `last_seen`（`docs/spec/api.md`「peer 视图」；agora-7ku.6）：行**不消失**，整行淡显（`li.stale`，hover / 选中回到可读），`.meta` 里 `@ zuan` 之后多一段 `○ 上次见到 23:10`——黄点与 `clockText`（本地时区 HH:MM）都与 Header 那一枚 stale 节点同源，完整 UTC 放 title；非 stale 行没有这一段。点开 stale 行与点开别的行没有区别（建终端 WS、回答面板照常）：节点看到人碰了 stale peer 的会话就插一次重连（`docs/spec/architecture.md`「立即重试」），恢复后事件流把行刷回正常、淡显消失，浏览器不用多做任何事。
 
 meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid="project-<id>"`；A49，agora-uvd.8，2026-09-09；数据是 `docs/spec/api.md` 会话行的只读 `project` 字段，agora-uvd.1）：`project` 非 null → `<name> ⎇ <branch>`，linked worktree（`main = false`）在名字后加 ` / <worktree 目录最后一段>`（`agora / agora-03k ⎇ agora-03k`），detached HEAD 写字面 `detached`、不显示 commit 短 hash；`project` 为 null（不是仓库 / 目录不存在 / 没 git）但有 `working_directory` → 目录最后一段（`tmp`）；两者都没有不占位。只显示名字与分支，完整 worktree 路径（或 working_directory）放 title。**树视图不画**这一行（`RowIdentity` 的 `showProject=false`）：组头已说明仓库与分支，行上再画是噪音。守卫 `web/src/SessionRow.test.tsx`「shows a repo ⎇ branch line in attention mode」「falls back to the directory name … absent when showProject is false」「detached HEAD shows ⎇ detached」。
 
@@ -178,7 +191,7 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 
 - 权限问一次：`Notification.permission` 还是 `default` 时主区顶部有一条"agent 需要你时弹浏览器通知？ [允许通知] [以后再说]"，答过（granted / denied）或点了"以后再说"就没了，之后不再弹权限框；denied 时通知静默丢掉。
 - 弹：同一会话在通知中心只占一格（弹新的先 close 旧的；tag 每条唯一——macOS 上同 tag 替换只静默更新不弹横幅，2026-09-04 人眼验收实测）。
-- 点击：窗口拉到前面，该行成为侧栏 active 行——WAITING / TURN_DONE 的就地回答区随行展开（Allow / Deny / 下一条指令），不是把人扔进终端。
+- 点击：窗口拉到前面，该行成为侧栏 active 行——主区 crumb 之下画出它的回答面板（Allow / Deny / 下一条指令），焦点直接落进面板（TURN_DONE 是输入框、WAITING 是第一个按钮；A50，agora-4yr.1），不是把人扔进终端。
 
 ## 运行时 degraded 横幅（MISSION §10.3；agora-bgr）
 
