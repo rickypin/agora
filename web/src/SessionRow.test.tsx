@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { SessionRow } from "./events";
 import { clockText } from "./Header";
+import { RowIdentity, projectLine } from "./RowIdentity";
 import { SidebarRow, staleSeen } from "./SessionRow";
 
 afterEach(cleanup);
@@ -71,6 +72,48 @@ it("shows an agent badge with data-agent and a colored node chip with data-node 
   const peerBadge = document.querySelector("[data-agent]") as HTMLElement | null;
   expect(peerBadge?.getAttribute("data-agent")).toBe("codex");
   expect(peerBadge?.style.getPropertyValue("--hue")).toBe("200");
+});
+
+const MAIN = { repo: "/Users/r/code/agora", name: "agora", worktree: "/Users/r/code/agora", branch: "main", main: true };
+const LINKED = { ...MAIN, worktree: "/Users/r/code/agora-wt/agora-03k", branch: "agora-03k", main: false };
+
+it("shows a repo ⎇ branch line in attention mode, with worktree name when not main (A49)", () => {
+  // 主 worktree：`agora ⎇ main`；linked worktree 在名字后加 worktree 目录最后一段。只显示名字与分支，
+  // 完整路径放 title。位置在 meta 之下（预览之上）。
+  mount(row({ project: MAIN }), true, "n");
+  const line = screen.getByTestId("project-n:a");
+  expect(line.textContent).toBe("agora ⎇ main");
+  expect(line.title).toBe("/Users/r/code/agora");
+  expect(line.className).toBe("line-project");
+  const meta = document.querySelector(".meta")!;
+  expect(meta.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  cleanup();
+  mount(row({ project: LINKED }), true, "n");
+  expect(screen.getByTestId("project-n:a").textContent).toBe("agora / agora-03k ⎇ agora-03k");
+  expect(screen.getByTestId("project-n:a").title).toBe("/Users/r/code/agora-wt/agora-03k");
+});
+
+it("the project line falls back to the directory name when project is null, and is absent when showProject is false", () => {
+  // 不是仓库（服务端给 null）但有工作目录：目录最后一段，title 放完整路径；两者都没有不占位；
+  // 树视图（SidebarTree 传 showProject=false）组头已说明仓库与分支，行上不画。
+  mount(row({ project: null, working_directory: "/tmp" }), true, "n");
+  expect(screen.getByTestId("project-n:a").textContent).toBe("tmp");
+  expect(screen.getByTestId("project-n:a").title).toBe("/tmp");
+  cleanup();
+  mount(row({ project: null }), true, "n");
+  expect(screen.queryByTestId("project-n:a")).toBeNull();
+  cleanup();
+  render(<RowIdentity row={row({ project: MAIN })} localNode="n" now={0} showProject={false} />);
+  expect(screen.queryByTestId("project-n:a")).toBeNull();
+  expect(screen.getByTestId("row-node-n:a")).toBeTruthy();
+  expect(projectLine(row())).toBeNull();
+});
+
+it("detached HEAD shows ⎇ detached", () => {
+  // 取舍：字面 detached，不显示 commit 短 hash。
+  mount(row({ project: { ...MAIN, branch: null } }), true, "n");
+  expect(screen.getByTestId("project-n:a").textContent).toBe("agora ⎇ detached");
+  expect(projectLine(row({ project: { ...LINKED, branch: null } }))?.text).toBe("agora / agora-03k ⎇ detached");
 });
 
 it("a stale peer row says when the node was last seen, in local HH:MM, and dims the whole row (A29; invariant 8)", () => {

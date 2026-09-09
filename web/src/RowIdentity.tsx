@@ -60,6 +60,7 @@ export function RowIdentity({
   row,
   localNode,
   now,
+  showProject = true,
 }: {
   row: SessionRow;
   localNode?: string;
@@ -71,34 +72,42 @@ export function RowIdentity({
   const agentType = String(row.agent_type ?? "");
   const badge = agentBadge(agentType);
   const local = localNode !== undefined && row.node === localNode;
+  const project = showProject ? projectLine(row) : null;
   return (
-    <span className="meta">
-      <span
-        className="badge"
-        data-agent={agentType}
-        style={badge.hue ? hueStyle(badge.hue) : undefined}
-      >
-        {badge.glyph} {badge.label}
-      </span>
-      {localNode !== undefined && (
+    <>
+      <span className="meta">
         <span
-          className={local ? "node local" : "node peer"}
-          data-testid={`row-node-${row.id}`}
-          data-node={row.node}
-          style={local ? undefined : hueStyle(nodeHue(row.node))}
+          className="badge"
+          data-agent={agentType}
+          style={badge.hue ? hueStyle(badge.hue) : undefined}
         >
-          @ {row.node}
+          {badge.glyph} {badge.label}
         </span>
-      )}
-      {row.origin === "external" && <span className="origin">external</span>}
-      {seen && (
-        <span className="stale-seen" data-testid={`row-stale-${row.id}`} title={seen.title}>
-          {seen.text}
+        {localNode !== undefined && (
+          <span
+            className={local ? "node local" : "node peer"}
+            data-testid={`row-node-${row.id}`}
+            data-node={row.node}
+            style={local ? undefined : hueStyle(nodeHue(row.node))}
+          >
+            @ {row.node}
+          </span>
+        )}
+        {row.origin === "external" && <span className="origin">external</span>}
+        {seen && (
+          <span className="stale-seen" data-testid={`row-stale-${row.id}`} title={seen.title}>
+            {seen.text}
+          </span>
+        )}
+        <span className={`state st-${row.status}`} data-testid={`state-${row.id}`}>
+          {statusLine(row, now)}
         </span>
-      )}
-      <span className={`state st-${row.status}`} data-testid={`state-${row.id}`}>
-        {statusLine(row, now)}
       </span>
-    </span>
+      {project && (
+        <span className="line-project" data-testid={`project-${row.id}`} title={project.title}>
+          {project.text}
+        </span>
+      )}
+    </>
   );
 }
