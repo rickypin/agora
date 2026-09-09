@@ -85,8 +85,12 @@ export function SidebarTree({
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsed());
   // 「shell」失败：组头下一行灰字，5 s 后自己消失（一次只留最后一条——同时点两个组头不是真实用法）。
   const [shellError, setShellError] = useState<{ key: string; message: string } | null>(null);
-  // 正在 POST 的那个组：按钮禁用，免得连点起出两个 shell。
-  const [shellBusy, setShellBusy] = useState<string | null>(null);
+  // 正在 POST 的那些组（存组 key，不是一个布尔/单值）：只禁用发起的那个组头。同时对两个 worktree
+  // 起 shell 是正当用法，不该互相挡——判断写成全局的 `!== null` 时，在途期间所有组头一起灰、点别的组
+  // 还会被 openShell 开头的早退静默吞掉（连错误提示都没有）。本机看不见是因为窗口太短：隔离 daemon 上
+  // 连打五次 POST /api/sessions 是 22 / 22 / 23 / 28 / 42 ms（2026-09-09 实测，agora-x1k）；peer 一跳
+  // 转发、手机远程时就看得见。守卫：SidebarTree.test.tsx 里 in-flight 的两条（自己禁用 / 别人不受影响）。
+  const [shellBusy, setShellBusy] = useState<Set<string>>(() => new Set());
   useEffect(() => {
     if (shellError === null) return;
     const t = setTimeout(() => setShellError(null), 5000);
@@ -121,9 +125,9 @@ export function SidebarTree({
    * 直接 POST 一条 shell 会话，成功交给 onCreated（Workspace 的 pendingOpen，行进列表后自动选中）。
    */
   async function openShell(group: TreeGroup) {
-    if (!api || shellBusy !== null) return;
+    if (!api || shellBusy.has(group.key)) return;
     const node = nodeOf(group);
-    setShellBusy(group.key);
+    setShellBusy((prev) => new Set(prev).add(group.key));
     setShellError(null);
     const r = await api.create({
       ...(node ? { node } : {}),
@@ -134,7 +138,12 @@ export function SidebarTree({
       working_directory: group.title,
       worktree: group.main ? null : (group.branch ?? group.title),
     });
-    setShellBusy(null);
+    // 只删自己那个 key：别的组头可能同时也在途。
+    setShellBusy((prev) => {
+      const next = new Set(prev);
+      next.delete(group.key);
+      return next;
+    });
     if (r.ok) {
       onCreated?.(r.value.id);
       return;
@@ -225,7 +234,7 @@ export function SidebarTree({
                     className="tree-action"
                     data-testid={`tree-new-shell-${g.key}`}
                     title={staleTitle ?? "在此开 shell"}
-                    disabled={stale || shellBusy !== null}
+                    disabled={stale || shellBusy.has(g.key)}
                     onClick={(e) => {
                       e.stopPropagation();
                       void openShell(g);

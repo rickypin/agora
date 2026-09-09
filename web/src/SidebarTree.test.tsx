@@ -215,6 +215,38 @@ it("the shell button posts one shell session in that worktree and reports failur
   expect(onCreated).toHaveBeenCalledTimes(2);
 });
 
+it("the shell button is disabled while its own POST is in flight and a second click posts nothing (A48)", async () => {
+  // 受控 pending promise 把 in-flight 状态钉住：真实时序下这个窗口比任何断言的调度都短
+  // （本机 POST 只有 22–42 ms，agora-x1k 2026-09-09 实测），只有手动 release 才测得到。
+  let release!: (v: unknown) => void;
+  const create = vi.fn().mockReturnValue(new Promise((r) => { release = r; }));
+  mount({ api: { create }, onCreated: vi.fn() });
+  const btn = () => screen.getByTestId(`tree-new-shell-wt:mac:${WT3}`) as HTMLButtonElement;
+  fireEvent.click(btn());
+  expect(create).toHaveBeenCalledTimes(1);
+  expect(btn().disabled).toBe(true);
+  fireEvent.click(btn());
+  expect(create).toHaveBeenCalledTimes(1);
+  release({ ok: true, value: { id: "mac:new1" } });
+  await waitFor(() => expect(btn().disabled).toBe(false));
+});
+
+it("a shell POST in flight does not disable the other worktrees' shell buttons (A48)", async () => {
+  // 同时对两个 worktree 起 shell 是正当用法。in-flight 状态按组 key 存（不是全局标志），
+  // 否则在途期间别的组头一起灰、点了还会被 openShell 的早退静默吞掉——本机 22–42 ms 看不见，
+  // peer 一跳转发时是「按了没反应」。
+  let release!: (v: unknown) => void;
+  const create = vi.fn().mockReturnValue(new Promise((r) => { release = r; }));
+  mount({ api: { create }, onCreated: vi.fn() });
+  fireEvent.click(screen.getByTestId(`tree-new-shell-wt:mac:${WT3}`));
+  const other = screen.getByTestId(`tree-new-shell-wt:mac:${AGORA}`) as HTMLButtonElement;
+  expect(other.disabled).toBe(false);
+  fireEvent.click(other);
+  expect(create).toHaveBeenCalledTimes(2);
+  release({ ok: true, value: { id: "mac:new1" } });
+  await waitFor(() => expect(other.disabled).toBe(false));
+});
+
 it("group header buttons on a stale node are disabled (A48)", () => {
   // zuan 离线（stale）：一跳转发到不了，按了只会得到 502——按钮就是灰的，不弹错误。本机的照常。
   const onNewAgent = vi.fn();
