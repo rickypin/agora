@@ -1,13 +1,15 @@
-import { Fragment, useEffect, useState, type ReactNode, type RefObject } from "react";
+import { Fragment, useEffect, useRef, useState, type PointerEvent, type ReactNode, type RefObject } from "react";
 import type { AdoptBody, SessionApi, WriteResult } from "./api";
 import { countByStatus, sectionOf, type SeenSet } from "./attention";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow, UnregisteredRow } from "./events";
 import { Header, type NodeStatus } from "./Header";
+import { isDesktop } from "./keys";
 import type { NewAgentInitial } from "./NewAgentDialog";
 import { SidebarRow } from "./SessionRow";
 import type { SidebarMode } from "./sidebarMode";
 import { SidebarTree } from "./SidebarTree";
+import { clearWidth, clamp, DEFAULT, loadWidth, storeWidth } from "./sidebarWidth";
 
 // 行组件与它的两个小工具搬去了 SessionRow.tsx（agora-h1k.3 接缝，2026-09-06）；CommandPalette /
 // SessionSettings 仍从这里 import，所以原样再导出一次，调用方一行不改。rowHaystack 也住在
@@ -247,6 +249,43 @@ export function Sidebar({
   useEffect(() => {
     if (activeInFinished) setFinishedOpen(true);
   }, [active, activeInFinished]);
+  // 侧栏宽度：挂载时把上次拖出来的 px 写进 --sidebar-w；拖柄只在桌面断点渲染（agora-uvd.5）。
+  useEffect(() => {
+    applySidebarWidth(loadWidth());
+  }, []);
+  const drag = useRef<{ startX: number; startW: number; last: number } | null>(null);
+  function onResizerPointerDown(e: PointerEvent<HTMLDivElement>) {
+    const startX = e.clientX;
+    if (!Number.isFinite(startX)) return;
+    const startW = currentSidebarWidth();
+    drag.current = { startX, startW, last: startW };
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // jsdom 没有指针捕获；测试直接往拖柄上 fireEvent.pointerMove。
+    }
+    document.body.style.userSelect = "none";
+  }
+  function onResizerPointerMove(e: PointerEvent<HTMLDivElement>) {
+    if (!drag.current) return;
+    const x = e.clientX;
+    if (!Number.isFinite(x)) return;
+    const w = clamp(drag.current.startW + (x - drag.current.startX));
+    drag.current.last = w;
+    applySidebarWidth(w);
+  }
+  function onResizerPointerUp() {
+    if (!drag.current) return;
+    storeWidth(drag.current.last);
+    drag.current = null;
+    document.body.style.userSelect = "";
+  }
+  function onResizerDoubleClick() {
+    drag.current = null;
+    document.body.style.userSelect = "";
+    applySidebarWidth(DEFAULT);
+    clearWidth();
+  }
   return (
     <aside className="sidebar">
       <Header agents={filter ? `${rows.length}/${total}` : total} nodes={nodes} />
@@ -382,6 +421,30 @@ export function Sidebar({
           </ul>
         </>
       )}
+      {isDesktop() && (
+        <div
+          className="sidebar-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整侧栏宽度"
+          data-testid="sidebar-resizer"
+          onPointerDown={onResizerPointerDown}
+          onPointerMove={onResizerPointerMove}
+          onPointerUp={onResizerPointerUp}
+          onPointerCancel={onResizerPointerUp}
+          onDoubleClick={onResizerDoubleClick}
+        />
+      )}
     </aside>
   );
+}
+
+function applySidebarWidth(w: number): void {
+  document.documentElement.style.setProperty("--sidebar-w", `${w}px`);
+}
+
+function currentSidebarWidth(): number {
+  const raw = document.documentElement.style.getPropertyValue("--sidebar-w").trim();
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? n : loadWidth();
 }

@@ -5,8 +5,27 @@ import { partitionByAttention, sortByAttention, type SeenSet } from "./attention
 import type { SessionRow } from "./events";
 import { Sidebar } from "./Sidebar";
 import { treeOrder } from "./sidebarTreeModel";
+import { DEFAULT, SIDEBAR_WIDTH_KEY } from "./sidebarWidth";
 
-afterEach(cleanup);
+// jsdom 26 的 PointerEvent 不是 constructor，fireEvent.pointerDown 会退化成 Event、丢掉 clientX
+// （agora-uvd.5 实测 2026-09-09：拖动断言收到 NaNpx）。MouseEvent 认得 clientX，补一层给指针事件用。
+if (typeof PointerEvent !== "function") {
+  class PointerEventPolyfill extends MouseEvent {
+    pointerId: number;
+    constructor(type: string, init: MouseEventInit & { pointerId?: number } = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 0;
+    }
+  }
+  Object.defineProperty(window, "PointerEvent", { configurable: true, value: PointerEventPolyfill });
+}
+
+afterEach(() => {
+  cleanup();
+  document.documentElement.style.removeProperty("--sidebar-w");
+  document.body.style.userSelect = "";
+  localStorage.removeItem(SIDEBAR_WIDTH_KEY);
+});
 
 function row(id: string, status: string, extra: Partial<SessionRow> = {}): SessionRow {
   return { id, node: "n", status, alive: true, agent_type: "claude", display_name: id.slice(2), ...extra };
@@ -136,6 +155,33 @@ it("the Finished count clears the collapsed section after confirmation: one DELE
   });
   expect(deleted.sort()).toEqual(["n:ext1", "n:ext2", "n:own"]);
   expect(screen.getByTestId("clear-finished-note").textContent).toBe("已清理 3 行，跳过 1 行（节点离线）");
+});
+
+it("dragging the resizer sets --sidebar-w and stores it; double-click restores the default (agora-uvd.5)", () => {
+  mount(ROWS);
+  const resizer = screen.getByTestId("sidebar-resizer");
+  expect(document.documentElement.style.getPropertyValue("--sidebar-w")).toBe(`${DEFAULT}px`);
+  fireEvent.pointerDown(resizer, { clientX: 260, pointerId: 1 });
+  fireEvent.pointerMove(resizer, { clientX: 460, pointerId: 1 });
+  expect(document.documentElement.style.getPropertyValue("--sidebar-w")).toBe("460px");
+  expect(document.body.style.userSelect).toBe("none");
+  fireEvent.pointerUp(resizer, { pointerId: 1 });
+  expect(localStorage.getItem(SIDEBAR_WIDTH_KEY)).toBe("460");
+  expect(document.body.style.userSelect).toBe("");
+  fireEvent.doubleClick(resizer);
+  expect(document.documentElement.style.getPropertyValue("--sidebar-w")).toBe(`${DEFAULT}px`);
+  expect(localStorage.getItem(SIDEBAR_WIDTH_KEY)).toBeNull();
+});
+
+it("no resizer below the desktop breakpoint (agora-uvd.5)", () => {
+  const wide = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { value: 375, configurable: true });
+  try {
+    mount(ROWS);
+    expect(screen.queryByTestId("sidebar-resizer")).toBeNull();
+  } finally {
+    Object.defineProperty(window, "innerWidth", { value: wide, configurable: true });
+  }
 });
 
 it("no clear button without deletable rows or without the DELETE callback", () => {
