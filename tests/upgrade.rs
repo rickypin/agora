@@ -216,8 +216,9 @@ fn term_and_wait(pid: u32, limit: Duration) {
 }
 
 /// 等 daemon 在 socket 上答 Pong；启动含 PATH 探测（最长 5 s）与 tmux 版本探测。
+/// 等的是一个真起来的 `target/debug/agora` 子进程，上限按 `isolate::PROC` 走（agora-pea）。
 async fn wait_pong(sock: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + isolate::PROC;
     loop {
         let reply =
             tokio::time::timeout(Duration::from_secs(2), local::request(sock, &Request::Ping))
@@ -359,6 +360,9 @@ fn rows(sessions: &[Value]) -> Vec<(String, String, String)> {
     rows
 }
 
+/// 上限一律给 `isolate::PROC`：这里等的都是"另一个进程做完事"（daemon 起来、会话列出来、
+/// hook 落到 external 行），满载时争抢 CPU，30 s / 15 s 在 2026-09-08 那批就不够（agora-pea
+/// 点名 upgrade 的三条）。断言原样保留，超时照样红。
 fn wait_until<T>(limit: Duration, mut probe: impl FnMut() -> Result<T, String>) -> T {
     let deadline = Instant::now() + limit;
     loop {
@@ -406,7 +410,7 @@ async fn daemon_restart_keeps_agents_sessions_and_metadata() {
             &format!("print READY-{i}; sleep 60000"),
         );
     }
-    let before = wait_until(Duration::from_secs(30), || {
+    let before = wait_until(isolate::PROC, || {
         let rows = rows(&list_sessions(&home, &cookie));
         if rows.len() == 10 && rows.iter().all(|(_, _, st)| st == "running") {
             Ok(rows)
@@ -439,7 +443,7 @@ async fn daemon_restart_keeps_agents_sessions_and_metadata() {
 
     // 同样十行：id、name、status 仍 running；pane 一个没换。
     wait_pong(&home.socket()).await;
-    let after = wait_until(Duration::from_secs(30), || {
+    let after = wait_until(isolate::PROC, || {
         let rows = rows(&list_sessions(&home, &cookie));
         if rows == before {
             Ok(rows)
@@ -509,7 +513,7 @@ async fn bin_link_repointed_and_hooks_still_deliver() {
     assert!(hook.status.success(), "{}", stderr_of(&hook));
 
     // 事实：GET /api/sessions 里出现该 agent_session_id 的 external 行。
-    wait_until(Duration::from_secs(15), || {
+    wait_until(isolate::PROC, || {
         let sessions = list_sessions(&home, &cookie);
         sessions
             .iter()

@@ -133,7 +133,7 @@ impl Drop for Home {
 
 /// 等 daemon 在 socket 上答 Pong；启动含 PATH 探测（最长 5 s）与 tmux 版本探测。
 async fn wait_pong(sock: &std::path::Path) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + isolate::PROC;
     loop {
         let reply =
             tokio::time::timeout(Duration::from_secs(2), local::request(sock, &Request::Ping))
