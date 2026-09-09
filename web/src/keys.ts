@@ -41,10 +41,12 @@ export type ShortcutAction =
   /** 侧栏第 index+1 条（按当前过滤后的显示顺序）。 */
   | { action: "jump"; index: number }
   /** 切换侧栏视图 attention ↔ tree（A47，agora-uvd.2；Alt/Option+G）。 */
-  | { action: "mode" };
+  | { action: "mode" }
+  /** 焦点进主区回答面板的输入框 / 第一个按钮（A50，agora-4yr.1；Alt/Option+R）。 */
+  | { action: "respond" };
 
 /**
- * 全局快捷键（Cmd/Ctrl+K/F、Alt/Option+K/F、Alt/Option+1…9、Alt/Option+]/[、Alt/Option+N、Alt/Option+G）。
+ * 全局快捷键（Cmd/Ctrl+K/F、Alt/Option+K/F、Alt/Option+1…9、Alt/Option+]/[、Alt/Option+N、Alt/Option+G、Alt/Option+R）。
  *
  * Alt/Option+K / F 是面板与过滤在终端聚焦时的入口（agora-82g）：Ctrl+K / F 那时归 pane，macOS 还有
  * Cmd 可用，Linux / Windows 只剩 Alt。Alt+F 在 Linux 的 readline 里是 forward-word（Alt+→ 同义，
@@ -61,8 +63,8 @@ export function matchShortcut(ev: KeyLike): ShortcutAction | null {
   if (ev.type && ev.type !== "keydown") return null;
   const mod = ev.metaKey || ev.ctrlKey;
 
-  // Alt/Option 系：数字跳转、上下一个、新建、切视图。都不带 Cmd/Ctrl，靠 code 认——macOS 上
-  // Option+] 的 key 是 `‘`、Option+N 是死键 `Dead`、Option+G 是 `©`，只有 code 还认得出（见 KeyLike.code）。
+  // Alt/Option 系：数字跳转、上下一个、新建、切视图、聚焦回答面板。都不带 Cmd/Ctrl，靠 code 认——macOS 上
+  // Option+] 的 key 是 `‘`、Option+N 是死键 `Dead`、Option+G 是 `©`、Option+R 是 `®`，只有 code 还认得出（见 KeyLike.code）。
   if (ev.altKey && !mod) {
     const d = digit(ev);
     if (d !== null) return { action: "jump", index: d - 1 };
@@ -79,6 +81,10 @@ export function matchShortcut(ev: KeyLike): ShortcutAction | null {
         return { action: "filter" };
       case "KeyG":
         return { action: "mode" };
+      case "KeyR":
+        // 只认 code：macOS 上 Option+R 的 key 是 `®`（agora-4yr.1）。Ctrl+R 不受影响——
+        // 它在 TERMINAL_CTRL_KEYS 里、且这一支只在不带 Cmd/Ctrl 时进得来。
+        return { action: "respond" };
       default:
         return null;
     }

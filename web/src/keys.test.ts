@@ -196,6 +196,16 @@ describe("键位表（docs/spec/ux.md）", () => {
     expect(matchShortcut(key("Dead", { altKey: true, code: "KeyN" }))).toEqual({ action: "new" });
   });
 
+  it("Alt+R is a respond action by code", () => {
+    // A50（agora-4yr.1）：Alt/Option+R 把焦点放进主区回答面板。macOS 上 Option+R 的 key 是 `®`，
+    // 认 key 的实现按不动；Ctrl+R 是终端的重搜索（TERMINAL_CTRL_KEYS），全局层一个字都不许碰。
+    expect(matchShortcut(key("®", { altKey: true, code: "KeyR" }))).toEqual({ action: "respond" });
+    expect(matchShortcut(key("r", { altKey: true, code: "KeyR" }))).toEqual({ action: "respond" });
+    expect(matchShortcut(key("r", { ctrlKey: true, code: "KeyR" }))).toBeNull();
+    expect(matchShortcut(key("r", { metaKey: true, code: "KeyR" }))).toBeNull();
+    expect(matchShortcut(key("r", { altKey: true, ctrlKey: true, code: "KeyR" }))).toBeNull();
+  });
+
   it("浏览器自己的加速键 agora 一律不认（agora-rzn）", () => {
     // macOS Chrome 人眼实测 2026-09-04：Cmd+Shift+]/[ 是下/上一个标签页、Cmd+N 是新窗口，
     // 在浏览器 UI 层就被吃掉，页面收不到 keydown——绑了也白绑，还会骗后来者以为有这个键。
