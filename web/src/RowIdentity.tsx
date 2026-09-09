@@ -31,6 +31,31 @@ export function staleSeen(row: SessionRow): { text: string; title: string } | nu
   return { text: `○ 上次见到 ${clockText(seen)}`, title: `该节点离线，正在重连；上次见到 ${seen}` };
 }
 
+/** 路径最后一段（`/a/b/agora-03k` → `agora-03k`）；尾部斜杠忽略。 */
+function lastSegment(path: string): string {
+  const parts = path.split("/").filter((p) => p !== "");
+  return parts.length ? parts[parts.length - 1] : path;
+}
+
+/**
+ * 「仓库 · 分支」一行的文案与 title（A49，agora-uvd.8）。
+ * - `row.project` 非 null → `<name> ⎇ <branch>`；linked worktree（`main === false`）在 name 后加
+ *   ` / <worktree 最后一段>`；`branch === null` 写字面 `detached`（取舍：不显示 commit 短 hash）。
+ * - project 为 null 但有 working_directory → 目录最后一段（服务端归「其它目录」的行也得知道在哪）。
+ * - 两者都没有 → null，不占位。
+ * 只显示名字与分支，完整路径放 title。
+ */
+export function projectLine(row: SessionRow): { text: string; title: string } | null {
+  const p = row.project;
+  if (p) {
+    const where = p.main ? p.name : `${p.name} / ${lastSegment(p.worktree)}`;
+    return { text: `${where} ⎇ ${p.branch ?? "detached"}`, title: p.worktree };
+  }
+  const dir = typeof row.working_directory === "string" ? row.working_directory : "";
+  if (dir) return { text: lastSegment(dir), title: dir };
+  return null;
+}
+
 export function RowIdentity({
   row,
   localNode,
@@ -39,6 +64,8 @@ export function RowIdentity({
   row: SessionRow;
   localNode?: string;
   now: number;
+  /** attention 视图 true；树视图（agora-uvd.3 SidebarTree）传 false——组头已说明仓库与分支，行上再画是噪音。 */
+  showProject?: boolean;
 }) {
   const seen = staleSeen(row);
   const agentType = String(row.agent_type ?? "");
