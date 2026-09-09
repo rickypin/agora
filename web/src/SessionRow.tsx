@@ -97,7 +97,7 @@ interface RowProps {
   expanded?: ReactNode;
   /** unix 秒；"waiting 3m"的基准。 */
   now: number;
-  /** 本机 node.id（`/api/system` 的 node）：node 标签只给不是本机的行；undefined = 还不知道，谁都不标。 */
+  /** 本机 node.id（`/api/system` 的 node）：已知后每一行都标节点 chip；undefined = 还不知道，谁都不标。 */
   localNode?: string;
   /** 「看 diff」：开该会话的只读 diff 标签页（MISSION §6.3 看结果；agora-h1k.5）。 */
   onOpenDiff?: (id: string) => void;

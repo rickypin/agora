@@ -34,17 +34,43 @@ function mount(r: SessionRow, active = true, localNode?: string) {
   return { onOpen };
 }
 
-it("labels the node only on rows from another node, and only once the local node is known (agora-7ku.5)", () => {
-  // MISSION §3.5 每行标明节点：本机的行不标（满屏 @ mac 是噪音），peer 的行标 @ zuan。
+it("labels the node on every row, local ones uncolored (A49; reverses agora-7ku.5)", () => {
+  // 两台机常态并行：本机也标，muted 边框不着色；peer 按 nodeHue 着色。还不知道本机是谁时
+  // 谁都不标（分不出 local / peer）。
   mount(row(), true, "n");
-  expect(screen.queryByTestId("row-node-n:a")).toBeNull();
+  const local = screen.getByTestId("row-node-n:a");
+  expect(local.textContent).toBe("@ n");
+  expect(local.getAttribute("data-node")).toBe("n");
+  expect(local.className).toBe("node local");
+  expect(local.style.getPropertyValue("--hue")).toBe("");
   cleanup();
   mount(row({ id: "zuan:7", node: "zuan" }), true, "n");
-  expect(screen.getByTestId("row-node-zuan:7").textContent).toBe("@ zuan");
+  const peer = screen.getByTestId("row-node-zuan:7");
+  expect(peer.textContent).toBe("@ zuan");
+  expect(peer.className).toBe("node peer");
+  expect(peer.style.getPropertyValue("--hue")).not.toBe("");
   cleanup();
-  // 还不知道本机是谁（/api/system 没回）：谁都不标，免得先满屏 @ 再消失。
   mount(row({ id: "zuan:7", node: "zuan" }), true);
   expect(screen.queryByTestId("row-node-zuan:7")).toBeNull();
+});
+
+it("shows an agent badge with data-agent and a colored node chip with data-node (A49)", () => {
+  mount(row({ agent_type: "claude" }), true, "n");
+  const badge = document.querySelector("[data-agent]") as HTMLElement | null;
+  expect(badge).toBeTruthy();
+  expect(badge?.getAttribute("data-agent")).toBe("claude");
+  expect(badge?.textContent).toMatch(/Claude/);
+  expect(badge?.style.getPropertyValue("--hue")).toBe("30");
+  expect(screen.getByTestId("row-node-n:a").getAttribute("data-node")).toBe("n");
+  cleanup();
+  mount(row({ id: "zuan:7", node: "zuan", agent_type: "codex" }), true, "n");
+  const chip = screen.getByTestId("row-node-zuan:7");
+  expect(chip.getAttribute("data-node")).toBe("zuan");
+  expect(chip.className).toBe("node peer");
+  expect(chip.style.getPropertyValue("--hue")).not.toBe("");
+  const peerBadge = document.querySelector("[data-agent]") as HTMLElement | null;
+  expect(peerBadge?.getAttribute("data-agent")).toBe("codex");
+  expect(peerBadge?.style.getPropertyValue("--hue")).toBe("200");
 });
 
 it("a stale peer row says when the node was last seen, in local HH:MM, and dims the whole row (A29; invariant 8)", () => {

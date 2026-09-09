@@ -170,3 +170,9 @@ li.stale > .row:hover, li.stale > .row.selected { opacity: 0.8; }
 .chg-deleted, .chg-unmerged { color: var(--bad); }
 /* 只读 diff 终端的连接状态与它的标签页点。 */
 .link-read_only { color: var(--accent); }
+
+/* 行身份：agent 品牌徽标 + 节点 chip（A49，agora-uvd.7）。颜色靠 --hue；没设 --hue 的
+   （shell / 未知 agent）继承 .meta 的 muted。本机节点 muted 边框 + 正常文字，不着色。 */
+.row .badge { display: inline-flex; align-items: center; border-radius: 3px; border: 1px solid var(--border); font-size: 11px; padding: 0 4px; color: hsl(var(--hue) 60% 70%); }
+.row .node.peer { display: inline-flex; align-items: center; border-radius: 3px; border: 1px solid var(--border); font-size: 11px; padding: 0 4px; color: hsl(var(--hue) 60% 70%); }
+.row .node.local { display: inline-flex; align-items: center; border-radius: 3px; border: 1px solid var(--muted); font-size: 11px; padding: 0 4px; color: var(--fg); }

@@ -418,7 +418,7 @@ describe("Workspace", () => {
     const list = screen.getByTestId("section-attention").parentElement!;
     const order = Array.from(list.querySelectorAll("[data-testid]"))
       .map((el) => el.getAttribute("data-testid")!)
-      .filter((id) => id.startsWith("section-") || id.startsWith("row-"));
+      .filter((id) => id.startsWith("section-") || (id.startsWith("row-") && !id.startsWith("row-node-") && !id.startsWith("row-stale-")));
     expect(order).toEqual(["section-attention", "row-n:fail", "row-n:p1", "row-n:p3", "row-n:done", "section-running", "row-n:run"]);
     // 第一列是任务：issue id + 标题。
     expect(screen.getByTestId("label-n:p1").textContent).toBe("x-1 高");
@@ -442,7 +442,7 @@ describe("Workspace", () => {
     const order = () =>
       Array.from(screen.getByTestId("section-attention").parentElement!.querySelectorAll("[data-testid]"))
         .map((el) => el.getAttribute("data-testid")!)
-        .filter((id) => id.startsWith("section-") || id.startsWith("row-"));
+        .filter((id) => id.startsWith("section-") || (id.startsWith("row-") && !id.startsWith("row-node-") && !id.startsWith("row-stale-")));
     expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-running", "row-n:run", "section-finished"]);
     expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
     // 点开 own：它还在 NEEDS ATTENTION（主区开着它的终端，侧栏不能让它消失进折叠区）。
@@ -493,7 +493,7 @@ describe("Workspace", () => {
     const order = () =>
       Array.from(screen.getByTestId("section-attention").parentElement!.querySelectorAll("[data-testid]"))
         .map((el) => el.getAttribute("data-testid")!)
-        .filter((id) => id.startsWith("section-") || id.startsWith("row-"));
+        .filter((id) => id.startsWith("section-") || (id.startsWith("row-") && !id.startsWith("row-node-") && !id.startsWith("row-stale-")));
     // 看过 own：进折叠区，记号带着这一次完成的 status_since。
     fireEvent.click(screen.getByTestId("row-n:own"));
     fireEvent.click(screen.getByTestId("row-n:wait"));
@@ -648,12 +648,15 @@ describe("Workspace", () => {
     expect(mounted).toEqual([]);
   });
 
-  it("rows from a peer carry a node label, the local node's rows do not (agora-7ku.5)", async () => {
-    // MISSION §3.5 每行标明节点；本机 id 来自 /api/system（setup 里是 "n"），peer 行 stale 与否都标。
+  it("labels the node on every row once the local node is known, local ones uncolored (A49; reverses agora-7ku.5)", async () => {
+    // MISSION §3.5 每行标明节点；本机 id 来自 /api/system（setup 里是 "n"），本机也标、不着色。
     const t = setup([row("n:a"), { ...row("zuan:7"), node: "zuan", stale: true }]);
     await online(t);
-    expect(screen.queryByTestId("row-node-n:a")).toBeNull();
+    const local = screen.getByTestId("row-node-n:a");
+    expect(local.getAttribute("data-node")).toBe("n");
+    expect(local.className).toContain("local");
     expect(screen.getByTestId("row-node-zuan:7").textContent).toBe("@ zuan");
+    expect(screen.getByTestId("row-node-zuan:7").className).toContain("peer");
   });
 
   it("the header names 本机 after /api/system's node and shows every peer from the same health poll, and a peer going stale keeps its last-seen (agora-7ku.12, 7ku.5)", async () => {

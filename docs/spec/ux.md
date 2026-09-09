@@ -71,12 +71,12 @@ mac ● zuan ●          Agents: 12
 Running 5   Needs Input 2   Turn Done 1   Finished 3   Idle 1
 
 NEEDS ATTENTION
-⚠ agora-90t.4 ADR-003     / Claude @ zuan    waiting 3m
-⚠ 修 migration 回滚        / Codex @ mac     waiting 1m
-◆ agora-90t.1 写 MISSION   / Claude @ mac    turn done 2m
-✓ agora-3la 测试骨架       / Claude @ mac    finished 9m
+⚠ agora-90t.4 ADR-003     [Claude] [zuan]    waiting 3m
+⚠ 修 migration 回滚        [Codex] [mac]     waiting 1m
+◆ agora-03k …              [Claude] [mac]    turn done 2m
+✓ agora-3la 测试骨架       [Claude] [mac]    finished 9m
 RUNNING
-● 重构 sglog parser        / Codex @ zuan
+● 重构 sglog parser        [Codex] [zuan]
 ▸ FINISHED 3
 ```
 
@@ -94,7 +94,7 @@ RUNNING
 选中行的展开区从上到下（`web/src/SessionRow.tsx`；agora-h1k.3 定）：① 就地 respond（上一段，WAITING / TURN_DONE 才有）；② **验收标准**折叠块——`task.acceptance`（`docs/spec/api.md`，读自 beads 的 acceptance_criteria、不复制进 agora 的库，不变量 12）全文、多行原样，一行 summary `▾ 验收标准 · agora-h1k.3` 可折叠，默认展开（行展开就是为了看"做完算什么"，MISSION §6.3 看结果 / A40）；没有任务或 beads 里没写不占位。respond 在上：回答问题 / 给下一条指令是先做的事，对照验收是看结果时的事；③ **改动文件**（`web/src/Changes.tsx`；A41，agora-h1k.5）接在验收标准之后，两者并排对照——`GET /api/sessions/:id/changes`（`docs/spec/api.md`「只读产出」，该 worktree 的只读 `git status`）的列表 `<单字母> <path>`（M / A / D / R / C / T / U / ?，与 `git status --short` 同一习惯），标题带分支名，空列表一行「无改动」，`reason` 按类型一行灰字（`not_a_repo` 不是 git 仓库、`no_directory` 工作目录不存在、`no_git` 本机没有 git、`timeout` git status 超时、`git` git 失败——只按类型不按文本，MISSION §2.3 规则 10）；status 是 TURN_DONE / FINISHED / FAILED（做完了看结果）或 RUNNING（瞄一眼进度）时显示，每次 status 变化拉一次、**不轮询**，WAITING / IDLE / STARTING / UNKNOWN 不占位——此刻该做的是回答问题。旁边的「看 diff」把主区切成这一行的 diff 视图（agora-a46 之后没有标签页，主区一次只显示选中行的终端或它的 diff）：crumb 是 `git diff / <会话名>` 带「关闭 diff」、没有 Settings（它不是会话），里面是同一个 TerminalView 以 `WS /api/sessions/:id/diff` 挂的**只读**终端——在该 worktree 跑 `git --no-pager diff HEAD`，连接状态显示「只读」，键入不发也不进 PTY（两边各守一半），跑完显示退出码、按钮「重新运行」再跑一次；「关闭 diff」或再点这一行回到它的终端，点别的行则切到那一行的终端，三者都关 WS、git 进程被收走；侧栏不多一行、`GET /api/sessions` 行数不变；会话被删时主区回到空。`reason` 非空时按钮禁用（没有可 diff 的仓库）。在 beads 里改了验收标准，`TaskIndex` 的 TTL（5 min）到期重查后展开区跟着变。守卫 `web/src/SessionRow.test.tsx`、`web/src/Changes.test.tsx`、`web/src/Workspace.test.tsx`（看 diff 一节）。
 
 ```
-◆ agora-h1k.3 会话行展开显示任务的验收标准 / Claude @ mac    turn done 2m
+◆ agora-h1k.3 会话行展开显示任务的验收标准 [Claude] [mac]    turn done 2m
   ❯ 做 h1k.3
   ↳ 改完了，vitest 全绿
   │ ↳ 改完了，vitest 全绿
@@ -121,12 +121,12 @@ diff --git a/src/session/manager.rs b/src/session/manager.rs
 
 **FINISHED 分来源与「看过」**（MISSION §4.6「看过」的三条证据、§6.3 排序表；A46，agora-j4w.1；`finishedCollapsed` / `sectionOf`）：`origin = external` 的 FINISHED 一律直接进折叠区——它的工作面在别的窗口，人是在终端里自己结束的会话（证据 ②），agora 这边没有 pane 也没有 Restart，能给的只有两行摘要；不按 `reason` 分（Claude / Grok 连关窗口都发 SessionEnd、Codex 关窗口不发，分不可靠也不必要）。`origin = agora / adopted` 的 FINISHED 先留在 NEEDS ATTENTION，**看过**（证据 ①：在本浏览器里被选中展开过一次）之后才进折叠区。「看过」是浏览器视图状态，不加服务端字段：`Workspace` 在**离开**那一行（切到别的行 / 关闭视图）的时刻记下——记在选中那一刻它会立刻掉进收起的折叠区、主区还开着它的终端而侧栏找不到这一行；离开时看它当时的状态，选中时还在跑、离开后才 FINISHED 的不算看过。集合存 `localStorage`（键 `agora.seen-finished`，读写都包 try/catch，丢了的代价只是几行回到 NEEDS ATTENTION 再看一眼）；元素是 `seenKey` = `<id>@<status_since>` 而不是裸 id（agora-23h）：记号跟着"这一次完成"走——行被删（Delete metadata）或又跑起来（Restart）记号作废，而 Restart 后 running → finished 被同一批事件（300 ms 合并窗）或断线重连的 resync 跳过中间态时，新一次 FINISHED 的 `status_since` 不同、旧键对不上，同样回到 NEEDS ATTENTION（守卫 `Workspace.test.tsx`「a seen mark dies with its completion」）。折叠区标题 `▸ FINISHED N` 是按钮（`data-testid="section-finished"`，`aria-expanded`），默认收起、刷新回到收起，选中行落进收起的折叠区（Alt/Option+N、finished 通知点击、命令面板都能从外面选中它）时自动展开一次、人仍能手动收回（agora-4nk；守卫 `Sidebar.test.tsx`「auto-expands the collapsed Finished section」），N 是折叠区里的行数。**一键清理**（A46，agora-j4w.2）：Header 计数行里的 `Finished N` 仍按状态数，但折叠区里有行时它是按钮（`data-testid="clear-finished"`，下划线提示）——点了弹 ConfirmDialog，写明将删的行数与其中 agora / adopted 来源的行数（它们已退出的运行时会话与输出会随 DELETE 一并清掉，MISSION §4.6「已退出的顺手清理」），确认后对折叠区里的每一行各发一次 `DELETE /api/sessions/:id`（没有批量端点，也不加：MISSION §11 不引入 Archive），NEEDS ATTENTION 里没看过的 FINISHED 行不发；清理的对象按过滤前的全部行算（过滤只是暂时少画几行，不改变哪些行「可以清」）；peer stale 的行跳过（一跳转发到不了）；跑完计数行下面一句 `已清理 N 行[，跳过 S 行（节点离线）][，失败 F 行]`（`data-testid="clear-finished-note"`，8 s 后消失）。不可逆所以要确认；不是 kill，不走 Kill 的「正在结束…」面板。守卫 `web/src/attention.test.ts`（external FINISHED 不 needsAttention、agora FINISHED 看过前后、三段拼接顺序等于 sortByAttention 顺序且与过滤可交换）、`web/src/Sidebar.test.tsx`（默认折叠带计数、展开后可选中且序号连续、NEEDS ATTENTION 无 external FINISHED、一键清理只对折叠区每行各发一次 DELETE 且 stale 行跳过 / 取消不发）、`web/src/Workspace.test.tsx`「an agora FINISHED row stays in NEEDS ATTENTION until it has been opened and left」。不做 Archive（MISSION §11）、不按项目 / 节点分组（与 Alt+N 序号冲突，agora-a46 的教训）。
 
-行上的 `@ <node>`（MISSION §3.5 "每行标明节点"；`web/src/SessionRow.tsx`，agora-7ku.5）只给 **node ≠ 本机** 的行：单机满屏 `@ mac` 是噪音，上面线框里本机的 `@ mac` 在实现里不显示；本机 id 取 `/api/system` 的 `node`（与 Header 本机那一枚同源），还没拉到之前谁都不标——先满屏 `@` 再消失更难看。peer 断线后行带 `stale: true` 与 `last_seen`（`docs/spec/api.md`「peer 视图」；agora-7ku.6）：行**不消失**，整行淡显（`li.stale`，hover / 选中回到可读），`.meta` 里 `@ zuan` 之后多一段 `○ 上次见到 23:10`——黄点与 `clockText`（本地时区 HH:MM）都与 Header 那一枚 stale 节点同源，完整 UTC 放 title；非 stale 行没有这一段。点开 stale 行与点开别的行没有区别（建终端 WS、就地 respond 照常）：节点看到人碰了 stale peer 的会话就插一次重连（`docs/spec/architecture.md`「立即重试」），恢复后事件流把行刷回正常、淡显消失，浏览器不用多做任何事。
+行上的节点 chip（MISSION §3.5 "每行标明节点"；A49，agora-uvd.7；`web/src/RowIdentity.tsx`）**本机也标**：两台机常态并行，用户反馈「在本机还是 zuan 不明显」，2026-09-09 反转 agora-7ku.5（当时判断满屏 `@ mac` 是噪音——那是单机场景）。chip 带 `data-node`，peer 按节点名字符码求和映射到 8 档色板着色（`nodeHue`，相邻 45°），本机 muted 边框 + 正常文字不着色。还没拉到 `/api/system` 的 `node`（与 Header 本机那一枚同源）之前谁都不标——先满屏 chip 再把本机改成不着色更难看。同一行前面是 agent 品牌徽标（`agentBadge`：每个 adapter 一个 glyph + 短标签 + 色相，`data-agent`；shell / custom 不着色）。peer 断线后行带 `stale: true` 与 `last_seen`（`docs/spec/api.md`「peer 视图」；agora-7ku.6）：行**不消失**，整行淡显（`li.stale`，hover / 选中回到可读），`.meta` 里 `@ zuan` 之后多一段 `○ 上次见到 23:10`——黄点与 `clockText`（本地时区 HH:MM）都与 Header 那一枚 stale 节点同源，完整 UTC 放 title；非 stale 行没有这一段。点开 stale 行与点开别的行没有区别（建终端 WS、就地 respond 照常）：节点看到人碰了 stale peer 的会话就插一次重连（`docs/spec/architecture.md`「立即重试」），恢复后事件流把行刷回正常、淡显消失，浏览器不用多做任何事。
 
 每行下面的两行（`❯` 用户最后输入 / `↳` agent 正在做或最后说的，MISSION §6.3；都来自 hook 的 `prompt` / `progress`，没有 hook 的会话只有一行 pane `preview`）：
 
 ```
-⚠ frontend / Claude @ zuan    waiting 3m
+⚠ frontend [Claude] [zuan]    waiting 3m
   ❯ 把 sidebar 的 workspace chip 换成可折叠的
   ↳ 改完了，144 个 e2e 全绿，要不要 push？
 ```
