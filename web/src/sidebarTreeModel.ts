@@ -29,6 +29,11 @@ export interface TreeGroup {
   branch?: string | null;
   /** worktree 组：是不是主 worktree。 */
   main?: boolean;
+  /**
+   * worktree 组：它所属仓库的路径（= 父仓库组的 `title`）。组头的「在此起 agent」要把 Project 一起
+   * 预填，而平铺之后拿不到父组（agora-uvd.4）——在建树时就带上，别让画的人回头找爸爸。
+   */
+  repo?: string;
   node: string;
   children: TreeGroup[];
   rows: SessionRow[];
@@ -150,6 +155,7 @@ function buildNode(node: string, rows: SessionRow[]): TreeGroup[] {
           depth: 2 as const,
           branch: typeof p.branch === "string" ? p.branch : null,
           main: p.main === true,
+          repo,
           node,
           children: [],
           rows: sortRows(wtRows),

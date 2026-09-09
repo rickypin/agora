@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, expect, it, vi } from "vitest";
 import { catalogApi, sessionApi, type FetchLike, type ReadyTask } from "./api";
 import type { NodeStatus } from "./Header";
-import { NewAgentDialog, nodeOptionLabel } from "./NewAgentDialog";
+import { NewAgentDialog, nodeOptionLabel, type NewAgentInitial } from "./NewAgentDialog";
 import { taskPrompt } from "./taskPrompt";
 import { NEW_WORKTREE } from "./WorktreeSelect";
 
@@ -64,7 +64,11 @@ const NODES: NodeStatus[] = [
   peer("v2", { online: false, retrying: true, last_error: "incompatible_version" }),
 ];
 
-function setup(tasks: { tasks: ReadyTask[]; reason: string | null } = NO_BD, nodes?: NodeStatus[]) {
+function setup(
+  tasks: { tasks: ReadyTask[]; reason: string | null } = NO_BD,
+  nodes?: NodeStatus[],
+  initial?: NewAgentInitial,
+) {
   const requests: { url: string; method: string; body?: string }[] = [];
   const f: FetchLike = async (url, init) => {
     requests.push({ url, method: init.method ?? "GET", body: init.body as string | undefined });
@@ -97,7 +101,14 @@ function setup(tasks: { tasks: ReadyTask[]; reason: string | null } = NO_BD, nod
   const onCreated = vi.fn();
   const onClose = vi.fn();
   render(
-    <NewAgentDialog api={sessionApi(f)} catalog={catalogApi(f)} nodes={nodes} onClose={onClose} onCreated={onCreated} />,
+    <NewAgentDialog
+      api={sessionApi(f)}
+      catalog={catalogApi(f)}
+      initial={initial}
+      nodes={nodes}
+      onClose={onClose}
+      onCreated={onCreated}
+    />,
   );
   return { requests, onCreated, onClose };
 }
@@ -272,6 +283,50 @@ it("agents without the prompt flag get no Prompt box and the body carries no pro
   const body = created(requests);
   expect(body).toMatchObject({ agent_type: "a2", task_ref: "agora-h1k.2" });
   expect(body).not.toHaveProperty("prompt");
+});
+
+it("initial.project and initial.worktree are selected once their lists arrive, and a later user choice is not overridden (A48)", async () => {
+  // 树视图 worktree 组头「+」（agora-uvd.4）：Project / Worktree 两个下拉在各自列表到达时预填一次，
+  // Create 就能按（§6.4「2–3 次操作」）。预填只是初值：用户改过之后不许再被拉回去。
+  const { requests, onCreated } = setup(NO_BD, undefined, {
+    project: "/Users/r/code/other",
+    worktree: "/Users/r/code/agora-wt/x",
+  });
+  // 列表第一项是最近用过的 agora，预填的却是 other——选的是预填那个，Name 也跟着它。
+  await waitFor(() => expect(field("na-project").value).toBe("/Users/r/code/other"));
+  expect(field("na-name").value).toBe("other");
+  await waitFor(() => expect(field("na-worktree").value).toBe("/Users/r/code/agora-wt/x"));
+  // 预填真的进了 body：linked worktree 换 cwd 并记分支。
+  fireEvent.click(screen.getByTestId("create"));
+  await waitFor(() => expect(onCreated).toHaveBeenCalled());
+  expect(created(requests)).toMatchObject({ working_directory: "/Users/r/code/agora-wt/x", worktree: "feat/x" });
+
+  // 用户换项目：新列表到达时不再套用 initial（否则点哪个项目都被拉回预填的那一个），
+  // Worktree 回到今天的默认——主 worktree，cwd 就是仓库本身。
+  fireEvent.change(field("na-project"), { target: { value: "/Users/r/code/agora" } });
+  await waitFor(() =>
+    expect(requests.some((r) => r.url === `/api/projects/worktrees?path=${encodeURIComponent("/Users/r/code/agora")}`)).toBe(true),
+  );
+  await waitFor(() => expect(field("na-worktree").value).toBe("/Users/r/code/agora"));
+  fireEvent.click(screen.getByTestId("create"));
+  await waitFor(() =>
+    expect(JSON.parse(requests.filter((r) => r.method === "POST" && r.url === "/api/sessions").pop()!.body!)).toMatchObject({
+      working_directory: "/Users/r/code/agora",
+      worktree: null,
+    }),
+  );
+});
+
+it("initial.node preselects a peer and everything is listed from it (A48)", async () => {
+  // peer 上的 worktree 组头同样支持（取舍：node 带过去，POST 由节点一跳转发）：Node 下拉就是 zuan，
+  // 四个下拉与 create body 都在那台机器上。
+  const { requests, onCreated } = setup(NO_BD, NODES, { node: "zuan", project: "/home/z/code/beta" });
+  await waitFor(() => expect(field("na-node").value).toBe("zuan"));
+  await waitFor(() => expect(field("na-project").value).toBe("/home/z/code/beta"));
+  expect(requests.map((r) => r.url)).toContain("/api/projects?node=zuan");
+  fireEvent.click(screen.getByTestId("create"));
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith("zuan:new7"));
+  expect(created(requests)).toMatchObject({ node: "zuan", working_directory: "/home/z/code/beta" });
 });
 
 it("lists the local node and the peers; offline or incompatible peers are listed but not selectable", async () => {

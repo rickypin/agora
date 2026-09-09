@@ -17,9 +17,25 @@ const CUSTOM = "custom";
 /** Task 下拉里「一句话…」那一项的 value；issue id 永远不会是空串。 */
 const FREE_TEXT = "";
 
+/**
+ * 打开对话框时的预填（A48，agora-uvd.4）：树视图的 worktree 组头「+」已经站在某个 worktree 上，
+ * 三个下拉不该再让人选一遍（MISSION §6.4「常用项目最多 2–3 次操作」）。
+ * 只是**初值**：三项都只在挂载后第一次拿到对应列表时生效一次，用户改过就再也不覆盖。
+ */
+export interface NewAgentInitial {
+  /** 在哪个节点起；null / 不给 = 本机（与 create body 的 `node` 同一口径）。 */
+  node?: string | null;
+  /** 仓库路径；不在 `/api/projects` 的列表里就当没给（仍选最近用过的那个）。 */
+  project?: string;
+  /** worktree 路径；不在该仓库的 worktree 列表里就当没给（保持默认）。 */
+  worktree?: string | null;
+}
+
 interface Props {
   api: SessionApi;
   catalog: CatalogApi;
+  /** 打开时的预填（agora-uvd.4）：不给 = 今天的默认（最近用过的项目 + 第一个 agent）。 */
+  initial?: NewAgentInitial;
   /**
    * Node 下拉的数据源（A45，agora-fna）：Header 同一份 `nodeStatuses`——本机 + 每个已配置的 peer 及其
    * 在线 / 离线 / 错误类型。没给（单机、旧测试）就只有本机。
@@ -76,15 +92,19 @@ export function describeTasksReason(reason: string): string | null {
  * Node（A45，agora-fna）：本机 + 已配置的 peer，在线的才可选。选了 peer，Project / Worktree / Task /
  * Agent 四个下拉全部改从那台机器取（五个 catalog 端点带 `node=`，节点经一跳转发），Create 与
  * 「新建 worktree」也带 `node` 在那边执行；响应的会话 id 带它的前缀，新行随 peer 视图进侧栏。
+ *
+ * 预填（A48，agora-uvd.4）：`initial` 的 Node / Project / Worktree 各在自己的列表到达时选中一次——
+ * 树视图的 worktree 组头「+」已经站在某个 worktree 上，再让人选三遍下拉就不是「2–3 次操作」了。
+ * 不是受控 prop：三项都只生效一次，用户改选之后 initial 再也不出现（换节点、换项目都不回头）。
  */
-export function NewAgentDialog({ api, catalog, nodes, onClose, onCreated }: Props) {
+export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreated }: Props) {
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   /** 本机 node.id（`/api/system`）：Node 下拉第一项的名字，也是"选了本机"的 value。 */
   const [localName, setLocalName] = useState<string>("");
   /** 选中的 peer 名；null = 本机。catalog 请求与 create body 的 `node` 都从这里来。 */
-  const [node, setNode] = useState<string | null>(null);
+  const [node, setNode] = useState<string | null>(initial?.node ?? null);
   const target = node ?? undefined;
   const peers = (nodes ?? []).filter((n) => !n.local);
   const selectedPeer = node === null ? null : peers.find((n) => n.name === node);
@@ -112,6 +132,10 @@ export function NewAgentDialog({ api, catalog, nodes, onClose, onCreated }: Prop
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 预填的项目（agora-uvd.4）：只等**第一份**项目列表，用掉就作废——不然用户换个节点、换个项目，
+  // 下一份列表到达时又被 initial 拉回去（"预填只在挂载时生效一次"）。
+  const pendingProject = useRef<string | null>(initial?.project ?? null);
+
   // 打开时、以及每次换节点：项目与 agent 列表从所选节点拉（`target`），默认值跟着换。
   useEffect(() => {
     let cancelled = false;
@@ -120,8 +144,11 @@ export function NewAgentDialog({ api, catalog, nodes, onClose, onCreated }: Prop
       if (cancelled) return;
       if (p.ok) {
         setProjects(p.value.projects);
-        // 最近用过的项目排在最前，所以默认选它——常用项目 2–3 次操作起会话（§6.4）。
-        const first = p.value.projects[0];
+        // 最近用过的项目排在最前，所以默认选它——常用项目 2–3 次操作起会话（§6.4）；
+        // 预填给的那个在列表里就选它（树视图组头「+」，A48），不在就还是最近用过的。
+        const wanted = pendingProject.current;
+        pendingProject.current = null;
+        const first = (wanted === null ? undefined : p.value.projects.find((x) => x.path === wanted)) ?? p.value.projects[0];
         if (first) {
           setProject(first.path);
           if (!nameEdited.current) setName(first.name);
@@ -156,8 +183,12 @@ export function NewAgentDialog({ api, catalog, nodes, onClose, onCreated }: Prop
 
   // 「新建…」建成之后重拉一次并选中新项（A44）：bump 这个计数让下面的 effect 再跑，
   // 想选中的路径先寄在 ref 里，等新列表到了再选——直接 setWorktree 会被 effect 开头的清空冲掉。
+  // 同一个 ref 也担着预填（agora-uvd.4）：`created` 是刚建好的那项（列表没它就补上再选），
+  // 只有 `path` 的是组头带来的预填（命中才选，没命中保持默认——那多半是别的仓库的路径）。
   const [worktreeGen, setWorktreeGen] = useState(0);
-  const pendingWorktree = useRef<WorktreeInfo | null>(null);
+  const pendingWorktree = useRef<{ path: string; created: WorktreeInfo | null } | null>(
+    initial?.worktree ? { path: initial.worktree, created: null } : null,
+  );
   const [worktreeCreating, setWorktreeCreating] = useState(false);
 
   // 项目变了就重新列 worktree；不是 git 仓库（或手打的路径）就没有 worktree 可选。
@@ -168,18 +199,22 @@ export function NewAgentDialog({ api, catalog, nodes, onClose, onCreated }: Prop
     if (!project.trim()) return;
     void catalog.worktrees(project.trim(), target).then((r) => {
       if (cancelled || !r.ok) return;
-      const created = pendingWorktree.current;
+      const pending = pendingWorktree.current;
       pendingWorktree.current = null;
-      if (!created) {
+      if (!pending) {
         setWorktrees(r.value.worktrees);
         return;
       }
-      // 刚建好的那项应该已经在 git 的登记里；万一列表还没它（比如另一路径形态），补上再选。
-      const list = r.value.worktrees.some((w) => w.path === created.path)
-        ? r.value.worktrees
-        : [...r.value.worktrees, created];
-      setWorktrees(list);
-      setWorktree(created.path);
+      const known = r.value.worktrees.some((w) => w.path === pending.path);
+      // 预填的路径列表里没有：不补、不选，保持今天的默认（主 worktree）——补上去只会给一个
+      // 这个仓库里并不存在的选项。刚建好的那项则相反：它应该已经在 git 的登记里，万一列表还没它
+      // （比如另一路径形态）也补上再选，否则用户刚建的 worktree 选不着（A44）。
+      if (!known && !pending.created) {
+        setWorktrees(r.value.worktrees);
+        return;
+      }
+      setWorktrees(known ? r.value.worktrees : [...r.value.worktrees, pending.created!]);
+      setWorktree(pending.path);
     });
     return () => {
       cancelled = true;
@@ -208,7 +243,7 @@ export function NewAgentDialog({ api, catalog, nodes, onClose, onCreated }: Prop
   }, [catalog, project, target]);
 
   function worktreeCreated(created: WorktreeInfo) {
-    pendingWorktree.current = created;
+    pendingWorktree.current = { path: created.path, created };
     setWorktreeGen((g) => g + 1);
   }
 
