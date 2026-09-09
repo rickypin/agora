@@ -10,7 +10,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { catalogApi, sessionApi, type FetchLike } from "./api";
 import type { SessionRow, SocketLike } from "./events";
 import { HealthWatcher } from "./health";
-import type { NotifierDeps } from "./notify";
+import type { NotificationLike, NotifierDeps } from "./notify";
 import { SessionStore } from "./store";
 import type { TerminalSocketLike } from "./terminal";
 import { Workspace } from "./Workspace";
@@ -61,6 +61,9 @@ class FakeEventsSocket implements SocketLike {
   onclose: ((ev: unknown) => void) | null = null;
   onerror: ((ev: unknown) => void) | null = null;
   close(): void {}
+  send(events: unknown[]): void {
+    this.onmessage?.({ data: JSON.stringify(events) });
+  }
 }
 
 /** 永远连不上的终端 WS：这里只关心焦点，不关心协议。 */
@@ -84,7 +87,7 @@ const notify: NotifierDeps = {
   focus: () => {},
 };
 
-function setup(rows: SessionRow[]) {
+function setup(rows: SessionRow[], notifyDeps: NotifierDeps = notify) {
   const sock = new FakeEventsSocket();
   const store = new SessionStore({ connect: () => sock, fetchSnapshot: async () => ({ sessions: rows, unregistered: [] }), coalesceMs: 0 });
   const f: FetchLike = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
@@ -93,7 +96,7 @@ function setup(rows: SessionRow[]) {
       store={store}
       api={sessionApi(f)}
       catalog={catalogApi(f)}
-      notifyDeps={notify}
+      notifyDeps={notifyDeps}
       health={new HealthWatcher({ fetchHealth: async () => ({ status: "ok", runtime: { status: "ok", reason: null } }) })}
       terminalConnect={() => new FakeTermSocket()}
     />,
@@ -122,6 +125,48 @@ afterEach(cleanup);
 function focusInTerminal(): boolean {
   return document.activeElement?.closest(".xterm") != null;
 }
+
+it("点通知落到另一行：焦点进回答面板的输入框，不被新终端挂载时的那次 focus 盖掉（A50，agora-4yr.1）", async () => {
+  // 这条只能在"终端替身真的会 focus"的这个文件里成立（Workspace.test.tsx 的 TerminalView 是个
+  // 不 focus 的 div，那边四条焦点守卫对本 bug 全绿）。通知点击是「选中这一行」+「聚焦它的面板」
+  // 同一批 state 更新：面板与 TerminalView 在同一次 commit 挂载，面板在树里靠前、effect 先跑，
+  // 终端挂载 effect 末尾那句 term.focus() 后跑——面板不把聚焦推迟一个宏任务就会被盖掉
+  // （2026-09-10 agent-browser 代检实测：crumb 换了、activeElement 还是 xterm 的 helper textarea）。
+  const created: NotificationLike[] = [];
+  const granted: NotifierDeps = {
+    permission: () => "granted",
+    request: async () => "granted",
+    create: () => {
+      const n: NotificationLike = { onclick: null, close() {} };
+      created.push(n);
+      return n;
+    },
+    focus: () => {},
+  };
+  const t = setup([row("n:a"), row("n:b")], granted);
+  await act(async () => {
+    t.sock.onopen?.({});
+  });
+  await flush();
+  fireEvent.click(screen.getByTestId("row-n:a"));
+  await flush();
+  expect(focusInTerminal()).toBe(true);
+  await act(async () => {
+    t.sock.send([
+      { type: "session_updated", id: "n:b", session: { ...row("n:b"), status: "turn_done", detail: "Two files." } },
+      { type: "notification", id: "n:b", title: "Claude / b @ n is done", body: "Two files.", status: "turn_done" },
+    ]);
+  });
+  await flush();
+  expect(created.length).toBe(1);
+  await act(async () => {
+    created[0]!.onclick?.({});
+  });
+  await flush();
+  expect(screen.getByTestId("crumb").textContent).toContain("b /");
+  expect(document.activeElement).toBe(screen.getByTestId("next-input"));
+  expect(focusInTerminal()).toBe(false);
+});
 
 describe("点已激活的行 / 标签页后焦点回到终端（agora-vcc）", () => {
   it("再点一次已激活的侧栏行，activeElement 回到 .xterm 内", async () => {
