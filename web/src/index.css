@@ -29,8 +29,9 @@ select:disabled { opacity: 0.5; }
 
 /* grid 子项默认 min-height:auto，会被 xterm 已渲染的高度撑住、窗口变矮时不缩（agent-browser 实测 2026-09-03：
    700→40 行、400 仍 40 行）；minmax(0,1fr) + min-height:0 让它跟着视口缩。 */
-.workspace { display: grid; grid-template-columns: 260px 1fr; grid-template-rows: minmax(0, 1fr); height: 100%; }
-.sidebar { background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; }
+.workspace { display: grid; grid-template-columns: var(--sidebar-w, 260px) 1fr; grid-template-rows: minmax(0, 1fr); height: 100%; }
+.sidebar { position: relative; background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; }
+.sidebar-resizer { width: 6px; cursor: col-resize; position: absolute; right: -3px; top: 0; bottom: 0; }
 .sidebar-head { display: flex; justify-content: space-between; align-items: baseline; padding: 10px 10px 6px; }
 .sidebar ul { list-style: none; margin: 0; padding: 0 6px; }
 .row { display: flex; gap: 8px; align-items: flex-start; width: 100%; text-align: left; background: none; border: 0; padding: 5px 6px; border-radius: 4px; }
