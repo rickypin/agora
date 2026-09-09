@@ -302,12 +302,17 @@ it("initial.project and initial.worktree are selected once their lists arrive, a
   expect(created(requests)).toMatchObject({ working_directory: "/Users/r/code/agora-wt/x", worktree: "feat/x" });
 
   // 用户换项目：新列表到达时不再套用 initial（否则点哪个项目都被拉回预填的那一个），
-  // Worktree 回到今天的默认——主 worktree，cwd 就是仓库本身。
+  // Worktree 回到「没选」——空项 —，cwd 落回 Project 那个目录，也就是仓库本身。这里以前断言的是
+  // "/Users/r/code/agora"（列表第一项），那是 select 找不到空 value 时落到第一项的假象、内部状态
+  // 一直是空串：agora-tl5 把空项改成无条件渲染之后显示值才和状态对上。
   fireEvent.change(field("na-project"), { target: { value: "/Users/r/code/agora" } });
   await waitFor(() =>
     expect(requests.some((r) => r.url === `/api/projects/worktrees?path=${encodeURIComponent("/Users/r/code/agora")}`)).toBe(true),
   );
-  await waitFor(() => expect(field("na-worktree").value).toBe("/Users/r/code/agora"));
+  // 换项目时列表先清空，等它重新到达（下拉里有了主 worktree 那一项）再看显示值。
+  const wt = () => field("na-worktree") as HTMLSelectElement;
+  await waitFor(() => expect([...wt().options].some((o) => o.value === "/Users/r/code/agora")).toBe(true));
+  expect(wt().value).toBe("");
   fireEvent.click(screen.getByTestId("create"));
   await waitFor(() =>
     expect(JSON.parse(requests.filter((r) => r.method === "POST" && r.url === "/api/sessions").pop()!.body!)).toMatchObject({

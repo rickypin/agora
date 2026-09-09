@@ -26,7 +26,7 @@ const field = (id: string) => document.getElementById(id) as HTMLInputElement | 
 
 function renderSelect(
   create: (path: string, name: string) => Promise<Awaited<ReturnType<ReturnType<typeof catalogApi>["createWorktree"]>>>,
-  opts: { defaultName?: string; worktrees?: WorktreeInfo[] } = {},
+  opts: { defaultName?: string; worktrees?: WorktreeInfo[]; value?: string } = {},
 ) {
   const onChange = vi.fn();
   const onCreated = vi.fn();
@@ -34,7 +34,7 @@ function renderSelect(
   render(
     <WorktreeSelect
       worktrees={opts.worktrees ?? [MAIN]}
-      value={MAIN.path}
+      value={opts.value ?? MAIN.path}
       onChange={onChange}
       disabled={false}
       project={MAIN.path}
@@ -90,6 +90,25 @@ it("失败按错误类型给文案，名字框留着改；取消回到原选项"
   expect(describeWorktreeError({ error: "path_exists", message: "x" })).toBe("目录已存在");
   expect(describeWorktreeError({ error: "bad_request", message: "名字不能含空白" })).toBe("名字不能含空白");
   expect(describeWorktreeError({ error: "git", message: "fatal: x" })).toBe("git 失败：fatal: x");
+});
+
+it("没选中任何 worktree（value 为空串）时下拉显示的也是空，不是列表第一项", () => {
+  // agora-tl5：空 option 以前只在列表为空时渲染，所以列表非空而 value === "" 时 select 找不到
+  // 匹配项，浏览器落到第一项——DOM 上写着「main」，内部状态却是「没选」。NewAgentDialog 的
+  // cwd 是 `selected && !selected.main ? selected.path : project`：项目本身是 linked worktree
+  // 时（用过一次就进 projects 表，docs/spec/api.md），显示的「main」和真正的 cwd 是两个目录。
+  const { onChange } = renderSelect(vi.fn(), { worktrees: [MAIN, NEW], value: "" });
+  const select = field("na-worktree") as HTMLSelectElement;
+  expect(select.value).toBe("");
+  expect(select.value).not.toBe(MAIN.path);
+  // 空项是真有这么一项（第一项），不是只在列表为空时才出现的占位。
+  expect(screen.getAllByRole("option").map((o) => (o as HTMLOptionElement).value)).toEqual([
+    "",
+    MAIN.path,
+    NEW.path,
+    NEW_WORKTREE,
+  ]);
+  expect(onChange).not.toHaveBeenCalled();
 });
 
 it("不是仓库（列表为空）就没有「新建…」", () => {

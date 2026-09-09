@@ -198,7 +198,7 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 New Agent
 Node:     [ zuan ▼ ]              # 本机 + 在线的 peer；选 peer 则经一跳转发执行
 Project:  [ ~/code/agora ]
-Worktree: [ main ▼ / 新建… ]      # 新建 = git worktree add，base 默认主 worktree 当前分支；合并/销毁归人（MISSION §6.4）
+Worktree: [ — ▼ / main / 新建… ]  # 首项 — = 没选中任何 worktree（cwd 落回 Project 那个目录）；新建 = git worktree add，base 默认主 worktree 当前分支；合并/销毁归人（MISSION §6.4）
 Agent:    [ Claude Code ▼ ]
 Task:     [ agora-90t.1 ▼ / 一句话 ]  # 有 bd 的仓库从 bd ready 选，否则一句话；留空取首条 prompt
 Name:     [ agora-mission ]
@@ -216,7 +216,10 @@ V1 的取舍（agora-xqa.12）：Project 是可输入的下拉
 `name-2`、`-3`…——没选任务时 Name = 项目名，几乎总会和主 worktree 目录撞，原样 POST 是 409
 `worktree_exists`，agora-h5x）与「建」按钮，`POST /api/projects/worktrees`
 成功后重拉列表并选中新项，失败按错误类型给文案（同名 worktree / 分支 / 目录已存在、名字不合法、git
-失败）；选主 worktree 等于选仓库本身；Agent 的名字与默认命令来自 `GET /api/agents`，
+失败）；选主 worktree 等于选仓库本身；下拉**第一项固定是空项 `—`**，意思是「没选中任何 worktree」、cwd 落回
+Project 那个目录（agora-tl5：这一项以前只在列表为空时渲染，列表非空而内部状态是空串时 select 没有匹配项、
+DOM 显示成列表第一项「main」，显示值与内部状态不是一回事；不写成「仓库根目录」是因为项目本身可以是一个
+linked worktree，那时它不是仓库根。守卫 `web/src/WorktreeSelect.test.tsx`）；Agent 的名字与默认命令来自 `GET /api/agents`，
 末尾多一项 `custom`——它没有 Adapter，Command 必填。Name 与 Command 有默认值，用户手改过之后
 换项目 / 换 agent 不再覆盖。
 
