@@ -117,10 +117,12 @@ interface RowProps {
   localNode?: string;
   /** 「看 diff」：开该会话的只读 diff 标签页（MISSION §6.3 看结果；agora-h1k.5）。 */
   onOpenDiff?: (id: string) => void;
+  /** 只透传给 RowIdentity（agora-uvd.8）：树视图（SidebarTree，agora-uvd.3）传 false——组头已说明仓库与分支。 */
+  showProject?: boolean;
 }
 
 /** memo：行对象引用没变就不重渲染（store.ts）。 */
-export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, expanded, now, localNode, onOpenDiff }: RowProps) {
+export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, expanded, now, localNode, onOpenDiff, showProject }: RowProps) {
   onRender?.(row.id);
   const prompt = str(row.prompt);
   const progress = str(row.progress);
@@ -144,7 +146,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
           <span className="name" data-testid={`label-${row.id}`}>
             {taskLabel(row)}
           </span>
-          <RowIdentity row={row} localNode={localNode} now={now} />
+          <RowIdentity row={row} localNode={localNode} now={now} showProject={showProject} />
           {prompt && !promptRepeatsLabel(row) && (
             <span className="preview line-prompt" data-testid={`prompt-${row.id}`}>
               <span className="muted">❯ </span>
