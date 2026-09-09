@@ -451,7 +451,7 @@ FAILED 100   WAITING 90   TURN_DONE 85   FINISHED 80   UNKNOWN 40   IDLE 30   ST
 
 `+ New Agent` 对话框：Node（本机 + 在线的 peer，选 peer 则经一跳转发执行）/ Project / Worktree / Agent / Task（有 bd 的仓库从 issue 列表选，否则一句话，留空取首条 prompt）/ Name / Command（线框见 `docs/spec/ux.md`）。
 
-Project 列表**不靠手写配置**：从 `project_roots`（§9.1）扫描 git 仓库并按最近使用排序——上百个仓库的手写列表会立刻过期。目标：**从打开 Dialog 到 agent 启动，常用项目最多 2–3 次操作。**
+Project 列表**不靠手写配置**：从 `project_roots`（§9.1）扫描 git 仓库并按最近使用排序——上百个仓库的手写列表会立刻过期。目标：**从打开 Dialog 到 agent 启动，常用项目最多 2–3 次操作。**（树视图的 worktree 组头 1 次（agora-uvd.4）：组头「+」把 Node / Project / Worktree 预填进对话框，「shell」连对话框都不开。）
 
 **「按项目」视图的组头就是那 2–3 次操作的入口**（A48，§6.3）：worktree 组头可就地「+ 在此起 agent」（打开对话框并预填 Node / Project / Worktree，只剩选 agent 与填任务）与「开 shell」（直接在那个 worktree 起一个 shell 会话），节点组头的「+」预填节点。预填走的是对话框既有的字段，不新增创建路径。
 
