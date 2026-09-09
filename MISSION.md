@@ -254,7 +254,7 @@ Session {
 }
 ```
 
-`status / exit_code / last_activity_at` 是运行时与 observer 的实时结果，**不落库**（不变量 7）；SQLite 只存上面的 metadata。
+`status / exit_code / last_activity_at` 是运行时与 observer 的实时结果，**不落库**（不变量 7）；SQLite 只存上面的 metadata。`project`（仓库根 / 名字 / worktree / 分支 / 是否主 worktree）是按 `working_directory` 派生的实时字段，与 `status` 同一待遇：异步补齐、按 TTL 重查、**不落库**（不变量 7）——库里只有 `working_directory`，字段形状见 `docs/spec/api.md`（A49，2026-09-09，agora-uvd.1）。
 
 节点身份不进本机模型：每个节点只存自己的 session。对外（浏览器与 peer）会话以 `<node>:<id>` 标识，`node` 是节点 id（§9.1）；peer 的会话并入视图时保留来源节点，绝不改写。
 
@@ -418,7 +418,7 @@ MVP 依赖运行时 scrollback，不自行构建 terminal transcript database。
 
 ### 6.1 主界面
 
-侧栏是 agent 列表（状态符号 + 任务 + agent + 节点 + 一行活动），主区是当前会话的终端，header 显示本机与每个 peer 的状态。线框见 `docs/spec/ux.md`。
+侧栏是 agent 列表，**两种视图可切换**（A47）：**「需要我」**（默认，§6.3 的 attention 排序）与**「按项目」**（节点 → 仓库 → worktree → 会话的树，行的位置只随创建 / 删除变、不随状态变，A48）。每一行都明示自己的身份（A49）：状态符号 + 任务 + agent 品牌 + 节点（**本机也标**）+ 仓库与分支 + 一行活动——「按项目」视图里仓库与分支由组头给出，不在行上重复。主区是当前会话的终端，header 显示本机与每个 peer 的状态。线框、切换入口与键位见 `docs/spec/ux.md`。
 
 ### 6.2 MVP Screens（只需要 4 个）
 
@@ -445,11 +445,15 @@ FAILED 100   WAITING 90   TURN_DONE 85   FINISHED 80   UNKNOWN 40   IDLE 30   ST
 
 **就地 respond**：WAITING 行展开后直接显示问题（hook 的文本，兜底为最后几行 pane）与一个输入框 / 选项按钮；TURN_DONE 行展开后是"下一条指令"输入框。提交即 `POST /api/sessions/:id/input`（§7.3）。这是手机上的主路径；终端是逃生口。
 
+**「按项目」视图**（A47 / A48；2026-09-08 用户反馈"行随状态自己换位置，人跟不上"）：上面的排序原则只属于「需要我」视图；同一批会话的另一种摆法是**不排序、只分组**的树。分组键固定三层，不自适应：节点（本机第一）→ 仓库 → worktree（主 worktree 第一，组头带分支），组内会话行**按创建顺序**，位置只随创建 / 删除变、不随状态变——一行进 WAITING 只换状态符号，要按紧急程度看它就切回「需要我」。不在任何 git 仓库里的会话归该节点下的「其它目录」组。组可折叠且记住，**折叠只是不画不是不数**：序号仍按树的顺序数（与 A46 的 Finished 区同一条规则，§6.5），折叠的组头显示组内需要关注的行数。**FINISHED 行不搬家**——留在原组原位淡显，这个视图里没有 Finished 折叠区；但 header 的一键清理与视图无关，清理对象始终是折叠区的那批行（§4.6「看过」）。worktree 组头可以就地起会话（§6.4）：树本身就是那份"最近用过的仓库与 worktree"清单。线框与规则见 `docs/spec/ux.md`。
+
 ### 6.4 创建 Session 与 Quick Launch
 
 `+ New Agent` 对话框：Node（本机 + 在线的 peer，选 peer 则经一跳转发执行）/ Project / Worktree / Agent / Task（有 bd 的仓库从 issue 列表选，否则一句话，留空取首条 prompt）/ Name / Command（线框见 `docs/spec/ux.md`）。
 
 Project 列表**不靠手写配置**：从 `project_roots`（§9.1）扫描 git 仓库并按最近使用排序——上百个仓库的手写列表会立刻过期。目标：**从打开 Dialog 到 agent 启动，常用项目最多 2–3 次操作。**
+
+**「按项目」视图的组头就是那 2–3 次操作的入口**（A48，§6.3）：worktree 组头可就地「+ 在此起 agent」（打开对话框并预填 Node / Project / Worktree，只剩选 agent 与填任务）与「开 shell」（直接在那个 worktree 起一个 shell 会话），节点组头的「+」预填节点。预填走的是对话框既有的字段，不新增创建路径。
 
 **Worktree 跟着任务生灭，agora 只管"生"**：对话框可新建 worktree（`git worktree add -b <name> <path> <base>`）——基础分支默认主 worktree 当前 checked-out 的分支（兜底 default branch），名字默认 issue id（无 bd 用 Name），路径按 `worktree_root` 约定（§9.1）。这是 §1.4 Git GUI 的唯一例外（只增不改的工作区准备）；任务验收后的合并与销毁归人（Git GUI / 终端），agora 不做。
 
@@ -457,7 +461,7 @@ Project 列表**不靠手写配置**：从 `project_roots`（§9.1）扫描 git 
 
 ### 6.5 Keyboard First
 
-桌面上管理几十个 agent 的效率靠键盘：命令面板（fuzzy search sessions / projects / nodes / actions）、侧栏过滤、上下一个 agent、按序号跳转。两条硬约束：浏览器全局快捷键**不得吞掉终端内的 Ctrl 组合键**；Cmd/Ctrl + 数字被浏览器保留，序号跳转用 Alt/Option。手机端没有键盘，快捷键与命令面板只在桌面生效。键位表见 `docs/spec/ux.md`。
+桌面上管理几十个 agent 的效率靠键盘：命令面板（fuzzy search sessions / projects / nodes / actions）、侧栏过滤、上下一个 agent、按序号跳转（**两种视图都按当前显示顺序数**——过滤只删不换序、折叠只是不画不是不数，所以第 N 条永远是眼睛看到的第 N 条，A46 / A47）、切换侧栏视图（Alt/Option+G，A47）。两条硬约束：浏览器全局快捷键**不得吞掉终端内的 Ctrl 组合键**；Cmd/Ctrl + 数字被浏览器保留，序号跳转用 Alt/Option。手机端没有键盘，快捷键与命令面板只在桌面生效。键位表见 `docs/spec/ux.md`。
 
 ### 6.6 Notifications
 
@@ -679,9 +683,9 @@ MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终�
 - [ ] **A44** 对话框可新建 worktree：base 默认主 worktree 当前 checked-out 分支、路径按 `worktree_root` 约定（§6.4）；agora 不做合并与销毁
 - [ ] **A45** New Agent 的 Node 下拉列本机与在线的 peer；选 peer 后 Project / Worktree / Task / Agent 从该节点取、创建与新建 worktree 经一跳转发在该节点执行，会话行带 `@ <node>`；stale / 版本不兼容的 peer 不可选而不是报错（§6.4，§1 第 3 步。2026-09-07 补：§6.4 早有此句但 §12 无编号，M2 拆分按编号核对时漏掉，见 §1.5「拆分」）
 - [ ] **A46** 侧栏收纳：FINISHED 行不再与 WAITING 同档——external 来源的 FINISHED 直接进默认折叠的 Finished 区，agora / adopted 来源的 FINISHED 在用户看过（选中展开过）之后进；Finished 计数一键批量 Delete metadata；external FINISHED 行超过 `sessions.external_finished_ttl` 自动删记录；折叠与否不改变 Alt/Option+N 的序号（§4.6「看过」的三条证据、§6.3，§1 第 1、5 步。2026-09-08 现场：58 行里 39 行 external FINISHED 占满第一屏）
-- [ ] **A47** 侧栏有两种视图可切换：「需要我」（§6.3 的 attention 排序）与「按项目」（节点 → 仓库 → worktree → 会话的树）；切换控件在侧栏头部，命令面板与 Alt/Option+G 也能切，选择存浏览器、刷新后保持；过滤在两种视图下都可用；两种视图下 Alt/Option+N 跳的第 N 条都等于眼睛看到的第 N 条（折叠只是不画不是不数，与 A46 同一条规则）（§6.1、§6.3、§6.5；§1 第 1、2 步。2026-09-08 用户反馈：行随状态自己换位置，人跟不上）
-- [ ] **A48** 「按项目」树：节点组（在线 / stale 点）→ 仓库组 → worktree 组（分支 chip、主 worktree 标记）→ 会话行按创建顺序、位置只随创建 / 删除变、不随状态变；不在任何 git 仓库里的会话归该节点下的「其它目录」组；组可折叠且记住；折叠的组头显示组内需要关注的行数；worktree 组头可就地「+ 在此起 agent」（对话框预填节点 / 仓库 / worktree）与「开 shell」，节点组头的「+」预填节点（§6.1、§6.4；§1 第 2、3 步）
-- [ ] **A49** 每行明示三件身份：agent 品牌（每个 adapter 一个可辨的徽标与颜色，shell / custom 与 agent 区分）、节点（本机也标，颜色按节点；反转 agora-7ku.5「本机不标」的决定）、仓库与分支（服务端会话行新增只读 `project` 字段：仓库根 / 名字 / worktree 路径 / 分支，异步补齐、TTL 重查，git 只读——`tests/arch_boundary.rs` 白名单守卫）；两种视图同源同字段（§6.1、§4.2；§1 第 1 步。2026-09-08 用户反馈：在哪个项目 / worktree、本机还是 zuan、哪家 agent 都看不清）
+- [ ] **A47** 侧栏有两种视图可切换：「需要我」（§6.3 的 attention 排序）与「按项目」（节点 → 仓库 → worktree → 会话的树）；切换控件在侧栏头部，命令面板与 Alt/Option+G 也能切，选择存浏览器、刷新后保持；过滤在两种视图下都可用；两种视图下 Alt/Option+N 跳的第 N 条都等于眼睛看到的第 N 条（折叠只是不画不是不数，与 A46 同一条规则）（§6.1、§6.3、§6.5；§1 第 1、2 步。2026-09-08 用户反馈：行随状态自己换位置，人跟不上）（守卫：`web/src/Sidebar.test.tsx`「the mode switch toggles aria-pressed and calls onMode」「tree mode renders SidebarTree and no section headings」、`web/src/Workspace.test.tsx`「the sidebar mode survives a remount via localStorage」、`web/src/keyboard.test.tsx`「Alt/Option+G toggles the sidebar mode, also while the terminal has focus」「Alt/Option+N in tree mode follows DFS order across groups」、`web/src/sidebarMode.test.ts`「visibleOrder in tree mode is creation order and filter only removes rows」、`web/src/sidebarTreeModel.test.ts`「collapsed groups hide rows but ordinals keep counting」）
+- [ ] **A48** 「按项目」树：节点组（在线 / stale 点）→ 仓库组 → worktree 组（分支 chip、主 worktree 标记）→ 会话行按创建顺序、位置只随创建 / 删除变、不随状态变；不在任何 git 仓库里的会话归该节点下的「其它目录」组；组可折叠且记住；折叠的组头显示组内需要关注的行数；worktree 组头可就地「+ 在此起 agent」（对话框预填节点 / 仓库 / worktree）与「开 shell」，节点组头的「+」预填节点（§6.1、§6.4；§1 第 2、3 步）（守卫：`web/src/sidebarTreeModel.test.ts`「order never changes when status or status_since changes」——逐元素断言、「groups by node, repo, worktree and orders rows by created_at」「rows without a project go to an 其它目录 group after all repos」「the local node comes first, peers follow the nodes order」、`web/src/SidebarTree.test.tsx`「group headers show branch, main marker and attention count when collapsed」「a finished row stays in place with the done class」、`web/src/Sidebar.test.tsx`「the Finished clear count is the same in both modes」；组头就地起会话的守卫随 agora-uvd.4 落地）
+- [ ] **A49** 每行明示三件身份：agent 品牌（每个 adapter 一个可辨的徽标与颜色，shell / custom 与 agent 区分）、节点（本机也标，颜色按节点；反转 agora-7ku.5「本机不标」的决定）、仓库与分支（服务端会话行新增只读 `project` 字段：仓库根 / 名字 / worktree 路径 / 分支，异步补齐、TTL 重查，git 只读——`tests/arch_boundary.rs` 白名单守卫）；两种视图同源同字段（§6.1、§4.2；§1 第 1 步。2026-09-08 用户反馈：在哪个项目 / worktree、本机还是 zuan、哪家 agent 都看不清）（守卫：`tests/session_project.rs`「main_worktree_session_reports_repo_branch_and_main_true」「linked_worktree_session_points_repo_to_main_worktree_and_main_false」「detached_head_yields_branch_null」「project_is_not_stored_in_sqlite」、`tests/arch_boundary.rs`「git_subprocesses_are_read_only_or_worktree_add」、`web/src/agentBadge.test.ts`「known adapters get distinct glyphs and hues; shell and unknown are uncolored」、`web/src/nodeColor.test.ts`「hue is stable for a name and differs for mac vs zuan」、`web/src/SessionRow.test.tsx`「labels the node on every row, local ones uncolored」「shows a repo ⎇ branch line in attention mode, with worktree name when not main」「detached HEAD shows ⎇ detached」）
 - [ ] **A50** 就地 respond 搬进主区：主区结构是 crumb → 回答面板 → 终端；WAITING 的问题与 Allow / Deny / 打开终端、TURN_DONE 的最后一条回复（按 markdown 排版：标题 / 列表 / 代码块 / 表格，不渲染 HTML）与「下一条指令」输入框（在面板顶部、不用滚到底）、验收标准与改动列表都在这个面板里，可折叠、有高度上限；侧栏行不再展开，只剩行本身；手机 drawer（§6.9）下同一面板（§6.2、§6.3；§1 第 2 步。agora-03k：窄列里塞几百行 markdown 读不了）
 - [ ] **A51** 「需要我」视图的重排让人跟得上：指针在侧栏内或最近一次侧栏交互后的短暂窗口内不重排（新行仍插入、状态符号照变），窗口过后再按 attention 顺序落位，换了位置的行短暂高亮；Alt/Option+N 按冻结期间眼睛看到的顺序跳（§6.3、§6.5；§1 第 1 步）
 
