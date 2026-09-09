@@ -89,6 +89,7 @@ zuan ●
 - **行的位置只随创建 / 删除变，不随状态变**：`treeOrder` 从头到尾不读 `status` / `status_since`（守卫 `web/src/sidebarTreeModel.test.ts`「order never changes when status or status_since changes」逐元素断言）。让一行进 WAITING，它的状态符号变 ⚠、位置不动；切到「需要我」它才在 NEEDS ATTENTION 顶部。
 - 分组键三层 + 其它目录，固定不自适应：节点组 `node:<node>`（本机第一，其余按 Header 那一排 `nodes` 的顺序，不在里面的按名字；组头是 Header 同源的点 + 名字）→ 仓库组 `repo:<node>:<project.repo>`（组内按 `project.name` 字母序；组头显示 name，title 是仓库路径）→ worktree 组 `wt:<node>:<project.worktree>`（主 worktree 第一并带「主」标记，其余按目录最后一段字母序；组头 `<目录最后一段> ⎇ <branch>`，detached 显示 `⎇ detached`）→ 行按 `created_at` 升序、同值按 id。`project == null` 的行归该节点的 **其它目录** 组 `other:<node>`，排在该节点所有仓库组之后、组内平铺不再按目录分。`project` 字段来自 `docs/spec/api.md`「每条会话的形态」（agora-uvd.1）。
 - 组头是按钮（`data-testid="tree-group-<key>"`，`aria-expanded`）；折叠按组 key 记 localStorage `agora.sidebar-tree-collapsed`（不按节点整体记）。**折叠只是不画不是不数**：Alt/Option+N 的序号是树的 DFS 顺序里会话行的次序，折叠组里的行序号照数（与 A46 Finished 区同一条规则，MISSION §6.5）；选中行落进折叠组时那条路径上的组自动展开一次、人仍能手动收回（agora-4nk 同一写法）。折叠时组头右侧显示这组里 `needsAttention` 的行数「N 需要关注」（`data-testid="tree-group-attention-<key>"`，按过滤前的全部行算，0 不显示）。
+- 树视图的行不画「仓库 ⎇ 分支」那一行（`RowIdentity` 的 `showProject=false`，agora-uvd.8）：组头已经说了，行上重复是噪音；「需要我」视图照画。
 - **FINISHED 行不搬家**：留在原组原位淡显（`li.done`，与 `li.stale` 同一组规则，hover / 选中回到可读）；树视图没有三段标题、没有 Finished 折叠区。
 - 过滤只删不换序：过滤后只剩有行的组（组是从行推出来的，空组不存在）。
 - Header 计数行的「Finished N」一键清理与视图无关：清理对象仍是 attention 折叠区的定义（`sectionOf(r, seen) === "finished"`），两种视图下按钮 title 的行数相同（守卫 `web/src/Sidebar.test.tsx`「the Finished clear count is the same in both modes」）。
