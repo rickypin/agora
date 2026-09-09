@@ -2,7 +2,7 @@
 
 > **由 `scripts/roadmap-view.sh` 生成，不要手改。** 真相源是 beads：阶段 = epic，阶段门 = epic 之间的 `blocks` 依赖，验收标准 = epic 的 `--acceptance`，演示剧本 = epic 的 `--design`（下方"演示剧本"一节）。
 > 本文件不放任务 checkbox（避免 devcenter 式双轨，见 `docs/analysis/beads/README.md` §6.3 / §8.2）。任务级细节：`bd ready`、`bd dep tree <epic>`。
-> 生成时间：2026-09-09
+> 生成时间：2026-09-10
 
 | 阶段 | epic | 目标 | 阶段门（被谁阻塞） | 验收要点 | 状态 / 进度 |
 |---|---|---|---|---|---|
@@ -108,7 +108,7 @@ M3b 演示剧本（agent 代检，无 👁 步骤；人按 MISSION §1「一天�
 2. agora 起一个会话回一句后 Kill → 它留在 NEEDS ATTENTION（FINISHED，agora 来源）；点它展开一次再点别的行 → 它进折叠区。折叠区排序仍是 attention 顺序，Alt/Option+N 跳的第 N 条等于眼睛看到的第 N 条。
 3. Header 的 Finished 计数点一下 → 确认框列出将删的行数 → 确认后折叠区清空、GET /api/sessions 少同样多行、每行都是 DELETE metadata（tmux 会话数不变、没有 kill）。
 4. 把 external_finished_ttl 调成 1m，再起一个 external 会话 Ctrl+C 结束 → 不到两个 sweep 周期后该行从 GET /api/sessions 消失，daemon.log 一行说明；agora 起的 FINISHED 行不受影响。
-5. agora-rzh 修完后：第 1 步里 Ctrl+C 与 /clear 结束的会话不弹 finished 通知，关窗口（Codex）那条弹。
+5. agora-rzh 修完后，通知按「人自己结束的不弹、进程意外没了才弹」分档。注意 notification_for 的第一道门是「转换前必须是 RUNNING / IDLE」：第 1 步那三条回完一句都停在 TURN_DONE，怎么结束都不弹（TURN_DONE → FINISHED 本来就不通知，见 docs/spec/api.md notification 段），照第 1 步验不出分档。所以这一步另起两条正忙的会话：Claude 与 Codex 各让它跑一条前台长命令（如 sleep 45）、停在 RUNNING 时关窗口 → Claude 那条落到 FINISHED / source=hook（它发 SessionEnd）不弹、Codex 那条落到 FINISHED / source=process（它不发 SessionEnd）弹一条「Codex / <name> @ <node> finished」；同一个物理动作两种结果，才是这条规则的正反对照。再加第 1 步里 Ctrl+C 与 /clear 结束的两条，同样不弹。（2026-09-09 真宿主实测，agora-agu。）
 6. CI 绿；MISSION §4.6「看过」三条证据、§6.3 排序表、§11 Archive 段、§12 A46 回写；attention.test.ts / Sidebar.test.tsx / tests 里的 sweep 用例是守卫。
 
 ### M4a `agora-uvd`
