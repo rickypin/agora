@@ -22,7 +22,8 @@
     {
       "name": "cargo",
       "command": "cargo test",
-      "when": "src"
+      "when": "src",
+      "serial": true
     },
     {
       "name": "doclint",
