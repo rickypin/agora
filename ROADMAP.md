@@ -14,7 +14,7 @@
 | M2c | `agora-3j0` | 在 peer 上起会话（New Agent 选节点） | `agora-s4r`, `agora-7ku` | MISSION §12：A45。 | closed  |
 | M3 | `agora-h1k` | 产出与起会话增强 | `agora-dvh` | MISSION §12：A40–A44。 | closed  |
 | M3b | `agora-j4w` | 侧栏收纳（FINISHED 行看过即收、external 行自动过期） | `agora-h1k` | MISSION §12：A46。 | open 3/3 |
-| M4a | `agora-uvd` | 侧栏树视图（节点 / 仓库 / worktree）、视图切换与行身份 | `agora-j4w` | MISSION §12：A47、A48、A49。 | open 2/8 |
+| M4a | `agora-uvd` | 侧栏树视图（节点 / 仓库 / worktree）、视图切换与行身份 | `agora-j4w` | MISSION §12：A47、A48、A49。 | open 3/8 |
 | M4b | `agora-4yr` | 回答区进主区（就地 respond / 验收 / 改动在主区渲染）与「需要我」视图的重排稳定 | `agora-j4w` | MISSION §12：A50、A51。 | open 0/5 |
 | T1 | `agora-bvs` | 执行代理 plugin（handoff）：Claude 编排、Claude / Grok / Codex 可插拔执行，一 issue 一 worktree 一契约 | — | 由人关闭（MISSION §1.5）：(1) ~/code/handoff 含 CLAUDE.md、plugin.json、skills/run、agents（runner / verifier / integrator）、workflows、workers、bin、schemas、hooks、tests，npm test 绿且含独立性检查与版本对齐检查；(2) 两次端到端试跑各用骨架关闭了一个真实 agora issue（一次 worker=claude、一次 worker=grok），close reason 含契约字段（outcome、tests、commit、复核 verdict；Grok 那次含 session_id 与 cost_usd），close 发生在 ff 合入之后；(3) bd 垫片、CLI deny、事后审计的拒绝 / 见红各有一次原文证据；(4) agora 仓库只多 .claude/handoff.json 与 AGENTS.md 一行，doc-lint 绿；(5) 符号链接安装后不带 --plugin-dir 的会话里 /handoff:run、/handoff:batch 与三个代理可见，args 能到达脚本，改源码后生效方式有实测表；(6) bd memories handoff 有 Grok 校准结论；(7) 演示剧本 👁 第 7 步由人看。 | closed  |
 | V2-1 | `agora-thc` | 手机客户端与 PWA（iOS / Android） | `agora-7ku`, `agora-s4r` | MISSION §11 手机条目：A13、A19、A28、A35、A37。 | open 0/8 |
