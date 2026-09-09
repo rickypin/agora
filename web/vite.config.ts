@@ -17,6 +17,10 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: { outDir: "dist", emptyOutDir: true },
-    test: { environment: "node" },
+    // css.include 是给 SessionRow.test.tsx 那条 CSS 守卫开的（agora-8lb）：vitest 默认 css: false 会把
+    // CSS 模块 stub 成空，连 `import css from "./index.css?raw"` 也一起吞掉——返回空字符串，于是
+    // `expect(css).not.toMatch(根因那条规则)` 永远绿，守卫等于没写（2026-09-09 实测 rawCss.length === 0）。
+    // 只放行 index.css，别的 CSS 仍走默认 stub。
+    test: { environment: "node", css: { include: [/index\.css/] } },
   };
 });

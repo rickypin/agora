@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { SessionRow } from "./events";
 import { clockText } from "./Header";
 import { RowIdentity, projectLine } from "./RowIdentity";
+import rawCss from "./index.css?raw";
 import { SidebarRow, staleSeen } from "./SessionRow";
 
 afterEach(cleanup);
@@ -72,6 +73,62 @@ it("shows an agent badge with data-agent and a colored node chip with data-node 
   const peerBadge = document.querySelector("[data-agent]") as HTMLElement | null;
   expect(peerBadge?.getAttribute("data-agent")).toBe("codex");
   expect(peerBadge?.style.getPropertyValue("--hue")).toBe("200");
+});
+
+/** index.css 去掉注释、空白压成单空格，方便按选择器取规则体。 */
+const CSS = rawCss.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ");
+
+/** 取 `selector { … }` 的声明体；找不到就让调用方的断言报出是哪条选择器丢了。 */
+function cssRule(selector: string): string {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // 前面钉住 `}`/`;`/开头，否则 `.row .badge` 会命中 `.row .meta > .badge` 的尾巴。
+  const m = CSS.match(new RegExp(`(?:^|[;}]) ?${esc} \\{([^}]*)\\}`));
+  expect(m, `index.css 里找不到规则 \`${selector}\``).toBeTruthy();
+  return m![1];
+}
+
+it("splits the badge into a whole glyph and a truncatable label, full name in title (agora-8lb)", () => {
+  // 2026-09-09 用户目检：侧栏行徽标成了「✧ Gro」，本机 external 行只剩半个 glyph。根因是 glyph 与
+  // label 在同一个 span 里，.meta 的省略号从 label 一路吃到 glyph。jsdom 不做布局，"被裁了几像素"
+  // 这里断不出来——本 bug 从 agora-uvd.7 合入到目检之间，上面那条徽标用例一直是绿的——所以这条钉的是
+  // 让截断**不可能发生**的结构：两个独立元素，全名另有 title 兜底。像素由代检用 agent-browser 量。
+  mount(row({ agent_type: "grok" }), true, "n");
+  const badge = document.querySelector(".badge") as HTMLElement;
+  const glyph = badge.querySelector(".badge-glyph") as HTMLElement | null;
+  const label = badge.querySelector(".badge-label") as HTMLElement | null;
+  expect(glyph, "glyph 必须是独立元素，不能和 label 共用一个 span").toBeTruthy();
+  expect(label).toBeTruthy();
+  expect(glyph).not.toBe(label);
+  expect(glyph!.textContent).toBe("✧");
+  expect(label!.textContent).toBe("Grok");
+  // 窄侧栏下只看得见 glyph，全名得能 hover 出来。
+  expect(badge.title).toContain("Grok");
+});
+
+it("lets only .badge-label carry the ellipsis; glyph and state never give way (agora-8lb)", () => {
+  // CSS 守卫。根因那条规则按**位置**点名（谁排第一谁被截），uvd.7 把徽标放到第一位就中招了；
+  // 它一旦回来，上面那条结构守卫照样绿、bug 照样复发，所以单独钉住。
+  expect(CSS, "按位置点名的规则不许回来：谁排第一是布局的事，谁可以截断是语义的事").not.toMatch(
+    /\.row \.meta > span:first-child/,
+  );
+
+  const glyph = cssRule(".row .badge-glyph");
+  expect(glyph).toMatch(/flex: none/);
+  expect(glyph).toMatch(/width: 1em/); // 与 .badge 的 min-width: 1em 是同一道护栏的两头
+  expect(glyph, "glyph 上不许有省略号——宁可丢全名也不能丢这一个字符").not.toMatch(/text-overflow/);
+
+  const label = cssRule(".row .badge-label");
+  expect(label).toMatch(/text-overflow: ellipsis/);
+  expect(label).toMatch(/min-width: 0/);
+
+  const badge = cssRule(".row .meta > .badge");
+  expect(badge, "徽标要能让位，否则行尾 state 被裁").toMatch(/flex: 0 100 auto/);
+  expect(badge, "内容框下限护住 glyph").toMatch(/min-width: 1em/);
+  // 这两条写上去，flex item 的 min-width: auto 会被解析成 0，护栏失效、glyph 被 badge 自己削掉。
+  expect(badge).not.toMatch(/overflow: hidden/);
+  expect(badge).not.toMatch(/min-width: 0/);
+
+  expect(cssRule(".row .meta .state"), "state 永不让位").toMatch(/flex: none/);
 });
 
 const MAIN = { repo: "/Users/r/code/agora", name: "agora", worktree: "/Users/r/code/agora", branch: "main", main: true };
