@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SessionApi } from "./api";
 import { needsAttention, type SeenSet } from "./attention";
 import type { SessionRow } from "./events";
@@ -32,8 +32,6 @@ interface Props {
   onRowRender?: (id: string) => void;
   now: number;
   onOpenDiff?: (id: string) => void;
-  /** 选中行的展开区；M4b（agora-4yr.1）合入前仍要透传，4yr.3 会删。 */
-  renderExpanded?: (row: SessionRow) => ReactNode;
   /** 组头「+」：带着这个组的 Node / Project / Worktree 打开 New Agent 对话框（A48，agora-uvd.4）。 */
   onNewAgent?: (initial?: NewAgentInitial) => void;
   /** 组头「shell」直接起会话用的写端点；不给就没有这两个按钮。 */
@@ -77,7 +75,6 @@ export function SidebarTree({
   onRowRender,
   now,
   onOpenDiff,
-  renderExpanded,
   onNewAgent,
   api,
   onCreated,
@@ -280,7 +277,6 @@ export function SidebarTree({
                 ordinal={e.ordinal}
                 onOpen={onOpen}
                 onRender={onRowRender}
-                expanded={r.id === active ? renderExpanded?.(r) : undefined}
                 now={now}
                 localNode={localNode}
                 onOpenDiff={onOpenDiff}

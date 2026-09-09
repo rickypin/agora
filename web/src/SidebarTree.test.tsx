@@ -266,22 +266,20 @@ it("group header buttons on a stale node are disabled (A48)", () => {
 it("the active row inside a collapsed group expands it once", () => {
   // Alt/Option+N、通知点击、命令面板都能从外面选中折叠组里的行（agora-4nk 同一条规则）。
   localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(["node:zuan", `wt:mac:${WT3}`]));
-  const expanded = (r: SessionRow) => <div data-testid={`expanded-${r.id}`} />;
-  const { rerender, props } = mount({ active: "mac:a", renderExpanded: expanded });
+  const { rerender, props } = mount({ active: "mac:a" });
   expect(screen.queryByTestId("row-zuan:z")).toBeNull();
   expect(screen.queryByTestId("row-mac:w")).toBeNull();
-  rerender(<SidebarTree {...props} active="zuan:z" renderExpanded={expanded} />);
+  rerender(<SidebarTree {...props} active="zuan:z" />);
   // 那条路径上的组都展开了；别的折叠组不动。
   expect(screen.getByTestId("tree-group-node:zuan").getAttribute("aria-expanded")).toBe("true");
   expect(screen.getByTestId("row-zuan:z").closest("li.selected")).not.toBeNull();
-  expect(screen.getByTestId("expanded-zuan:z")).toBeTruthy();
   expect(screen.queryByTestId("row-mac:w")).toBeNull();
   expect(JSON.parse(localStorage.getItem(COLLAPSED_STORAGE_KEY)!)).toEqual([`wt:mac:${WT3}`]);
   // 人再手动收起：active 还在里面也收得起来（只展开一次，不派生）。
   fireEvent.click(screen.getByTestId("tree-group-node:zuan"));
   expect(screen.queryByTestId("row-zuan:z")).toBeNull();
   // 换到另一个折叠组里的行又展开那一组。
-  rerender(<SidebarTree {...props} active="mac:w" renderExpanded={expanded} />);
+  rerender(<SidebarTree {...props} active="mac:w" />);
   expect(screen.getByTestId("row-mac:w").closest("li.selected")).not.toBeNull();
   expect(screen.queryByTestId("row-zuan:z")).toBeNull();
 });

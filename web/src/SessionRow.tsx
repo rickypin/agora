@@ -1,4 +1,4 @@
-import { memo, useState, type ReactNode } from "react";
+import { memo, useState } from "react";
 import { promptRepeatsLabel, taskLabel, taskOf } from "./attention";
 import { Changes } from "./Changes";
 import type { SessionRow } from "./events";
@@ -109,8 +109,6 @@ interface RowProps {
   onOpen: (id: string) => void;
   /** 测试注入：数渲染次数。 */
   onRender?: (id: string) => void;
-  /** 选中行下方的展开区（就地回答，MISSION §6.3）。 */
-  expanded?: ReactNode;
   /** unix 秒；"waiting 3m"的基准。 */
   now: number;
   /** 本机 node.id（`/api/system` 的 node）：已知后每一行都标节点 chip；undefined = 还不知道，谁都不标。 */
@@ -122,7 +120,7 @@ interface RowProps {
 }
 
 /** memo：行对象引用没变就不重渲染（store.ts）。 */
-export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, expanded, now, localNode, onOpenDiff, showProject }: RowProps) {
+export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, now, localNode, onOpenDiff, showProject }: RowProps) {
   onRender?.(row.id);
   const prompt = str(row.prompt);
   const progress = str(row.progress);
@@ -172,7 +170,6 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
         </span>
         <span className="ord muted">{ordinal >= 1 && ordinal <= 9 ? ordinal : ""}</span>
       </button>
-      {active && expanded}
       {active && <Acceptance row={row} />}
       {active && <Changes row={row} onOpenDiff={onOpenDiff} />}
     </li>

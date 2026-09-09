@@ -8,7 +8,7 @@ import { HealthWatcher, versionBlocked, VersionWatcher } from "./health";
 import { isDesktop, matchShortcut } from "./keys";
 import { NewAgentDialog, type NewAgentInitial } from "./NewAgentDialog";
 import { browserDeps, Notifier, type NotifierDeps, type Permission } from "./notify";
-import { Respond } from "./Respond";
+import { hasRespondPanel, RespondPanel } from "./RespondPanel";
 import { SessionSettings } from "./SessionSettings";
 import { loadMode, storeMode, visibleOrder, type SidebarMode } from "./sidebarMode";
 import { rowName, Sidebar } from "./Sidebar";
@@ -101,6 +101,11 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     };
   }, [store, onRevoked]);
   const [view, setView] = useState<View | null>(null);
+  // 把焦点放进回答面板的请求（A50，agora-4yr.1）：值是"给哪一行的面板"，不是一个裸计数——
+  // 通知点击是「选中这一行」+「聚焦它的面板」同一批 state 更新，面板在那一帧才第一次挂载，
+  // 裸计数在挂载那一刻分不出"刚被请求"与"上一次请求留下的旧值"。面板聚焦完回调清空，只用一次。
+  const [respondFocus, setRespondFocus] = useState<string | null>(null);
+  const clearRespondFocus = useCallback(() => setRespondFocus(null), []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newAgentOpen, setNewAgentOpen] = useState(false);
   // 打开对话框时的预填（A48，agora-uvd.4）：树视图组头「+」带来的 Node / Project / Worktree；
@@ -148,9 +153,17 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     [focusTerminal],
   );
 
-  // 浏览器通知（MISSION §6.6；A18）：点击回到该行——openTab 让它成为侧栏 active 行，WAITING /
-  // TURN_DONE 的就地回答区就随行展开（Sidebar 只给 active 行渲染 renderExpanded）。
-  const notifier = useMemo(() => new Notifier(notifyDeps ?? browserDeps(), openTab), [notifyDeps, openTab]);
+  // 浏览器通知（MISSION §6.6；A18）：点击回到该行——openTab 让它成为侧栏 active 行，主区 crumb 之下
+  // 就画出这一行的回答面板，焦点再落进面板里（MISSION §6.6「点击落到就地回答区」；A50，agora-4yr.1。
+  // 面板不在这一行时下面那个 effect 会把请求丢掉，焦点不动）。
+  const openFromNotification = useCallback(
+    (id: string) => {
+      openTab(id);
+      setRespondFocus(id);
+    },
+    [openTab],
+  );
+  const notifier = useMemo(() => new Notifier(notifyDeps ?? browserDeps(), openFromNotification), [notifyDeps, openFromNotification]);
   const [notifyPerm, setNotifyPerm] = useState<Permission>(() => notifier.permission());
   useEffect(() => {
     store.onNotification = (n) => notifier.show(n);
@@ -175,6 +188,12 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
 
   const active = view ? byId.get(view.id) : undefined;
   const showDiff = view?.kind === "diff";
+  // 聚焦请求只对当前这一帧有效：面板不在（这一行没有可回答的东西，或正在看 diff）就丢掉——
+  // 留着它会在这一行下一次变成 TURN_DONE 的那一刻把焦点从终端抢走。
+  const panelRow = active && !showDiff && hasRespondPanel(active) ? active : null;
+  useEffect(() => {
+    if (respondFocus !== null && respondFocus !== panelRow?.id) setRespondFocus(null);
+  }, [respondFocus, panelRow?.id]);
   const openNewAgent = useCallback((initial?: NewAgentInitial) => {
     setNewAgentInitial(initial);
     setNewAgentOpen(true);
@@ -285,11 +304,15 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         case "mode":
           toggleMode();
           break;
+        case "respond":
+          // 面板存在时才做事：Alt/Option+R 是把焦点挪进已经画出来的面板，不是"打开"什么。
+          if (panelRow) setRespondFocus(panelRow.id);
+          break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [paletteOpen, newAgentOpen, visible, view?.id, openTab, toggleMode, openNewAgent]);
+  }, [paletteOpen, newAgentOpen, visible, view?.id, openTab, toggleMode, openNewAgent, panelRow]);
 
   if (blocked !== null) {
     // 节点与页面不是同一个 API major（或读不出版本）：只留横幅，侧栏 / 终端一概不挂——
@@ -332,7 +355,6 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           const first = visible[0];
           if (first) openTab(first.id);
         }}
-        renderExpanded={(r) => <Respond row={r} api={api} onOpenTerminal={openTab} />}
         unregistered={unregistered}
         onAdopt={adopt}
         onOpenDiff={openDiff}
@@ -383,6 +405,20 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
                 </>
               )}
             </div>
+            {/* 回答面板（A50，agora-4yr.1）：crumb 之下、终端之上，永远这个位置——面板与终端是
+                同一行的两面，宽度跟主区走。diff 视图不画它（那一格在看结果，不在回答）。
+                key = 会话 id：切行时面板重挂载，草稿 / busy / 错误不跨行残留（它长在侧栏行的
+                <li> 里时是随行天然重挂的，搬进主区后位置固定，不加 key 就会串行）。 */}
+            {!showDiff && (
+              <RespondPanel
+                key={active.id}
+                row={active}
+                api={api}
+                onOpenTerminal={focusTerminal}
+                focusRequest={respondFocus === active.id}
+                onFocusHandled={clearRespondFocus}
+              />
+            )}
             <div className="pane">
               {/* key=会话 id：切行时旧终端卸载（detach）、新终端挂载，永不 restart。 */}
               {showDiff ? (

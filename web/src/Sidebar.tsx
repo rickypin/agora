@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type PointerEvent, type ReactNode, type RefObject } from "react";
+import { Fragment, useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
 import type { AdoptBody, SessionApi, WriteResult } from "./api";
 import { countByStatus, sectionOf, type SeenSet } from "./attention";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -98,8 +98,6 @@ interface SidebarProps {
   onFilterEnter?: () => void;
   /** 过滤前的总数：过滤后要让人看得出"还有多少被藏起来了"。 */
   total: number;
-  /** 选中行的展开区。 */
-  renderExpanded?: (row: SessionRow) => ReactNode;
   /** 运行时里未登记的会话（Unknown Agent，MISSION §5.5）。 */
   unregistered?: UnregisteredRow[];
   onAdopt?: (body: AdoptBody) => void;
@@ -190,7 +188,6 @@ export function Sidebar({
   filterRef,
   onFilterEnter,
   total,
-  renderExpanded,
   unregistered = [],
   onAdopt,
   onOpenDiff,
@@ -364,7 +361,6 @@ export function Sidebar({
           onRowRender={onRowRender}
           now={now}
           onOpenDiff={onOpenDiff}
-          renderExpanded={renderExpanded}
           onNewAgent={onNewAgent}
           api={api}
           onCreated={onCreated}
@@ -399,7 +395,6 @@ export function Sidebar({
               ordinal={i + 1}
               onOpen={onOpen}
               onRender={onRowRender}
-              expanded={r.id === active ? renderExpanded?.(r) : undefined}
               now={now}
               localNode={localNode}
               onOpenDiff={onOpenDiff}

@@ -159,14 +159,88 @@ describe("Workspace", () => {
       await new Promise((r) => setTimeout(r, 5));
     });
     expect(n.created.map((c) => [c.title, c.body, c.tag])).toEqual([["Claude / b @ n needs input", "Bash: rm -rf x", "n:b#1"]]);
-    expect(screen.queryByTestId("respond-n:b")).toBeNull(); // 还没点：不抢焦点
+    expect(screen.queryByTestId("respond-panel-n:b")).toBeNull(); // 还没点：不抢焦点
     await act(async () => {
       n.created[0]!.note.onclick?.({});
     });
-    // 点击：该行成为 active，就地回答区随行展开（不是终端的事）。
-    expect(screen.getByTestId("respond-n:b")).toBeTruthy();
+    // 点击：该行成为 active，主区 crumb 之下画出它的回答面板（不是终端的事）。
+    expect(screen.getByTestId("respond-panel-n:b")).toBeTruthy();
     expect(screen.getByTestId("allow")).toBeTruthy();
     expect(screen.getByTestId("term-n:b")).toBeTruthy();
+  });
+
+  it("clicking a turn_done row shows the respond panel in the main area between crumb and pane, and the sidebar row has no respond- testid (A50; agora-03k)", async () => {
+    // agora-03k：回答区长在 260 px 的侧栏列里，几百行的 TURN_DONE 回复不可读。搬进主区后
+    // 它永远在 crumb 与终端之间——「这一行的回答」与「这一行的终端」是同一对象的两面。
+    const t = setup([{ ...row("n:a", "turn_done"), detail: "结论先说：可以做局部性能优化" }]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("row-n:a"));
+    const main = t.ui.container.querySelector("section.main")!;
+    expect(Array.from(main.children).map((el) => el.className)).toEqual(["crumb", "respond-panel", "pane"]);
+    expect(screen.getByTestId("respond-panel-n:a")).toBe(main.querySelector(".respond-panel"));
+    // 输入框在最后一条回复之上（用户明确要求；限高 40vh 是布局事实，归代检）。
+    const input = screen.getByTestId("next-input");
+    const last = screen.getByTestId("respond-last");
+    expect(input.compareDocumentPosition(last) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // 侧栏那一行只剩行本身：respond- 一个都没有。
+    expect(t.ui.container.querySelector('.sidebar [data-testid^="respond-"]')).toBeNull();
+  });
+
+  it("the diff view hides the panel", async () => {
+    // 看 diff 的那一格在看结果，不在回答（面板会把 diff 挤窄，而且「打开终端」在那儿没有落点）。
+    const t = setup([{ ...row("n:a", "turn_done"), detail: "done" }]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("row-n:a"));
+    await flush();
+    expect(screen.getByTestId("respond-panel-n:a")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("diff-n:a"));
+    await flush();
+    expect(screen.getByTestId("crumb-diff")).toBeTruthy();
+    expect(screen.queryByTestId("respond-panel-n:a")).toBeNull();
+    fireEvent.click(screen.getByTestId("close-diff"));
+    expect(screen.getByTestId("respond-panel-n:a")).toBeTruthy();
+  });
+
+  it("a notification click focuses the panel input", async () => {
+    // MISSION §6.6「点击落到就地回答区」：点通知落到该行之后，人可以直接打字，不用再点一下输入框。
+    const n = fakeNotify("granted");
+    const t = setup([row("n:a"), row("n:b")], [], n.deps);
+    await online(t);
+    await act(async () => {
+      t.sock.send([
+        { type: "session_updated", id: "n:b", session: { ...row("n:b"), status: "turn_done", alive: true, detail: "Two files." } },
+        { type: "notification", id: "n:b", title: "Claude / b @ n is done", body: "Two files.", status: "turn_done" },
+      ]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    await act(async () => {
+      n.created[0]!.note.onclick?.({});
+    });
+    expect(document.activeElement).toBe(screen.getByTestId("next-input"));
+  });
+
+  it("Alt/Option+R focuses the panel input when present and does nothing otherwise", async () => {
+    const t = setup([
+      { ...row("n:a", "turn_done"), detail: "Two files." },
+      row("n:b"),
+      { ...row("n:w", "waiting"), reason: "permission", respond_via: "hook", detail: "Bash", pending_decision: { request_id: "req-1", summary: "Bash", epoch: 1 } },
+    ]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("row-n:a"));
+    // 点行的焦点归终端（agora-p29 / agora-vcc 不变）：面板不抢，Alt/Option+R 才抢。
+    expect(document.activeElement).not.toBe(screen.getByTestId("next-input"));
+    fireEvent.keyDown(window, { code: "KeyR", altKey: true });
+    expect(document.activeElement).toBe(screen.getByTestId("next-input"));
+    // WAITING 行落在第一个按钮上（Allow）：那一刻要按的就是它。
+    fireEvent.click(screen.getByTestId("row-n:w"));
+    fireEvent.keyDown(window, { code: "KeyR", altKey: true });
+    expect(document.activeElement).toBe(screen.getByTestId("allow"));
+    // RUNNING 行没有面板：什么都不做，焦点原地不动。
+    fireEvent.click(screen.getByTestId("row-n:b"));
+    const before = document.activeElement;
+    fireEvent.keyDown(window, { code: "KeyR", altKey: true });
+    expect(screen.queryByTestId("next-input")).toBeNull();
+    expect(document.activeElement).toBe(before);
   });
 
   it("asks for notification permission once, in a banner that goes away after the answer", async () => {

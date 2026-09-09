@@ -29,7 +29,6 @@ function mount(r: SessionRow, active = true, localNode?: string) {
         onOpen={onOpen}
         now={0}
         localNode={localNode}
-        expanded={<div data-testid="respond-n:a">respond</div>}
       />
     </ul>,
   );
@@ -218,15 +217,13 @@ it("a stale row without last_seen still renders (offline, no time) instead of cr
   expect(staleSeen(row({ stale: true, last_seen: SEEN }))?.text).toBe(`○ 上次见到 ${clockText(SEEN)}`);
 });
 
-it("an active row shows the task's acceptance criteria in full, below the respond area (A40)", () => {
+it("an active row shows the task's acceptance criteria in full (A40)", () => {
   // MISSION §6.3 看结果：展开一行就该看到"做完算什么"，全文、多行原样，读自 beads。
+  // 以前这里还断"排在就地 respond 之下"；回答面板 2026-09-10 搬进主区（A50，agora-4yr.1），
+  // 行里没有它了，两者的相对位置改由 Workspace.test「crumb → 面板 → pane」那条钉。
   mount(row({ task: { id: "agora-h1k.3", title: "验收标准", priority: 2, acceptance: ACCEPTANCE } }));
-  const block = screen.getByTestId("acceptance-n:a");
   expect(screen.getByTestId("acceptance-body-n:a").textContent).toBe(ACCEPTANCE);
   expect(screen.getByTestId("acceptance-toggle-n:a").textContent).toContain("agora-h1k.3");
-  // 位置：就地 respond 之下（docs/spec/ux.md）。
-  const respond = screen.getByTestId("respond-n:a");
-  expect(respond.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 it("the acceptance block folds and unfolds without touching the row", () => {
@@ -254,5 +251,4 @@ it("no task, no acceptance text, or an inactive row: the block takes no space", 
   cleanup();
   mount(row({ task: { id: "agora-h1k.3", title: "验收标准", priority: 2, acceptance: ACCEPTANCE } }), false);
   expect(screen.queryByTestId("acceptance-n:a")).toBeNull();
-  expect(screen.queryByTestId("respond-n:a")).toBeNull();
 });

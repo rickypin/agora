@@ -108,20 +108,18 @@ it("auto-expands the collapsed Finished section when the active row lives in it 
   const seen: SeenSet = new Set();
   const visible = partitionByAttention(sortByAttention(ROWS), seen);
   const props = { rows: visible, seen, all: ROWS, total: ROWS.length, onOpen: vi.fn(), filter: "", onFilter: () => {} };
-  const expanded = (r: SessionRow) => <div data-testid={`expanded-${r.id}`} />;
-  const { rerender } = render(<Sidebar {...props} active="n:wait" renderExpanded={expanded} />);
+  const { rerender } = render(<Sidebar {...props} active="n:wait" />);
   expect(screen.queryByTestId("row-n:ext2")).toBeNull();
-  rerender(<Sidebar {...props} active="n:ext2" renderExpanded={expanded} />);
+  rerender(<Sidebar {...props} active="n:ext2" />);
   const li = screen.getByTestId("row-n:ext2").closest("li")!;
   expect(li.classList.contains("selected")).toBe(true);
-  expect(screen.getByTestId("expanded-n:ext2")).toBeTruthy();
   expect(screen.getByTestId("section-finished").getAttribute("aria-expanded")).toBe("true");
   // 序号不随展开变：ext2 仍是第 5 条。
   expect(screen.getByTestId("row-n:ext2").querySelector(".ord")?.textContent).toBe("5");
   // 人可以再手动收起（active 还在里面也收得起来）；换到折叠区里另一行又展开。
   fireEvent.click(screen.getByTestId("section-finished"));
   expect(screen.queryByTestId("row-n:ext2")).toBeNull();
-  rerender(<Sidebar {...props} active="n:ext1" renderExpanded={expanded} />);
+  rerender(<Sidebar {...props} active="n:ext1" />);
   expect(screen.getByTestId("row-n:ext1").closest("li")!.classList.contains("selected")).toBe(true);
 });
 
@@ -193,6 +191,18 @@ it("no clear button without deletable rows or without the DELETE callback", () =
   // 没给 onDeleteMetadata（mount 不传）：external FINISHED 也不出按钮。
   mount([row("n:e", "finished", { origin: "external" })]);
   expect(screen.queryByTestId("clear-finished")).toBeNull();
+});
+
+it("the sidebar never renders a respond- testid (A50)", () => {
+  // agora-03k / A50：回答面板 2026-09-10 搬进主区（agora-4yr.1），侧栏行不再展开任何回答区。
+  // 钉的是"这条通道没了"：Sidebar 与 SidebarRow 都没有 renderExpanded / expanded 这两个 prop 了，
+  // 谁把它接回来（或直接在行里画一块 respond-）这条就红。位置由 Workspace.test 的 crumb → 面板 → pane 钉。
+  for (const active of ["n:wait", "n:done"]) {
+    mount([row("n:wait", "waiting"), row("n:done", "turn_done", { detail: "Two files." })], new Set(), active);
+    expect(document.querySelector('.sidebar [data-testid^="respond-"]'), `active=${active}`).toBeNull();
+    expect(screen.queryByTestId("next-input")).toBeNull();
+    cleanup();
+  }
 });
 
 it("the mode switch toggles aria-pressed and calls onMode (A47)", () => {
