@@ -1,8 +1,10 @@
 import { memo, useState, type ReactNode } from "react";
-import { promptRepeatsLabel, statusLine, taskLabel, taskOf } from "./attention";
+import { promptRepeatsLabel, taskLabel, taskOf } from "./attention";
 import { Changes } from "./Changes";
 import type { SessionRow } from "./events";
-import { clockText } from "./Header";
+import { RowIdentity } from "./RowIdentity";
+
+export { staleSeen } from "./RowIdentity";
 
 /**
  * 侧栏的一行会话（docs/spec/ux.md「Attention Dashboard 线框」）。
@@ -11,25 +13,9 @@ import { clockText } from "./Header";
  * 后续往行上加东西——验收标准折叠块（h1k.3）、node 标签（7ku.5）、stale「上次见到」（7ku.6）——
  * 都只改这个文件，Sidebar.tsx 只管列表、分区标题与未注册段。
  *
- * node 标签（MISSION §3.5 "每行标明节点"；agora-7ku.5）：只给 `node !== localNode` 的行——本机的
- * 行一律不标，满屏 `@ mac` 是噪音；`localNode` 是 `/api/system` 报的本机 node.id，还没拉到时谁都不
- * 标（先满屏 @ 再消失更难看）。
- *
- * stale 行（MISSION §3.5 "peer 断线保留最后视图并标记（上次见到 23:10）"；不变量 8；agora-7ku.6）：
- * `stale: true` 的 peer 行整行淡显（`<li class="stale">`，index.css）但一条不少，`.meta` 里多一段
- * `○ 上次见到 HH:MM`——时间是行上的 `last_seen`（节点按本机时钟打的 UTC 文本，与 `/api/health`
- * peers 段同一个值），用 Header 同一个 `clockText` 转本地时区，完整 UTC 放 title。点开 stale 行
- * 不需要前端做任何事：TerminalView 建终端 WS / 任何写操作到节点就触发一次重试（`forward::hop`）。
+ * 2026-09-09 meta 一行抽到 RowIdentity.tsx（agora-uvd.7 接缝，不改行为）：行身份与展开区搬走
+ * 不再抢同一文件。node / stale 的规则仍在 RowIdentity 里，注释随那一处。
  */
-
-/** stale 行 `.meta` 里那一段的文案与 title；非 stale 行返回 null（不占位）。 */
-export function staleSeen(row: SessionRow): { text: string; title: string } | null {
-  if (!row.stale) return null;
-  const seen = typeof row.last_seen === "string" ? row.last_seen : null;
-  // 有 last_seen 才有"上次见到"；没有（理论上不会——连上过才有行可标）就只说离线，不编时间。
-  if (seen === null) return { text: "○ 离线", title: "该节点离线，正在重连" };
-  return { text: `○ 上次见到 ${clockText(seen)}`, title: `该节点离线，正在重连；上次见到 ${seen}` };
-}
 
 /** `<li>` 的类名：选中 / stale 两个正交的状态。 */
 export function rowClasses(active: boolean, stale?: boolean): string | undefined {
@@ -129,7 +115,6 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
   // 两行预览读自 hook（❯ 用户最后输入 / ↳ agent 正在做或最后说的）；没有 hook 的会话保持一行
   // pane preview；两者都没有时退回状态理由（MISSION §6.3；ADR-002 D8）。
   const lines = prompt || progress ? null : preview || String(row.reason ?? "");
-  const seen = staleSeen(row);
   return (
     <li className={rowClasses(active, row.stale)}>
       <button
@@ -143,23 +128,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
           <span className="name" data-testid={`label-${row.id}`}>
             {taskLabel(row)}
           </span>
-          <span className="meta">
-            <span>{String(row.agent_type ?? "")}</span>
-            {row.origin === "external" && <span className="origin">external</span>}
-            {localNode !== undefined && row.node !== localNode && (
-              <span className="node" data-testid={`row-node-${row.id}`}>
-                @ {row.node}
-              </span>
-            )}
-            {seen && (
-              <span className="stale-seen" data-testid={`row-stale-${row.id}`} title={seen.title}>
-                {seen.text}
-              </span>
-            )}
-            <span className={`state st-${row.status}`} data-testid={`state-${row.id}`}>
-              {statusLine(row, now)}
-            </span>
-          </span>
+          <RowIdentity row={row} localNode={localNode} now={now} />
           {prompt && !promptRepeatsLabel(row) && (
             <span className="preview line-prompt" data-testid={`prompt-${row.id}`}>
               <span className="muted">❯ </span>
