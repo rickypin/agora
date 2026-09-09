@@ -98,15 +98,48 @@ select:disabled { opacity: 0.5; }
 /* 回答面板（A50，agora-4yr.1）：crumb 与终端之间的一段，宽度跟主区走。它在侧栏那 260 px 的窄列里
    待到 2026-09-10，几百行的 TURN_DONE 回复挤成一条线、输入框沉在全文底下（agora-03k）。 */
 .respond-panel { border-bottom: 1px solid var(--border); padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; }
-.respond-question { margin: 0; white-space: pre-wrap; word-break: break-word; }
+.respond-question { margin: 0; }
 /* 最后一条回复排在输入框下面，限高 40vh 自己滚：不限高它会把终端挤没（.main 是 flex 列，
    .pane 收得下去）。max-height 同时是面板 min-content 的上界，所以 .pane 至少还剩 60vh。
-   「展开全文」的折叠按钮归 agora-4yr.2，本任务只限高。 */
-.respond-last { max-height: 40vh; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+   这条限高与「默认露 12 行」的折叠（agora-4yr.2，RespondPanel 的 FOLD_LINES）是两件事：
+   折叠管默认露多少，40vh 管展开之后最多占多高。白空格不再由这里管——正文走 markdown 排版
+   （.md 一族），只有代码块保留原样。 */
+.respond-last { max-height: 40vh; overflow: auto; font-size: 13px; display: flex; align-items: flex-start; gap: 6px; }
+/* ↳ 是"这是回复"的记号，得留在正文外面：markdown 的第一个块可能是 h2 或 <pre>，把箭头塞
+   进去会跟标题基线打架。flex 让它占一列，正文那列 min-width:0 才收得住宽表格 / 长代码行。 */
+.respond-last-mark { flex: none; }
+.respond-last .md { flex: 1; min-width: 0; }
+.respond-more { align-self: flex-start; }
 .respond-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .respond-panel .respond-next { display: flex; gap: 6px; }
 .respond-next input { flex: 1; min-width: 0; }
 .respond-error { margin: 0; color: var(--bad); }
+/* markdown 排版（agora-4yr.2，MarkdownView.tsx）。全部限定在 .md 下：页面别处的 h2 / pre /
+   table 有自己的规矩（:root 的 h2 是 13 px 的小标题），回复里的标题却要真的分出层级。
+   间距用 em 而不是 px：回复整体 13 px，跟着字号缩。 */
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md { word-break: break-word; }
+.md p { margin: 0 0 0.5em; }
+.md h2, .md h3, .md h4, .md h5, .md h6 { margin: 0.8em 0 0.3em; line-height: 1.3; font-weight: 600; }
+.md h2 { font-size: 1.3em; }
+.md h3 { font-size: 1.18em; }
+.md h4 { font-size: 1.08em; }
+.md h5, .md h6 { font-size: 1em; color: var(--muted); }
+.md ul, .md ol { margin: 0 0 0.5em; padding-left: 1.5em; }
+.md li { margin: 0.1em 0; }
+.md li > ul, .md li > ol { margin-bottom: 0; }
+.md code { background: var(--panel-2); border-radius: 3px; padding: 0 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
+/* 代码块自己横向滚，别把面板撑宽（.respond-last 的正文列是 min-width:0 的 flex item）。 */
+.md pre { margin: 0 0 0.5em; padding: 5px 8px; background: var(--panel-2); border-radius: 4px; overflow-x: auto; }
+.md pre code { background: none; padding: 0; white-space: pre; }
+.md blockquote { margin: 0 0 0.5em; padding-left: 8px; border-left: 2px solid var(--border); color: var(--muted); }
+/* display: block 是为了让宽表格自己滚：table 默认不是 flex/block item，overflow 在它身上不生效。 */
+.md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0 0 0.5em; }
+.md th, .md td { border: 1px solid var(--border); padding: 2px 6px; text-align: left; }
+.md th { background: var(--panel-2); font-weight: 600; }
+.md hr { border: 0; border-top: 1px solid var(--border); margin: 0.8em 0; }
+.md a { color: var(--accent); }
 .pane { position: relative; flex: 1; min-height: 0; display: flex; }
 .pane .term { flex: 1; min-width: 0; }
 .empty { padding: 2rem; }

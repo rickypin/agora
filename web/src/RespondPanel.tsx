@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SessionApi } from "./api";
 import type { SessionRow } from "./events";
+import { MarkdownView } from "./MarkdownView";
 
 interface Props {
   row: SessionRow;
@@ -46,15 +47,33 @@ export function hasRespondPanel(row: SessionRow): boolean {
  * 交回终端——短于 5 分钟就把它写出来，免得人以为 Allow 按钮坏了。
  */
 const SHORT_HOLD_SECS = 300;
+/**
+ * 最后一条回复默认露出的行数（agora-4yr.2；docs/spec/ux.md「回答面板」写的就是这个 12 行）。
+ *
+ * 按**源文本**的 `\n` 数截，而不是 CSS 限高：限高会随字号 / 表格 / 代码块飘，同一段回复在
+ * 不同机器上折叠位置不一样，也没法拿一个数字跟 spec 对账（agora-4yr.5 的验收要按 ux.md 里的
+ * 「12 行」grep 代码）。截断落在围栏 / 表格中间的处理在 markdown.ts。
+ *
+ * 与 `.respond-last { max-height: 40vh }`（agora-4yr.1）不冲突：这里管默认露多少，40vh 管
+ * 展开之后最多占多高、超了自己滚，面板不会把终端挤没。
+ */
+const FOLD_LINES = 12;
 export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHandled }: Props) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const rootRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     setError(null);
   }, [row.id, row.status, row.reason, row.pending_decision?.request_id]);
+  // 折叠态只活在"这一条回复"上：换一行、或者同一行来了新回复，都回到折叠。**不持久化**
+  // （ux.md 写明，agora-4yr.5 按 ux.md 逐项对账）——"我看没看完这一条"是即时状态，而 detail
+  // 每次 TURN_DONE 都换，存下来的键下一次只会让人对着一段没读过的长文默认展开。
+  useEffect(() => {
+    setExpanded(false);
+  }, [row.id, row.detail]);
   useEffect(() => {
     if (!focusRequest) return;
     // 推迟一个宏任务再抢焦点，不能在 effect 里直接 focus。TerminalView 的挂载 effect 末尾有一句
@@ -83,6 +102,11 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
   // external 会话没有运行时句柄（MISSION §5.5）：主区那一格是"没有终端"的说明文字，
   // 把焦点交给它没有意义，按钮直接不画。它仍然能经 hook 回答（Allow / Deny 照旧）。
   const hasTerminal = row.origin !== "external";
+  const lastLines = detail === null ? [] : detail.split("\n");
+  // 展开是单向的：展开后按钮消失，不变「收起」。回复是"看结果"的东西，看完就该给下一条指令
+  // （输入框在面板最上面），再折回去没有用；40vh 的限高保证展开也不会把终端挤没。
+  const folded = !expanded && lastLines.length > FOLD_LINES;
+  const lastShown = folded ? lastLines.slice(0, FOLD_LINES).join("\n") : detail;
 
   async function decide(decision: "allow" | "deny") {
     if (!pending) return;
@@ -109,7 +133,7 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
 
   return (
     <section className="respond-panel" data-testid={`respond-panel-${row.id}`} ref={rootRef}>
-      {waiting && <p className="respond-question">{canDecide ? pending.summary : detail ?? String(row.reason ?? "等待你")}</p>}
+      {waiting && <MarkdownView className="respond-question" text={canDecide ? pending.summary : detail ?? String(row.reason ?? "等待你")} />}
       {shortHold && (
         <p className="respond-hint muted" data-testid="respond-within">
           {within} 秒内没答会交回终端（挂起期间终端看不到提示）
@@ -163,10 +187,20 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
               发送
             </button>
           </form>
-          {detail && (
-            <div className="respond-last muted" data-testid="respond-last">
-              ↳ {detail}
-            </div>
+          {lastShown !== null && (
+            <>
+              <div className="respond-last muted" data-testid="respond-last">
+                <span className="respond-last-mark" aria-hidden="true">
+                  ↳
+                </span>
+                <MarkdownView text={lastShown} />
+              </div>
+              {folded && (
+                <button className="respond-more" data-testid="respond-last-more" onClick={() => setExpanded(true)}>
+                  展开全文（{lastLines.length} 行）
+                </button>
+              )}
+            </>
           )}
         </>
       )}

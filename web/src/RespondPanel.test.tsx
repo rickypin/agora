@@ -141,3 +141,40 @@ it("an external row has no terminal to hand the focus to, so it offers no such b
   expect(screen.getByTestId("allow")).toBeTruthy();
   expect(screen.queryByTestId("open-terminal")).toBeNull();
 });
+
+it("a long reply is folded to 12 lines with an expand button; a short one has no button (A50)", () => {
+  // agora-4yr.2：按**源文本**的行数截，不是 CSS 限高——jsdom 不做布局，限高在这里根本测不到，
+  // 而且限高会随字号 / 表格飘。展开是单向的：点完按钮就消失（回复看完就该给下一条指令）。
+  const lines = Array.from({ length: 20 }, (_, i) => `第 ${i + 1} 行`);
+  setup({ status: "turn_done", detail: lines.join("\n") });
+  const last = screen.getByTestId("respond-last");
+  expect(last.textContent).toContain("第 12 行");
+  expect(last.textContent).not.toContain("第 13 行");
+  const more = screen.getByTestId("respond-last-more");
+  expect(more.textContent).toContain("20 行");
+  fireEvent.click(more);
+  expect(screen.getByTestId("respond-last").textContent).toContain("第 20 行");
+  expect(screen.queryByTestId("respond-last-more")).toBeNull();
+  cleanup();
+  // 12 行以内不出按钮，全文本来就都在。
+  setup({ status: "turn_done", detail: "一\n二\n三" });
+  expect(screen.queryByTestId("respond-last-more")).toBeNull();
+  expect(screen.getByTestId("respond-last").textContent).toContain("三");
+});
+
+it("the reply is rendered as markdown: a table becomes a table and a fence becomes a pre (A50; agora-03k)", () => {
+  // agora-03k 的截图：标题、表格、代码块在 pre-wrap 下挤成一坨。排版是否"读得顺"是人眼条款，
+  // 这里钉的是"元素真的出来了"。
+  setup({
+    status: "turn_done",
+    detail: "## 小结\n\n| 文件 | 状态 |\n| --- | --- |\n| a.rs | 改了 |\n\n```rust\nlet a = 1;\n```",
+  });
+  const last = screen.getByTestId("respond-last");
+  expect(last.querySelector("h3")!.textContent).toBe("小结");
+  expect(last.querySelector("table th")!.textContent).toBe("文件");
+  expect(last.querySelector("pre code")!.textContent).toBe("let a = 1;");
+  // 源里的围栏与竖线不再作为字面量出现在屏幕上。
+  expect(last.textContent).not.toContain("```");
+  expect(last.textContent).not.toContain("| --- |");
+  expect(screen.queryByTestId("respond-last-more")).toBeNull();
+});
