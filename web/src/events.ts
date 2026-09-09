@@ -29,6 +29,18 @@ export interface SessionRow {
    * 走着：设置面板据此显示"正在结束"，直到行推成 FINISHED（agora-284；`docs/spec/ux.md` Kill）。
    */
   killed_at?: string | null;
+  /**
+   * 会话所在 git 仓库 / worktree / 分支（服务端按 working_directory 现算；agora-uvd.1，A49）。
+   * 目录不存在 / 不是仓库 / git 不可用 / 超时为 null，前端据此归「其它目录」。
+   * 本任务只加类型，不改渲染。
+   */
+  project?: {
+    repo: string;
+    name: string;
+    worktree: string;
+    branch: string | null;
+    main: boolean;
+  } | null;
   [key: string]: unknown;
 }
 

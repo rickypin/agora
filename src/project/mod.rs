@@ -4,9 +4,12 @@
 //! 合并后按最近使用排序。上百个仓库的手写列表会立刻过期，目标是常用项目 2–3 次操作起会话。
 //!
 //! 本文件只读、不写工作区；新建 worktree（`git worktree add -b`，§1.4 Git GUI 边界的唯一例外）
-//! 在 [`worktree`]。
+//! 在 [`worktree`]。会话行上的 `{ repo, name, worktree, branch, main }` 由 [`index`] 按目录现算。
 
+pub mod index;
 pub mod worktree;
+
+pub use index::ProjectInfo;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

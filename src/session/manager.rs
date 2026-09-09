@@ -24,6 +24,7 @@ use crate::status::{
     self, AgentProcess, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation,
     Status,
 };
+use crate::project::ProjectInfo;
 use crate::task::{TaskIndex, TaskInfo};
 
 /// 首条 prompt 当 task_ref 摘要时最多留多长（ADR-002 D8）。
@@ -165,6 +166,8 @@ pub struct SessionView {
     pub hooks_unheard: Option<String>,
     /// `task_ref` 像 beads id 且查得到时的标题与优先级（只读 beads，不变量 12）。
     pub task: Option<TaskInfo>,
+    /// 按 `working_directory` 现算的仓库 / worktree / 分支（agora-uvd.1，A49）。查不到为 None。
+    pub project: Option<ProjectInfo>,
 }
 
 impl SessionView {
@@ -1044,6 +1047,7 @@ impl SessionManager {
             status_since,
             hooks_unheard,
             task,
+            project: None,
             record: rec,
         }
     }

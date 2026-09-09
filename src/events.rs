@@ -638,6 +638,7 @@ mod tests {
             status_since: m.status_since(),
             hooks_unheard: None,
             task: None,
+            project: None,
         }
     }
 
