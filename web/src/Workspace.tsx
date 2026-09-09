@@ -234,9 +234,9 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   }, [byId]);
 
   // 侧栏显示顺序：visibleOrder 一条（A47，agora-uvd.2）。attention 分支原样 =
-  // partitionByAttention(fuzzyFilter(sortByAttention))；tree 分支本任务先按创建序平铺
-  // （uvd.3 换成 DFS）。Alt/Option+N / ]/[ / 过滤框 Enter 都走这条 visible。
-  const visible = useMemo(() => visibleOrder(mode, rows, filter, seen), [mode, rows, filter, seen]);
+  // partitionByAttention(fuzzyFilter(sortByAttention))；tree 分支是树的 DFS 顺序（agora-uvd.3，
+  // 节点序取自 Header 那一排 nodes、本机第一）。Alt/Option+N / ]/[ / 过滤框 Enter 都走这条 visible。
+  const visible = useMemo(() => visibleOrder(mode, rows, filter, seen, nodes, localNode ?? undefined), [mode, rows, filter, seen, nodes, localNode]);
 
   useEffect(() => {
     // 手机端没有键盘：全局快捷键与命令面板只在桌面装（MISSION §6.5）。

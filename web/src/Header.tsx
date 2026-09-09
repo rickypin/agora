@@ -58,7 +58,8 @@ export function clockText(iso: string): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function describe(n: NodeStatus): { symbol: string; cls: string; reason: string | null } {
+/** 一枚节点的点：符号、`.node-status` 的类、离线原因。树视图的节点组头复用（agora-uvd.3），与 Header 同源。 */
+export function describeNode(n: NodeStatus): { symbol: string; cls: string; reason: string | null } {
   if (n.online) return { symbol: "●", cls: "ok", reason: null };
   if (n.last_error) return { symbol: "✗", cls: "bad", reason: peerErrorLabel(n.last_error) };
   if (n.last_seen) return { symbol: "○", cls: "stale", reason: null };
@@ -66,7 +67,7 @@ function describe(n: NodeStatus): { symbol: string; cls: string; reason: string 
 }
 
 function NodeChip({ n }: { n: NodeStatus }) {
-  const { symbol, cls, reason } = describe(n);
+  const { symbol, cls, reason } = describeNode(n);
   // 在线只有名字和点；离线才带原因与"上次见到"（MISSION §3.5：保留最后一眼，绝不静默消失）。
   const seen = !n.online && n.last_seen ? `上次见到 ${clockText(n.last_seen)}` : null;
   const note = [reason, seen].filter((s): s is string => s !== null).join(" · ");

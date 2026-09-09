@@ -1,9 +1,9 @@
 /**
  * 「按项目」视图的树（A48，agora-uvd.3）：节点组 → 仓库组 → worktree 组 → 会话行；没有仓库的行归该节点的
- * 「其它目录」组。纯函数、可测；组件在 SidebarTree.tsx。
+ * 「其它目录」组。纯函数、可测；组件在 SidebarTree.tsx。文件名带 Model 后缀：叫 sidebarTree.ts 会与 SidebarTree.tsx 在 macOS 的大小写不敏感文件系统上撞名，裸导入 ./SidebarTree 解析到 .ts（2026-09-09 实测 tsc TS1149）。
  *
  * 唯一的硬规则（用户 2026-09-08 的第一条反馈：行随状态自己换位置，人跟不上）：**行的位置只随创建 / 删除变，
- * 不随状态变**——本文件从头到尾不读 `status` / `status_since`（守卫 sidebarTree.test.ts「order never changes
+ * 不随状态变**——本文件从头到尾不读 `status` / `status_since`（守卫 sidebarTreeModel.test.ts「order never changes
  * when status or status_since changes」）。FINISHED 行不搬家、不折叠，只由组件淡显。
  *
  * 分组键（也是折叠记忆的键，MISSION §6.5 折叠不改变序号）：
@@ -34,7 +34,8 @@ export interface TreeGroup {
   rows: SessionRow[];
 }
 
-export type FlatEntry = { kind: "group"; group: TreeGroup } | { kind: "row"; row: SessionRow; ordinal: number; hidden: boolean };
+/** `hidden`：某个祖先组折叠了——行不画、序号照数；组头同样不画（只有折叠的那个组头自己留着）。 */
+export type FlatEntry = { kind: "group"; group: TreeGroup; hidden: boolean } | { kind: "row"; row: SessionRow; ordinal: number; hidden: boolean };
 
 export const OTHER_LABEL = "其它目录";
 
@@ -178,7 +179,7 @@ export function flattenTree(tree: TreeGroup[], collapsed: ReadonlySet<string>): 
   const out: FlatEntry[] = [];
   let ordinal = 0;
   const walk = (g: TreeGroup, hidden: boolean) => {
-    out.push({ kind: "group", group: g });
+    out.push({ kind: "group", group: g, hidden });
     const below = hidden || collapsed.has(g.key);
     for (const c of g.children) walk(c, below);
     for (const row of g.rows) out.push({ kind: "row", row, ordinal: ++ordinal, hidden: below });

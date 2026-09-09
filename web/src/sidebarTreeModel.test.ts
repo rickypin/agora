@@ -3,7 +3,7 @@ import type { SessionRow } from "./events";
 import { fuzzyFilter } from "./fuzzy";
 import type { NodeStatus } from "./Header";
 import { rowHaystack } from "./SessionRow";
-import { buildTree, COLLAPSED_STORAGE_KEY, flattenTree, loadCollapsed, rowGroupKeys, storeCollapsed, treeOrder, type TreeGroup } from "./sidebarTree";
+import { buildTree, COLLAPSED_STORAGE_KEY, flattenTree, loadCollapsed, rowGroupKeys, storeCollapsed, treeOrder, type TreeGroup } from "./sidebarTreeModel";
 
 function row(id: string, node: string, created: string, project: SessionRow["project"] = null, extra: Record<string, unknown> = {}): SessionRow {
   return { id, node, status: "running", alive: true, created_at: created, project, display_name: id, ...extra };
@@ -105,7 +105,8 @@ describe("sidebarTree", () => {
     const before = treeOrder(ROWS, nodes, "mac");
     expect(before.map((r) => r.id)).toEqual(["mac:a", "mac:b", "mac:wt", "mac:sg", "mac:sh", "zuan:z"]);
     // 同一批行：每一行都换状态与起点，头一行变 WAITING（attention 视图会把它顶到最上面）。
-    const statuses = ["waiting", "finished", "failed", "turn_done", "idle", "unknown"];
+    // 同一 worktree 里 a 变 waiting、b 变 failed：按状态排（字母序或 attention 分数）都会把两行对调。
+    const statuses = ["failed", "finished", "waiting", "turn_done", "idle", "unknown"];
     const changed = ROWS.map((r, i) => ({ ...r, status: statuses[i % statuses.length]!, status_since: 1000 - i, alive: i % 2 === 0 }));
     const after = treeOrder(changed, nodes, "mac");
     expect(after.length).toBe(before.length);
@@ -139,6 +140,8 @@ describe("sidebarTree", () => {
       ["zuan:z", 6, false],
     ]);
     expect(folded.filter((e) => e.kind === "group").length).toBe(open.filter((e) => e.kind === "group").length);
+    // 折叠组自己的组头不藏，它下面两个 worktree 的组头藏。
+    expect(folded.flatMap((e) => (e.kind === "group" && e.hidden ? [e.group.key] : []))).toEqual([`wt:mac:${AGORA}`, `wt:mac:${WT3}`]);
     // 折叠节点组：整个节点下面全藏。
     const node0 = flattenTree(tree, new Set(["node:mac"]));
     expect(rowsOf(node0).map(([id, , hidden]) => [id, hidden])).toEqual([

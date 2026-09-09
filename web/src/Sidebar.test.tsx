@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { partitionByAttention, sortByAttention, type SeenSet } from "./attention";
 import type { SessionRow } from "./events";
 import { Sidebar } from "./Sidebar";
+import { treeOrder } from "./sidebarTreeModel";
 
 afterEach(cleanup);
 
@@ -166,12 +167,30 @@ it("the mode switch toggles aria-pressed and calls onMode (A47)", () => {
   expect(onMode).toHaveBeenCalledWith("attention");
 });
 
-it("tree mode renders no section headings (A47)", () => {
-  const visible = partitionByAttention(sortByAttention(ROWS), new Set());
+it("tree mode renders SidebarTree and no section headings (A47 / A48)", () => {
+  // uvd.2 时这条断言的是创建序平铺；uvd.3 起 tree 分支整段换成 <SidebarTree>：没有仓库的行归「其它目录」，
+  // 顺序是 treeOrder（创建序，同秒按 id）而不是 attention 序，Finished 折叠区不存在、FINISHED 行原位淡显。
+  const visible = treeOrder(ROWS, undefined, "n");
   render(<Sidebar rows={visible} mode="tree" onMode={() => {}} all={ROWS} total={ROWS.length} active={null} onOpen={() => {}} filter="" onFilter={() => {}} />);
+  expect(screen.getByTestId("sidebar-tree")).toBeTruthy();
   expect(screen.queryByTestId("section-attention")).toBeNull();
   expect(screen.queryByTestId("section-running")).toBeNull();
   expect(screen.queryByTestId("section-finished")).toBeNull();
-  // 平铺全部行，Finished 折叠不生效。
-  expect(listOrder()).toEqual(["row-n:wait", "row-n:own", "row-n:run", "row-n:ext1", "row-n:ext2"]);
+  expect(screen.getByTestId("tree-group-node:n").getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByTestId("tree-group-other:n").textContent).toContain("其它目录");
+  expect(listOrder()).toEqual(["row-n:ext1", "row-n:ext2", "row-n:own", "row-n:run", "row-n:wait"]);
+  expect(screen.getByTestId("row-n:ext1").closest("li.done")).not.toBeNull();
+  expect(screen.getByTestId("row-n:run").closest("li.done")).toBeNull();
+});
+
+it("the Finished clear count is the same in both modes: clearing is defined by the folded section, not the view (agora-uvd.3)", () => {
+  const seen: SeenSet = new Set(["n:own@20"]);
+  const onDeleteMetadata = vi.fn(async () => ({ ok: true as const, value: undefined }));
+  const attention = partitionByAttention(sortByAttention(ROWS), seen);
+  const { rerender } = render(<Sidebar rows={attention} mode="attention" seen={seen} all={ROWS} total={ROWS.length} active={null} onOpen={() => {}} filter="" onFilter={() => {}} onDeleteMetadata={onDeleteMetadata} />);
+  const titleA = screen.getByTestId("clear-finished").getAttribute("title");
+  expect(titleA).toContain("3 行");
+  rerender(<Sidebar rows={treeOrder(ROWS, undefined, "n")} mode="tree" seen={seen} all={ROWS} total={ROWS.length} active={null} onOpen={() => {}} filter="" onFilter={() => {}} onDeleteMetadata={onDeleteMetadata} />);
+  expect(screen.getByTestId("clear-finished").getAttribute("title")).toBe(titleA);
+  expect(screen.getByTestId("clear-finished").textContent).toBe("Finished 3");
 });

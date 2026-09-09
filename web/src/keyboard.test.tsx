@@ -231,6 +231,35 @@ describe("侧栏视图切换（A47）", () => {
     expect(press({ key: "©", code: "KeyG", altKey: true }, term)).toBe(true);
     expect(screen.getByTestId("sidebar-mode-attention").getAttribute("aria-pressed")).toBe("true");
   });
+
+  it("Alt/Option+N in tree mode follows DFS order across groups (A47)", async () => {
+    // attention 序是 wait → b → a（waiting 最先）；树的 DFS 是 仓库 agora（主 worktree a、b）→ 仓库 sglog（wait）。
+    const agora = { repo: "/code/agora", name: "agora", worktree: "/code/agora", branch: "main", main: true };
+    const sglog = { repo: "/code/sglog", name: "sglog", worktree: "/code/sglog", branch: "main", main: true };
+    const t = setup([
+      row("mac:wait", { status: "waiting", project: sglog, created_at: "2026-09-08T12:00:00Z" }),
+      row("mac:b", { project: agora, created_at: "2026-09-08T12:00:02Z" }),
+      row("mac:a", { project: agora, created_at: "2026-09-08T12:00:01Z" }),
+    ]);
+    await online(t);
+    press({ key: "1", code: "Digit1", altKey: true });
+    expect(mounted).toEqual(["mac:wait"]);
+    press({ key: "©", code: "KeyG", altKey: true });
+    expect(screen.getByTestId("sidebar-mode-tree").getAttribute("aria-pressed")).toBe("true");
+    // 树视图：1 = a（agora 主 worktree 里创建最早），2 = b，3 = wait（sglog 仓库组在 agora 之后）。
+    press({ key: "1", code: "Digit1", altKey: true });
+    press({ key: "3", code: "Digit3", altKey: true });
+    expect(mounted).toEqual(["mac:wait", "mac:a", "mac:wait"]);
+    expect(screen.getByTestId("row-mac:b").querySelector(".ord")?.textContent).toBe("2");
+    // 折叠 sglog 仓库组后 wait 不画但序号照数：Alt+3 仍跳到它，且组自动展开。
+    fireEvent.click(screen.getByTestId("tree-group-repo:mac:/code/sglog"));
+    expect(screen.queryByTestId("row-mac:wait")).toBeNull();
+    press({ key: "2", code: "Digit2", altKey: true });
+    press({ key: "3", code: "Digit3", altKey: true });
+    expect(mounted).toEqual(["mac:wait", "mac:a", "mac:wait", "mac:b", "mac:wait"]);
+    expect(screen.getByTestId("tree-group-repo:mac:/code/sglog").getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("row-mac:wait").closest("li.selected")).not.toBeNull();
+  });
 });
 
 describe("窄屏（手机没有键盘）", () => {

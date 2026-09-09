@@ -6,6 +6,7 @@ import type { SessionRow, UnregisteredRow } from "./events";
 import { Header, type NodeStatus } from "./Header";
 import { SidebarRow } from "./SessionRow";
 import type { SidebarMode } from "./sidebarMode";
+import { SidebarTree } from "./SidebarTree";
 
 // 行组件与它的两个小工具搬去了 SessionRow.tsx（agora-h1k.3 接缝，2026-09-06）；CommandPalette /
 // SessionSettings 仍从这里 import，所以原样再导出一次，调用方一行不改。rowHaystack 也住在
@@ -192,6 +193,7 @@ export function Sidebar({
   // 前的 all 算——过滤只是暂时少画几行，不改变哪些行「可以清」；NEEDS ATTENTION 里没看过的 FINISHED 不碰
   // （MISSION §4.6「不得在用户看到结果之前清理」）。没有批量端点也不加：逐行 DELETE /api/sessions/:id
   // （MISSION §11 不引入 Archive）；peer stale 的行跳过（一跳转发到不了）并在结果里说明。
+  // 树视图下同样成立（agora-uvd.3）：清理对象是折叠区的定义，与视图无关——树里 FINISHED 行只是原位淡显。
   const clearable = all.filter((r) => sectionOf(r, seen) === "finished");
   const [clearAsk, setClearAsk] = useState(false);
   const [clearNote, setClearNote] = useState<string | null>(null);
@@ -217,7 +219,8 @@ export function Sidebar({
   }
   const ownClearable = clearable.filter((r) => r.origin !== "external").length;
   // 三段的交界：rows 已经按 attention → running → finished 拼好（partitionByAttention），这里只在交界处插标题。
-  // tree 视图不画分区标题、不折叠（A47：平铺全部行；uvd.3 接手组头）。
+  // tree 视图整段列表换成 <SidebarTree>（A48，agora-uvd.3）：组头、折叠与 DFS 序号都在那边；下面 attention
+  // 分支一个字不动。
   const showSections = mode !== "tree";
   const sections = rows.map((r) => sectionOf(r, seen));
   const firstRunning = sections.indexOf("running");
@@ -301,6 +304,21 @@ export function Sidebar({
           <span className="muted">NEEDS ATTENTION</span>
         </div>
       )}
+      {mode === "tree" ? (
+        <SidebarTree
+          rows={rows}
+          all={all}
+          nodes={nodes}
+          localNode={localNode}
+          active={active}
+          seen={seen}
+          onOpen={onOpen}
+          onRowRender={onRowRender}
+          now={now}
+          onOpenDiff={onOpenDiff}
+          renderExpanded={renderExpanded}
+        />
+      ) : (
       <ul>
         {rows.map((r, i) => (
           <Fragment key={r.id}>
@@ -339,6 +357,7 @@ export function Sidebar({
           </Fragment>
         ))}
       </ul>
+      )}
       {unregistered.length > 0 && !filter && (
         <>
           <div className="sidebar-head">

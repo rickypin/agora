@@ -155,6 +155,25 @@ li.stale > .row { opacity: 0.55; }
 li.stale > .row:hover, li.stale > .row.selected { opacity: 0.8; }
 .row .meta .stale-seen { color: var(--warn); }
 
+/* 「按项目」树视图（A48，agora-uvd.3）：组头是按钮，三层缩进；行由 <li class="tree-row"> 包一层再放
+   SidebarRow 自己的 <li>（行的 <li> 归 uvd.7，本任务不改），内层 ul 不再加侧栏的 6px 内边距。
+   FINISHED 行不搬家、原位淡显：li.done 与 li.stale 同一组规则，hover / 选中回到可读。 */
+.tree .tree-head { display: flex; gap: 6px; align-items: baseline; width: 100%; background: none; border: 0; padding: 6px 6px 2px; text-align: left; color: var(--fg); cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; }
+.tree .tree-head:hover { background: var(--panel-2); border-radius: 4px; }
+.tree .tree-caret { flex: none; width: 1em; }
+.tree .tree-label { overflow: hidden; text-overflow: ellipsis; }
+.tree .tree-branch, .tree .tree-main { flex: none; font-size: 11px; }
+.tree .tree-main { border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+.tree .tree-attention { margin-left: auto; flex: none; color: var(--warn); font-size: 11px; }
+.tree .tree-group.depth-0 .tree-head { padding-top: 10px; font-size: 13px; }
+.tree .tree-group.depth-1 .tree-head { padding-left: 14px; }
+.tree .tree-group.depth-2 .tree-head { padding-left: 26px; }
+.tree .tree-row > ul { padding: 0; }
+.tree .tree-row.depth-2 > ul { padding-left: 14px; }
+.tree .tree-row.depth-3 > ul { padding-left: 26px; }
+li.done > .row, li.done > ul > li > .row { opacity: 0.55; }
+li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, li.done > ul > li > .row.selected { opacity: 0.8; }
+
 /* New Agent 的 Task 字段（A43，agora-h1k.2）：下拉 / 一句话 + 一行灰字（没装 bd、没有 beads），
    Prompt 是多行框——放在一个格子里叠着，标签列不动。 */
 .form .task-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
