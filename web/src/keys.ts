@@ -39,7 +39,9 @@ export type ShortcutAction =
   | { action: "next" }
   | { action: "prev" }
   /** 侧栏第 index+1 条（按当前过滤后的显示顺序）。 */
-  | { action: "jump"; index: number };
+  | { action: "jump"; index: number }
+  /** 切换侧栏视图 attention ↔ tree（A47，agora-uvd.2；Alt/Option+G）。 */
+  | { action: "mode" };
 
 /**
  * 全局快捷键（Cmd/Ctrl+K/F、Alt/Option+K/F、Alt/Option+1…9、Alt/Option+]/[、Alt/Option+N）。

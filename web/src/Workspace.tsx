@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
-import { loadSeen, partitionByAttention, seenKey, sortByAttention, storeSeen } from "./attention";
+import { loadSeen, seenKey, storeSeen } from "./attention";
 import { ChangesApiContext } from "./Changes";
 import { CommandPalette } from "./CommandPalette";
-import { fuzzyFilter } from "./fuzzy";
 import { nodeStatuses } from "./Header";
 import { HealthWatcher, versionBlocked, VersionWatcher } from "./health";
 import { isDesktop, matchShortcut } from "./keys";
@@ -11,7 +10,8 @@ import { NewAgentDialog } from "./NewAgentDialog";
 import { browserDeps, Notifier, type NotifierDeps, type Permission } from "./notify";
 import { Respond } from "./Respond";
 import { SessionSettings } from "./SessionSettings";
-import { rowHaystack, rowName, Sidebar } from "./Sidebar";
+import { visibleOrder } from "./sidebarMode";
+import { rowName, Sidebar } from "./Sidebar";
 import { SessionStore, useSessions, useUnregistered } from "./store";
 import { defaultDiffSocket, type TerminalClientOptions } from "./terminal";
 import { TerminalView } from "./TerminalView";
@@ -220,13 +220,11 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     });
   }, [byId]);
 
-  // 侧栏显示顺序：先按 attention 排（MISSION §6.3），过滤只删不换序（空 query 同分稳定），
-  // 再拼成 NEEDS ATTENTION → RUNNING → FINISHED 三段；Alt/Option+N 跳的就是这个顺序（agora-xqa.14 验收），
-  // Finished 段收起时行不画、序号照数（A46）。
-  const visible = useMemo(
-    () => partitionByAttention(fuzzyFilter(sortByAttention(rows), filter, rowHaystack), seen),
-    [rows, filter, seen],
-  );
+  // 侧栏显示顺序：visibleOrder 一条（A47，agora-uvd.2）。attention 分支原样 =
+  // partitionByAttention(fuzzyFilter(sortByAttention))；Alt/Option+N 跳的就是这个顺序
+  // （agora-xqa.14 验收），Finished 段收起时行不画、序号照数（A46）。本步先钉 attention，
+  // 视图切换的 mode 状态下一刀再接。
+  const visible = useMemo(() => visibleOrder("attention", rows, filter, seen), [rows, filter, seen]);
 
   useEffect(() => {
     // 手机端没有键盘：全局快捷键与命令面板只在桌面装（MISSION §6.5）。
