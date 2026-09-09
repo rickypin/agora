@@ -334,7 +334,7 @@ Display name 可任意修改，运行时身份不变。一行显示的名字有�
 
 **已退出会话的清理**：FINISHED / FAILED / 被 Kill 的运行时会话在用户看过之后清理（Dashboard 里确认或 Delete Metadata 时一并清掉保留的输出）。这不是 kill——进程已经不在——所以不需要确认，但不得在用户看到结果之前发生；V1 不做定时回收。external 行没有运行时会话与输出，只有 agora 的两行记录；FINISHED 超过 `sessions.external_finished_ttl` 自动删记录，不算回收。策略细节见 ADR-001 D4。
 
-**「看过」的三条证据**（A46；上一段的"用户看过"与 §6.3 的 Finished 折叠区都按这里判）：① 该行在 Dashboard 里被选中展开过一次——这是浏览器的视图状态（选中集合与主区选中行是同一个，只在内存；「看过」集合另存 localStorage，刷新不丢），不是服务端字段，换个浏览器就从头算；② 人在终端里自己结束了会话——`external` 行的 SessionEnd（bd memories `external-exit-hooks-ctrlc-vs-hup` 的实测表：Claude 两次 Ctrl+C 与关窗口、Grok 两种、Codex 两次 Ctrl+C 都发；Codex 关窗口不发、只能靠进程探活变 process gone），这类会话的工作面从来不在 agora 里，结束即视为看过，不按 reason 分；③ TURN_DONE 之后又来了新 prompt——人已经读过上一轮的结果才会接着说，已隐含在 TURN_DONE → RUNNING 的转换里，不另记。
+**「看过」的三条证据**（A46；上一段的"用户看过"与 §6.3 的 Finished 折叠区都按这里判）：① 该行在 Dashboard 里被选中过一次（展开区已并入主区面板，A50：选中一行就是把它的回答 / 结果面板画在主区，判定不变）——这是浏览器的视图状态（选中集合与主区选中行是同一个，只在内存；「看过」集合另存 localStorage，刷新不丢），不是服务端字段，换个浏览器就从头算；② 人在终端里自己结束了会话——`external` 行的 SessionEnd（bd memories `external-exit-hooks-ctrlc-vs-hup` 的实测表：Claude 两次 Ctrl+C 与关窗口、Grok 两种、Codex 两次 Ctrl+C 都发；Codex 关窗口不发、只能靠进程探活变 process gone），这类会话的工作面从来不在 agora 里，结束即视为看过，不按 reason 分；③ TURN_DONE 之后又来了新 prompt——人已经读过上一轮的结果才会接着说，已隐含在 TURN_DONE → RUNNING 的转换里，不另记。
 
 主区显示的是侧栏当前选中行的终端，这是浏览器的视图状态，而不是 agent 生命周期；页面只有这一个选中集合——曾经的顶栏 Tabs 是第二个选中集合（标签页管主区、侧栏行管展开区，二者可不一致），用户 2026-09-07 反馈"只有左侧栏时很容易上手，加上顶栏就不知道该如何操作"，去掉（agora-a46）。切换行 / 关闭终端视图不允许：restart session、recreate 运行时会话、丢失 agent 状态、终止 PTY 拥有的进程。
 
@@ -422,8 +422,8 @@ MVP 依赖运行时 scrollback，不自行构建 terminal transcript database。
 
 ### 6.2 MVP Screens（只需要 4 个）
 
-- **Screen A — Dashboard**：agents / status / needs attention；**WAITING 行可就地回答、TURN_DONE 行可就地下一条指令**，不必进 Screen B
-- **Screen B — Terminal Workspace**：Sidebar + Terminal（主区只跟侧栏选中行，没有顶栏 Tabs；§4.6）
+- **Screen A — Dashboard**：agents / status / needs attention；**WAITING 的回答与 TURN_DONE 的下一条指令都在主区回答面板完成**，不必进终端（A50）
+- **Screen B — Terminal Workspace**：Sidebar + 主区（回答面板 / 结果面板 / 终端，A50；主区只跟侧栏选中行，没有顶栏 Tabs；§4.6）
 - **Screen C — New Agent Dialog**：创建 agent
 - **Screen D — Session Settings**：修改 Display Name / Project，以及危险操作
 
@@ -441,9 +441,9 @@ FAILED 100   WAITING 90   TURN_DONE 85   FINISHED 80   UNKNOWN 40   IDLE 30   ST
 
 每一行的第一列是**任务**而不是进程名：issue id + 标题 > 首条 prompt 摘要 > display name。行下面再带两行，回答"它现在到哪了"：`❯` 是用户最后输入的那一条；`↳` 是 agent 正在做什么或它最后说了什么，两者互为兜底。这两行读自 **agent 的 hook 事件**（`prompt.submitted`、`turn.ended` 的最后一条回复、`activity` 的当前工具，ADR-002 D8），不读 pane，也不解析 transcript（V1 只存路径）；没有 hook 的会话保持一行 pane preview。所有客户端形态用同一条规则渲染同样的两行。
 
-**看结果**：TURN_DONE / FINISHED 的行展开后，除了两行，还显示该 worktree 的改动文件列表（`git status --short`），旁边是任务的验收标准（读自 beads，不复制）供对照；"看 diff"在会话所在 worktree 开一个只读终端跑 `git --no-pager diff`——复用现有终端，不做 diff 组件（§11）。git 写操作是 Git GUI（唯一例外见 §1.4）。
+**看结果**（A50）：选中 TURN_DONE / FINISHED 的行，主区回答面板之下是**结果面板**——该 worktree 的改动文件列表（`git status --short`），旁边是任务的验收标准（读自 beads，不复制）供对照，两段各自可折叠、默认展开；"看 diff"在会话所在 worktree 开一个只读终端跑 `git --no-pager diff`——复用现有终端，不做 diff 组件（§11）；diff 视图下回答面板隐藏、结果面板留着与 diff 并排对照。git 写操作是 Git GUI（唯一例外见 §1.4）。
 
-**就地 respond**：WAITING 行展开后直接显示问题（hook 的文本，兜底为最后几行 pane）与一个输入框 / 选项按钮；TURN_DONE 行展开后是"下一条指令"输入框。提交即 `POST /api/sessions/:id/input`（§7.3）。这是手机上的主路径；终端是逃生口。
+**就地 respond**（A50）：选中行之后，主区 crumb 之下、终端之上是**回答面板**——WAITING 显示问题（hook 的文本，兜底为最后几行 pane）与选项按钮 / 输入框；TURN_DONE 的"下一条指令"输入框**在面板最上面**，不必滚过整段回复才够得着，其下才是最后一条回复。回复与问题文本按自写的 **markdown 子集**排版，默认只渲染前 12 行、超过给一个单向的「展开全文」按钮（**例外**：`reason = permission` 那条 summary 是一行命令，逐字符原样、等宽、不过 markdown——人照着它批准）。提交即 `POST /api/sessions/:id/input`（§7.3）。侧栏行不再展开，只剩行本身。这是手机上的主路径；终端是逃生口。**重排时机**：「需要我」视图在人看 / 操作侧栏时不重排，按 A51 的冻结规则落位。
 
 **「按项目」视图**（A47 / A48；2026-09-08 用户反馈"行随状态自己换位置，人跟不上"）：上面的排序原则只属于「需要我」视图；同一批会话的另一种摆法是**不排序、只分组**的树。分组键固定三层，不自适应：节点（本机第一）→ 仓库 → worktree（主 worktree 第一，组头带分支），组内会话行**按创建顺序**，位置只随创建 / 删除变、不随状态变——一行进 WAITING 只换状态符号，要按紧急程度看它就切回「需要我」。不在任何 git 仓库里的会话归该节点下的「其它目录」组。组可折叠且记住，**折叠只是不画不是不数**：序号仍按树的顺序数（与 A46 的 Finished 区同一条规则，§6.5），折叠的组头显示组内需要关注的行数。**FINISHED 行不搬家**——留在原组原位淡显，这个视图里没有 Finished 折叠区；但 header 的一键清理与视图无关，清理对象始终是折叠区的那批行（§4.6「看过」）。worktree 组头可以就地起会话（§6.4）：树本身就是那份"最近用过的仓库与 worktree"清单。线框与规则见 `docs/spec/ux.md`。
 
@@ -472,7 +472,7 @@ Project 列表**不靠手写配置**：从 `project_roots`（§9.1）扫描 git 
 | RUNNING → FINISHED | "Codex / tests @ mac finished" |
 | RUNNING → FAILED | "Codex / migration @ mac failed" |
 
-点击 notification 直接导航至对应会话（WAITING → 就地回答，不是终端）。V1 桌面用浏览器通知（A18）。人自己干的不通知：Kill、以及 `external` 行在终端里自己结束的（SessionEnd / `/clear`，§4.6 证据 ②）；external 行只有进程消失（崩溃、关窗口）才弹 "finished"。
+点击 notification 直接导航至对应会话——落到该行，并把焦点放进主区回答面板（TURN_DONE 是输入框、WAITING 是第一个按钮；A50），不是把人扔进终端。V1 桌面用浏览器通知（A18）。人自己干的不通知：Kill、以及 `external` 行在终端里自己结束的（SessionEnd / `/clear`，§4.6 证据 ②）；external 行只有进程消失（崩溃、关窗口）才弹 "finished"。
 
 手机阶段（§11）：通知要在浏览器关闭时也能到达，因此 PWA 需要 Web Push（iOS 需加到主屏）。**推送由承载 PWA 的那个节点发出**（它经 peer 链路看得见全部事件），推送订阅只注册在那一个节点；节点到不了推送端点（如 FCM）时降级为"PWA 打开期间实时更新"，并在 health（§10.3）显示原因；不做经其它节点的推送中转。
 
@@ -488,7 +488,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 
 ### 6.9 Responsive
 
-**所有设备功能集相同**（不变量 9）；手机 / iPad 优先优化 Dashboard、就地回答与确认（§6.3）；桌面优先优化终端与创建。Desktop breakpoint 显示 sidebar；窄屏用 sidebar drawer。V1 只做桌面断点（§0.1）；窄屏与手机优化随手机阶段，届时手机终端可用但不做完整 ergonomics（§11）。
+**所有设备功能集相同**（不变量 9）；手机 / iPad 优先优化 Dashboard、就地回答与确认（§6.3）；桌面优先优化终端与创建。Desktop breakpoint 显示 sidebar；窄屏用 sidebar drawer。手机 drawer 选中行后收起，主区即回答面板 + 终端（A50 同一个面板，没有第二套；agora-thc.5）。V1 只做桌面断点（§0.1）；窄屏与手机优化随手机阶段，届时手机终端可用但不做完整 ergonomics（§11）。
 
 ### 6.10 视觉方向
 
@@ -676,18 +676,18 @@ MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终�
 - [ ] **A36** 不变量 1–5、7、8、10、11 各有 fake-agent 集成测试；逐条关掉守卫，对应测试变红。不变量 12 由 A43 的零写入守卫覆盖；6 由不变量 1–4 的测试涵盖；9 由 `tests/arch_boundary.rs` 钉死（前端只经 `/api` 与 WS 和节点通信，没有客户端专用后门）
 - [ ] **A38** Mac 打开 `127.0.0.1`，经 peer 一跳回答 zuan 上的 WAITING、attach 到 zuan 上的会话终端并交互
 - [ ] **A39** 一条命令升级节点，升级期间 agent 不死、会话与 metadata 完整——不变量 3 与规则 10 最真实的测试
-- [ ] **A40** 会话行展开显示任务的验收标准（读自 beads，agora 不复制）
+- [ ] **A40** 选中会话行即显示任务的验收标准（读自 beads，agora 不复制；A50 之后画在主区结果面板里，§6.3）
 - [ ] **A41** TURN_DONE / FINISHED 的会话可看改动文件列表，并一键在其 worktree 开只读终端看 `git diff`；看结果链路不做任何 git 写操作
 - [ ] **A42** `ended_at` 落库；attention 的等待时长按事件时间计算
 - [ ] **A43** 从 `bd ready` 选任务起会话：预填仓库 / worktree / 名字与首条 prompt；agora 对 beads 零写入，有守卫测试
 - [ ] **A44** 对话框可新建 worktree：base 默认主 worktree 当前 checked-out 分支、路径按 `worktree_root` 约定（§6.4）；agora 不做合并与销毁
 - [ ] **A45** New Agent 的 Node 下拉列本机与在线的 peer；选 peer 后 Project / Worktree / Task / Agent 从该节点取、创建与新建 worktree 经一跳转发在该节点执行，会话行带 `@ <node>`；stale / 版本不兼容的 peer 不可选而不是报错（§6.4，§1 第 3 步。2026-09-07 补：§6.4 早有此句但 §12 无编号，M2 拆分按编号核对时漏掉，见 §1.5「拆分」）
-- [ ] **A46** 侧栏收纳：FINISHED 行不再与 WAITING 同档——external 来源的 FINISHED 直接进默认折叠的 Finished 区，agora / adopted 来源的 FINISHED 在用户看过（选中展开过）之后进；Finished 计数一键批量 Delete metadata；external FINISHED 行超过 `sessions.external_finished_ttl` 自动删记录；折叠与否不改变 Alt/Option+N 的序号（§4.6「看过」的三条证据、§6.3，§1 第 1、5 步。2026-09-08 现场：58 行里 39 行 external FINISHED 占满第一屏）
+- [ ] **A46** 侧栏收纳：FINISHED 行不再与 WAITING 同档——external 来源的 FINISHED 直接进默认折叠的 Finished 区，agora / adopted 来源的 FINISHED 在用户看过（选中过，§4.6 证据 ①）之后进；Finished 计数一键批量 Delete metadata；external FINISHED 行超过 `sessions.external_finished_ttl` 自动删记录；折叠与否不改变 Alt/Option+N 的序号（§4.6「看过」的三条证据、§6.3，§1 第 1、5 步。2026-09-08 现场：58 行里 39 行 external FINISHED 占满第一屏）
 - [ ] **A47** 侧栏有两种视图可切换：「需要我」（§6.3 的 attention 排序）与「按项目」（节点 → 仓库 → worktree → 会话的树）；切换控件在侧栏头部，命令面板与 Alt/Option+G 也能切，选择存浏览器、刷新后保持；过滤在两种视图下都可用；两种视图下 Alt/Option+N 跳的第 N 条都等于眼睛看到的第 N 条（折叠只是不画不是不数，与 A46 同一条规则）（§6.1、§6.3、§6.5；§1 第 1、2 步。2026-09-08 用户反馈：行随状态自己换位置，人跟不上）（守卫：`web/src/Sidebar.test.tsx`「the mode switch toggles aria-pressed and calls onMode」「tree mode renders SidebarTree and no section headings」、`web/src/Workspace.test.tsx`「the sidebar mode survives a remount via localStorage」、`web/src/keyboard.test.tsx`「Alt/Option+G toggles the sidebar mode, also while the terminal has focus」「Alt/Option+N in tree mode follows DFS order across groups」、`web/src/sidebarMode.test.ts`「visibleOrder in tree mode is creation order and filter only removes rows」、`web/src/sidebarTreeModel.test.ts`「collapsed groups hide rows but ordinals keep counting」）
 - [ ] **A48** 「按项目」树：节点组（在线 / stale 点）→ 仓库组 → worktree 组（分支 chip、主 worktree 标记）→ 会话行按创建顺序、位置只随创建 / 删除变、不随状态变；不在任何 git 仓库里的会话归该节点下的「其它目录」组；组可折叠且记住；折叠的组头显示组内需要关注的行数；worktree 组头可就地「+ 在此起 agent」（对话框预填节点 / 仓库 / worktree）与「开 shell」，节点组头的「+」预填节点（§6.1、§6.4；§1 第 2、3 步）（守卫：`web/src/sidebarTreeModel.test.ts`「order never changes when status or status_since changes」——逐元素断言、「groups by node, repo, worktree and orders rows by created_at」「rows without a project go to an 其它目录 group after all repos」「the local node comes first, peers follow the nodes order」、`web/src/SidebarTree.test.tsx`「group headers show branch, main marker and attention count when collapsed」「a finished row stays in place with the done class」、`web/src/Sidebar.test.tsx`「the Finished clear count is the same in both modes」；组头就地起会话的守卫随 agora-uvd.4 落地）
 - [ ] **A49** 每行明示三件身份：agent 品牌（每个 adapter 一个可辨的徽标与颜色，shell / custom 与 agent 区分）、节点（本机也标，颜色按节点；反转 agora-7ku.5「本机不标」的决定）、仓库与分支（服务端会话行新增只读 `project` 字段：仓库根 / 名字 / worktree 路径 / 分支，异步补齐、TTL 重查，git 只读——`tests/arch_boundary.rs` 白名单守卫）；两种视图同源同字段（§6.1、§4.2；§1 第 1 步。2026-09-08 用户反馈：在哪个项目 / worktree、本机还是 zuan、哪家 agent 都看不清）（守卫：`tests/session_project.rs`「main_worktree_session_reports_repo_branch_and_main_true」「linked_worktree_session_points_repo_to_main_worktree_and_main_false」「detached_head_yields_branch_null」「project_is_not_stored_in_sqlite」、`tests/arch_boundary.rs`「git_subprocesses_are_read_only_or_worktree_add」、`web/src/agentBadge.test.ts`「known adapters get distinct glyphs and hues; shell and unknown are uncolored」、`web/src/nodeColor.test.ts`「hue is stable for a name and differs for mac vs zuan」、`web/src/SessionRow.test.tsx`「labels the node on every row, local ones uncolored」「shows a repo ⎇ branch line in attention mode, with worktree name when not main」「detached HEAD shows ⎇ detached」）
-- [ ] **A50** 就地 respond 搬进主区：主区结构是 crumb → 回答面板 → 终端；WAITING 的问题与 Allow / Deny / 打开终端、TURN_DONE 的最后一条回复（按 markdown 排版：标题 / 列表 / 代码块 / 表格，不渲染 HTML）与「下一条指令」输入框（在面板顶部、不用滚到底）、验收标准与改动列表都在这个面板里，可折叠、有高度上限；侧栏行不再展开，只剩行本身；手机 drawer（§6.9）下同一面板（§6.2、§6.3；§1 第 2 步。agora-03k：窄列里塞几百行 markdown 读不了）
-- [ ] **A51** 「需要我」视图的重排让人跟得上：指针在侧栏内或最近一次侧栏交互后的短暂窗口内不重排（新行仍插入、状态符号照变），窗口过后再按 attention 顺序落位，换了位置的行短暂高亮；Alt/Option+N 按冻结期间眼睛看到的顺序跳（§6.3、§6.5；§1 第 1 步）
+- [ ] **A50** 就地 respond 搬进主区：主区结构是 crumb → 回答面板 → 终端；WAITING 的问题与 Allow / Deny / 打开终端、TURN_DONE 的最后一条回复（按 markdown 排版：标题 / 列表 / 代码块 / 表格，不渲染 HTML）与「下一条指令」输入框（在面板顶部、不用滚到底）、验收标准与改动列表都在这个面板里，可折叠、有高度上限；侧栏行不再展开，只剩行本身；手机 drawer（§6.9）下同一面板（§6.2、§6.3；§1 第 2 步。agora-03k：窄列里塞几百行 markdown 读不了）（守卫：`web/src/Workspace.test.tsx`「clicking a turn_done row shows the respond panel in the main area between crumb and pane, and the sidebar row has no respond- testid (A50; agora-03k)」「a turn_done row with a task shows respond, acceptance and changes panels in that order above the terminal (A50)」、`web/src/RespondPanel.test.tsx`「the next-command input renders above the last reply (A50)」「a long reply is folded to 12 lines with an expand button; a short one has no button (A50)」、`web/src/Sidebar.test.tsx`「the sidebar DOM never contains respond-, acceptance- or changes- testids in either mode (A50)」）
+- [ ] **A51** 「需要我」视图的重排让人跟得上：指针在侧栏内或最近一次侧栏交互后的短暂窗口内不重排（新行仍插入、状态符号照变），窗口过后再按 attention 顺序落位，换了位置的行短暂高亮；Alt/Option+N 按冻结期间眼睛看到的顺序跳（§6.3、§6.5；§1 第 1 步）（守卫：`web/src/Workspace.test.tsx`「while the pointer is over the sidebar a status change does not reorder rows but updates the symbol (A51)」「after leaving the sidebar and 3 s (fake timers) the row moves and carries the moved class (A51)」「Alt/Option+2 during a freeze jumps to the second row as displayed (A51)」、`web/src/stableOrder.test.ts`「frozen freezes the section of every row and keeps the three sections contiguous (A51)」）
 
 编号全局唯一、不复用：A13 / A19 / A28 / A35 / A37 在 §11 手机条目。
 
