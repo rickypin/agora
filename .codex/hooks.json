@@ -46,6 +46,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"${HANDOFF_GUARD:-}\" ] && exec \"$HANDOFF_GUARD\"; exit 0",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
