@@ -160,7 +160,7 @@ GET /api/health
 - **事件原样出本机总线**：peer 的 `session_created` / `session_updated` / `session_removed` / `decision_resolved` / `notification` 经视图改写后发进本机 `/api/events`（`status_changed` 以整行 `session_updated` 出去——行上的时间已改写），浏览器只连本机一条流。全量快照与本地视图差分成 created / updated / removed。守卫 `tests/peer_view.rs::peer_sessions_are_merged_with_node_label`、`incompatible_peer_is_flagged_not_merged`。
 - `GET /api/sessions/:id` 的 `<node>` 是已配置 peer → Human 从并入视图读（404 `not_found` 表示视图里没有），Peer principal 问 peer 的会话仍是 `node_unknown`（一跳）。对 peer 会话的写操作与终端流是另一条链路（一跳转发，agora-7ku.7）。
 
-前端：侧栏行的 `@ <node>` 只给 `node ≠ 本机` 的行，本机 id 取 `/api/system` 的 `node`（`web/src/health.ts` 的 `VersionWatcher` 同一次拉取带出，不另起轮询），Header 本机那一枚也叫这个名字（`docs/spec/ux.md`）。stale 行直接读行上的 `last_seen` 显示「○ 上次见到 HH:MM」并整行淡显（`web/src/SessionRow.tsx`，`docs/spec/ux.md`「行上的 `@ <node>`」段）；点开 stale 行前端不做任何事，重试由节点在 `hop` / `get` 里插。`api_version`：`stale`（agora-7ku.5）随 1.2 已 bump；`last_seen`（agora-7ku.6，只增）随 1.3 已 bump。
+前端：侧栏行的 `@ <node>` **每一行都画，本机也不例外**（2026-09-09 反转 agora-7ku.5 的「本机不标」，A49 / agora-uvd.7：两台机常态并行，不标就看不出这一行在哪），本机的 chip 不着色以示区别；本机 id 取 `/api/system` 的 `node`（`web/src/health.ts` 的 `VersionWatcher` 同一次拉取带出，不另起轮询），Header 本机那一枚也叫这个名字（`docs/spec/ux.md`）。stale 行直接读行上的 `last_seen` 显示「○ 上次见到 HH:MM」并整行淡显（`web/src/RowIdentity.tsx`，`docs/spec/ux.md`「行上的节点 chip」段）；点开 stale 行前端不做任何事，重试由节点在 `hop` / `get` 里插。`api_version`：`stale`（agora-7ku.5）随 1.2 已 bump；`last_seen`（agora-7ku.6，只增）随 1.3 已 bump。
 
 ## 一跳转发（ADR-003 D8、ADR-004；agora-7ku.7）
 
