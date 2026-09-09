@@ -98,3 +98,24 @@ it("fetches once per status change and not at all for states where the result is
   expect(urls.length).toBe(2);
   expect(screen.queryByTestId("changes-n:a")).toBeNull(); // WAITING：不占位，此刻该做的是回答问题
 });
+
+it("folding the list keeps the fetched state: unfolding does not re-pull /changes (agora-4yr.3)", async () => {
+  // 折叠（agora-4yr.3，与验收标准同一副按钮）只藏 body，不把整个 Changes 从 DOM 里摘掉：
+  // 拉取挂在 mount 的 useEffect，组件一卸载 state 就没了，"收起来再打开"会白白重发一次请求。
+  const { api, urls } = fakeApi(() => ({ body: { files: [{ path: "a.txt", status: "modified" }], branch: "main", reason: null } }));
+  render(<Changes row={row()} api={api} />);
+  await flush();
+  expect(urls.length).toBe(1);
+  const toggle = screen.getByTestId("changes-toggle-n:a");
+  expect(toggle.getAttribute("aria-expanded")).toBe("true"); // 默认展开：看结果就是为了看改了什么
+  expect(toggle.textContent).toBe("▾ 改动 · main");
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByTestId("changes-list-n:a")).toBeNull();
+  // 「看 diff」留在头上、不随折叠消失：收起列表是嫌它长，不是不想看 diff。
+  expect(screen.getByTestId("diff-n:a")).toBeTruthy();
+  fireEvent.click(toggle);
+  await flush();
+  expect(screen.getByTestId("changes-list-n:a").textContent).toContain("M a.txt");
+  expect(urls.length).toBe(1);
+});

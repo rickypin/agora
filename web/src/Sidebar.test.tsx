@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { sessionApi, type FetchLike } from "./api";
 import { partitionByAttention, sortByAttention, type SeenSet } from "./attention";
+import { ChangesApiContext } from "./Changes";
 import type { SessionRow } from "./events";
 import { Sidebar } from "./Sidebar";
 import { treeOrder } from "./sidebarTreeModel";
@@ -265,4 +267,36 @@ it("the Finished clear count is the same in both modes: clearing is defined by t
   rerender(<Sidebar rows={treeOrder(ROWS, undefined, "n")} mode="tree" seen={seen} all={ROWS} total={ROWS.length} active={null} onOpen={() => {}} filter="" onFilter={() => {}} onDeleteMetadata={onDeleteMetadata} />);
   expect(screen.getByTestId("clear-finished").getAttribute("title")).toBe(titleA);
   expect(screen.getByTestId("clear-finished").textContent).toBe("Finished 3");
+});
+
+it("the sidebar DOM never contains respond-, acceptance- or changes- testids in either mode (A50)", () => {
+  // agora-03k / A50：回答面板（agora-4yr.1）与验收标准 + 改动列表（agora-4yr.3）都在主区，侧栏
+  // 那 260 px 只负责"选哪一行"。给一行最容易把它们招回来的样子：选中、TURN_DONE（正好落在
+  // Changes 的状态集合里）、任务里写了验收标准。
+  //
+  // ChangesApiContext 必须真的供上：Changes 拿不到 api 时一律返回 null，不供 Provider 这条守卫
+  // 对 changes- 那一类就是恒真的、把行为改回去也照样绿（2026-09-10 写这条时先漏了 Provider，
+  // 实测确认过：改回去只有 acceptance- 那一类红）。
+  const f: FetchLike = async () =>
+    new Response(JSON.stringify({ files: [{ path: "a.txt", status: "modified" }], branch: "main", reason: null }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  const api = sessionApi(f);
+  const rows = [row("n:a", "turn_done", { task: { id: "agora-03k", title: "侧栏行展开区可读性差", priority: 2, acceptance: "三段都在主区" } })];
+  const common = { seen: new Set<string>(), all: rows, total: rows.length, active: "n:a", onOpen: () => {}, filter: "", onFilter: () => {} };
+  for (const mode of ["attention", "tree"] as const) {
+    const visible = mode === "attention" ? partitionByAttention(sortByAttention(rows), new Set()) : treeOrder(rows, undefined, "n");
+    const { container } = render(
+      <ChangesApiContext.Provider value={api}>
+        <Sidebar {...common} rows={visible} mode={mode} onMode={() => {}} />
+      </ChangesApiContext.Provider>,
+    );
+    // 行真的画出来了，否则下面那个 0 是"选择器没命中"而不是"侧栏干净"。
+    expect(screen.getByTestId("row-n:a"), `mode=${mode}`).toBeTruthy();
+    expect(container.querySelector("aside.sidebar"), `mode=${mode}`).toBeTruthy();
+    const leaked = container.querySelectorAll('[data-testid^="respond-"],[data-testid^="acceptance-"],[data-testid^="changes-"]');
+    expect(Array.from(leaked).map((el) => el.getAttribute("data-testid")), `mode=${mode} 的侧栏 DOM 里漏了主区的东西`).toEqual([]);
+    cleanup();
+  }
 });

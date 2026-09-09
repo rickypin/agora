@@ -2,7 +2,6 @@ import { memo } from "react";
 import { promptRepeatsLabel, taskLabel } from "./attention";
 import type { SessionRow } from "./events";
 import { RowIdentity } from "./RowIdentity";
-import { RowResult } from "./RowResult";
 
 export { staleSeen } from "./RowIdentity";
 
@@ -16,8 +15,10 @@ export { staleSeen } from "./RowIdentity";
  * 2026-09-09 meta 一行抽到 RowIdentity.tsx（agora-uvd.7 接缝，不改行为）：行身份与展开区搬走
  * 不再抢同一文件。node / stale 的规则仍在 RowIdentity 里，注释随那一处。
  *
- * 2026-09-10 展开区的验收标准 / 改动列表抽到 RowResult.tsx（agora-4yr.3 接缝，不改行为）：
- * 它们的规则与注释随那一处，这里只留行本身。
+ * 2026-09-10 展开区的验收标准 / 改动列表抽到 RowResult.tsx（agora-4yr.3 接缝），随即整段搬进主区的
+ * 看结果面板（A50，兑现 agora-03k）。至此 `<li>` 里只剩行按钮本身：行是"选哪一个"，选中之后要看的
+ * 东西全在主区，260 px 的窄列不再承担可读性。守卫 Sidebar.test.tsx「the sidebar DOM never contains
+ * respond-, acceptance- or changes- testids in either mode」——两种视图各一次，别让任何一段回来。
  */
 
 /** `<li>` 的类名：选中 / stale / 刚换位，三个正交的状态。 */
@@ -84,8 +85,6 @@ interface RowProps {
   now: number;
   /** 本机 node.id（`/api/system` 的 node）：已知后每一行都标节点 chip；undefined = 还不知道，谁都不标。 */
   localNode?: string;
-  /** 「看 diff」：开该会话的只读 diff 标签页（MISSION §6.3 看结果；agora-h1k.5）。 */
-  onOpenDiff?: (id: string) => void;
   /** 只透传给 RowIdentity（agora-uvd.8）：树视图（SidebarTree，agora-uvd.3）传 false——组头已说明仓库与分支。 */
   showProject?: boolean;
   /** 这一帧刚落位、位置真的变了（A51，agora-4yr.4）：`<li class="moved">` 触发 1.2 s 的背景高亮。 */
@@ -93,7 +92,7 @@ interface RowProps {
 }
 
 /** memo：行对象引用没变就不重渲染（store.ts）。 */
-export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, now, localNode, onOpenDiff, showProject, moved }: RowProps) {
+export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, now, localNode, showProject, moved }: RowProps) {
   onRender?.(row.id);
   const prompt = str(row.prompt);
   const progress = str(row.progress);
@@ -146,7 +145,6 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
         </span>
         <span className="ord muted">{ordinal >= 1 && ordinal <= 9 ? ordinal : ""}</span>
       </button>
-      {active && <RowResult row={row} onOpenDiff={onOpenDiff} />}
     </li>
   );
 });

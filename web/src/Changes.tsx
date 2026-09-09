@@ -22,6 +22,15 @@ export const ChangesApiContext = createContext<SessionApi | null>(null);
 /** 这几种状态才拉列表。 */
 const SHOW_FOR = new Set(["turn_done", "finished", "failed", "running"]);
 
+/**
+ * 这一行现在有没有改动列表可看。RowResult 用它判断「看结果面板要不要占位」——面板与组件
+ * 自己必须用同一个判据，不然会出现一个空面板画着边线、里面什么都没有（与 RespondPanel 的
+ * hasRespondPanel 同一个形状）。api 为 null（没有 Provider 也没传）时组件什么都不做，也算不显示。
+ */
+export function showsChanges(row: SessionRow, api: SessionApi | null): boolean {
+  return api !== null && SHOW_FOR.has(row.status);
+}
+
 /** 列表里的单字母（git status --short 的习惯）。不认识的状态原样给首字母，绝不空着。 */
 export function statusLetter(status: string): string {
   switch (status) {
@@ -77,8 +86,10 @@ type Loaded = { kind: "loading" } | { kind: "data"; data: ChangesInfo } | { kind
 export function Changes({ row, onOpenDiff, api: given }: Props) {
   const ctx = useContext(ChangesApiContext);
   const api = given ?? ctx;
-  const show = api !== null && SHOW_FOR.has(row.status);
+  const show = showsChanges(row, api);
   const [state, setState] = useState<Loaded>({ kind: "loading" });
+  // 折叠（agora-4yr.3，与验收标准同一副折叠按钮）：默认展开——看结果就是为了看"改了什么"。
+  const [open, setOpen] = useState(true);
   useEffect(() => {
     if (!show || !api) return;
     let alive = true;
@@ -108,12 +119,22 @@ export function Changes({ row, onOpenDiff, api: given }: Props) {
   if (!show || !api) return null;
   const data = state.kind === "data" ? state.data : null;
   const canDiff = data !== null && data.reason === null;
+  // 折叠只藏 body、绝不把整个 Changes 从 DOM 里摘掉：拉取挂在 mount 的 useEffect（见文件头），
+  // 组件一卸载 state 就没了，"收起来再打开"会白白重发一次 GET /changes（2026-09-10 设计 agora-4yr.3
+  // 时先想把折叠写在外层做条件渲染，正是这个形状；同一条理由让 diff 视图保留 result-panel）。
+  // 「看 diff」按钮留在头上、不随折叠消失：收起列表是嫌它长，不是不想看 diff。
   return (
     <div className="changes" data-testid={`changes-${row.id}`} onClick={(e) => e.stopPropagation()}>
       <div className="changes-head">
-        <span className="muted">
-          改动{data?.branch ? ` · ${data.branch}` : ""}
-        </span>
+        <button
+          type="button"
+          className="changes-toggle muted"
+          aria-expanded={open}
+          data-testid={`changes-toggle-${row.id}`}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {open ? "▾" : "▸"} 改动{data?.branch ? ` · ${data.branch}` : ""}
+        </button>
         <button
           type="button"
           data-testid={`diff-${row.id}`}
@@ -124,23 +145,23 @@ export function Changes({ row, onOpenDiff, api: given }: Props) {
           看 diff
         </button>
       </div>
-      {state.kind === "loading" && <p className="muted changes-note">…</p>}
-      {state.kind === "error" && (
+      {open && state.kind === "loading" && <p className="muted changes-note">…</p>}
+      {open && state.kind === "error" && (
         <p className="muted changes-note" data-testid={`changes-error-${row.id}`}>
           拉不到改动列表（{state.error}）
         </p>
       )}
-      {data && data.reason !== null && (
+      {open && data && data.reason !== null && (
         <p className="muted changes-note" data-testid={`changes-reason-${row.id}`} data-reason={data.reason}>
           {reasonText(data.reason)}
         </p>
       )}
-      {data && data.reason === null && data.files.length === 0 && (
+      {open && data && data.reason === null && data.files.length === 0 && (
         <p className="muted changes-note" data-testid={`changes-empty-${row.id}`}>
           无改动
         </p>
       )}
-      {data && data.files.length > 0 && (
+      {open && data && data.files.length > 0 && (
         <ul className="changes-list" data-testid={`changes-list-${row.id}`}>
           {data.files.map((f) => (
             <li key={f.path} title={`${f.status}: ${f.path}`}>

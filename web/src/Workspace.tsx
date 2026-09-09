@@ -9,6 +9,7 @@ import { isDesktop, matchShortcut } from "./keys";
 import { NewAgentDialog, type NewAgentInitial } from "./NewAgentDialog";
 import { browserDeps, Notifier, type NotifierDeps, type Permission } from "./notify";
 import { hasRespondPanel, RespondPanel } from "./RespondPanel";
+import { RowResult } from "./RowResult";
 import { SessionSettings } from "./SessionSettings";
 import { loadMode, storeMode, visibleOrder, type SidebarMode } from "./sidebarMode";
 import { rowName, Sidebar } from "./Sidebar";
@@ -429,6 +430,9 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         total={rows.length}
         // 看 diff 时它的会话行仍是选中行（展开区留着，验收标准 / 改动列表与 diff 并排对照，MISSION §6.3）；
         // 不然行一折叠，关掉 diff 又重挂载重拉一次 /changes（2026-09-06 代检时看到）。
+        // 2026-09-10 复核（agora-4yr.3）：那两段已经从行里搬进主区的 result-panel，上面这条结论
+        // 一个字不改——只是"折叠"的形态从"行收起来"变成"面板不画"，所以 diff 视图下只藏
+        // respond-panel、result-panel 照画（下面那处），重拉那一幕仍然不会发生。
         active={view?.id ?? null}
         onOpen={openFromSidebar}
         onNewAgent={openNewAgent}
@@ -446,7 +450,6 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         onPointerLeave={leaveSidebar}
         unregistered={unregistered}
         onAdopt={adopt}
-        onOpenDiff={openDiff}
         onDeleteMetadata={api.deleteMetadata}
         // 树视图组头「shell」直接起会话（agora-uvd.4）：成功走 pendingOpen，行进列表后自动选中。
         api={api}
@@ -494,20 +497,32 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
                 </>
               )}
             </div>
-            {/* 回答面板（A50，agora-4yr.1）：crumb 之下、终端之上，永远这个位置——面板与终端是
-                同一行的两面，宽度跟主区走。diff 视图不画它（那一格在看结果，不在回答）。
-                key = 会话 id：切行时面板重挂载，草稿 / busy / 错误不跨行残留（它长在侧栏行的
-                <li> 里时是随行天然重挂的，搬进主区后位置固定，不加 key 就会串行）。 */}
-            {!showDiff && (
-              <RespondPanel
-                key={active.id}
-                row={active}
-                api={api}
-                onOpenTerminal={focusTerminal}
-                focusRequest={respondFocus === active.id}
-                onFocusHandled={clearRespondFocus}
-              />
-            )}
+            {/* crumb 之下、终端之上的两个面板（A50）：回答面板（agora-4yr.1）+ 看结果面板
+                （agora-4yr.3）。包一层 .panels 是为了给**两者合计**一个 50vh 的上界、超了整块
+                自己滚——分别限高只能保证各自不失控，一段长验收标准加一段长回复照样能把终端挤没。
+                回答面板在上：回答问题 / 给下一条指令是先做的事，对照验收看结果是后做的事
+                （agora-h1k.3 定的顺序）。
+                diff 视图只藏回答面板（那一格在看结果，不在回答），RowResult 照画——验收标准 /
+                改动列表与 diff 并排对照是 MISSION §6.3 要的，而且藏掉它「关闭 diff」会重拉一次
+                GET /changes（见上面 Sidebar active 那条注释与 RowResult.tsx 文件头）。
+                key 带会话 id：切行时面板重挂载，草稿 / busy / 错误 / 折叠状态不跨行残留（它们长在
+                侧栏行的 <li> 里时是随行天然重挂的，搬进主区后位置固定，不加 key 就会串行）。两个 key
+                各带前缀而不是都用裸 id：同一父节点下的两个兄弟用同一个 key，React 只把其中一个放进
+                重排用的 key map，切 diff 时（回答面板那一格变成 false）另一个就可能被判成新节点重挂——
+                Changes 一重挂就是一次多余的 GET /changes，正是本任务要避免的那一幕。 */}
+            <div className="panels">
+              {!showDiff && (
+                <RespondPanel
+                  key={`respond:${active.id}`}
+                  row={active}
+                  api={api}
+                  onOpenTerminal={focusTerminal}
+                  focusRequest={respondFocus === active.id}
+                  onFocusHandled={clearRespondFocus}
+                />
+              )}
+              <RowResult key={`result:${active.id}`} row={active} onOpenDiff={openDiff} />
+            </div>
             <div className="pane">
               {/* key=会话 id：切行时旧终端卸载（detach）、新终端挂载，永不 restart。 */}
               {showDiff ? (

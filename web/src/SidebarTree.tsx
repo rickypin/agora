@@ -31,7 +31,6 @@ interface Props {
   onOpen: (id: string) => void;
   onRowRender?: (id: string) => void;
   now: number;
-  onOpenDiff?: (id: string) => void;
   /** 组头「+」：带着这个组的 Node / Project / Worktree 打开 New Agent 对话框（A48，agora-uvd.4）。 */
   onNewAgent?: (initial?: NewAgentInitial) => void;
   /** 组头「shell」直接起会话用的写端点；不给就没有这两个按钮。 */
@@ -74,7 +73,6 @@ export function SidebarTree({
   onOpen,
   onRowRender,
   now,
-  onOpenDiff,
   onNewAgent,
   api,
   onCreated,
@@ -279,7 +277,6 @@ export function SidebarTree({
                 onRender={onRowRender}
                 now={now}
                 localNode={localNode}
-                onOpenDiff={onOpenDiff}
                 // 组头已经说明仓库与分支，行上再画一遍「name ⎇ branch」是噪音（agora-uvd.8 / agora-s7o）。
                 showProject={false}
               />

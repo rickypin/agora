@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { SessionRow } from "./events";
 import { clockText } from "./Header";
@@ -15,8 +15,6 @@ const SEEN = "2026-09-02T23:10:00Z";
 function row(extra: Partial<SessionRow> = {}): SessionRow {
   return { id: "n:a", node: "n", status: "turn_done", alive: true, agent_type: "claude", ...extra };
 }
-
-const ACCEPTANCE = "tests/task_info.rs::acceptance_is_read_not_stored（库里无该字段、API 有）；\n前端 vitest：展开显示与折叠。";
 
 function mount(r: SessionRow, active = true, localNode?: string) {
   const onOpen = vi.fn();
@@ -217,38 +215,6 @@ it("a stale row without last_seen still renders (offline, no time) instead of cr
   expect(staleSeen(row({ stale: true, last_seen: SEEN }))?.text).toBe(`○ 上次见到 ${clockText(SEEN)}`);
 });
 
-it("an active row shows the task's acceptance criteria in full (A40)", () => {
-  // MISSION §6.3 看结果：展开一行就该看到"做完算什么"，全文、多行原样，读自 beads。
-  // 以前这里还断"排在就地 respond 之下"；回答面板 2026-09-10 搬进主区（A50，agora-4yr.1），
-  // 行里没有它了，两者的相对位置改由 Workspace.test「crumb → 面板 → pane」那条钉。
-  mount(row({ task: { id: "agora-h1k.3", title: "验收标准", priority: 2, acceptance: ACCEPTANCE } }));
-  expect(screen.getByTestId("acceptance-body-n:a").textContent).toBe(ACCEPTANCE);
-  expect(screen.getByTestId("acceptance-toggle-n:a").textContent).toContain("agora-h1k.3");
-});
-
-it("the acceptance block folds and unfolds without touching the row", () => {
-  const { onOpen } = mount(row({ task: { id: "agora-h1k.3", title: "验收标准", priority: 2, acceptance: ACCEPTANCE } }));
-  const toggle = screen.getByTestId("acceptance-toggle-n:a");
-  expect(toggle.getAttribute("aria-expanded")).toBe("true");
-  fireEvent.click(toggle);
-  expect(screen.queryByTestId("acceptance-body-n:a")).toBeNull();
-  expect(toggle.getAttribute("aria-expanded")).toBe("false");
-  fireEvent.click(toggle);
-  expect(screen.getByTestId("acceptance-body-n:a").textContent).toBe(ACCEPTANCE);
-  // 折叠 / 展开不是"打开这一行"。
-  expect(onOpen).not.toHaveBeenCalled();
-});
-
-it("no task, no acceptance text, or an inactive row: the block takes no space", () => {
-  mount(row());
-  expect(screen.queryByTestId("acceptance-n:a")).toBeNull();
-  cleanup();
-  mount(row({ task: { id: "agora-x", title: "没写验收", priority: 2, acceptance: "  " } }));
-  expect(screen.queryByTestId("acceptance-n:a")).toBeNull();
-  cleanup();
-  mount(row({ task: { id: "agora-x", title: "没写验收", priority: 2 } }));
-  expect(screen.queryByTestId("acceptance-n:a")).toBeNull();
-  cleanup();
-  mount(row({ task: { id: "agora-h1k.3", title: "验收标准", priority: 2, acceptance: ACCEPTANCE } }), false);
-  expect(screen.queryByTestId("acceptance-n:a")).toBeNull();
-});
+// 验收标准三条（A40）2026-09-10 随 Acceptance 搬去 web/src/RowResult.test.tsx（agora-4yr.3）：
+// 那两段进了主区的看结果面板，行里再没有它们。行的守卫改由 Sidebar.test.tsx 的
+// 「the sidebar DOM never contains respond-, acceptance- or changes- testids」负责。

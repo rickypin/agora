@@ -102,7 +102,6 @@ interface SidebarProps {
   unregistered?: UnregisteredRow[];
   onAdopt?: (body: AdoptBody) => void;
   /** 「看 diff」（agora-h1k.5）；只透传给每一行。 */
-  onOpenDiff?: (id: string) => void;
   /** 一键清理用的 DELETE metadata（agora-j4w.2）；不给就没有清理按钮。 */
   onDeleteMetadata?: (id: string) => Promise<WriteResult<unknown>>;
   /** 冻结期间每行的分段归属（A51，agora-4yr.4，`stableSections`）：不给就实时算，既有调用方一行不改。
@@ -199,7 +198,6 @@ export function Sidebar({
   total,
   unregistered = [],
   onAdopt,
-  onOpenDiff,
   onDeleteMetadata,
   sections: givenSections,
   moved,
@@ -374,7 +372,6 @@ export function Sidebar({
           onOpen={onOpen}
           onRowRender={onRowRender}
           now={now}
-          onOpenDiff={onOpenDiff}
           onNewAgent={onNewAgent}
           api={api}
           onCreated={onCreated}
@@ -411,8 +408,7 @@ export function Sidebar({
               onRender={onRowRender}
               now={now}
               localNode={localNode}
-              onOpenDiff={onOpenDiff}
-              moved={moved?.has(r.id)}
+                  moved={moved?.has(r.id)}
             />
             )}
           </Fragment>

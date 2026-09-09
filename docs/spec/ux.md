@@ -135,7 +135,7 @@ RUNNING
 
 折叠按**源文本的行数**：最后一条回复默认只渲染前 **12 行**，超过时下面一个「展开全文（N 行）」按钮（`respond-last-more`），点开显示全文、按钮随之消失（不提供「收起」——回复是看结果的东西，看完就该给上面的输入框下一条指令）；12 行以内不出按钮。折叠态**不持久化**：换一行、同一行来了新回复、刷新页面都回到折叠。按行数截而不是 CSS 限高，是因为限高会随字号 / 表格 / 代码块飘，同一段回复在不同机器上折叠位置不一样。截断落在围栏中间时，未闭合的代码块一路渲染到结尾（不退回原文）；落在表头与分隔线之间时，表头行退回成一行普通文字。`.respond-last` 那条 40vh 限高与折叠是两件事：折叠管默认露多少，40vh 管展开之后最多占多高。守卫 `web/src/markdown.test.ts`、`web/src/RespondPanel.test.tsx`。
 
-状态既不是 WAITING 也不是 TURN_DONE 时面板一格都不占；看 diff 时不画（那一格在看结果，不在回答）。「打开终端」在主区里的意思是**把焦点交给下面的终端**（面板与终端本来就上下相邻，不再是切标签页）；external 会话没有终端可交（MISSION §5.5），这个按钮不画，经 hook 的 Allow / Deny 照旧。输入框里按 Escape 同样把焦点还给终端。终端焦点规则（agora-p29 / agora-vcc）不变：点行仍然聚焦终端，面板只在 Alt/Option+R 与通知点击两条路径上拿焦点。守卫 `web/src/RespondPanel.test.tsx`、`web/src/Workspace.test.tsx`（crumb → 面板 → pane 的 DOM 顺序、diff 视图不画、通知点击与 Alt/Option+R 的落点）、`web/src/Sidebar.test.tsx`（侧栏一个 `respond-` testid 都没有）、`web/src/keys.test.ts`（Alt+R 认 code）。
+状态既不是 WAITING 也不是 TURN_DONE 时面板一格都不占；看 diff 时不画（那一格在看结果，不在回答；同时**留着**的看结果面板见下一段）。「打开终端」在主区里的意思是**把焦点交给下面的终端**（面板与终端本来就上下相邻，不再是切标签页）；external 会话没有终端可交（MISSION §5.5），这个按钮不画，经 hook 的 Allow / Deny 照旧。输入框里按 Escape 同样把焦点还给终端。终端焦点规则（agora-p29 / agora-vcc）不变：点行仍然聚焦终端，面板只在 Alt/Option+R 与通知点击两条路径上拿焦点。守卫 `web/src/RespondPanel.test.tsx`、`web/src/Workspace.test.tsx`（crumb → 面板 → pane 的 DOM 顺序、diff 视图只藏这一个面板、通知点击与 Alt/Option+R 的落点）、`web/src/Sidebar.test.tsx`（侧栏一个 `respond-` testid 都没有）、`web/src/keys.test.ts`（Alt+R 认 code）。
 
 ```
 agora-03k 侧栏展开区可读性差 / claude @ mac        [Settings] [关闭]
@@ -143,24 +143,28 @@ agora-03k 侧栏展开区可读性差 / claude @ mac        [Settings] [关闭]
 │ [下一条指令                                    ] [发送] │
 │ ↳ 结论先说：可以做局部性能优化…                         │
 │   ## 1. 总判 …（最多 40vh，内部滚动）                   │
-└─────────────────────────────────────────────────────────┘
+├ 看结果面板 ─────────────────────────────────────────────┤
+│ ▾ 验收标准 · agora-03k                                  │
+│ 回答面板 + 验收 + 改动三段都在主区；侧栏行里一个都没有。│
+│ ▾ 改动 · agora-4yr.3                          [看 diff] │
+│ M web/src/RowResult.tsx                                 │
+│ M web/src/index.css                                     │
+└──────────── 两个面板合计最多 50vh，超过内部滚动 ────────┘
 ┌ TERMINAL ───────────────────────────────────────────────┐
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
 
-选中行下方还剩两段（`web/src/SessionRow.tsx`；agora-h1k.3 定。就地 respond 曾是这里的第 ①，2026-09-10 搬进主区成了上一段的回答面板；余下两段进主区归 agora-4yr.3）：① **验收标准**折叠块——`task.acceptance`（`docs/spec/api.md`，读自 beads 的 acceptance_criteria、不复制进 agora 的库，不变量 12）全文、多行原样，一行 summary `▾ 验收标准 · agora-h1k.3` 可折叠，默认展开（行展开就是为了看"做完算什么"，MISSION §6.3 看结果 / A40）；没有任务或 beads 里没写不占位。回答面板在主区、在这两段之上：回答问题 / 给下一条指令是先做的事，对照验收是看结果时的事；② **改动文件**（`web/src/Changes.tsx`；A41，agora-h1k.5）接在验收标准之后，两者并排对照——`GET /api/sessions/:id/changes`（`docs/spec/api.md`「只读产出」，该 worktree 的只读 `git status`）的列表 `<单字母> <path>`（M / A / D / R / C / T / U / ?，与 `git status --short` 同一习惯），标题带分支名，空列表一行「无改动」，`reason` 按类型一行灰字（`not_a_repo` 不是 git 仓库、`no_directory` 工作目录不存在、`no_git` 本机没有 git、`timeout` git status 超时、`git` git 失败——只按类型不按文本，MISSION §2.3 规则 10）；status 是 TURN_DONE / FINISHED / FAILED（做完了看结果）或 RUNNING（瞄一眼进度）时显示，每次 status 变化拉一次、**不轮询**，WAITING / IDLE / STARTING / UNKNOWN 不占位——此刻该做的是回答问题。旁边的「看 diff」把主区切成这一行的 diff 视图（agora-a46 之后没有标签页，主区一次只显示选中行的终端或它的 diff）：crumb 是 `git diff / <会话名>` 带「关闭 diff」、没有 Settings（它不是会话），里面是同一个 TerminalView 以 `WS /api/sessions/:id/diff` 挂的**只读**终端——在该 worktree 跑 `git --no-pager diff HEAD`，连接状态显示「只读」，键入不发也不进 PTY（两边各守一半），跑完显示退出码、按钮「重新运行」再跑一次；「关闭 diff」或再点这一行回到它的终端，点别的行则切到那一行的终端，三者都关 WS、git 进程被收走；侧栏不多一行、`GET /api/sessions` 行数不变；会话被删时主区回到空。`reason` 非空时按钮禁用（没有可 diff 的仓库）。在 beads 里改了验收标准，`TaskIndex` 的 TTL（5 min）到期重查后展开区跟着变。守卫 `web/src/SessionRow.test.tsx`、`web/src/Changes.test.tsx`、`web/src/Workspace.test.tsx`（看 diff 一节）。
+**主区面板从上到下**（`web/src/RowResult.tsx`；A50，agora-4yr.3，2026-09-10 从侧栏选中行的展开区搬来，兑现 agora-03k）：① **回答面板**（上一段）② **验收标准** ③ **改动列表**。②③ 合成紧随回答面板的一个 `<section class="result-panel" data-testid="result-panel-<id>">`——分成两个 section 而不是一个，是因为两者生命周期不同：回答面板看 WAITING / TURN_DONE，看结果面板看另一个状态集合，而且 diff 视图下只藏前者。顺序由 agora-h1k.3 定，不变：回答问题 / 给下一条指令是先做的事，对照验收看结果是后做的事。两个面板**合计**最多 50vh、超过整块内部滚动（`.panels`），终端至少还剩一半；②③ 两段各自可折叠、默认都展开；两段都没有内容时整个看结果面板一格不占。侧栏行至此只剩行按钮本身（`web/src/SessionRow.tsx`），260 px 的窄列不再承担可读性。
+
+② **验收标准**折叠块——`task.acceptance`（`docs/spec/api.md`，读自 beads 的 acceptance_criteria、不复制进 agora 的库，不变量 12）全文、多行原样，一行 summary `▾ 验收标准 · agora-h1k.3`（`acceptance-toggle-<id>`）可折叠，默认展开（选中一行就是为了看"做完算什么"，MISSION §6.3 看结果 / A40）；没有任务或 beads 里没写不占位。③ **改动文件**（`web/src/Changes.tsx`；A41，agora-h1k.5）接在验收标准之后，两者并排对照——`GET /api/sessions/:id/changes`（`docs/spec/api.md`「只读产出」，该 worktree 的只读 `git status`）的列表 `<单字母> <path>`（M / A / D / R / C / T / U / ?，与 `git status --short` 同一习惯），一行 summary `▾ 改动 · <分支名>`（`changes-toggle-<id>`）可折叠、默认展开——**折叠只藏列表、不卸载组件**：拉取挂在 mount 的 useEffect，卸载即丢 state，收起来再打开就白白重发一次 `GET /changes`；「看 diff」按钮留在 summary 那一行、不随折叠消失。空列表一行「无改动」，`reason` 按类型一行灰字（`not_a_repo` 不是 git 仓库、`no_directory` 工作目录不存在、`no_git` 本机没有 git、`timeout` git status 超时、`git` git 失败——只按类型不按文本，MISSION §2.3 规则 10）；status 是 TURN_DONE / FINISHED / FAILED（做完了看结果）或 RUNNING（瞄一眼进度）时显示，每次 status 变化拉一次、**不轮询**，WAITING / IDLE / STARTING / UNKNOWN 不占位——此刻该做的是回答问题。旁边的「看 diff」把主区切成这一行的 diff 视图（agora-a46 之后没有标签页，主区一次只显示选中行的终端或它的 diff）：crumb 是 `git diff / <会话名>` 带「关闭 diff」、没有 Settings（它不是会话），里面是同一个 TerminalView 以 `WS /api/sessions/:id/diff` 挂的**只读**终端——在该 worktree 跑 `git --no-pager diff HEAD`，连接状态显示「只读」，键入不发也不进 PTY（两边各守一半），跑完显示退出码、按钮「重新运行」再跑一次；「关闭 diff」或再点这一行回到它的终端，点别的行则切到那一行的终端，三者都关 WS、git 进程被收走；侧栏不多一行、`GET /api/sessions` 行数不变；会话被删时主区回到空。`reason` 非空时按钮禁用（没有可 diff 的仓库）。**diff 视图下回答面板隐藏、看结果面板留着**与 diff 并排对照（MISSION §6.3；2026-09-06 定、2026-09-10 随 agora-4yr.3 复核沿用）：两个都藏会让「关闭 diff」必然重拉一次 `GET /changes`，而并排对照验收标准 / 改动列表看 diff 本来就是这一格该有的样子。在 beads 里改了验收标准，`TaskIndex` 的 TTL（5 min）到期重查后面板跟着变。守卫 `web/src/RowResult.test.tsx`、`web/src/Changes.test.tsx`（折叠不重拉）、`web/src/Sidebar.test.tsx`（侧栏 DOM 里 `respond-` / `acceptance-` / `changes-` 三类 testid 一个都没有，两种视图各一次）、`web/src/Workspace.test.tsx`（三段顺序、WAITING 行只有回答面板、diff 视图只藏回答面板且 `GET /changes` 计数不变、看 diff 一节）。
+
+选中之后侧栏那一行**什么都不长出来**（2026-09-10 起，agora-4yr.3）——上面那两段全在主区：
 
 ```
 ◆ agora-h1k.3 会话行展开显示任务的验收标准 [Claude] [mac]    turn done 2m
   ❯ 做 h1k.3
   ↳ 改完了，vitest 全绿
-  │ ▾ 验收标准 · agora-h1k.3
-  │ tests/task_info.rs::acceptance_is_read_not_stored（库里无该字段、API 有）；
-  │ 前端 vitest：展开显示与折叠；docs/spec/api.md task 形态回写。
-  │ 改动 · agora-h1k.3                              [看 diff]
-  │ M src/session/manager.rs
-  │ ? web/src/Acceptance.test.tsx
 ```
 
 点「看 diff」后主区：

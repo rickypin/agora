@@ -79,13 +79,8 @@ select:disabled { opacity: 0.5; }
 .finished-toggle { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; letter-spacing: inherit; text-align: left; }
 .finished-toggle:hover { color: var(--fg); }
 .dot { width: 1em; text-align: center; flex: none; }
-/* 展开区的验收标准折叠块（agora-h1k.3）：行左侧那条边线 + 28 px 缩进，接在行下面。
-   回答面板 2026-09-10 搬去主区之后（.respond-panel，agora-4yr.1）这里只剩它自己与改动列表；
-   两者进主区归 agora-4yr.3。 */
-.acceptance { margin: 2px 6px 6px 28px; padding: 4px 8px; border-left: 2px solid var(--border); font-size: 12px; }
-.acceptance-toggle { background: none; border: 0; padding: 0; cursor: pointer; font-size: 12px; text-align: left; }
-.acceptance-toggle:hover { color: var(--fg); }
-.acceptance-body { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font: inherit; color: var(--fg); opacity: 0.85; }
+/* 侧栏行下面 2026-09-10 之前还挂着验收标准与改动列表（agora-h1k.3 / h1k.5 的 28 px 缩进 + 左边线）。
+   两段随回答面板进了主区（.result-panel，agora-4yr.3），样式也跟去那边——留在这里的只有行本身。 */
 .st-waiting { color: var(--warn); }
 .st-turn_done { color: var(--accent); }
 .st-running, .st-starting { color: var(--ok); }
@@ -97,7 +92,31 @@ select:disabled { opacity: 0.5; }
 .crumb-actions { display: flex; gap: 6px; }
 /* 回答面板（A50，agora-4yr.1）：crumb 与终端之间的一段，宽度跟主区走。它在侧栏那 260 px 的窄列里
    待到 2026-09-10，几百行的 TURN_DONE 回复挤成一条线、输入框沉在全文底下（agora-03k）。 */
+/* 两个面板合计最多 50vh、超了整块自己滚（agora-4yr.3）：终端永远还剩一半。上界必须落在包裹层
+   而不是各自身上——分别限高只保证各自不失控，一段长验收标准 + 一段长回复加起来照样把 .pane 压没
+   （.main 是 flex 列，.pane 有 min-height: 0，会一路收下去）。flex: none：内容不足 50vh 时按内容
+   高，不许被 .pane 的 flex: 1 挤扁。 */
+.panels { flex: none; display: flex; flex-direction: column; min-height: 0; max-height: 50vh; overflow: auto; }
 .respond-panel { border-bottom: 1px solid var(--border); padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; }
+/* 看结果面板（A50，agora-4yr.3，兑现 agora-03k）：验收标准 + 改动列表，回答面板之下、终端之上，
+   与 .respond-panel 同一条底边线、同一副内边距——它们是主区里并列的两段，不是一段的附属。
+   两段 2026-09-10 之前长在侧栏选中行的 <li> 里，那 28 px 缩进 + 左边线是"挂在某一行下面"的记号，
+   主区没有对应的行可挂，去掉。 */
+.result-panel { border-bottom: 1px solid var(--border); padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.acceptance-toggle, .changes-toggle { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; text-align: left; }
+.acceptance-toggle:hover, .changes-toggle:hover { color: var(--fg); }
+.acceptance-body { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font: inherit; color: var(--fg); opacity: 0.85; }
+.changes-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.changes-head button { font-size: 12px; padding: 1px 6px; }
+.changes-note { margin: 4px 0 0; }
+.changes-list { list-style: none; margin: 4px 0 0; padding: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* 主区宽得多，路径不再需要一律省略号：长路径折行显示，而不是把中段吃掉（agora-03k 抱怨的正是
+   这个——260 px 里 `web/src/…` 之后全是 `…`）。 */
+.changes-list li { word-break: break-all; }
+.chg { display: inline-block; width: 1em; text-align: center; }
+.chg-modified, .chg-typechange, .chg-renamed, .chg-copied { color: var(--warn); }
+.chg-added, .chg-untracked { color: var(--ok); }
+.chg-deleted, .chg-unmerged { color: var(--bad); }
 .respond-question { margin: 0; }
 /* 权限 summary 是一行命令，原样显示：不排版、不折行吃空格，长了自己横向滚（agora-k1s）。 */
 .respond-command { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -248,17 +267,6 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .form .task-hint { font-size: 12px; }
 .form textarea { min-width: 0; font: inherit; resize: vertical; }
 
-/* 展开区的改动文件列表（MISSION §6.3 看结果；A41，agora-h1k.5）：接在验收标准之后，同一条左边线、同一缩进。 */
-.changes { margin: 2px 6px 6px 28px; padding: 4px 8px; border-left: 2px solid var(--border); font-size: 12px; }
-.changes-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
-.changes-head button { font-size: 12px; padding: 1px 6px; }
-.changes-note { margin: 4px 0 0; }
-.changes-list { list-style: none; margin: 4px 0 0; padding: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-.changes-list li { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chg { display: inline-block; width: 1em; text-align: center; }
-.chg-modified, .chg-typechange, .chg-renamed, .chg-copied { color: var(--warn); }
-.chg-added, .chg-untracked { color: var(--ok); }
-.chg-deleted, .chg-unmerged { color: var(--bad); }
 /* 只读 diff 终端的连接状态与它的标签页点。 */
 .link-read_only { color: var(--accent); }
 

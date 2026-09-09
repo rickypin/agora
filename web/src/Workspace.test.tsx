@@ -218,8 +218,10 @@ describe("Workspace", () => {
     await online(t);
     fireEvent.click(screen.getByTestId("row-n:a"));
     const main = t.ui.container.querySelector("section.main")!;
-    expect(Array.from(main.children).map((el) => el.className)).toEqual(["crumb", "respond-panel", "pane"]);
+    // 2026-09-10（agora-4yr.3）多了一层 .panels：回答面板与看结果面板合计限高 50vh，终端至少留一半。
+    expect(Array.from(main.children).map((el) => el.className)).toEqual(["crumb", "panels", "pane"]);
     expect(screen.getByTestId("respond-panel-n:a")).toBe(main.querySelector(".respond-panel"));
+    expect(main.querySelector(".panels")!.firstElementChild).toBe(screen.getByTestId("respond-panel-n:a"));
     // 输入框在最后一条回复之上（用户明确要求；限高 40vh 是布局事实，归代检）。
     const input = screen.getByTestId("next-input");
     const last = screen.getByTestId("respond-last");
@@ -228,19 +230,81 @@ describe("Workspace", () => {
     expect(t.ui.container.querySelector('.sidebar [data-testid^="respond-"]')).toBeNull();
   });
 
-  it("the diff view hides the panel", async () => {
-    // 看 diff 的那一格在看结果，不在回答（面板会把 diff 挤窄，而且「打开终端」在那儿没有落点）。
+  it("the diff view hides the respond panel, keeps the result panel and 看 diff still switches to it", async () => {
+    // 看 diff 的那一格在看结果，不在回答：回答面板不画（它会把 diff 挤窄，而且「打开终端」在那儿
+    // 没有落点）。看结果面板**留着**——验收标准 / 改动列表与 diff 并排对照本来就是 MISSION §6.3
+    // 要的；而且 Changes 的拉取挂在 mount 的 useEffect、卸载即丢 state，把它一起藏掉就等于
+    // 「关掉 diff」必然重发一次 GET /changes（2026-09-06 代检时见过的那个形态，2026-09-10 定夺
+    // agora-4yr.3 时复核后沿用）。下面数的就是这个计数。
     const t = setup([{ ...row("n:a", "turn_done"), detail: "done" }]);
     await online(t);
     fireEvent.click(screen.getByTestId("row-n:a"));
     await flush();
+    const changes = () => t.requests.filter((r) => r.url === "/api/sessions/n%3Aa/changes").length;
     expect(screen.getByTestId("respond-panel-n:a")).toBeTruthy();
+    expect(screen.getByTestId("result-panel-n:a")).toBeTruthy();
+    expect(changes()).toBe(1);
+    // 「看 diff」这个按钮就长在看结果面板里：它还能把主区切过去，本身也说明面板没被藏。
     fireEvent.click(screen.getByTestId("diff-n:a"));
     await flush();
     expect(screen.getByTestId("crumb-diff")).toBeTruthy();
     expect(screen.queryByTestId("respond-panel-n:a")).toBeNull();
+    expect(screen.getByTestId("result-panel-n:a")).toBeTruthy();
+    expect(changes()).toBe(1);
     fireEvent.click(screen.getByTestId("close-diff"));
+    await flush();
     expect(screen.getByTestId("respond-panel-n:a")).toBeTruthy();
+    expect(screen.getByTestId("result-panel-n:a")).toBeTruthy();
+    expect(changes(), "关掉 diff 不许重拉 /changes：面板全程没卸载过").toBe(1);
+  });
+
+  it("a turn_done row with a task shows respond, acceptance and changes panels in that order above the terminal (A50)", async () => {
+    // agora-03k 的最后一块：回答 → 验收标准 → 改动列表，三段都在主区、都在终端之上。
+    // 顺序是 agora-h1k.3 定的：回答问题 / 给下一条指令是先做的事，对照验收看结果是后做的事。
+    const task = { id: "agora-03k", title: "侧栏行展开区可读性差", priority: 2, acceptance: "回答 / 验收 / 改动三段都在主区，侧栏行里一个都没有。" };
+    const t = setup([{ ...row("n:a", "turn_done"), detail: "结论先说：可以做局部性能优化", task }]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("row-n:a"));
+    await flush();
+    const main = t.ui.container.querySelector("section.main")!;
+    expect(Array.from(main.children).map((el) => el.className)).toEqual(["crumb", "panels", "pane"]);
+    expect(Array.from(main.querySelector(".panels")!.children).map((el) => el.className)).toEqual(["respond-panel", "result-panel"]);
+    // 面板内也按这个顺序，且三段都排在终端之前。
+    const seq = [
+      screen.getByTestId("respond-panel-n:a"),
+      screen.getByTestId("acceptance-n:a"),
+      screen.getByTestId("changes-n:a"),
+      main.querySelector(".pane")!,
+    ];
+    for (let i = 0; i + 1 < seq.length; i++) {
+      expect(seq[i].compareDocumentPosition(seq[i + 1]) & Node.DOCUMENT_POSITION_FOLLOWING, `第 ${i} 段排在第 ${i + 1} 段之前`).toBeTruthy();
+    }
+    // 文本就是数据本身：验收标准是 bd 的 acceptance_criteria 全文，改动列表是 GET /changes 的应答。
+    expect(screen.getByTestId("acceptance-body-n:a").textContent).toBe(task.acceptance);
+    expect(screen.getByTestId("acceptance-toggle-n:a").textContent).toContain("agora-03k");
+    expect(screen.getByTestId("changes-list-n:a").textContent).toContain("M a.txt");
+    // 侧栏那一行只剩行本身（守卫另有 Sidebar.test.tsx 一条；这里是整页装配后的同一件事）。
+    expect(t.ui.container.querySelectorAll('aside.sidebar [data-testid^="respond-"],aside.sidebar [data-testid^="acceptance-"],aside.sidebar [data-testid^="changes-"]').length).toBe(0);
+  });
+
+  it("panels are absent for waiting rows except the respond panel", async () => {
+    // WAITING 不在 Changes 的状态集合里——此刻该做的是回答问题，不是看结果。没有任务的 WAITING 行
+    // 于是整个 result-panel 一格都不占（空面板会在终端上方白留一条边线）；有任务的仍然看得到验收
+    // 标准（"做完算什么"与状态无关），改动列表照旧不占位、也不发请求。
+    const task = { id: "agora-x", title: "有验收的等待行", priority: 2, acceptance: "验收标准与状态无关" };
+    const t = setup([row("n:a", "waiting"), { ...row("n:b", "waiting"), task }]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("row-n:a"));
+    await flush();
+    expect(screen.getByTestId("respond-panel-n:a")).toBeTruthy();
+    expect(screen.queryByTestId("result-panel-n:a")).toBeNull();
+    expect(screen.queryByTestId("changes-n:a")).toBeNull();
+    fireEvent.click(screen.getByTestId("row-n:b"));
+    await flush();
+    expect(screen.getByTestId("respond-panel-n:b")).toBeTruthy();
+    expect(screen.getByTestId("acceptance-body-n:b").textContent).toBe(task.acceptance);
+    expect(screen.queryByTestId("changes-n:b")).toBeNull();
+    expect(t.requests.filter((r) => r.url.endsWith("/changes"))).toEqual([]);
   });
 
   it("a notification click focuses the panel input", async () => {
