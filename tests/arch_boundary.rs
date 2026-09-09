@@ -380,6 +380,22 @@ fn the_single_network_exit_checks_the_prefix_at_runtime() {
 }
 
 #[test]
+fn frontend_never_uses_innerhtml() {
+    // agora-4yr.2：面板里的最后一条回复是 agent 写的**不可信文本**，markdown 排版走自写的子集
+    // 渲染器（web/src/markdown.ts + MarkdownView.tsx）。它的整个安全论证只有一句："AST 里只有
+    // 纯文本节点和已经过 http/https 白名单的 href，落到 DOM 全靠 React 的 children 自然转义"。
+    // 只要有人图省事往 DOM 里灌一次 HTML 字符串，这句话当场不成立、渲染器的转义全绕过去了，
+    // 而单元测试断言的是"标签变成了字面量"，绕过之后照样能写出绿的测试。所以边界钉在源码上。
+    //
+    // 扫的是文件全文、注释也算（本文件开头那条规矩）：web/src 里连这两个词本身都不许出现，
+    // MarkdownView.tsx 与 markdown.ts 的注释因此只提本测试的名字。
+    assert_absent("web/src", "dangerouslySetInnerHTML", "agora-4yr.2 回复是不可信文本");
+    // 大小写敏感的 contains：`dangerouslySetInnerHTML` 里是 `InnerHTML`，与裸 `innerHTML`
+    // 不重叠，两条都要扫，删掉任何一条都会漏掉一整类写法。
+    assert_absent("web/src", "innerHTML", "agora-4yr.2 回复是不可信文本");
+}
+
+#[test]
 fn comment_stripping_keeps_strings_and_drops_comments() {
     // 剥离器自身的守卫：它错一点，上面两条就会误报或漏报。
     let src = r#"const u = `${p}//${h}/api/events`; // fetch("/evil")
