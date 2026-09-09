@@ -148,6 +148,8 @@ struct Seen {
     hooks_unheard: Option<String>,
     /// 任务标签是异步补齐的（`task/`）：到了要整行重发。
     task: Option<crate::task::TaskInfo>,
+    /// 项目身份同样异步补齐（`project/index`）：到了要整行重发，否则浏览器永远看不到。
+    project: Option<crate::project::ProjectInfo>,
     pending_decision: Option<crate::session::PendingDecision>,
     /// agent 自报的对话 id（`/clear` 后会换）：Settings 里"当前对话"要跟着变（dvh.13）。
     agent_session_id: Option<String>,
@@ -166,6 +168,7 @@ fn seen(v: &SessionView) -> Seen {
         status_since: v.status_since,
         hooks_unheard: v.hooks_unheard.clone(),
         task: v.task.clone(),
+        project: v.project.clone(),
         pending_decision: v.pending_decision.clone(),
         agent_session_id: v.record.agent_session_id.clone(),
     }
@@ -286,9 +289,10 @@ impl Differ {
                     session: export(node, v),
                 }),
                 // task_ref 是 metadata，标签又是异步查回来的：整行重发最省事也最不会漏字段。
-                // 对话 id 同理（metadata 不是状态，/clear 后会换，dvh.13）。
+                // project 同理（agora-uvd.1）。对话 id 也是（metadata 不是状态，/clear 后会换，dvh.13）。
                 Some(prev)
                     if prev.task != s.task
+                        || prev.project != s.project
                         || prev.agent_session_id != s.agent_session_id
                         || prev.pending_decision != s.pending_decision =>
                 {
@@ -704,5 +708,37 @@ mod tests {
             ),
             "{events:?}"
         );
+    }
+
+    #[test]
+    fn project_change_emits_session_updated() {
+        // agora-uvd.1：异步补齐的 project 从 None → Some 必须走 SessionUpdated，否则浏览器
+        // 永远看不到。相同时不发。关掉 Differ::step 里 prev.project != s.project 那一截，
+        // 这条就红（会变成 StatusChanged 或什么都不发）。
+        use crate::project::ProjectInfo;
+        use crate::status::{Machine, MachineConfig};
+        let m = Machine::new(MachineConfig::default(), false, 1, 0);
+        let none = shell_view(&m, true);
+        let mut differ = Differ::default();
+        assert!(
+            differ.step("n", &[none.clone()]).is_empty(),
+            "第一轮只建基线"
+        );
+
+        let mut some = none.clone();
+        some.project = Some(ProjectInfo {
+            repo: "/repo".into(),
+            name: "repo".into(),
+            worktree: "/repo".into(),
+            branch: Some("main".into()),
+            main: true,
+        });
+        let events = differ.step("n", &[some.clone()]);
+        assert!(
+            matches!(&events[..], [Event::SessionUpdated { .. }]),
+            "project 到了该整行重发: {events:?}"
+        );
+        let events = differ.step("n", &[some]);
+        assert!(events.is_empty(), "project 没变不该再发: {events:?}");
     }
 }

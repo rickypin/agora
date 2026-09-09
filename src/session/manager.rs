@@ -3,7 +3,7 @@
 //! 所有方法同步阻塞（内部会起运行时子进程），API 层用 `spawn_blocking` 调。
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,6 +16,7 @@ use serde::Serialize;
 use super::db::{Db, DbError};
 use super::model::{Origin, SessionRecord};
 use super::throttle::Throttle;
+use crate::project::{ProjectIndex, ProjectInfo};
 use crate::runtime::{
     proctree, AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession,
     RuntimeStatus, Size, TerminateSignal,
@@ -24,7 +25,6 @@ use crate::status::{
     self, AgentProcess, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation,
     Status,
 };
-use crate::project::ProjectInfo;
 use crate::task::{TaskIndex, TaskInfo};
 
 /// 首条 prompt 当 task_ref 摘要时最多留多长（ADR-002 D8）。
@@ -217,6 +217,8 @@ pub struct SessionManager {
     external_pids: Mutex<HashMap<String, AgentProcess>>,
     /// 任务标签（只读 beads）。
     tasks: Arc<TaskIndex>,
+    /// 会话所在仓库 / worktree / 分支（只读 git，agora-uvd.1）。
+    projects_index: Arc<ProjectIndex>,
     /// external FINISHED 行结束多久后自动删 metadata（`sessions.external_finished_ttl`）；ZERO = 关闭。
     external_finished_ttl: Duration,
     /// 上面那件事的节流：轮询每 tick 来问一次，真扫描按 [`EXTERNAL_EXPIRY_SWEEP_EVERY`] 与 ttl 取小。
@@ -241,6 +243,7 @@ impl SessionManager {
             status_cfg: MachineConfig::default(),
             external_pids: Mutex::new(HashMap::new()),
             tasks: Arc::new(TaskIndex::default()),
+            projects_index: Arc::new(ProjectIndex::default()),
             // 默认关闭：只有 daemon 按配置显式打开。库与 API 层的测试造出来的行不该在自己脚下消失。
             external_finished_ttl: Duration::ZERO,
             external_expiry: Throttle::new(EXTERNAL_EXPIRY_SWEEP_EVERY),
@@ -265,6 +268,12 @@ impl SessionManager {
     /// 任务标签的数据源（测试塞同步的假 bd）。
     pub fn with_task_index(mut self, tasks: Arc<TaskIndex>) -> Self {
         self.tasks = tasks;
+        self
+    }
+
+    /// 项目身份的数据源（测试塞同步的 ProjectIndex）。
+    pub fn with_project_index(mut self, projects: Arc<ProjectIndex>) -> Self {
+        self.projects_index = projects;
         self
     }
 
@@ -1006,9 +1015,13 @@ impl SessionManager {
             .filter(|_| !hooked)
             .and_then(|scr| adapter::text::last_line(scr, PREVIEW_MAX));
         let task = match (&rec.working_directory, &rec.task_ref) {
-            (Some(cwd), Some(r)) => self.tasks.get(std::path::Path::new(cwd), r),
+            (Some(cwd), Some(r)) => self.tasks.get(Path::new(cwd), r),
             _ => None,
         };
+        let project = rec
+            .working_directory
+            .as_deref()
+            .and_then(|cwd| self.projects_index.get(Path::new(cwd)));
         let pending_decision = lock(&self.decisions)
             .get(&rec.id)
             .and_then(|v| v.iter().rev().find(|p| p.epoch == rec.epoch))
@@ -1047,7 +1060,7 @@ impl SessionManager {
             status_since,
             hooks_unheard,
             task,
-            project: None,
+            project,
             record: rec,
         }
     }

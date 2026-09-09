@@ -9,7 +9,7 @@
 pub mod index;
 pub mod worktree;
 
-pub use index::ProjectInfo;
+pub use index::{ProjectIndex, ProjectInfo};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
