@@ -721,7 +721,7 @@ mod tests {
         let none = shell_view(&m, true);
         let mut differ = Differ::default();
         assert!(
-            differ.step("n", &[none.clone()]).is_empty(),
+            differ.step("n", std::slice::from_ref(&none)).is_empty(),
             "第一轮只建基线"
         );
 
