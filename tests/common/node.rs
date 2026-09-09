@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use agora::api::AppState;
 use agora::auth::{Auth, AuthConfig, PairedVia};
-use agora::runtime::tmux::{TmuxConfig, TmuxRuntime};
+use agora::runtime::tmux::{socket_path, TmuxConfig, TmuxRuntime};
 use agora::runtime::{Runtime, Size};
 use agora::session::{Db, NewSession, SessionManager, SessionView};
 use agora::tls::{self, Fingerprint};
@@ -303,6 +303,8 @@ impl Drop for TmuxNode {
             .args(["-L", &self.socket, "kill-server"])
             .stderr(std::process::Stdio::null())
             .status();
+        // 2026-09-07 macOS 实测（agora-quy）：kill-server 后仍可能留下死 socket。
+        let _ = std::fs::remove_file(socket_path(&self.socket));
         let _ = std::fs::remove_dir_all(&self.home);
     }
 }

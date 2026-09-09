@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use agora::runtime::tmux::{TmuxConfig, TmuxRuntime};
+use agora::runtime::tmux::{socket_path, TmuxConfig, TmuxRuntime};
 use agora::runtime::{Runtime, Size};
 use agora::session::manager::KILL_GRACE;
 use agora::session::{Db, NewSession, SessionError, SessionManager};
@@ -77,6 +77,8 @@ impl Drop for Fixture {
             .args(["-L", &self.socket, "kill-server"])
             .stderr(std::process::Stdio::null())
             .status();
+        // 2026-09-07 macOS 实测（agora-quy）：kill-server 后仍可能留下死 socket。
+        let _ = std::fs::remove_file(socket_path(&self.socket));
     }
 }
 
@@ -91,6 +93,37 @@ fn spec(name: &str, command: &str) -> NewSession {
         env: vec![],
         size: Size::default(),
     }
+}
+
+#[test]
+fn fixture_drop_removes_live_and_stale_sockets() {
+    for stale in [false, true] {
+        let f = Fixture::new();
+        let m = f.manager();
+        m.create(&spec("cleanup", "sleep 300")).unwrap();
+        let path = socket_path(&f.socket);
+        assert!(std::os::unix::net::UnixStream::connect(&path).is_ok());
+        if stale {
+            assert!(Command::new("tmux")
+                .args(["-L", &f.socket, "kill-server"])
+                .status()
+                .unwrap()
+                .success());
+            // 确定性重现 server 已退出但文件残留，不依赖某个 tmux 版本是否 unlink。
+            let _ = std::fs::remove_file(&path);
+            drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+            assert!(std::os::unix::net::UnixStream::connect(&path).is_err());
+        }
+        assert!(path.exists());
+        drop(m);
+        drop(f);
+        assert!(
+            !path.exists(),
+            "fixture left socket {path:?} (stale={stale})"
+        );
+    }
+    // 没有起过 server 时，重复清理不存在的 socket 也不能 panic。
+    drop(Fixture::new());
 }
 
 #[test]
