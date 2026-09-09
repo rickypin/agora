@@ -1,8 +1,10 @@
 //! A11 / A12 / A20 / A21 的后端语义，真实 tmux 隔离 socket 上的 Session Manager。
 
+#[path = "common/isolate.rs"]
+mod isolate;
+
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,8 +19,6 @@ use agora::status::Status;
 // 退出码"——真因是 tmux < 3.6 链 libutempter 时 SIGCHLD 被吞，运行时现在会补发，见 agora-tc4。）
 const POLL: Duration = Duration::from_millis(200);
 
-static N: AtomicU32 = AtomicU32::new(0);
-
 struct Fixture {
     socket: String,
     db: Arc<Db>,
@@ -28,8 +28,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        let socket = format!("agora-sm-{}-{n}", std::process::id());
+        let socket = isolate::socket_name("sm", isolate::nth());
         let dir = tempfile::tempdir().unwrap();
         let rt = Arc::new(
             TmuxRuntime::new(TmuxConfig {
@@ -73,12 +72,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.socket, "kill-server"])
-            .stderr(std::process::Stdio::null())
-            .status();
-        // 2026-09-07 macOS 实测（agora-quy）：kill-server 后仍可能留下死 socket。
-        let _ = std::fs::remove_file(socket_path(&self.socket));
+        isolate::kill_tmux(&self.socket);
     }
 }
 
@@ -112,7 +106,7 @@ fn fixture_drop_removes_live_and_stale_sockets() {
             // 确定性重现 server 已退出但文件残留，不依赖某个 tmux 版本是否 unlink。
             let _ = std::fs::remove_file(&path);
             drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
-            assert!(std::os::unix::net::UnixStream::connect(&path).is_err());
+            isolate::wait_socket_refuses(&path);
         }
         assert!(path.exists());
         drop(m);

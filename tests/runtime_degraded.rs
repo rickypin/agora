@@ -5,6 +5,9 @@
 //! 用假 tmux 二进制模拟，不依赖本机装了什么版本：一个 mode 文件切换它的行为
 //! （`ok` / `mismatch` / `old`），socket 自己 bind 一个，好让 `server_running` 成立。
 
+#[path = "common/isolate.rs"]
+mod isolate;
+
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::sync::Arc;
@@ -72,7 +75,7 @@ fn fake(tag: &str, mode0: &str) -> Fake {
 
     // `server_running` 靠能不能 connect 上 socket 判断：自己 bind 一个，好让"server 在、
     // 但它拒绝应答"这个状态成立——这正是协议不匹配时的样子。
-    let socket = format!("agora-degraded-{}-{tag}", std::process::id());
+    let socket = isolate::socket_name(&format!("deg-{tag}"), isolate::nth());
     let path = socket_path(&socket);
     let sockets_dir = path.parent().unwrap();
     if !sockets_dir.exists() {

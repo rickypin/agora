@@ -22,6 +22,7 @@ use agora::runtime::{
 };
 use agora::session::SessionManager;
 use agora::task::{TaskIndex, READ_ONLY};
+use common::isolate;
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use http_body_util::BodyExt;
@@ -79,7 +80,14 @@ fn calls(dir: &Path) -> Vec<Vec<String>> {
 /// 一套 API：`tmp/<repo>` 是已知项目（roots = tmp），会话管理器的 beads 入口指向给定的 bd。
 fn fx_with_bd(tmp: &Path, bd: &Path) -> (Fx, String) {
     let mut fx = Fx::new();
-    let index = Arc::new(TaskIndex::new(bd.to_str().unwrap()).synchronous());
+    // 假 bd 是 `#!/bin/sh`：满载时 fork+exec 一次就可能超过 TaskIndex 默认的 10 s 超时，超时按
+    // "没这个 issue"返回 None，断言就在别处假阴性（同一条病与理由见 tests/task_beads.rs 的
+    // FAKE_BD_TIMEOUT；2026-09-09 那批红的是本文件三条，agora-pea）。别去改 TaskIndex 的默认值。
+    let index = Arc::new(
+        TaskIndex::new(bd.to_str().unwrap())
+            .synchronous()
+            .with_timeout(isolate::PROC),
+    );
     let sessions = Arc::new(
         SessionManager::new(fx.db.clone(), fx.rt.clone() as Arc<dyn Runtime>)
             .with_task_index(index),
@@ -283,7 +291,14 @@ async fn session_created_from_task_prefills_ref_name_and_prompt() {
         inner: FakeRuntime::default(),
         launches: Mutex::new(Vec::new()),
     });
-    let index = Arc::new(TaskIndex::new(bd.to_str().unwrap()).synchronous());
+    // 假 bd 是 `#!/bin/sh`：满载时 fork+exec 一次就可能超过 TaskIndex 默认的 10 s 超时，超时按
+    // "没这个 issue"返回 None，断言就在别处假阴性（同一条病与理由见 tests/task_beads.rs 的
+    // FAKE_BD_TIMEOUT；2026-09-09 那批红的是本文件三条，agora-pea）。别去改 TaskIndex 的默认值。
+    let index = Arc::new(
+        TaskIndex::new(bd.to_str().unwrap())
+            .synchronous()
+            .with_timeout(isolate::PROC),
+    );
     let sessions = Arc::new(
         SessionManager::new(fx.db.clone(), rt.clone() as Arc<dyn Runtime>).with_task_index(index),
     );

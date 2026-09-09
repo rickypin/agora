@@ -1,8 +1,13 @@
 //! 真实 tmux、隔离 socket 上的运行时守卫（ADR-001 D2 / D3 / D6）。
-//! 每个测试自己一个 socket `agora-test-<pid>-<n>`，结束时直接杀掉那个 server。
+//! 每个测试自己一个 socket（名字由 `isolate` 派生，带本进程独有的标签），结束时杀掉那个
+//! server **并删掉 socket 文件**——只 kill-server 会在 `/tmp/tmux-<uid>/` 里越堆越多死文件
+//! （2026-09-10 实测开发机上 480 个 `agora-test-*`，agora-n15），而死文件正是让下一个进程
+//! 认领陌生 socket 的那一步（agora-eny）。
+
+#[path = "common/isolate.rs"]
+mod isolate;
 
 use std::process::Command;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use agora::runtime::tmux::{socket_path, TmuxConfig, TmuxRuntime};
@@ -13,8 +18,6 @@ use agora::runtime::{Exit, LaunchSpec, Runtime, RuntimeError, Size};
 // 3.2a 上密集轮询丢 5/6、200 ms 轮询丢 1/6）。生产的 status.detector_interval 是 2 s。
 const POLL: Duration = Duration::from_millis(200);
 
-static N: AtomicU32 = AtomicU32::new(0);
-
 struct Fixture {
     rt: TmuxRuntime,
     socket: String,
@@ -24,10 +27,9 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        let pid = std::process::id();
-        let socket = format!("agora-test-{pid}-{n}");
-        let foreign = format!("agora-test-{pid}-{n}-foreign");
+        let n = isolate::nth();
+        let socket = isolate::socket_name("rt", n);
+        let foreign = format!("{socket}-foreign");
         let dir = tempfile::tempdir().unwrap();
         let rt = TmuxRuntime::new(TmuxConfig {
             socket: socket.clone(),
@@ -119,10 +121,7 @@ fn pane_env(socket: &str, pane: &str) -> std::collections::BTreeMap<String, Stri
 impl Drop for Fixture {
     fn drop(&mut self) {
         for s in [&self.socket, &self.foreign] {
-            let _ = Command::new("tmux")
-                .args(["-L", s, "kill-server"])
-                .stderr(std::process::Stdio::null())
-                .status();
+            isolate::kill_tmux(s);
         }
     }
 }

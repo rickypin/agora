@@ -5,12 +5,14 @@
 //! 样板抄自 tests/single_instance.rs（本批 tests/common 归别的任务，不改）。测试里没有 systemd /
 //! launchd，`upgrade` 走的是 pid 文件那一支：SIGTERM 旧 daemon、经链接起新的。
 
+#[path = "common/isolate.rs"]
+mod isolate;
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use agora::api::version::API_VERSION;
@@ -21,8 +23,6 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const AGORA_BIN: &str = env!("CARGO_BIN_EXE_agora");
-static N: AtomicU32 = AtomicU32::new(0);
-
 struct Home {
     path: PathBuf,
     tmux_socket: String,
@@ -31,12 +31,11 @@ struct Home {
 
 impl Home {
     fn new() -> Self {
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        let pid = std::process::id();
-        let path = PathBuf::from(format!("/tmp/agup-{pid}-{n}"));
+        let n = isolate::nth();
+        let path = isolate::home_dir("up", n);
         let _ = std::fs::remove_dir_all(&path);
         local::ensure_home(&path).unwrap();
-        let tmux_socket = format!("agora-up-{pid}-{n}");
+        let tmux_socket = isolate::socket_name("up", n);
         // 拿一个空闲端口再放掉：绑定与 daemon 启动之间有个小窗口，够用。
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -140,10 +139,7 @@ impl Home {
 
 impl Drop for Home {
     fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.tmux_socket, "kill-server"])
-            .stderr(Stdio::null())
-            .status();
+        isolate::kill_tmux(&self.tmux_socket);
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }

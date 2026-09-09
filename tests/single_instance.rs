@@ -7,6 +7,9 @@
 //! 真二进制 + 隔离 AGORA_HOME（短路径：macOS unix socket 路径上限 104 字节）+ 隔离 tmux
 //! socket（config.yaml 的 runtime.tmux.socket），免得 reconcile 摸到开发机上真的 agora server。
 
+#[path = "common/isolate.rs"]
+mod isolate;
+
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -24,11 +27,11 @@ struct Home {
 
 impl Home {
     fn new() -> Self {
-        let pid = std::process::id();
-        let path = PathBuf::from(format!("/tmp/agsi-{pid}"));
+        let n = isolate::nth();
+        let path = isolate::home_dir("si", n);
         let _ = std::fs::remove_dir_all(&path);
         local::ensure_home(&path).unwrap();
-        let tmux_socket = format!("agora-si-{pid}");
+        let tmux_socket = isolate::socket_name("si", n);
         // 拿一个空闲端口再放掉：绑定与 daemon 启动之间有个小窗口，够用。
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -123,10 +126,7 @@ impl Drop for Daemon {
 
 impl Drop for Home {
     fn drop(&mut self) {
-        let _ = Command::new("tmux")
-            .args(["-L", &self.tmux_socket, "kill-server"])
-            .stderr(Stdio::null())
-            .status();
+        isolate::kill_tmux(&self.tmux_socket);
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }

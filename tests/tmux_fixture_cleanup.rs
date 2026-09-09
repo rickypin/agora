@@ -27,7 +27,7 @@ async fn node_drop_removes_live_and_stale_sockets_after_crash() {
             // 确定性重现 server 已退出但文件残留，不依赖某个 tmux 版本是否 unlink。
             let _ = std::fs::remove_file(&path);
             drop(UnixListener::bind(&path).unwrap());
-            assert!(UnixStream::connect(&path).is_err());
+            common::isolate::wait_socket_refuses(&path);
         }
         assert!(path.exists());
         let home = node.home.clone();

@@ -26,8 +26,10 @@ use common::{Fx, HOST};
 /// 2026-09-06：之前是固定 100 × 5 ms / 100 × 10 ms 轮询，三路 agent 并行编译的机器与 CI
 /// 单核（GitHub Actions run 34001122947）上 receiver 的 wake 还没跑到就超时，随后的断言假阴性
 /// （agora-e8s）。等待上限放宽不等于放宽断言：断言原样保留，超时了仍然会红。
+/// 2026-09-10 又从 5 s 提到 `isolate::PROC`：同一条病在 2026-09-09 那批打红了
+/// `old_epoch_approval_cannot_answer_a_restarted_session`（agora-d0p）。
 async fn wait_until(mut cond: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + common::isolate::PROC;
     while !cond() && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -555,7 +557,7 @@ async fn an_interrupted_permission_is_released_via_terminal_when_the_prompt_disa
 
     // 终端放行 / Esc：提示消失，屏幕只剩空提示符。连续 GET（每次都是一次 observe）直到翻 unknown。
     fx.rt.tails.lock().unwrap().insert(reference, "❯ ".into());
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + common::isolate::PROC;
     let mut row = Value::Null;
     while Instant::now() < deadline {
         row = call(&fx, &cookie, Method::GET, &endpoint, None).await.1;
@@ -572,7 +574,7 @@ async fn an_interrupted_permission_is_released_via_terminal_when_the_prompt_disa
     );
 
     // sweep 放掉还在等的 hook（生产里每 5 s 一次；hold 登记 ≥ 2 s 后才算，所以这里重试到它放）。
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + common::isolate::PROC;
     while !receiver.pending(&local).is_empty() && Instant::now() < deadline {
         receiver.sweep();
         tokio::time::sleep(Duration::from_millis(50)).await;

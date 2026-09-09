@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+pub mod isolate;
 pub mod node;
 
 use std::collections::HashMap;

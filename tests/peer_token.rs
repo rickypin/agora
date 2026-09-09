@@ -469,7 +469,7 @@ async fn https_transport_reports_token_file_problems_as_misconfigured() {
 fn cli_create_list_revoke_via_binary() {
     use std::os::unix::fs::MetadataExt;
     use std::process::Command;
-    let home = std::path::PathBuf::from(format!("/tmp/agpt-{}", std::process::id()));
+    let home = common::isolate::home_dir("peertok", common::isolate::nth());
     let _ = std::fs::remove_dir_all(&home);
     agora::local::ensure_home(&home).unwrap();
     let run = |args: &[&str]| {

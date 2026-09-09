@@ -3,6 +3,9 @@
 //! `Signal("unknown")`。真 tmux 上这个窗口只有几毫秒，ubuntu-22.04 容器紧密轮询 30 次撞上 2 次
 //! （2026-09-03），CI 上表现为 `quick_exit_keeps_exit_code` 偶红。
 
+#[path = "common/isolate.rs"]
+mod isolate;
+
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::time::Duration;
@@ -86,7 +89,7 @@ fn write_fake(
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     // `server_running` 靠能不能 connect 上 socket 判断：这里自己 bind 一个。
-    let socket = format!("agora-fake-{}-{tag}", std::process::id());
+    let socket = isolate::socket_name(&format!("dw-{tag}"), isolate::nth());
     let path = socket_path(&socket);
     let dir_of_sockets = path.parent().unwrap();
     if !dir_of_sockets.exists() {

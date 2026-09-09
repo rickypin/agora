@@ -66,7 +66,9 @@ async fn events_survive_daemon_restart() {
         .unwrap();
     let id = view.record.id.clone();
     let inbox = Inbox::new(&node.home);
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // 等的是 tmux 里那个 fake-agent 起两次 `agora hook` 把文件落盘：起子进程的耗时随机器负载
+    // 走，15 s 在三个 worktree 并行的批次里不够（agora-8tv / agora-2ok / agora-ohw）。
+    let deadline = Instant::now() + common::isolate::PROC;
     loop {
         if inbox.pending().unwrap().len() == 2 {
             break;

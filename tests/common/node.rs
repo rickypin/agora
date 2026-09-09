@@ -1,19 +1,21 @@
 //! 单进程多节点 fixture（agora-3la；ADR-001 输入 ①）：每个节点自己的 AGORA_HOME、tmux
 //! socket、SQLite、AppState 与监听器，同一个测试进程里起几个互不干扰。
 //!
-//! AGORA_HOME 用短路径 `/tmp/agt-<pid>-<n>`：macOS unix socket 路径上限 104 字节，
-//! tempfile 的默认目录太深会让 agora.sock 绑定失败（agora-3la 注记）。
+//! AGORA_HOME 与 socket 的名字都从 `super::isolate` 来：短路径（macOS unix socket 路径上限
+//! 104 字节，tempfile 的默认目录太深会让 agora.sock 绑定失败，agora-3la 注记），且带一段本进程
+//! 独有的标签——只带 pid 会在 pid 回绕后与另一个测试进程撞名（agora-eny）。
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::isolate;
+
 use agora::api::AppState;
 use agora::auth::{Auth, AuthConfig, PairedVia};
-use agora::runtime::tmux::{socket_path, TmuxConfig, TmuxRuntime};
+use agora::runtime::tmux::{TmuxConfig, TmuxRuntime};
 use agora::runtime::{Runtime, Size};
 use agora::session::{Db, NewSession, SessionManager, SessionView};
 use agora::tls::{self, Fingerprint};
@@ -22,8 +24,6 @@ use agora::tls::{self, Fingerprint};
 // server 收集子进程退出状态抢 SIGCHLD，pane 会死得"没有退出码"（agora-tc4；实测 2026-09-03
 // 3.2a 上密集轮询丢 5/6、200 ms 轮询丢 1/6）。生产的 status.detector_interval 是 2 s。
 const POLL: Duration = Duration::from_millis(200);
-
-static N: AtomicU32 = AtomicU32::new(0);
 
 /// 测试二进制旁边的 agora，本身就是 fake-agent（`agora fake-agent ...`）。
 pub const AGORA_BIN: &str = env!("CARGO_BIN_EXE_agora");
@@ -55,13 +55,12 @@ impl TmuxNode {
 
     /// 换掉运行时二进制与超时：不变量 5 用一个"永远不返回"的假 tmux 造坏节点。
     pub fn with_runtime(bin: &str, exec_timeout: Duration) -> Self {
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        let pid = std::process::id();
+        let n = isolate::nth();
         let name = format!("n{n}");
-        let home = PathBuf::from(format!("/tmp/agt-{pid}-{n}"));
+        let home = isolate::home_dir("node", n);
         let _ = std::fs::remove_dir_all(&home);
         agora::local::ensure_home(&home).unwrap();
-        let socket = format!("agora-t-{pid}-{n}");
+        let socket = isolate::socket_name("node", n);
         let rt = Arc::new(
             TmuxRuntime::new(TmuxConfig {
                 bin: bin.to_owned(),
@@ -299,12 +298,7 @@ impl TmuxNode {
 impl Drop for TmuxNode {
     fn drop(&mut self) {
         self.crash();
-        let _ = Command::new("tmux")
-            .args(["-L", &self.socket, "kill-server"])
-            .stderr(std::process::Stdio::null())
-            .status();
-        // 2026-09-07 macOS 实测（agora-quy）：kill-server 后仍可能留下死 socket。
-        let _ = std::fs::remove_file(socket_path(&self.socket));
+        isolate::kill_tmux(&self.socket);
         let _ = std::fs::remove_dir_all(&self.home);
     }
 }

@@ -1,6 +1,6 @@
 //! `agora hook` 命令的行为（ADR-002 D3/D4/D5；agora-dvh.3）：真实子进程 + 进程内 daemon 侧。
 //!
-//! 每个测试自己的 AGORA_HOME（短路径：macOS unix socket 路径上限 104 字节）；daemon 侧
+//! 每个测试自己的 AGORA_HOME（`common::isolate` 派生：短路径 + 本进程独有的标签）；daemon 侧
 //! 跑在一个独立的 tokio runtime 上，"daemon 崩了"就是把那个 runtime 整个 drop 掉——
 //! 监听器与每个连接的任务一起消失，和真进程被 kill 一样。
 
@@ -9,7 +9,6 @@ mod common;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,14 +17,12 @@ use agora::hook::{Receiver, MAX_HOLDS_PER_SESSION};
 use agora::local::{self, Request, SOCKET_FILE};
 use agora::session::{Db, SessionManager};
 
-use common::FakeRuntime;
+use common::{isolate, FakeRuntime};
 
 const AGORA_BIN: &str = env!("CARGO_BIN_EXE_agora");
-static N: AtomicU32 = AtomicU32::new(0);
 
 fn home() -> PathBuf {
-    let n = N.fetch_add(1, Ordering::SeqCst);
-    let home = PathBuf::from(format!("/tmp/agh-{}-{n}", std::process::id()));
+    let home = isolate::home_dir("hookcmd", isolate::nth());
     let _ = std::fs::remove_dir_all(&home);
     local::ensure_home(&home).unwrap();
     home
@@ -142,7 +139,7 @@ impl Daemon {
         rt.spawn(async move {
             let _ = local::serve(&sock, handler).await;
         });
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + isolate::PROC;
         while !socket.exists() {
             assert!(Instant::now() < deadline, "socket 没起来");
             std::thread::sleep(Duration::from_millis(10));
@@ -154,7 +151,7 @@ impl Daemon {
     }
 
     fn wait_holds(&self, n: usize) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + isolate::PROC;
         while self.receiver.hold_count() != n {
             assert!(
                 Instant::now() < deadline,
@@ -268,7 +265,7 @@ fn hold_releases_on_daemon_death() {
     daemon.wait_holds(1);
     assert!(hook.running(), "挂起中的 hook 不该退出");
     daemon.crash();
-    let (code, out, _) = hook.wait_within(Duration::from_secs(1));
+    let (code, out, _) = hook.wait_within(isolate::PROC);
     assert_eq!((code, out.as_str()), (0, ""));
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -291,7 +288,7 @@ fn hold_cap() {
         .collect();
     daemon.wait_holds(MAX_HOLDS_PER_SESSION);
     let (code, out, _) = Hook::spawn(&home, "claude", &permission_request("t-overflow"), &env)
-        .wait_within(Duration::from_secs(5));
+        .wait_within(isolate::PROC);
     assert_eq!((code, out.as_str()), (0, ""));
     assert_eq!(daemon.receiver.hold_count(), MAX_HOLDS_PER_SESSION);
     assert!(held.iter_mut().all(Hook::running));

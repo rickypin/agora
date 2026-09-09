@@ -16,12 +16,14 @@
 //! ——fixture 不存在就写到位，存在就写到旁边的 `.new`，人核对后替换并补 `expect` 行
 //! （`testdata/README.md`）。
 
+#[path = "common/isolate.rs"]
+mod isolate;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use agora::adapter::{self, VersionProbe};
@@ -33,8 +35,6 @@ const PROMPT: &str = "Reply with exactly: pong";
 const SCENARIO: &str = "headless";
 /// 一轮 "pong" 连模型延迟带 hook 落盘，实测 5–20 s；给足余量。
 const AGENT_TIMEOUT: Duration = Duration::from_secs(180);
-
-static N: AtomicU32 = AtomicU32::new(0);
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -191,8 +191,7 @@ fn smoke(host: &str) {
 
     // 隔离环境：AGORA_HOME 要短路径（socket 路径上限），用户 HOME 随便。
     let real_home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
-    let n = N.fetch_add(1, Ordering::SeqCst);
-    let agora_home = PathBuf::from(format!("/tmp/agsm-{}-{n}", std::process::id()));
+    let agora_home = isolate::home_dir("smoke", isolate::nth());
     let _ = fs::remove_dir_all(&agora_home);
     agora::local::ensure_home(&agora_home).unwrap();
     let user = tempfile::tempdir().unwrap();

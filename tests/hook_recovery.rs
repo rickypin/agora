@@ -343,7 +343,7 @@ fn starting_decays_through_session_manager_and_after_checkpoint_restore() {
     };
     // 等到状态离开 STARTING（最多宽限 + 3 s），返回最后一次看到的视图；断言留给调用方原样做。
     let wait_decay = |s: &SessionManager, id: &str| {
-        let deadline = std::time::Instant::now() + GRACE + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + GRACE + common::isolate::PROC;
         loop {
             let v = s.get(id).unwrap();
             if v.assessment.status != Status::Starting || std::time::Instant::now() >= deadline {
