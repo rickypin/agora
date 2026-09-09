@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { catalogApi, sessionApi, type FetchLike } from "./api";
 import type { SessionRow, SocketLike, UnregisteredRow } from "./events";
 import { API_VERSION, HealthWatcher, VersionWatcher } from "./health";
 import type { NotificationLike, NotifierDeps, Permission } from "./notify";
 import { KILL_BODY } from "./SessionSettings";
+import { FREEZE_MS } from "./stableOrder";
 import { SessionStore } from "./store";
 import { Workspace } from "./Workspace";
 
@@ -61,7 +63,7 @@ function fakeNotify(permission: Permission) {
   return { deps, created };
 }
 
-function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?: NotifierDeps, health?: HealthWatcher, version?: VersionWatcher) {
+function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?: NotifierDeps, health?: HealthWatcher, version?: VersionWatcher, strict = false) {
   const sock = new FakeSocket();
   const store = new SessionStore({
     connect: () => sock,
@@ -91,7 +93,7 @@ function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?
     return json(r.body, r.status);
   };
   const renders: string[] = [];
-  const ui = render(
+  const tree = (
     <Workspace
       store={store}
       api={sessionApi(f)}
@@ -102,8 +104,11 @@ function setup(rows: SessionRow[], unregistered: UnregisteredRow[] = [], notify?
       health={health ?? new HealthWatcher({ fetchHealth: async () => ({ status: "ok", runtime: { status: "ok", reason: null } }) })}
       // 缺省一个同版本的节点；不给的话 Workspace 会去真的 fetch /api/system。
       version={version ?? new VersionWatcher({ fetchSystem: async () => ({ api_version: API_VERSION, version: "test", node: "n" }) })}
-    />,
+    />
   );
+  // strict：main.tsx 真的把 App 包在 <StrictMode> 里，dev 下每次渲染跑两遍、effect 挂载 → 清理 → 再挂载。
+  // 只有开着它才测得出「ref 在 render 阶段写」这类 bug（agora-3w8 的教训，见下面 moved 那一条）。
+  const ui = render(strict ? <StrictMode>{tree}</StrictMode> : tree);
   return { ui, store, sock, requests, renders, setKill: (fn: typeof killResponse) => (killResponse = fn) };
 }
 
@@ -122,8 +127,45 @@ async function online(t: ReturnType<typeof setup>) {
   await flush();
 }
 
+/** 侧栏行的显示顺序（不含 RowIdentity 的 row-node- / row-stale- 那些 testid）。 */
+function rowOrder(): string[] {
+  return screen.getAllByTestId(/^row-n:/).map((el) => el.getAttribute("data-testid")!.slice("row-".length));
+}
+
+/** 侧栏行的 `<li>`：moved 类与 data-ordinal 都挂在它身上。 */
+function rowLi(id: string): HTMLElement {
+  return screen.getByTestId(`row-${id}`).closest("li")!;
+}
+
+/**
+ * 指针进 / 出侧栏。派的是 pointerover / pointerout 而不是 pointerenter / pointerleave：React 的
+ * onPointerEnter / onPointerLeave 是 EnterLeaveEventPlugin 由 over / out 合成出来的，直接派
+ * pointerenter 它一个字都收不到（2026-09-10 实测：先写成 fireEvent.pointerEnter，用例里顺序照旧重排）。
+ */
+function pointerIntoSidebar(): void {
+  fireEvent.pointerOver(document.querySelector("aside.sidebar")!);
+}
+function pointerOutOfSidebar(): void {
+  fireEvent.pointerOut(document.querySelector("aside.sidebar")!);
+}
+
+/**
+ * 冻结窗口（A51，agora-4yr.4）走完、行落位。点一行本身就是"我在操作侧栏"，顺序会冻住 3 s——
+ * 「点开 own 再点别的行、own 掉进折叠区」这类断言看的是**落位之后**的三段。
+ *
+ * fake timer 开 `shouldAdvanceTime`：用例里 `await new Promise(r => setTimeout(r, 5))` 等事件合并窗
+ * 的那些真定时器照常按真实时间走，只有这 3 s 是跳过去的；要在冻结定时器被 arm **之前**就切到
+ * fake timer，否则 arm 出去的是真定时器，advance 假时钟碰不到它（2026-09-10 实测）。
+ */
+async function settle() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(FREEZE_MS + 1);
+  });
+}
+
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   // 「看过」集合存在 localStorage（agora-j4w.1）：别让一个用例的记号漏到下一个。
   localStorage.clear();
   mounted.length = 0;
@@ -511,6 +553,8 @@ describe("Workspace", () => {
 
   it("an agora FINISHED row stays in NEEDS ATTENTION until it has been opened and left; external ones start collapsed (A46)", async () => {
     // MISSION §4.6「看过」证据 ①：选中展开过一次。记在离开那一行的时刻：选中期间它留在原位。
+    // 点行会冻住顺序 3 s（A51，agora-4yr.4），所以每次"点了之后该重排"的断言前先 settle()。
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const t = setup([
       { ...row("n:ext", "finished"), origin: "external" },
       { ...row("n:own", "finished"), origin: "agora" },
@@ -528,8 +572,10 @@ describe("Workspace", () => {
     fireEvent.click(screen.getByTestId("row-n:own"));
     expect(screen.getByTestId("term-n:own")).toBeTruthy();
     expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-running", "row-n:run", "section-finished"]);
-    // 再点别的行：own 进折叠区，计数 +1；localStorage 记下了。
+    // 再点别的行：own 进折叠区，计数 +1；localStorage 记下了。冻结期间它先留在原位（A51 的守卫在下面
+    // 「a row that becomes finished during a freeze…」那条），3 s 落位后才是这里断言的三段。
     fireEvent.click(screen.getByTestId("row-n:wait"));
+    await settle();
     expect(order()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:run", "section-finished"]);
     expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 2");
     expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:own@"]);
@@ -549,6 +595,7 @@ describe("Workspace", () => {
       t.sock.send([{ type: "status_changed", id: "n:run", status: "finished", source: "process", reason: "exited", alive: false }]);
       await new Promise((r) => setTimeout(r, 5));
     });
+    await settle();
     expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:run", "section-finished"]);
     // 看过的行又跑起来（Restart）：记号作废，下一次 FINISHED 是新结果。
     await act(async () => {
@@ -560,12 +607,15 @@ describe("Workspace", () => {
       t.sock.send([{ type: "status_changed", id: "n:own", status: "finished", source: "process", reason: "exited", alive: false }]);
       await new Promise((r) => setTimeout(r, 5));
     });
+    await settle();
     // 两条都是 FINISHED、都没有 status_since：稳定排序保持快照里的原顺序（own 在 run 前）。
     expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own", "row-n:run", "section-finished"]);
   });
 
   it("a seen mark dies with its completion: running+finished in one batch, or a resync with a newer status_since, put the row back in NEEDS ATTENTION (agora-23h)", async () => {
-    // fetchSnapshot 每次都读这个数组：改它再发 resync 就是"重连后拿到的全量"。
+    // fetchSnapshot 每次都读这个数组：改它再发 resync 就是"重连后拿到的全量"。点行会冻住顺序 3 s（A51），
+    // 断言"进了折叠区"之前先 settle()。
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     const rows: SessionRow[] = [row("n:wait", "waiting"), { ...row("n:own", "finished"), origin: "agora", status_since: 100 }];
     const t = setup(rows);
     await online(t);
@@ -576,6 +626,7 @@ describe("Workspace", () => {
     // 看过 own：进折叠区，记号带着这一次完成的 status_since。
     fireEvent.click(screen.getByTestId("row-n:own"));
     fireEvent.click(screen.getByTestId("row-n:wait"));
+    await settle();
     expect(order()).toEqual(["section-attention", "row-n:wait", "section-finished"]);
     expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:own@100"]);
     // Restart 后 running 与新的 finished 在同一批到达（合并窗）：中间态从没进过 byId，靠 status_since 认出是新结果。
@@ -591,6 +642,7 @@ describe("Workspace", () => {
     // 再看一次，然后断线重连 resync 直接拿到又一次完成（status_since 更新）：同样回到 NEEDS ATTENTION。
     fireEvent.click(screen.getByTestId("row-n:own"));
     fireEvent.click(screen.getByTestId("row-n:wait"));
+    await settle();
     expect(order()).toEqual(["section-attention", "row-n:wait", "section-finished"]);
     rows[1] = { ...row("n:own", "finished"), origin: "agora", status_since: 300 };
     await act(async () => {
@@ -831,6 +883,158 @@ describe("Workspace", () => {
     // 断流再连上：错过的翻转补不回来，重连时重拉一次 health 对齐（首连不拉，上面 polls 仍是 1）。
     await online(t);
     expect(health.polls).toBe(2);
+  });
+});
+
+describe("Workspace · 重排稳定（A51，agora-4yr.4）", () => {
+  /** 侧栏三段的样子：标题与行按 DOM 先后。 */
+  const sectioned = () =>
+    Array.from(screen.getByTestId("section-attention").parentElement!.querySelectorAll("[data-testid]"))
+      .map((el) => el.getAttribute("data-testid")!)
+      .filter((id) => id.startsWith("section-") || (id.startsWith("row-") && !id.startsWith("row-node-") && !id.startsWith("row-stale-")));
+
+  it("while the pointer is over the sidebar a status change does not reorder rows but updates the symbol (A51)", async () => {
+    const t = setup([row("n:a"), row("n:b"), row("n:c")]);
+    await online(t);
+    expect(rowOrder()).toEqual(["n:a", "n:b", "n:c"]);
+    pointerIntoSidebar();
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:c", status: "waiting", source: "hook", reason: "permission", alive: true }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    // 位置一行没动：WAITING 的 c 按实时排序早该跳到最前，人还悬在侧栏里，就别动它。
+    expect(rowOrder()).toEqual(["n:a", "n:b", "n:c"]);
+    // 内容照常更新——冻的是次序不是状态。用户要看到"它在等我了"，只是不要它跑掉。
+    const dot = screen.getByTestId("row-n:c").querySelector(".dot")!;
+    expect(dot.textContent).toBe("⚠");
+    expect(dot.classList.contains("st-waiting")).toBe(true);
+    expect(screen.getByTestId("counts").textContent).toBe("Running 2 · Needs Input 1");
+    // 冻结期间没有任何一行是"刚落位"的，不该有高亮。
+    expect(document.querySelectorAll("li.moved")).toHaveLength(0);
+  });
+
+  it("after leaving the sidebar and 3 s (fake timers) the row moves and carries the moved class (A51)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t = setup([row("n:a"), row("n:b"), row("n:c")]);
+    await online(t);
+    pointerIntoSidebar();
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:b", status: "waiting", source: "hook", reason: "permission", alive: true }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(rowOrder()).toEqual(["n:a", "n:b", "n:c"]);
+    pointerOutOfSidebar();
+    // 指针一离开不等于立刻跳：3 s 还没走完，顺序照旧（人可能只是滑过主区又要滑回来）。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(FREEZE_MS - 100);
+    });
+    expect(rowOrder()).toEqual(["n:a", "n:b", "n:c"]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    // 落位：b 到 NEEDS ATTENTION 顶部，a 跟着往下挪了一格——两行都变了位置，都点亮。
+    expect(rowOrder()).toEqual(["n:b", "n:a", "n:c"]);
+    expect(sectioned()).toEqual(["section-attention", "row-n:b", "section-running", "row-n:a", "row-n:c"]);
+    expect(rowLi("n:b").classList.contains("moved")).toBe(true);
+    expect(rowLi("n:a").classList.contains("moved")).toBe(true);
+    // c 的相对位置没变（还是排在 a 之后），不点亮：动了才闪，不是整屏闪。
+    expect(rowLi("n:c").classList.contains("moved")).toBe(false);
+    // 高亮只活一个落位周期：下一次列表更新（顺序没变）就清空，不会一直亮着。
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:c", status: "running", source: "hook", reason: "activity", alive: true, progress: "Edit x" }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(rowOrder()).toEqual(["n:b", "n:a", "n:c"]);
+    expect(document.querySelectorAll("li.moved")).toHaveLength(0);
+  });
+
+  it("Alt/Option+2 during a freeze jumps to the second row as displayed (A51)", async () => {
+    const t = setup([row("n:a"), row("n:b"), row("n:c")]);
+    await online(t);
+    pointerIntoSidebar();
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:c", status: "failed", source: "process", reason: "exited", alive: false }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    // 实时排序里 FAILED 的 c 早该是第 1 条；冻着的显示顺序仍是 a b c，序号也按显示顺序数。
+    expect(rowOrder()).toEqual(["n:a", "n:b", "n:c"]);
+    expect(rowLi("n:a").getAttribute("data-ordinal")).toBe("1");
+    expect(rowLi("n:b").getAttribute("data-ordinal")).toBe("2");
+    // Alt/Option+2 打开的必须是**眼睛看到的**第 2 条 b，而不是实时排序的第 2 条 a。
+    fireEvent.keyDown(window, { code: "Digit2", altKey: true });
+    expect(screen.getByTestId("term-n:b")).toBeTruthy();
+    expect(screen.getByTestId("crumb").textContent).toContain("b");
+    // 跳转本身也算侧栏交互：跳完顺序仍然冻着，连按两次不会落到两行不同的会话上。
+    expect(rowOrder()).toEqual(["n:a", "n:b", "n:c"]);
+  });
+
+  it("tree mode never freezes", async () => {
+    const t = setup([row("n:a"), row("n:b"), row("n:c")]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("sidebar-mode-tree"));
+    pointerIntoSidebar();
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:c", status: "failed", source: "process", reason: "exited", alive: false }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    // 树视图按创建序，状态变了本来就不重排——这里真正要钉的是它**没有记下**一份冻结顺序。
+    expect(rowOrder()).toEqual(["n:a", "n:b", "n:c"]);
+    // 指针还在侧栏里（frozen 仍为真）切回「需要我」：看到的必须是实时的 attention 顺序。
+    // 树模式也走 stableOrder 的话，这里冻住的会是树的顺序，c 不会跳到最前。
+    fireEvent.click(screen.getByTestId("sidebar-mode-attention"));
+    expect(rowOrder()).toEqual(["n:c", "n:a", "n:b"]);
+    // 刚切过来的第一帧不是"落位"，不该点亮任何行。
+    expect(document.querySelectorAll("li.moved")).toHaveLength(0);
+  });
+
+  it("a row that becomes finished during a freeze stays in place and the FINISHED head keeps its count (A51)", async () => {
+    // 2026-09-10 交叉验证点名的那条日常路径：逐个处理时点下一行，会把上一行写进 seen，
+    // finishedCollapsed 立刻为真——而 onOpen 自己就调 touchSidebar 冻着顺序。只冻顺序不冻分段的话，
+    // 这一行当场从 DOM 消失、FINISHED 表头插到列表中间、计数从 1 变成 3。
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t = setup([
+      { ...row("n:ext", "finished"), origin: "external" },
+      { ...row("n:own", "finished"), origin: "agora" },
+      row("n:run"),
+      row("n:wait", "waiting"),
+    ]);
+    await online(t);
+    expect(sectioned()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-running", "row-n:run", "section-finished"]);
+    fireEvent.click(screen.getByTestId("row-n:own"));
+    fireEvent.click(screen.getByTestId("row-n:wait"));
+    // 冻结期间：own 还在原位、还在 DOM 里（「不许在冻结期间隐藏行」），三段表头与计数一个字没变。
+    expect(sectioned()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-running", "row-n:run", "section-finished"]);
+    expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
+    expect(rowLi("n:own").getAttribute("data-ordinal")).toBe("2");
+    // 3 s 落位之后才收进折叠区，计数才跟着变。
+    await settle();
+    expect(sectioned()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:run", "section-finished"]);
+    expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 2");
+  });
+
+  it("<StrictMode> still reports the rows that moved: prev order is written in the commit phase (A51)", async () => {
+    // main.tsx 是 <StrictMode>，dev 下每次渲染跑两遍、effect 挂载 → 清理 → 再挂载。整条冻结 / 落位链路
+    // （prev 的记与读、moved 的算与清）在双跑下必须照样出高亮。
+    //
+    // 实测边界（2026-09-10，React 19.2）：把 prev 挪回 useMemo 的 render 阶段写**不会**让这条变红——
+    // StrictMode 双跑提交的是第一遍的结果，第二遍读到的毒值被丢掉（探针见 Workspace.tsx 那段注释）。
+    // 这条钉的是链路本身，不是 ref 写在哪一阶段；别据此以为 render 阶段写 ref 是安全的。
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t = setup([row("n:a"), row("n:b"), row("n:c")], [], undefined, undefined, undefined, true);
+    await online(t);
+    pointerIntoSidebar();
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:b", status: "waiting", source: "hook", reason: "permission", alive: true }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(rowOrder()).toEqual(["n:a", "n:b", "n:c"]);
+    pointerOutOfSidebar();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(FREEZE_MS + 1);
+    });
+    expect(rowOrder()).toEqual(["n:b", "n:a", "n:c"]);
+    expect(rowLi("n:b").classList.contains("moved")).toBe(true);
+    expect(rowLi("n:a").classList.contains("moved")).toBe(true);
   });
 });
 

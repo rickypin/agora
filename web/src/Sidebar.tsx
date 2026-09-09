@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
 import type { AdoptBody, SessionApi, WriteResult } from "./api";
-import { countByStatus, sectionOf, type SeenSet } from "./attention";
+import { countByStatus, sectionOf, type SeenSet, type Section } from "./attention";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow, UnregisteredRow } from "./events";
 import { Header, type NodeStatus } from "./Header";
@@ -105,6 +105,15 @@ interface SidebarProps {
   onOpenDiff?: (id: string) => void;
   /** 一键清理用的 DELETE metadata（agora-j4w.2）；不给就没有清理按钮。 */
   onDeleteMetadata?: (id: string) => Promise<WriteResult<unknown>>;
+  /** 冻结期间每行的分段归属（A51，agora-4yr.4，`stableSections`）：不给就实时算，既有调用方一行不改。
+   * 冻的是「顺序 + 分段」两件事——三段表头与折叠区是按位置推的，光冻顺序会让表头插到列表中间、
+   * 计数错、FINISHED 行从 DOM 消失。 */
+  sections?: readonly Section[];
+  /** 刚落位、位置变了的行（A51，agora-4yr.4）：这一帧给它们 `li.moved`，1.2 s 的背景高亮。 */
+  moved?: ReadonlySet<string>;
+  /** 指针进出侧栏（A51，agora-4yr.4）：进来冻住顺序，离开 3 s 后落位。由 Workspace 管状态与定时器。 */
+  onPointerEnter?: () => void;
+  onPointerLeave?: () => void;
   /** 树视图组头「shell」用的写端点（agora-uvd.4）；只透传给 <SidebarTree>，不给就没有那个按钮。 */
   api?: Pick<SessionApi, "create">;
   /** 组头「shell」起成功了：交给 Workspace 的 pendingOpen（同 New Agent 对话框的 onCreated）。 */
@@ -192,6 +201,10 @@ export function Sidebar({
   onAdopt,
   onOpenDiff,
   onDeleteMetadata,
+  sections: givenSections,
+  moved,
+  onPointerEnter,
+  onPointerLeave,
   api,
   onCreated,
 }: SidebarProps) {
@@ -229,7 +242,8 @@ export function Sidebar({
   // tree 视图整段列表换成 <SidebarTree>（A48，agora-uvd.3）：组头、折叠与 DFS 序号都在那边；下面 attention
   // 分支一个字不动。
   const showSections = mode !== "tree";
-  const sections = rows.map((r) => sectionOf(r, seen));
+  // 冻结期间用 Workspace 冻下来的那份分段（A51，agora-4yr.4）；没给就照旧实时算。
+  const sections = givenSections ?? rows.map((r) => sectionOf(r, seen));
   const firstRunning = sections.indexOf("running");
   const firstFinished = sections.indexOf("finished");
   const hasAttention = sections[0] === "attention";
@@ -284,7 +298,7 @@ export function Sidebar({
     clearWidth();
   }
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" onPointerEnter={onPointerEnter} onPointerLeave={onPointerLeave}>
       <Header agents={filter ? `${rows.length}/${total}` : total} nodes={nodes} />
       <CountsLine rows={all} clearable={clearable.length} onClear={onDeleteMetadata ? () => setClearAsk(true) : undefined} />
       <div className="sidebar-mode" role="group" aria-label="侧栏视图">
@@ -398,6 +412,7 @@ export function Sidebar({
               now={now}
               localNode={localNode}
               onOpenDiff={onOpenDiff}
+              moved={moved?.has(r.id)}
             />
             )}
           </Fragment>

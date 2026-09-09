@@ -17,9 +17,9 @@ export { staleSeen } from "./RowIdentity";
  * 不再抢同一文件。node / stale 的规则仍在 RowIdentity 里，注释随那一处。
  */
 
-/** `<li>` 的类名：选中 / stale 两个正交的状态。 */
-export function rowClasses(active: boolean, stale?: boolean): string | undefined {
-  const cls = [active ? "selected" : null, stale ? "stale" : null].filter((c): c is string => c !== null);
+/** `<li>` 的类名：选中 / stale / 刚换位，三个正交的状态。 */
+export function rowClasses(active: boolean, stale?: boolean, moved?: boolean): string | undefined {
+  const cls = [active ? "selected" : null, stale ? "stale" : null, moved ? "moved" : null].filter((c): c is string => c !== null);
   return cls.length ? cls.join(" ") : undefined;
 }
 
@@ -117,10 +117,12 @@ interface RowProps {
   onOpenDiff?: (id: string) => void;
   /** 只透传给 RowIdentity（agora-uvd.8）：树视图（SidebarTree，agora-uvd.3）传 false——组头已说明仓库与分支。 */
   showProject?: boolean;
+  /** 这一帧刚落位、位置真的变了（A51，agora-4yr.4）：`<li class="moved">` 触发 1.2 s 的背景高亮。 */
+  moved?: boolean;
 }
 
 /** memo：行对象引用没变就不重渲染（store.ts）。 */
-export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, now, localNode, onOpenDiff, showProject }: RowProps) {
+export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, now, localNode, onOpenDiff, showProject, moved }: RowProps) {
   onRender?.(row.id);
   const prompt = str(row.prompt);
   const progress = str(row.progress);
@@ -132,7 +134,10 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
   // pane preview；两者都没有时退回状态理由（MISSION §6.3；ADR-002 D8）。
   const lines = prompt || progress ? null : preview || String(row.reason ?? "");
   return (
-    <li className={rowClasses(active, row.stale)}>
+    // data-ordinal 挂在 <li> 上而不是只靠行里那个 span（agora-5ri）：span 从来只画 1…9，第 10 行往后
+    // 渲染的是空字符串，代检按 `.ord` 文本读序号在 2026-09-08 现场那种 58 行的列表里直接读不到。
+    // 属性两种视图共用（SidebarRow 是同一个组件），显示规则不变。
+    <li className={rowClasses(active, row.stale, moved)} data-ordinal={ordinal}>
       <button
         className={active ? "row selected" : "row"}
         onClick={() => onOpen(row.id)}

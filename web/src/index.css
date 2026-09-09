@@ -207,6 +207,12 @@ li.stale > .row { opacity: 0.55; }
 li.stale > .row:hover, li.stale > .row.selected { opacity: 0.8; }
 .row .meta .stale-seen { color: var(--warn); }
 
+/* 解冻落位后短暂高亮换位的行（A51，agora-4yr.4）：冻结期间行不动，指针一走开它们会一次性跳到
+   新位置——不给个记号，人只知道"刚才那行不见了"。只闪一下背景而不做滑动动画：要的是"哪几行动了"，
+   不是看它们走过去（一屏十几行同时滑动比不滑更难跟）。类由 moved 集合驱动，下一次落位自然清空。 */
+@keyframes row-moved { from { background: #2a3a4f; } to { background: transparent; } }
+li.moved > .row { animation: row-moved 1.2s ease-out; }
+
 /* 「按项目」树视图（A48，agora-uvd.3）：组头是按钮，三层缩进；行由 <li class="tree-row"> 包一层再放
    SidebarRow 自己的 <li>（行的 <li> 归 uvd.7，本任务不改），内层 ul 不再加侧栏的 6px 内边距。
    FINISHED 行不搬家、原位淡显：li.done 与 li.stale 同一组规则，hover / 选中回到可读。 */

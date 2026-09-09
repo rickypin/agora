@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
-import { loadSeen, seenKey, storeSeen } from "./attention";
+import { loadSeen, sectionOf, seenKey, storeSeen, type Section } from "./attention";
 import { ChangesApiContext } from "./Changes";
 import { CommandPalette } from "./CommandPalette";
 import { nodeStatuses } from "./Header";
@@ -12,6 +12,7 @@ import { hasRespondPanel, RespondPanel } from "./RespondPanel";
 import { SessionSettings } from "./SessionSettings";
 import { loadMode, storeMode, visibleOrder, type SidebarMode } from "./sidebarMode";
 import { rowName, Sidebar } from "./Sidebar";
+import { FREEZE_MS, stableOrder, stableSections } from "./stableOrder";
 import { SessionStore, useSessions, useUnregistered } from "./store";
 import { defaultDiffSocket, type TerminalClientOptions } from "./terminal";
 import { TerminalView } from "./TerminalView";
@@ -47,6 +48,9 @@ interface Props {
   /** 事件流被服务端以 4401 关掉（本设备被吊销，agora-0jt）：App 换回配对门。 */
   onRevoked?: () => void;
 }
+
+/** 没有一行动过：常量，省得每次渲染新造一个空集合把 memo 的下游叫醒。 */
+const NO_MOVED: ReadonlySet<string> = new Set();
 
 /** Screen A 的侧栏（Attention Dashboard）+ Screen B：侧栏 active 行的终端 + Session Settings（无顶栏标签页，agora-a46）。 */
 export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, onRowRender, notifyDeps, health: givenHealth, version: givenVersion, terminalConnect, diffConnect, onRevoked }: Props) {
@@ -127,6 +131,40 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
       return next;
     });
   }, []);
+  // 「需要我」视图的重排冻结（A51，agora-4yr.4）：指针在侧栏里、或最近 3 s 内动过侧栏（点行、敲过滤框、
+  // Alt/Option+N / ]/[）时顺序冻住——我在看 / 在操作的时候别动；我走开了再落位。只看指针与键盘，不看
+  // 焦点：焦点常年在终端里，按焦点判会几乎永远冻着。3 s 写死，不做配置。
+  const [frozen, setFrozen] = useState(false);
+  const pointerInside = useRef(false);
+  const thawTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearThaw = useCallback(() => {
+    if (thawTimer.current !== null) {
+      clearTimeout(thawTimer.current);
+      thawTimer.current = null;
+    }
+  }, []);
+  const armThaw = useCallback(() => {
+    clearThaw();
+    // 定时器到点还要再看一眼指针：人可能一直悬在侧栏里只是没再按键，那时不该落位。
+    thawTimer.current = setTimeout(() => {
+      thawTimer.current = null;
+      if (!pointerInside.current) setFrozen(false);
+    }, FREEZE_MS);
+  }, [clearThaw]);
+  const touchSidebar = useCallback(() => {
+    setFrozen(true);
+    armThaw();
+  }, [armThaw]);
+  const enterSidebar = useCallback(() => {
+    pointerInside.current = true;
+    clearThaw();
+    setFrozen(true);
+  }, [clearThaw]);
+  const leaveSidebar = useCallback(() => {
+    pointerInside.current = false;
+    armThaw();
+  }, [armThaw]);
+  useEffect(() => clearThaw, [clearThaw]);
   // 刚创建的会话：等它随事件流进列表再选中。POST 的响应先于 `session_created` 到达，
   // 这时就选中会被下面"行没了就清空"的 effect（列表里还没有这一行）立刻清掉。
   const [pendingOpen, setPendingOpen] = useState<string | null>(null);
@@ -151,6 +189,23 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
       setView({ id, kind: "terminal" });
     },
     [focusTerminal],
+  );
+
+  // 从侧栏点开一行：先冻住顺序再开。点行本身就是"我正在这里操作"，而它常常顺手改变排序——把上一行
+  // 写进 seen（A46）就够让它掉进折叠区了。通知点击与命令面板走的是裸 openTab，不冻。
+  const openFromSidebar = useCallback(
+    (id: string) => {
+      touchSidebar();
+      openTab(id);
+    },
+    [openTab, touchSidebar],
+  );
+  const changeFilter = useCallback(
+    (v: string) => {
+      touchSidebar();
+      setFilter(v);
+    },
+    [touchSidebar],
   );
 
   // 浏览器通知（MISSION §6.6；A18）：点击回到该行——openTab 让它成为侧栏 active 行，主区 crumb 之下
@@ -265,7 +320,33 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   // 侧栏显示顺序：visibleOrder 一条（A47，agora-uvd.2）。attention 分支原样 =
   // partitionByAttention(fuzzyFilter(sortByAttention))；tree 分支是树的 DFS 顺序（agora-uvd.3，
   // 节点序取自 Header 那一排 nodes、本机第一）。Alt/Option+N / ]/[ / 过滤框 Enter 都走这条 visible。
-  const visible = useMemo(() => visibleOrder(mode, rows, filter, seen, nodes, localNode ?? undefined), [mode, rows, filter, seen, nodes, localNode]);
+  //
+  // 冻结（A51，agora-4yr.4）只包在 attention 分支外面：树视图本来就不按状态重排，冻它没有意义，
+  // 而且 prev 在树模式下一律清空——不然从树切回「需要我」时，冻着的是树的顺序。
+  const prevOrder = useRef<{ ids: string[]; sections: Map<string, Section> } | null>(null);
+  const { rows: visible, sections: visibleSections, moved } = useMemo(() => {
+    const next = visibleOrder(mode, rows, filter, seen, nodes, localNode ?? undefined);
+    if (mode !== "attention") return { rows: next, sections: undefined, moved: NO_MOVED };
+    const prev = prevOrder.current;
+    const stable = stableOrder(prev?.ids ?? null, next, frozen);
+    const placed = stableSections(prev?.sections ?? null, stable.order, (r) => sectionOf(r, seen), frozen);
+    return { rows: placed.order, sections: placed.sections, moved: stable.moved };
+  }, [mode, rows, filter, seen, nodes, localNode, frozen]);
+  // 上一次的显示顺序**只在 commit 阶段写**：render 阶段写 ref 是 React 明令禁止的（渲染被打断 / 丢弃时
+  // ref 已经被改脏，而那一帧根本没提交），本仓库也已被 StrictMode 咬过两次（agora-3w8 的配对兑换、
+  // TerminalView 的双挂载）。
+  //
+  // 但要说清楚这条守卫钉不住什么，免得后来者据此以为「写进 useMemo 也没事」：2026-09-10 实测 React
+  // 19.2 + StrictMode，useMemo 的工厂确实跑两遍，**提交的却是第一遍的结果**（探针：mount 得到
+  // call#1/#2、DOM 是 call#1；update 得到 call#3/#4、DOM 是 call#3）。所以把这一行挪回 useMemo 里，
+  // 第二遍读到的毒值会被丢掉，下面那条 <StrictMode> 用例并不会变红——它钉的是"整条冻结 / 落位链路在
+  // StrictMode 下照样出 moved"，不是"ref 写在哪一阶段"。真正拦住 render 阶段写 ref 的是这段注释和
+  // React 自己的规则。守卫 Workspace.test.tsx「<StrictMode> still reports the rows that moved」。
+  useEffect(() => {
+    prevOrder.current = visibleSections
+      ? { ids: visible.map((r) => r.id), sections: new Map(visible.map((r, i) => [r.id, visibleSections[i]])) }
+      : null;
+  }, [visible, visibleSections]);
 
   useEffect(() => {
     // 手机端没有键盘：全局快捷键与命令面板只在桌面装（MISSION §6.5）。
@@ -290,6 +371,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         case "next":
         case "prev": {
           if (visible.length === 0) break;
+          touchSidebar();
           const at = visible.findIndex((r) => r.id === view?.id);
           const step = hit.action === "next" ? 1 : -1;
           const next = visible[(at + step + visible.length) % visible.length];
@@ -297,7 +379,10 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           break;
         }
         case "jump": {
+          // 先冻再跳：跳过去这一下就常常改变排序（选中会把上一行写进 seen），第 N 条的位置得稳住，
+          // 不然连按两下 Alt+2 会落到两行不同的会话上。用的是**冻结期间的显示顺序**，与眼睛看到的一致。
           const target = visible[hit.index];
+          touchSidebar();
           if (target) openTab(target.id);
           break;
         }
@@ -312,7 +397,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [paletteOpen, newAgentOpen, visible, view?.id, openTab, toggleMode, openNewAgent, panelRow]);
+  }, [paletteOpen, newAgentOpen, visible, view?.id, openTab, toggleMode, openNewAgent, panelRow, touchSidebar]);
 
   if (blocked !== null) {
     // 节点与页面不是同一个 API major（或读不出版本）：只留横幅，侧栏 / 终端一概不挂——
@@ -345,16 +430,20 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         // 看 diff 时它的会话行仍是选中行（展开区留着，验收标准 / 改动列表与 diff 并排对照，MISSION §6.3）；
         // 不然行一折叠，关掉 diff 又重挂载重拉一次 /changes（2026-09-06 代检时看到）。
         active={view?.id ?? null}
-        onOpen={openTab}
+        onOpen={openFromSidebar}
         onNewAgent={openNewAgent}
         onRowRender={onRowRender}
         filter={filter}
-        onFilter={setFilter}
+        onFilter={changeFilter}
         filterRef={filterInput}
         onFilterEnter={() => {
           const first = visible[0];
-          if (first) openTab(first.id);
+          if (first) openFromSidebar(first.id);
         }}
+        sections={visibleSections}
+        moved={moved}
+        onPointerEnter={enterSidebar}
+        onPointerLeave={leaveSidebar}
         unregistered={unregistered}
         onAdopt={adopt}
         onOpenDiff={openDiff}

@@ -205,6 +205,22 @@ it("the sidebar never renders a respond- testid (A50)", () => {
   }
 });
 
+it("every row carries data-ordinal on its <li>, past the ninth where the printed number stops (agora-5ri)", () => {
+  // 行按钮里的 `.ord` 只画 1…9（MISSION §6.5：Alt/Option 只到 9），第 10 行往后它渲染的是空字符串。
+  // 代检「Alt+N 打开的是显示顺序第 N 行」只能按 `.ord` 文本读序号的话，2026-09-08 现场那种 58 行的
+  // 列表里第 10 行往后一个序号都读不到（agora-5ri）。序号本身挂在 <li data-ordinal> 上，一行不漏，
+  // 两种视图共用（SidebarRow 是同一个组件）。
+  const many = Array.from({ length: 12 }, (_, i) => row(`n:r${i + 1}`, "running"));
+  mount(many);
+  const lis = Array.from(document.querySelectorAll("aside.sidebar ul > li"));
+  expect(lis.map((li) => li.getAttribute("data-ordinal"))).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]);
+  // 第 9 行两边都读得到；第 10 行只有属性有，显示的数字是空的——这正是要补属性的理由。
+  expect(screen.getByTestId("row-n:r9").closest("li")!.getAttribute("data-ordinal")).toBe("9");
+  expect(screen.getByTestId("row-n:r9").querySelector(".ord")?.textContent).toBe("9");
+  expect(screen.getByTestId("row-n:r10").closest("li")!.getAttribute("data-ordinal")).toBe("10");
+  expect(screen.getByTestId("row-n:r10").querySelector(".ord")?.textContent).toBe("");
+});
+
 it("the mode switch toggles aria-pressed and calls onMode (A47)", () => {
   const onMode = vi.fn();
   const visible = partitionByAttention(sortByAttention(ROWS), new Set());
