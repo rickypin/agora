@@ -99,6 +99,8 @@ select:disabled { opacity: 0.5; }
    待到 2026-09-10，几百行的 TURN_DONE 回复挤成一条线、输入框沉在全文底下（agora-03k）。 */
 .respond-panel { border-bottom: 1px solid var(--border); padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; }
 .respond-question { margin: 0; }
+/* 权限 summary 是一行命令，原样显示：不排版、不折行吃空格，长了自己横向滚（agora-k1s）。 */
+.respond-command { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 /* 最后一条回复排在输入框下面，限高 40vh 自己滚：不限高它会把终端挤没（.main 是 flex 列，
    .pane 收得下去）。max-height 同时是面板 min-content 的上界，所以 .pane 至少还剩 60vh。
    这条限高与「默认露 12 行」的折叠（agora-4yr.2，RespondPanel 的 FOLD_LINES）是两件事：

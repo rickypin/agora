@@ -133,7 +133,22 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
 
   return (
     <section className="respond-panel" data-testid={`respond-panel-${row.id}`} ref={rootRef}>
-      {waiting && <MarkdownView className="respond-question" text={canDecide ? pending.summary : detail ?? String(row.reason ?? "等待你")} />}
+      {waiting &&
+        (canDecide ? (
+          // 权限请求的 summary 是**一行命令**（`src/adapter/hooks.rs permission_summary`：工具名 +
+          // tool_input 主参数首行），不是 markdown。批准之前看到的文本必须逐字符等于真实命令
+          // ——这是"respond 不经终端完成"（MISSION §1.2）的信任基础。走 markdown 会把命令里的元
+          // 字符当语法吃掉（2026-09-10 实测：`sed -i 's/_a_/_b_/'` 的 `_a_` 两侧是 `/`、在词边界
+          // 规则之外，渲染成斜体 a、下划线整个消失；`ls **/*.ts` 的 `**` 同理），人看到的与要
+          // 批准的就不是同一串了（agora-k1s）。别为了"统一"把它改回 MarkdownView。
+          <p className="respond-question respond-command" data-testid="respond-question">
+            {pending.summary}
+          </p>
+        ) : (
+          // 提问（AskUserQuestion 类）与兜底文案是 agent 写的散文，没有"逐字符批准"的语义
+          // ——选项在 TUI 里，这里只是让人读懂发生了什么，排版有收益，保留 markdown。
+          <MarkdownView className="respond-question" text={detail ?? String(row.reason ?? "等待你")} />
+        ))}
       {shortHold && (
         <p className="respond-hint muted" data-testid="respond-within">
           {within} 秒内没答会交回终端（挂起期间终端看不到提示）

@@ -178,3 +178,16 @@ it("the reply is rendered as markdown: a table becomes a table and a fence becom
   expect(last.textContent).not.toContain("| --- |");
   expect(screen.queryByTestId("respond-last-more")).toBeNull();
 });
+
+it("a permission summary is shown verbatim: markdown characters in a command are not typography (agora-k1s)", () => {
+  // 人是照着这段文字批准命令的（MISSION §1.2 respond 不经终端完成），所以它必须逐字符等于
+  // permission_summary。2026-09-10：问题文本刚接上 MarkdownView 时这三种都会被排版吃掉——
+  // `_a_` 两侧是 `/`（词边界之外）渲染成斜体、`**` 后面跟 `/` 开出 strong、反引号变行内 code，
+  // 元字符本身从屏幕上消失。断的是 textContent 与源串相等，不是"有没有 em 元素"：将来换别的
+  // 渲染方式，只要吃掉字符照样红。
+  const summary = "Bash: sed -i 's/_a_/_b_/' **/*.ts && cat `which ls`";
+  setup({ reason: "permission", respond_via: "hook", pending_decision: { request_id: "request-1", summary, epoch: 1 } });
+  expect(screen.getByTestId("respond-question").textContent).toBe(summary);
+  // 顺带钉住"这一段没被交给 markdown"：.md 是 MarkdownView 的外壳类。
+  expect(document.querySelector(".respond-question")?.classList.contains("md")).toBe(false);
+});
