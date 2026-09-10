@@ -30,6 +30,9 @@ pub const HOLD_TIMEOUT: Duration = crate::adapter::hooks::DEFAULT_HOLD_TIMEOUT;
 /// （事件进状态机、`pending` 插入键）再 hold，正常顺序下 hold 一登记状态机里就有键；这 2 s 只是保险，
 /// 免得把刚登记、状态机那边还没来得及看见的 hold 当孤儿放掉。
 pub const HOLD_SETTLE: Duration = Duration::from_secs(2);
+/// 两次归档清理之间至少隔多久。sweep 每 5 s 一轮，扫目录不该跟着这个频率走；保留期本身是
+/// 24 h（`DONE_RETENTION`），迟一个小时删对排障没有影响（agora-t36）。
+pub const PRUNE_INTERVAL: Duration = Duration::from_secs(3600);
 
 /// 一条已应用的事件：状态机（agora-dvh.4）的输入，现阶段只进账本。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +79,11 @@ pub struct Receiver {
     hold_timeout: Duration,
     /// `/api/events` 的 `decision_resolved` 从这里发；没接总线就不发。
     events: Mutex<Option<(EventBus, Arc<str>)>>,
+    /// 归档清理（agora-t36）：保留期、两次清理之间的最小间隔、上次跑完的时刻。
+    /// `last_prune = None` = 还没在本进程里跑过。
+    done_retention: Duration,
+    prune_interval: Duration,
+    last_prune: Mutex<Option<Instant>>,
 }
 
 /// 账本里记的事件名：只给排障看，所以键名风格两种都认，不算核心层懂 payload。
@@ -127,12 +135,29 @@ impl Receiver {
             ledger: Mutex::new(Vec::new()),
             hold_timeout: HOLD_TIMEOUT,
             events: Mutex::new(None),
+            done_retention: DONE_RETENTION,
+            prune_interval: PRUNE_INTERVAL,
+            last_prune: Mutex::new(None),
         }
     }
 
     /// 测试用：缩短挂起超时。
     pub fn with_hold_timeout(mut self, timeout: Duration) -> Self {
         self.hold_timeout = timeout;
+        self
+    }
+
+    /// 归档清理的两个旋钮（`hooks.inbox_retention` / `hooks.prune_interval`）；
+    /// 间隔 `Duration::ZERO` = 每次 sweep 都扫。
+    pub fn with_pruning(mut self, retention: Duration, interval: Duration) -> Self {
+        self.done_retention = retention;
+        self.prune_interval = interval;
+        self
+    }
+
+    /// 测试用：只改节流间隔，保留期仍是默认的 24 h。
+    pub fn with_prune_interval(mut self, interval: Duration) -> Self {
+        self.prune_interval = interval;
         self
     }
 
@@ -184,7 +209,8 @@ impl Receiver {
             Ok(_) => {}
             Err(err) => tracing::warn!(component = "hook", %err, "取代旧行失败"),
         }
-        self.inbox.prune_done(DONE_RETENTION);
+        // 走同一条节流：启动这次一定跑（还没记过时刻），之后一小时内的 sweep 不重复扫。
+        self.maybe_prune_done();
         Ok(n)
     }
 
@@ -720,8 +746,12 @@ impl Receiver {
     }
 
     /// 定期扫：超时的与进程已退出的会话解除挂起。`wake` 自己也有超时，这里是双保险，
-    /// 主要为进程退出——没有事件会替死掉的 agent 发 SessionEnd。
+    /// 主要为进程退出——没有事件会替死掉的 agent 发 SessionEnd。顺带按 `PRUNE_INTERVAL`
+    /// 节流清一次归档：原先 `prune_done` 只在 `replay()` 尾部跑，而 replay 只在启动时跑一次，
+    /// 于是"保留 24 h"实际成了"下次重启时清掉 24 h 以前的"，daemon 不重启就无界增长
+    /// （2026-09-10 现场：开发机 done/ 87 MB / 12274 文件，靠频繁重启才没露馅；agora-t36）。
     pub fn sweep(&self) {
+        self.maybe_prune_done();
         let expired: Vec<((String, String), String)> = {
             let holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
             holds
@@ -776,6 +806,18 @@ impl Receiver {
                     "状态机已无此挂起（终端里答过或中断了），放掉还在等的 hook");
             }
         }
+    }
+
+    /// 距上次清理够久了才真的扫目录；时刻先记后扫，扫得慢也不会两轮叠在一起。
+    fn maybe_prune_done(&self) {
+        {
+            let mut last = self.last_prune.lock().unwrap_or_else(|p| p.into_inner());
+            if last.is_some_and(|t| t.elapsed() < self.prune_interval) {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        self.inbox.prune_done(self.done_retention);
     }
 
     pub async fn run_sweeper(self: Arc<Self>, every: Duration) {

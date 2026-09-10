@@ -636,3 +636,188 @@ fn v2_checkpoint_seen_at_in_seconds_is_upgraded_to_millis_on_restore() {
     child.kill().unwrap();
     child.wait().unwrap();
 }
+
+/// agora-t36 的守卫之一：清理挂在 sweep 周期上，daemon 不重启也回收。
+/// 关掉 `Receiver::sweep` 里的 `maybe_prune_done()` 这条红。
+#[test]
+fn the_sweep_prunes_the_done_archive_instead_of_waiting_for_a_restart() {
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let rt = Arc::new(common::FakeRuntime::default());
+    let s = Arc::new(SessionManager::new(db, rt));
+    let id = create(&s, "claude");
+    let inbox = Inbox::new(home.path());
+    // 节流间隔 0：每轮 sweep 都真的扫，先验"扫了会删"。
+    // 保留期仍是默认的 24 h：这条要验的是"按 mtime 判超期"，所以下面靠 age_file 造老文件。
+    let r = Receiver::new(home.path(), s.clone()).with_prune_interval(Duration::ZERO);
+
+    let path = inbox
+        .write(&delivery(
+            &id,
+            1,
+            1,
+            json!({"hook_event_name":"UserPromptSubmit","prompt":"implement"}),
+        ))
+        .unwrap();
+    r.ingest(&path).unwrap();
+    let archived = inbox.completed().unwrap();
+    assert_eq!(archived.len(), 1, "ingest 之后应留在 done/ 供排障");
+
+    age_file(&archived[0], Duration::from_secs(48 * 3600));
+    r.sweep();
+    assert!(
+        inbox.completed().unwrap().is_empty(),
+        "sweep 应该清掉超过保留期的归档，而不是等下次 daemon 启动重放时才清（agora-t36）"
+    );
+}
+
+/// agora-t36 的守卫之二：节流住，别每 5 s 一轮 sweep 都去扫目录。
+#[test]
+fn pruning_is_throttled_so_the_five_second_sweep_does_not_scan_every_round() {
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let rt = Arc::new(common::FakeRuntime::default());
+    let s = Arc::new(SessionManager::new(db, rt));
+    let id = create(&s, "claude");
+    let inbox = Inbox::new(home.path());
+    let r = Receiver::new(home.path(), s.clone()).with_prune_interval(Duration::from_secs(3600));
+
+    // 第一轮 sweep 记下时刻（本进程里还没扫过，一定跑）。
+    r.sweep();
+
+    // 之后才出现的超期文件：还在节流窗口里，第二轮不该扫到它。
+    let path = inbox
+        .write(&delivery(
+            &id,
+            1,
+            2,
+            json!({"hook_event_name":"UserPromptSubmit","prompt":"again"}),
+        ))
+        .unwrap();
+    r.ingest(&path).unwrap();
+    let archived = inbox.completed().unwrap();
+    age_file(&archived[0], Duration::from_secs(48 * 3600));
+
+    r.sweep();
+    assert_eq!(
+        inbox.completed().unwrap().len(),
+        1,
+        "距上次清理不到 PRUNE_INTERVAL，这一轮 sweep 不该再扫目录（agora-t36）"
+    );
+}
+
+/// agora-t36 的守卫之三：归档里的大结果被截断，状态机看到的仍是完整 payload；`tool_input` 不截。
+#[test]
+fn a_big_tool_result_is_truncated_in_the_archive_but_reaches_the_state_machine_whole() {
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let rt = Arc::new(common::FakeRuntime::default());
+    let s = Arc::new(SessionManager::new(db, rt));
+    let id = create(&s, "claude");
+    let inbox = Inbox::new(home.path());
+    let r = Receiver::new(home.path(), s.clone());
+
+    // 现场的形状：结果是对象不是字符串（claude 4511 条里 4173 条如此），所以按紧凑 JSON 的字节数算。
+    let big = "x".repeat(60 * 1024);
+    let long_command = format!("echo {}", "y".repeat(20 * 1024));
+    let path = inbox
+        .write(&delivery(
+            &id,
+            1,
+            3,
+            json!({
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Bash",
+                "tool_use_id": "tool-1",
+                "tool_input": { "command": long_command },
+                "tool_response": { "stdout": big },
+            }),
+        ))
+        .unwrap();
+    r.ingest(&path).unwrap();
+
+    // 状态机侧（账本记的就是 ingest 读到的那份）：一个字没少。
+    let seen = r.received();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        seen[0].delivery.payload["tool_response"]["stdout"]
+            .as_str()
+            .unwrap()
+            .len(),
+        big.len(),
+        "截断只发生在挪进 done/ 那一步，状态机判 hold 读的仍是完整 payload"
+    );
+
+    // 归档侧：截到上限、带标记。
+    let archived = inbox.completed().unwrap();
+    assert_eq!(archived.len(), 1);
+    let on_disk: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&archived[0]).unwrap()).unwrap();
+    let cut = on_disk["payload"]["tool_response"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!(
+                "超限的结果应被换成带标记的字符串，实际：{}",
+                on_disk["payload"]["tool_response"]
+            )
+        });
+    assert!(
+        cut.ends_with(" bytes]") && cut.contains("[truncated "),
+        "截断要留可辨认的标记：{}",
+        &cut[cut.len().saturating_sub(80)..]
+    );
+    assert!(
+        cut.len() < 9 * 1024,
+        "截断后不该还有 {} 字节（上限 8 KB + 标记）",
+        cut.len()
+    );
+
+    // 但 tool_input 一个字不动：agora-pzi 的权限摘要要从它取主参数，归档重建也靠它。
+    assert_eq!(
+        on_disk["payload"]["tool_input"]["command"]
+            .as_str()
+            .unwrap()
+            .len(),
+        long_command.len(),
+        "tool_input 不在截断名单里（见 ARCHIVE_TRUNCATED_KEYS 的注释）"
+    );
+}
+
+/// 把文件的 mtime 往前推，模拟"躺了很久的归档"。
+fn age_file(path: &std::path::Path, age: Duration) {
+    let f = std::fs::File::options().write(true).open(path).unwrap();
+    let when = std::time::SystemTime::now() - age;
+    f.set_times(std::fs::FileTimes::new().set_modified(when))
+        .unwrap();
+}
+
+/// agora-t36 的守卫之四：保留期取自 `hooks.inbox_retention` 而不是硬编码的 24 h。
+/// 把 `with_pruning` 的 retention 换回常量 `DONE_RETENTION` 这条红。
+#[test]
+fn the_retention_comes_from_config_not_from_the_hardcoded_twenty_four_hours() {
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let rt = Arc::new(common::FakeRuntime::default());
+    let s = Arc::new(SessionManager::new(db, rt));
+    let id = create(&s, "claude");
+    let inbox = Inbox::new(home.path());
+    // 保留期 0：刚归档的文件（mtime 就是现在）也该被清，不必等 24 h。
+    let r = Receiver::new(home.path(), s.clone()).with_pruning(Duration::ZERO, Duration::ZERO);
+
+    let path = inbox
+        .write(&delivery(
+            &id,
+            1,
+            4,
+            json!({"hook_event_name":"UserPromptSubmit","prompt":"now"}),
+        ))
+        .unwrap();
+    r.ingest(&path).unwrap();
+    assert_eq!(inbox.completed().unwrap().len(), 1);
+
+    r.sweep();
+    assert!(
+        inbox.completed().unwrap().is_empty(),
+        "retention = 0 时刚归档的文件也该清掉：保留期要跟着 hooks.inbox_retention 走（agora-t36）"
+    );
+}

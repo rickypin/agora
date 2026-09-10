@@ -19,6 +19,17 @@ pub const DONE_DIR: &str = "hooks/done";
 /// `done/` 里的文件保留多久供排障（ADR-002 D3）。
 pub const DONE_RETENTION: Duration = Duration::from_secs(24 * 3600);
 
+/// 归档里单个工具结果字段的上限（ADR-002 D3）：`done/` 只为排障，事件类型、工具名与结果开头
+/// 就够定位问题，整段结果不必留。2026-09-10 现场：`~/.agora/hooks/done` 64.4 MB 里 30.4 MB 是
+/// 这两个字段，其中一个宿主还把同一份结果按 `toolResult` 与 `tool_response` 两种键名各存一遍（agora-t36）。
+pub const ARCHIVE_FIELD_LIMIT: usize = 8 * 1024;
+
+/// 只截这两个键。**不截 `tool_input`**：agora-pzi 的权限摘要要从它取主参数（"Bash: git push …"），
+/// `restore_archive` 从归档重建检查点时还得靠它，截了摘要就只剩工具名。相反这两个键没有任何
+/// adapter 的 parse 读（2026-09-10 实测：全仓库只有 `src/adapter/` 的测试载荷里出现过），
+/// 所以截了不影响任何重建结论——真要改这条，先确认 parse 侧仍然不读它们。
+const ARCHIVE_TRUNCATED_KEYS: [&str; 2] = ["tool_response", "toolResult"];
+
 /// 信封：hook 进程从自己的环境与身份里带回的东西（ADR-002 D3 ①）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Envelope {
@@ -191,7 +202,10 @@ impl Inbox {
         })
     }
 
-    /// 应用完移到 `done/`，保持 `<host>/<session>/<file>` 的相对路径。
+    /// 应用完移到 `done/`，保持 `<host>/<session>/<file>` 的相对路径。挪的时候顺手把大结果字段
+    /// 截到 `ARCHIVE_FIELD_LIMIT`。截断放在**这一步**而不是 hook 进程写 inbox 那一步：状态机要读
+    /// 完整 payload 才判得了 hold，此刻它已经消费过了，往后只剩排障要看（agora-t36）。读不动或
+    /// 解析不了就原样挪走——半截的排障文件不值得让归档卡住。
     pub fn done(&self, path: &Path) -> Result<(), HookError> {
         let rel = path
             .strip_prefix(self.inbox_dir())
@@ -200,10 +214,48 @@ impl Inbox {
         if let Some(parent) = target.parent() {
             create_private_dirs(&self.hooks_dir(), parent)?;
         }
+        if let Some(body) = self.truncated_archive_body(path) {
+            let io = |p: &Path| {
+                let p = p.display().to_string();
+                move |source| HookError::Io { path: p, source }
+            };
+            // 与 `write` 同一条路：先 `.part` 再 rename，读归档的人不会读到半截文件。
+            let part = with_part_suffix(&target);
+            std::fs::write(&part, body).map_err(io(&part))?;
+            std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o600))
+                .map_err(io(&part))?;
+            std::fs::rename(&part, &target).map_err(io(&target))?;
+            std::fs::remove_file(path).map_err(io(path))?;
+            return Ok(());
+        }
         std::fs::rename(path, &target).map_err(|source| HookError::Io {
             path: target.display().to_string(),
             source,
         })
+    }
+
+    /// 读出来截一遍：没有超限的字段（或读不动、序列化不了）返回 `None`，调用方直接 rename。
+    fn truncated_archive_body(&self, path: &Path) -> Option<Vec<u8>> {
+        let mut delivery = self.read(path).ok()?;
+        let obj = delivery.payload.as_object_mut()?;
+        let mut cut_any = false;
+        for key in ARCHIVE_TRUNCATED_KEYS {
+            let Some(value) = obj.get_mut(key) else {
+                continue;
+            };
+            // 这两个键多数时候是对象而不是字符串（2026-09-10 现场：某宿主 4511 条里 4173 条是
+            // 对象），所以按紧凑 JSON 的字节数量，超了整个换成带标记的开头文本——类型从对象变
+            // 字符串，归档只给人看，parse 侧不读它们（见 `ARCHIVE_TRUNCATED_KEYS`）。
+            let compact = serde_json::to_string(value).ok()?;
+            if compact.len() <= ARCHIVE_FIELD_LIMIT {
+                continue;
+            }
+            let keep = floor_char_boundary(&compact, ARCHIVE_FIELD_LIMIT);
+            let dropped = compact.len() - keep;
+            *value = Value::String(format!("{}…[truncated {dropped} bytes]", &compact[..keep]));
+            cut_any = true;
+        }
+        cut_any.then(|| serde_json::to_vec(&delivery).ok())?
     }
 
     /// 删掉 `done/` 里超过保留期的文件；空目录随手删。错误只记日志——排障文件不值得让 daemon 退出。
@@ -229,6 +281,24 @@ impl Inbox {
             let _ = std::fs::remove_dir(&host);
         }
     }
+}
+
+/// `<dir>/<name>.json` → `<dir>/<name>.json.part`（`with_extension` 会把 `.json` 吃掉）。
+fn with_part_suffix(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".part");
+    path.with_file_name(name)
+}
+
+/// 截到不劈开 UTF-8 字符的位置（`str::floor_char_boundary` 还没稳定）。
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 fn list_dir(dir: &Path) -> Result<Vec<PathBuf>, HookError> {

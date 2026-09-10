@@ -132,3 +132,28 @@ fn typos_and_bad_durations_are_rejected() {
         Err(ConfigError::NodeId(_))
     ));
 }
+
+#[test]
+fn archive_pruning_knobs_reach_settings_instead_of_only_being_syntax_checked() {
+    // agora-t36：`hooks.inbox_retention` 在 config.md 里写着"done/ 保留时长"，但 2026-09-10 之前
+    // 只在启动时校验语法、没有任何消费者——改它一点效果都没有。这条守卫钉住两个旋钮都真的
+    // 到达 Settings（谁把它们退回"没有消费者"那张表，这里就红）。
+    let s = load(None).unwrap();
+    assert_eq!(s.hook_inbox_retention.as_secs(), 86_400, "默认保留 24h");
+    assert_eq!(s.hook_prune_interval.as_secs(), 3600, "默认每小时清一次");
+
+    let s = load(Some(
+        "hooks:\n  inbox_retention: \"2h\"\n  prune_interval: \"5s\"\n",
+    ))
+    .unwrap();
+    assert_eq!(s.hook_inbox_retention.as_secs(), 7200);
+    assert_eq!(s.hook_prune_interval.as_secs(), 5);
+
+    assert!(matches!(
+        load(Some("hooks:\n  prune_interval: \"1 hour\"\n")),
+        Err(ConfigError::Duration {
+            field: "hooks.prune_interval",
+            ..
+        })
+    ));
+}

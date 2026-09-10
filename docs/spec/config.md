@@ -36,7 +36,8 @@ hooks:                        # ADR-002 D1 / D5 / D3
   hold_timeout: "55m"         # 挂起的权限决定的上限；安装到 agent 配置里的 hook timeout 必须大于它
   hold_per_session: 8         # 并行工具调用可同时产生多个 PermissionRequest
   hold_per_node: 256
-  inbox_retention: "24h"      # 已应用的事件文件在 done/ 保留时长
+  inbox_retention: "24h"      # 已应用的事件文件在 done/ 保留时长（挪进 done/ 时大结果字段截到 8 KB，只留开头供排障）
+  prune_interval: "1h"        # 两次归档清理之间的最小间隔；清理挂在 daemon 的 sweep 周期上，不必等重启
 notifications:
   enabled: true
 tls:                          # ADR-003 D4；agora 永远自己终止 TLS，不支持 HTTP 终止型反向代理

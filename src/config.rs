@@ -196,7 +196,10 @@ pub struct HooksSection {
     pub hold_timeout: String,
     pub hold_per_session: u32,
     pub hold_per_node: u32,
+    /// 已应用的事件文件在 `done/` 保留多久（排障用）。
     pub inbox_retention: String,
+    /// 两次归档清理之间至少隔多久（agora-t36）：清理挂在 sweep 周期上，但不跟着每 5 s 扫目录。
+    pub prune_interval: String,
 }
 
 impl Default for HooksSection {
@@ -209,6 +212,7 @@ impl Default for HooksSection {
             hold_per_session: 8,
             hold_per_node: 256,
             inbox_retention: "24h".into(),
+            prune_interval: "1h".into(),
         }
     }
 }
@@ -320,6 +324,9 @@ pub struct Settings {
     pub hook_silence_after: Duration,
     pub hook_unheard_after: Duration,
     pub hook_external_silent_after: Duration,
+    /// 已应用的事件文件在 `done/` 留多久；`hook_prune_interval` 是两次清理之间的最小间隔（agora-t36）。
+    pub hook_inbox_retention: Duration,
+    pub hook_prune_interval: Duration,
     /// `Duration::ZERO` = 关闭。
     pub external_finished_ttl: Duration,
     pub auth: crate::auth::AuthConfig,
@@ -399,10 +406,13 @@ impl Config {
             "sessions.external_finished_ttl",
             &self.sessions.external_finished_ttl,
         )?;
+        let hook_inbox_retention =
+            parse_duration("hooks.inbox_retention", &self.hooks.inbox_retention)?;
+        let hook_prune_interval =
+            parse_duration("hooks.prune_interval", &self.hooks.prune_interval)?;
         // 其余时长字段现在没有消费者，但语法先卡住，免得日后消费时才在运行中炸。
         for (field, value) in [
             ("hooks.hold_timeout", &self.hooks.hold_timeout),
-            ("hooks.inbox_retention", &self.hooks.inbox_retention),
             ("tls.external.renew_before", &self.tls.external.renew_before),
         ] {
             parse_duration(field, value)?;
@@ -416,6 +426,8 @@ impl Config {
             hook_silence_after,
             hook_unheard_after,
             hook_external_silent_after,
+            hook_inbox_retention,
+            hook_prune_interval,
             external_finished_ttl,
             auth,
             raw: self,
