@@ -29,7 +29,7 @@ export interface StableResult<T> {
 /**
  * 显示顺序：`frozen` 时沿用 `prev` 的次序，否则原样交出 `next` 并报告谁换了位。
  *
- * - `frozen === false` 或 `prev === null`：`order = next`；`moved` = 在 `prev` 里存在、且相对位置变了的 id。
+ * - `frozen === false` 或 `prev === null`：`order = next`；`moved` = 共有 id 上 LIS 之外的那些（被挤着挪格的不算）。
  * - `frozen === true`：`order` = `prev` 的顺序过滤掉 `next` 里没有的 id，再把新 id 按它们在 `next` 里的
  *   位置插进去（插到 `next` 中它前一个「旧顺序里也有」的元素之后；没有前一个就插最前）；`moved` 为空。
  *
@@ -69,9 +69,16 @@ export function stableOrder<T extends { id: string }>(prev: readonly string[] | 
 }
 
 /**
- * 换了位的行：按 `next` 的顺序取 `prev` 中也存在的 id 序列，与 `prev` 过滤后的序列逐位比较，不同即算动过。
- * 只看**相对**位置，所以纯粹的增删（新行插进来、老行消失）不会把满屏行都点亮；过滤只删不换序，
- * 敲过滤框同样不点亮。
+ * 换了位的行：共有 id 上按 `prev` 下标求 `next` 顺序的最长上升子序列，留在 LIS 里的算没动，其余才算 moved。
+ *
+ * 逐位比较下标会把「被挤着挪格」的行也算进去——一行跳到最前，它后面每一行的下标都变了，整段一起闪
+ * （2026-09-10 代检：3 行的 alpha 从第 3 位跳到第 1 位，三行同时 `row-moved`；58 行的现场里一条
+ * WAITING 会让上半屏一起闪）。高亮的本意是「告诉我哪几行动了」。
+ *
+ * 纯粹的增删不会点亮任何行：共有序列本身就是一条 LIS。过滤只删不换序，敲过滤框同样不点亮。
+ *
+ * 并列 LIS 时延伸同等长度优先接 `prev` 里更靠前的前驱（被挤着往后挪的老行留在 LIS 里，真正往前跳的
+ * 才被点亮）；终点取最靠右的最长链。
  */
 function movedIds<T extends { id: string }>(prev: readonly string[] | null, next: readonly T[]): Set<string> {
   const moved = new Set<string>();
@@ -80,8 +87,35 @@ function movedIds<T extends { id: string }>(prev: readonly string[] | null, next
   const byNext = next.filter((r) => inPrev.has(r.id)).map((r) => r.id);
   const inNext = new Set(byNext);
   const byPrev = prev.filter((id) => inNext.has(id));
-  for (let i = 0; i < byNext.length; i += 1) {
-    if (byNext[i] !== byPrev[i]) moved.add(byNext[i]);
+  const rank = new Map(byPrev.map((id, i) => [id, i]));
+  const n = byNext.length;
+  if (n === 0) return moved;
+  const dp = new Array<number>(n).fill(1);
+  const pred = new Array<number>(n).fill(-1);
+  for (let i = 0; i < n; i += 1) {
+    const ri = rank.get(byNext[i])!;
+    for (let j = 0; j < i; j += 1) {
+      const rj = rank.get(byNext[j])!;
+      if (rj >= ri) continue;
+      const cand = dp[j] + 1;
+      if (cand < dp[i]) continue;
+      if (cand > dp[i] || pred[i] < 0 || rj < rank.get(byNext[pred[i]])!) {
+        dp[i] = cand;
+        pred[i] = j;
+      }
+    }
+  }
+  let end = 0;
+  for (let i = 1; i < n; i += 1) {
+    if (dp[i] >= dp[end]) end = i;
+  }
+  const kept = new Set<string>();
+  for (let i = end; i >= 0; i = pred[i]) {
+    kept.add(byNext[i]);
+    if (pred[i] < 0) break;
+  }
+  for (const id of byNext) {
+    if (!kept.has(id)) moved.add(id);
   }
   return moved;
 }

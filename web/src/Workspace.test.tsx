@@ -996,12 +996,11 @@ describe("Workspace · 重排稳定（A51，agora-4yr.4）", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(200);
     });
-    // 落位：b 到 NEEDS ATTENTION 顶部，a 跟着往下挪了一格——两行都变了位置，都点亮。
+    // 落位：b 到 NEEDS ATTENTION 顶部。a 只是被挤着挪了一格，LIS 留下 a、c，只点亮真正跳了的 b。
     expect(rowOrder()).toEqual(["n:b", "n:a", "n:c"]);
     expect(sectioned()).toEqual(["section-attention", "row-n:b", "section-running", "row-n:a", "row-n:c"]);
     expect(rowLi("n:b").classList.contains("moved")).toBe(true);
-    expect(rowLi("n:a").classList.contains("moved")).toBe(true);
-    // c 的相对位置没变（还是排在 a 之后），不点亮：动了才闪，不是整屏闪。
+    expect(rowLi("n:a").classList.contains("moved")).toBe(false);
     expect(rowLi("n:c").classList.contains("moved")).toBe(false);
     // 高亮只活一个落位周期：下一次列表更新（顺序没变）就清空，不会一直亮着。
     await act(async () => {
@@ -1098,7 +1097,7 @@ describe("Workspace · 重排稳定（A51，agora-4yr.4）", () => {
     });
     expect(rowOrder()).toEqual(["n:b", "n:a", "n:c"]);
     expect(rowLi("n:b").classList.contains("moved")).toBe(true);
-    expect(rowLi("n:a").classList.contains("moved")).toBe(true);
+    expect(rowLi("n:a").classList.contains("moved")).toBe(false);
   });
 });
 

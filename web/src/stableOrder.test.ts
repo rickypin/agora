@@ -17,9 +17,11 @@ describe("stableOrder（A51，agora-4yr.4）", () => {
     // 不冻结就是原样交出 next（连元素引用都不换）。
     expect(ids(r.order)).toEqual(["c", "a", "b"]);
     expect(r.order[0]).toBe(next[0]);
-    // c 从末尾跑到最前，a / b 跟着往后挪了一格：三行的下标都变了，三行都算动过（描述里的定义
-    // 就是「与 prev 过滤后的序列逐位比较，位置不同即 moved」，不做最长公共子序列那种最小集）。
-    expect([...r.moved].sort()).toEqual(["a", "b", "c"]);
+    // c 从末尾跳到最前：a、b 相对顺序没变，只点亮真正动了的 c。逐位比较下标会把 a、b 也算进去
+    // （一行跳顶，后面每一行的下标都变了，整段一起闪；agora-2ef，2026-09-10 代检 3 行三行同时 row-moved）。
+    expect([...r.moved].sort()).toEqual(["c"]);
+    // 中间一行跳到最前同理：并列 LIS 时留下被挤着挪格的 a、c，只点亮往前跳的 b。
+    expect([...stableOrder(["a", "b", "c"], rows("b", "a", "c"), false).moved].sort()).toEqual(["b"]);
     // 第一次渲染（prev === null）谁都不算动过——不然一进页面满屏高亮。
     expect(stableOrder(null, next, false).moved.size).toBe(0);
     // 纯粹的增删不算换位：只删（过滤）与只插（新会话）都不点亮任何一行。
