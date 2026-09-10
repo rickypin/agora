@@ -128,6 +128,47 @@ it("lets only .badge-label carry the ellipsis; glyph and state never give way (a
   expect(cssRule(".row .meta .state"), "state 永不让位").toMatch(/flex: none/);
 });
 
+it("splits the node chip into a whole @ and a truncatable name, full name in title (agora-yaf)", () => {
+  // 2026-09-10 agora-8lb 代检：220px 侧栏下 @ workstation 被硬裁 51px，屏幕上是「@ works」。
+  // 根因是 .node 是 inline-flex，text-overflow 在 flex 容器上不生效。jsdom 不做布局，像素由
+  // 代检用 agent-browser 量——这条钉的是让硬裁**不可能发生**的结构：两个独立元素，全名另有 title。
+  mount(row({ id: "workstation:1", node: "workstation" }), true, "n");
+  const chip = screen.getByTestId("row-node-workstation:1");
+  const at = chip.querySelector(".node-at") as HTMLElement | null;
+  const name = chip.querySelector(".node-label") as HTMLElement | null;
+  expect(at, "@ 必须是独立元素，不能和节点名共用一个 span").toBeTruthy();
+  expect(name).toBeTruthy();
+  expect(at).not.toBe(name);
+  expect(at!.textContent).toBe("@");
+  expect(name!.textContent).toBe("workstation");
+  expect(chip.title).toContain("workstation");
+  // 既有用例钉的是「@ zuan」整段文案，空白文本节点在 flex 里不占位、textContent 仍带空格。
+  expect(chip.textContent).toBe("@ workstation");
+});
+
+it("lets only .node-label carry the ellipsis; @ never gives way (agora-yaf)", () => {
+  // CSS 守卫。chip 自己一旦 overflow: hidden + min-width: 0，「@」会被自己削掉（agora-8lb 徽标
+  // 同构的坑）；名字必须 block 化，inline-flex 上 text-overflow 不生效正是本 bug 的根因。
+  expect(CSS, "节点 chip 不许再和 origin / stale 共用 overflow: hidden——那会把 @ 一起硬裁").not.toMatch(
+    /\.row \.meta > \.node, \.row \.meta > \.origin/,
+  );
+
+  const at = cssRule(".row .node-at");
+  expect(at).toMatch(/flex: none/);
+  expect(at, "@ 上不许有省略号——宁可丢节点名也不能丢这个字符").not.toMatch(/text-overflow/);
+
+  const name = cssRule(".row .node-label");
+  expect(name).toMatch(/text-overflow: ellipsis/);
+  expect(name).toMatch(/min-width: 0/);
+  expect(name, "inline-flex 上 text-overflow 不生效，名字 span 必须 block 化").toMatch(/display: block/);
+
+  const chip = cssRule(".row .meta > .node");
+  expect(chip, "节点 chip 要能让位，否则行尾 state 被裁").toMatch(/flex: 0 1 auto/);
+  expect(chip, "内容框下限护住 @").toMatch(/min-width: 1em/);
+  expect(chip).not.toMatch(/overflow: hidden/);
+  expect(chip).not.toMatch(/min-width: 0/);
+});
+
 const MAIN = { repo: "/Users/r/code/agora", name: "agora", worktree: "/Users/r/code/agora", branch: "main", main: true };
 const LINKED = { ...MAIN, worktree: "/Users/r/code/agora-wt/agora-03k", branch: "agora-03k", main: false };
 

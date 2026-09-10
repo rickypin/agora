@@ -25,6 +25,11 @@ function hueStyle(hue: number): CSSProperties {
  * label 一路吃到 glyph，2026-09-09 截图里 zuan 行成了「✧ Gro」、本机 external 行只剩半个 glyph。
  * 拆开之后 `.badge-glyph` 是 flex: none（永远整个可见，一眼分辨靠它），只有 `.badge-label` 收缩带
  * 省略号；全名放 badge 的 title，窄侧栏下 hover 仍读得到。别再合回一个 span。
+ *
+ * 节点 chip 同构（agora-yaf）：`.node` 是 `display: inline-flex`，`text-overflow` 在 flex 容器上
+ * 不生效，agora-8lb 让它 flex-shrink: 1 兜底让位之后，220px 侧栏下 `@ workstation` 被硬裁成
+ * 「@ works」，看不出后面还有字。拆成不可截的 `.node-at`（「@」）+ 可截的 `.node-label`（名字
+ * block 化走省略号），全名放 chip 的 title。别再合回一个 span。
  */
 
 /** stale 行 `.meta` 里那一段的文案与 title；非 stale 行返回 null（不占位）。 */
@@ -95,9 +100,11 @@ export function RowIdentity({
             className={local ? "node local" : "node peer"}
             data-testid={`row-node-${row.id}`}
             data-node={row.node}
+            title={row.node}
             style={local ? undefined : hueStyle(nodeHue(row.node))}
           >
-            @ {row.node}
+            <span className="node-at">@</span>{" "}
+            <span className="node-label">{row.node}</span>
           </span>
         )}
         {row.origin === "external" && <span className="origin">external</span>}

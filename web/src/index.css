@@ -50,9 +50,11 @@ select:disabled { opacity: 0.5; }
    .badge-glyph 是两个永不让位的锚点（这行要不要我管、是哪个 agent，正是侧栏存在的理由）。 */
 .row .meta { display: flex; gap: 6px; color: var(--muted); font-size: 12px; min-width: 0; overflow: hidden; white-space: nowrap; }
 .row .meta > span { flex: none; }
-/* 徽标让完还不够时兜底让位的三项：节点名有颜色与 data-node、origin / stale 短且行上有 title，
-   硬裁（inline-flex 上 text-overflow 不生效，只能硬裁）不致命；state 被裁才是致命的。 */
-.row .meta > .node, .row .meta > .origin, .row .meta > .stale-seen { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+/* 徽标让完还不够时兜底让位：origin / stale 短且行上有 title，硬裁不致命；节点 chip 的省略号走
+   内部 .node-label（agora-yaf），chip 自己不能 overflow: hidden，否则「@」会被自己削掉（同
+   agora-8lb 徽标）。state 被裁才是致命的。 */
+.row .meta > .origin, .row .meta > .stale-seen { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+.row .meta > .node { flex: 0 1 auto; min-width: 1em; }
 .row .origin { border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
 .unknown .dot { color: var(--muted); }
 .adopt { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px 8px 28px; font-size: 12px; }
@@ -283,7 +285,7 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
      自动最小尺寸就变 0，徽标被压得比 glyph 还窄、再由它自己的 overflow 把 glyph 削掉（同日实测：
      260px 侧栏 external 行 badge 只剩 10px = 光剩内边距，「✦」整个没了）。这一种裁剪量 .meta 是
      量不出来的——得量 .badge 自己，本 issue 的守卫因此两头都量。
-   - flex-shrink 给 100，让徽标在 meta 里第一个让位：全名被省略号吃掉还有 title 兜底，比节点名硬裁
+   - flex-shrink 给 100，让徽标在 meta 里第一个让位：全名被省略号吃掉还有 title 兜底，比再截节点名
      体面；跟上面兜底那三项 1:100 的悬殊比例保证「先吃完全名，再动别人」。
    - 选择器必须写满 `.row .meta > .badge`：上面 `.row .meta > span { flex: none }` 特异性 (0,2,1)，
      光写 `.row .badge` 是 (0,2,0) 会输，徽标一格都不收缩（实测过，state 反而比修之前裁得更多）。 */
@@ -291,8 +293,13 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .row .meta > .badge { flex: 0 100 auto; min-width: 1em; }
 .row .badge-glyph { flex: none; width: 1em; text-align: center; }
 .row .badge-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.row .node.peer { display: inline-flex; align-items: center; border-radius: 3px; border: 1px solid var(--border); font-size: 11px; padding: 0 4px; color: hsl(var(--hue) 60% 70%); }
-.row .node.local { display: inline-flex; align-items: center; border-radius: 3px; border: 1px solid var(--muted); font-size: 11px; padding: 0 4px; color: var(--fg); }
+/* 节点 chip = 永不截断的「@」+ 可截断的名字（agora-yaf）。inline-flex 上 text-overflow 不生效，
+   名字必须是独立的 block 化 span；chip 的 min-width: 1em 护住「@」，overflow: hidden 只能写在
+   .node-label 上——写在 chip 上会把「@」一起削掉（同日徽标踩过，见上面 .badge）。 */
+.row .node.peer { display: inline-flex; align-items: center; gap: 4px; border-radius: 3px; border: 1px solid var(--border); font-size: 11px; padding: 0 4px; color: hsl(var(--hue) 60% 70%); }
+.row .node.local { display: inline-flex; align-items: center; gap: 4px; border-radius: 3px; border: 1px solid var(--muted); font-size: 11px; padding: 0 4px; color: var(--fg); }
+.row .node-at { flex: none; }
+.row .node-label { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* 行上的「仓库 ⎇ 分支」一行（A49，agora-uvd.8）：meta 之下、预览之上，只有名字与分支，路径在 title。
    树视图不画（组头已说明）。 */
