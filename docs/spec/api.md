@@ -240,4 +240,4 @@ New Agent 的 Node 下拉选了 peer 之后，对话框的四个下拉与两个�
 - 会话没有工作目录 → 升级前 409 `no_directory`（见「错误应答统一为」）；会话不存在 404 `not_found`；跨站 403 `cross_origin`。
 - 守卫 `tests/changes.rs::diff_terminal_is_read_only_and_ephemeral`（真 WS：首帧 read_only、输出含 diff、发 input 不出错也不回显、收到 exit、行数不变、仓库 `git status --porcelain` 与 `git reflog` 前后一字不差）。
 
-前端（`web/src/Changes.tsx`、`docs/spec/ux.md`「主区面板从上到下」）：行被选中且 status ∈ {TURN_DONE, FINISHED, FAILED, RUNNING} 时拉一次 `/changes`（status 变了再拉，不轮询），列表 `<单字母> <path>`、空列表「无改动」、`reason` 按类型给一行灰字；「看 diff」开一个 `diff:<会话 id>` 标签页，以 `WS /diff` 挂只读终端（`web/src/terminal.ts` 的 `defaultDiffSocket`），关标签即关 WS。`api_version`：两个新端点与 `read_only` 状态帧随 1.3 已 bump（「api_version 兼容规则」）。
+前端（`web/src/Changes.tsx`、`docs/spec/ux.md`「主区面板从上到下」）：行被选中且 status ∈ {TURN_DONE, FINISHED, FAILED, RUNNING} 时拉一次 `/changes`（status 变了再拉，不轮询），列表 `<单字母> <path>`、空列表「无改动」、`reason` 按类型给一行灰字；「看 diff」把主区切成该会话的 diff 视图，以 `WS /diff` 挂只读终端；切走 / 关闭 diff 即关 WS。`api_version`：两个新端点与 `read_only` 状态帧随 1.3 已 bump（「api_version 兼容规则」）。
