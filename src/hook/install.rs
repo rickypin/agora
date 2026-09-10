@@ -343,6 +343,51 @@ fn hooks_table(root: &mut Value) -> &mut Map<String, Value> {
 
 /// 删自己的条目：组里只剩别人的留下，组空了删组，事件空了删键；`hooks` 空了也留着——
 /// 那是用户文件里的键，不是我们的。
+/// 这台机器上装没装某个 agent 的 agora hooks。`hooks_unheard` 的提示按它分档（agora-rip）：
+/// 条目根本不在的时候，教人"进 TUI 信任 agora 的条目"是让人做一件做不到的事——条目不存在，
+/// 按提示做没有任何效果（2026-09-08 现场见 agora-rip：某台节点从没跑过 `agora hooks install`，
+/// 配置文件不存在，三个会话钉在 working，提示却在教人怎么信任一个不存在的条目）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HooksInstalled {
+    /// 配置文件不存在：这台节点没跑过 `agora hooks install <agent>`。
+    NoFile,
+    /// 文件在，但没有指向本 `AGORA_HOME` 的条目——装过又卸了，或那是别的 agora 装的。
+    NoEntries,
+    /// 条目在。事件仍然没来是另一回事（没信任、被关掉、二进制不可执行），交给 `install_hint`。
+    Yes,
+}
+
+/// 只读地看一眼配置文件，判定口径与 `plan_uninstall` 同源（都靠 [`remove_ours`] 认自己的条目）。
+/// 读不动或不是合法 JSON 都算 `NoEntries`：那种文件里的条目就算写着我们的命令也未必生效。
+pub fn installed_state(
+    agora_home: &Path,
+    user_home: &Path,
+    hooks: &dyn AgentHooks,
+) -> HooksInstalled {
+    let spec = hooks.install_spec();
+    let Some(first) = spec.first() else {
+        return HooksInstalled::NoFile;
+    };
+    let file = user_home.join(&first.file);
+    if !file.exists() {
+        return HooksInstalled::NoFile;
+    }
+    let installer = Installer {
+        agora_home: agora_home.to_owned(),
+        user_home: user_home.to_owned(),
+    };
+    let Ok(before) = installer.read(&file) else {
+        return HooksInstalled::NoEntries;
+    };
+    let mut after = before.clone();
+    remove_ours(&mut after, agora_home);
+    if after == before {
+        HooksInstalled::NoEntries
+    } else {
+        HooksInstalled::Yes
+    }
+}
+
 fn remove_ours(root: &mut Value, agora_home: &Path) {
     let Some(table) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
         return;

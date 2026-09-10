@@ -200,6 +200,10 @@ pub struct ReconcileReport {
 
 /// 没有任何内存状态：会话 = metadata 行 ⨝ 运行时会话，daemon 重启后视图与重启前一致。
 /// "用户 Kill 过"曾是内存集合，重启后被 Kill 的会话变 FAILED（agora-xqa.16），现落 `killed_at`。
+/// 「装没装 hooks」的判定缓存多久（agora-rip）：unheard 是罕见状态，但它一挂就是持续的，
+/// 不缓存就会每 tick 每会话 stat + 解析一次 JSON。装 / 卸载之后最多晚 30 s 反映到文案上。
+const HOOKS_INSTALLED_TTL_SECS: i64 = 30;
+
 pub struct SessionManager {
     db: Arc<Db>,
     runtime: Arc<dyn Runtime>,
@@ -209,6 +213,10 @@ pub struct SessionManager {
     /// 每个会话一台状态机（ADR-002 D1）；内存态，不落库（不变量 7）。
     machines: Mutex<HashMap<String, Machine>>,
     hook_state_dir: Mutex<Option<PathBuf>>,
+    /// 「hook 没接上」的提示要分档，得知道去哪儿看 agent 的配置文件：(AGORA_HOME, 用户 HOME)。
+    /// 带 30 s 缓存，免得每 tick 每个 unheard 会话都去 stat + 解析一遍 JSON（agora-rip）。
+    hook_install_homes: Mutex<Option<(PathBuf, PathBuf)>>,
+    hook_installed_cache: Mutex<HashMap<String, (i64, crate::hook::install::HooksInstalled)>>,
     decisions: Mutex<HashMap<String, Vec<PendingDecision>>>,
     status_cfg: MachineConfig,
     /// external 会话最近一次 hook 报来的 agent 进程：`kill(pid, 0)` 判存活（ADR-002 D4）。
@@ -239,6 +247,8 @@ impl SessionManager {
             runtime_status: Arc::new(RuntimeStatus::default()),
             machines: Mutex::new(HashMap::new()),
             hook_state_dir: Mutex::new(None),
+            hook_install_homes: Mutex::new(None),
+            hook_installed_cache: Mutex::new(HashMap::new()),
             decisions: Mutex::new(HashMap::new()),
             status_cfg: MachineConfig::default(),
             external_pids: Mutex::new(HashMap::new()),
@@ -408,6 +418,65 @@ impl SessionManager {
 
     pub fn enable_hook_checkpoints(&self, home: &std::path::Path) {
         *lock(&self.hook_state_dir) = Some(home.join("hooks/state"));
+        if let Some(user_home) = std::env::var_os("HOME") {
+            *lock(&self.hook_install_homes) = Some((home.to_owned(), PathBuf::from(user_home)));
+        }
+    }
+
+    /// 测试用：直接指定"去哪儿找 agent 的 hooks 配置"，不依赖进程的 `HOME`。
+    pub fn set_hook_install_homes(
+        &self,
+        agora_home: &std::path::Path,
+        user_home: &std::path::Path,
+    ) {
+        *lock(&self.hook_install_homes) = Some((agora_home.to_owned(), user_home.to_owned()));
+        lock(&self.hook_installed_cache).clear();
+    }
+
+    /// 这台节点装没装该 agent 的 hooks（30 s 缓存）。没告诉过我们 home（单测里的裸 manager）时
+    /// 返回 `None`：判不了就别乱说，退回原来的 install_hint 文案。
+    fn hooks_installed(
+        &self,
+        agent_type: &str,
+        now: i64,
+    ) -> Option<crate::hook::install::HooksInstalled> {
+        let hooks = crate::adapter::find(agent_type)?.hooks()?;
+        let (agora_home, user_home) = lock(&self.hook_install_homes).clone()?;
+        if let Some((at, state)) = lock(&self.hook_installed_cache).get(agent_type) {
+            if now - at < HOOKS_INSTALLED_TTL_SECS {
+                return Some(*state);
+            }
+        }
+        let state = crate::hook::install::installed_state(&agora_home, &user_home, hooks);
+        lock(&self.hook_installed_cache).insert(agent_type.to_owned(), (now, state));
+        Some(state)
+    }
+
+    /// 「hook 没接上」对人说的那句话，按事实分两档（agora-rip）。
+    ///
+    /// 条目根本不在的时候，教人"进 TUI 信任 agora 的条目"是让人做一件做不到的事——2026-09-08
+    /// 现场（agora-rip）：某台节点从没跑过 `agora hooks install`，配置文件不存在，三个会话钉在
+    /// working，提示却在教人怎么信任一个不存在的条目。装了却没声音（没信任、被关掉、二进制
+    /// 不可执行）才轮得到宿主自己的 `install_hint`。
+    pub fn unheard_hint(&self, agent_type: &str, now: i64) -> String {
+        use crate::hook::install::HooksInstalled;
+        if matches!(
+            self.hooks_installed(agent_type, now),
+            Some(HooksInstalled::NoFile | HooksInstalled::NoEntries)
+        ) {
+            return format!(
+                "终端活动了一阵仍没收到任何 hook 事件。这台节点没装 {agent_type} 的 hooks：先在这台机器上跑 `agora hooks install {agent_type}`。"
+            );
+        }
+        let hint = adapter::find(agent_type)
+            .and_then(|a| a.hooks())
+            .and_then(|h| h.install_hint())
+            .unwrap_or_else(|| {
+                format!(
+                    "检查 `agora hooks install {agent_type}` 装到的配置是不是这个 agent 读的那份，以及 hook 有没有被关掉。"
+                )
+            });
+        format!("终端活动了一阵仍没收到任何 hook 事件。{hint}")
     }
 
     pub fn restore_hook_checkpoints(&self) -> Result<(), SessionError> {
@@ -998,18 +1067,7 @@ impl SessionManager {
         };
         // 句子里不写沉默了多少秒（agora-385，2026-09-06）：hooks_unheard 在求差器的 Seen 里，嵌了秒数
         // 每 tick 都变、每 tick 一条 status_changed；已经沉默了多久对"去修 hook"这个动作也没有帮助。
-        let hooks_unheard = unheard.map(|_| {
-            let hint = adapter::find(&rec.agent_type)
-                .and_then(|a| a.hooks())
-                .and_then(|h| h.install_hint())
-                .unwrap_or_else(|| {
-                    format!(
-                        "检查 `agora hooks install {}` 装到的配置是不是这个 agent 读的那份，以及 hook 有没有被关掉。",
-                        rec.agent_type
-                    )
-                });
-            format!("终端活动了一阵仍没收到任何 hook 事件。{hint}")
-        });
+        let hooks_unheard = unheard.map(|_| self.unheard_hint(&rec.agent_type, now));
         let preview = screen
             .as_deref()
             .filter(|_| !hooked)
