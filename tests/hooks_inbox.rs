@@ -60,7 +60,13 @@ async fn events_survive_daemon_restart() {
             worktree: None,
             task_ref: None,
             command: format!("{AGORA_BIN} fake-agent {}", script.display()),
-            env: vec![("AGORA_HOME".into(), node.home.display().to_string())],
+            env: vec![
+                ("AGORA_HOME".into(), node.home.display().to_string()),
+                // 守卫（agora-7ad）：pane 环境里带上 grok CLI 会 export 的那个变量，把"执行者是
+                // grok"的现场固定下来。fake-agent 不按宿主摆正环境的话，下面这两条 `hook claude`
+                // 会被 hook 进程当成"不是我的事"静默丢掉，这个循环等满 PROC 才红。
+                ("GROK_SESSION_ID".into(), "grok-in-pane".into()),
+            ],
             size: Size::default(),
         })
         .unwrap();

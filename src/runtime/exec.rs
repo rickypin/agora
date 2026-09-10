@@ -27,6 +27,8 @@ pub struct ExecOptions {
     pub env: Vec<(String, String)>,
     /// 清空继承的环境后只用 `env`（PATH 探测用）。
     pub env_clear: bool,
+    /// 从继承来的环境里删掉这些键。在 `env` 之前应用，所以显式 `env` 的同名键仍然赢。
+    pub env_remove: Vec<String>,
     /// 喂给子进程 stdin 的字节；`None` 是 `/dev/null`（fake-agent 走真实 `agora hook` 路径要它）。
     pub stdin: Option<Vec<u8>>,
 }
@@ -98,6 +100,9 @@ pub fn exec<S: AsRef<OsStr>>(argv: &[S], opts: &ExecOptions) -> Result<Output, E
     }
     if opts.env_clear {
         cmd.env_clear();
+    }
+    for k in &opts.env_remove {
+        cmd.env_remove(k);
     }
     cmd.envs(opts.env.iter().map(|(k, v)| (k, v)));
 

@@ -45,6 +45,35 @@ fn argv_is_never_shell_interpolated() {
 }
 
 #[test]
+fn env_remove_drops_inherited_var() {
+    // fake-agent 靠它让 hook 子进程只带被扮演宿主的环境（agora-7ad）。HOME 是测试环境里必然
+    // 继承到的键，拿它证明删的是"继承来的"那一份而不只是 `env` 里没写。
+    let gone = exec(
+        &["sh", "-c", "echo ${HOME:-<none>}"],
+        &ExecOptions {
+            env_remove: vec!["HOME".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(String::from_utf8_lossy(&gone.stdout).trim(), "<none>");
+    // 显式 env 赢过 env_remove：两者同名时以写进去的为准。
+    let explicit = exec(
+        &["sh", "-c", "echo ${HOME:-<none>}"],
+        &ExecOptions {
+            env_remove: vec!["HOME".into()],
+            env: vec![("HOME".into(), "/tmp/explicit-home".into())],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&explicit.stdout).trim(),
+        "/tmp/explicit-home"
+    );
+}
+
+#[test]
 fn spawn_failure_is_classified_not_found() {
     let err = exec(&["/nonexistent/agora-bin"], &ExecOptions::default()).unwrap_err();
     assert!(err.is_not_found(), "{err}");

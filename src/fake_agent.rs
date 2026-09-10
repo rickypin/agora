@@ -91,11 +91,17 @@ pub fn run(args: &[&str]) -> i32 {
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| "agora".into());
                 let home = crate::local::resolve_home().display().to_string();
-                let opts = ExecOptions {
+                let mut opts = ExecOptions {
                     stdin: Some(json.as_bytes().to_vec()),
                     timeout: Some(std::time::Duration::from_secs(3600)),
                     ..ExecOptions::default()
                 };
+                // 扮演谁就只带谁的环境：hook 进程自认宿主看的是继承来的环境，认错人就静默
+                // 丢事件（细节与实测反例见 `adapter::impersonation_env`，agora-7ad）。这里不许
+                // 认识任何具体宿主，判断留在 adapter（ADR-002 D2，tests/arch_boundary.rs 守着）。
+                let (set, unset) = crate::adapter::impersonation_env(host);
+                opts.env.extend(set);
+                opts.env_remove.extend(unset);
                 let mut out = stdout.lock();
                 match exec(
                     &[me.as_str(), "hook", "--host", host, "--home", &home],

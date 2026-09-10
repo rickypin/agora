@@ -75,7 +75,7 @@ pub async fn run(argv: &[&str]) -> i32 {
     let Some(hooks) = adapter::for_host(&args.host) else {
         return 2;
     };
-    if !hooks.host_matches_env(std::env::var_os("GROK_SESSION_ID").is_some()) {
+    if !hooks.host_matches_env(std::env::var_os(adapter::GROK_SESSION_ENV).is_some()) {
         return 0;
     }
     let mut raw = Vec::new();

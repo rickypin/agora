@@ -251,6 +251,31 @@ pub fn for_host(host: &str) -> Option<&'static dyn AgentHooks> {
         .find(|h| h.host() == host)
 }
 
+/// hook 进程自认宿主时看的那个环境变量（D4，见 [`AgentHooks::host_matches_env`]）。
+pub const GROK_SESSION_ENV: &str = "GROK_SESSION_ID";
+
+/// 扮演 `host` 起 hook 子进程时，环境该怎么摆：`(要设的键值, 要从继承环境里删的键)`。
+///
+/// `hook::cmd` 开工前先用 [`AgentHooks::host_matches_env`] 自认宿主，认错人就静默 exit 0
+/// 不落盘（fail-open），调用方什么都看不出来——而这个判断看的是**继承来的**环境。所以
+/// 扮演谁，就得让环境满足谁的自认条件，两个方向都要摆：该有的补上，不该有的删掉。
+///
+/// 2026-09-10 实测（agora-7ad）：外部工具自己 export 的 [`GROK_SESSION_ENV`] 会沿
+/// 进程树一路继承进来，让 fake-agent 发出的事件被 hook 当成"不是我的"全部丢掉，
+/// 集成测试于是等满超时红在"文件没落下"，同一份代码换个终端跑却是绿的。
+///
+/// 不硬编码宿主名是有意的：直接问 adapter"环境里有它的时候你认不认自己"，新宿主接进来
+/// 自动是对的。
+pub fn impersonation_env(host: &str) -> (Vec<(String, String)>, Vec<String>) {
+    match for_host(host) {
+        Some(h) if h.host_matches_env(true) => (
+            vec![(GROK_SESSION_ENV.to_string(), "fake-session".to_string())],
+            Vec::new(),
+        ),
+        _ => (Vec::new(), vec![GROK_SESSION_ENV.to_string()]),
+    }
+}
+
 /// 探测可用性：跑 `<command> --version`（唯一允许解析的输出，规则 10）。调用方在 blocking 线程。
 pub fn probe(adapter: &dyn Adapter, command: &str, timeout: Duration) -> VersionProbe {
     let opts = ExecOptions {
