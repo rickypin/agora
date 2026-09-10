@@ -389,7 +389,11 @@ fn frontend_never_uses_innerhtml() {
     //
     // 扫的是文件全文、注释也算（本文件开头那条规矩）：web/src 里连这两个词本身都不许出现，
     // MarkdownView.tsx 与 markdown.ts 的注释因此只提本测试的名字。
-    assert_absent("web/src", "dangerouslySetInnerHTML", "agora-4yr.2 回复是不可信文本");
+    assert_absent(
+        "web/src",
+        "dangerouslySetInnerHTML",
+        "agora-4yr.2 回复是不可信文本",
+    );
     // 大小写敏感的 contains：`dangerouslySetInnerHTML` 里是 `InnerHTML`，与裸 `innerHTML`
     // 不重叠，两条都要扫，删掉任何一条都会漏掉一整类写法。
     assert_absent("web/src", "innerHTML", "agora-4yr.2 回复是不可信文本");
