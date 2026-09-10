@@ -63,8 +63,11 @@ export function TerminalView({ sessionId, connect, focusRef, readOnly = false }:
         if (s === "attached" || s === "read_only") {
           setLink(s === "read_only" ? "read_only" : "attached");
           // 挂载时那一次 focus 在新开的浏览器标签页里偶尔不生效（agora-p29，2026-09-03 目检：
-          // attach 成功但键入不进 pane，点一下终端才好）；attached 到达时再交一次焦点。
-          // 用户这会儿已经在别的输入框里打字的话不抢。
+          // attach 成功但键入不进 pane，点一下终端才好）；attached 到达时再交一次焦点。这次
+          // 补交必须留着——新标签页里 activeElement 还是 body，靠它把键盘交回 pane。
+          // 用户这会儿已经在别处操作可交互控件的话不抢（agora-y3h，2026-09-10：WAITING
+          // 面板的 Allow 是 <button>，旧实现只认 input/textarea/select/contentEditable，
+          // 点通知落到未打开的 WAITING 行时 attached 把焦点抢回 xterm helper textarea）。
           if (!typingElsewhere(el)) term.focus();
         }
       },
@@ -154,11 +157,23 @@ function isMacLike(): boolean {
   return /^(Mac|iPhone|iPad)/.test(navigator.platform ?? "");
 }
 
-/** 焦点在终端之外的某个文本输入上（侧栏过滤、Rename、New Agent 表单…）。 */
+/** 焦点在终端之外的某个可交互控件上（侧栏过滤、Rename、New Agent 表单、回答面板的 Allow…）。 */
 function typingElsewhere(host: HTMLElement): boolean {
   const a = document.activeElement;
   if (!a || a === document.body || host.contains(a)) return false;
-  return a instanceof HTMLInputElement || a instanceof HTMLTextAreaElement || a instanceof HTMLSelectElement || (a as HTMLElement).isContentEditable === true;
+  return isInteractiveControl(a);
+}
+
+/** 人正在操作的控件：attached 补交焦点时不要从这些上面抢走键盘。 */
+function isInteractiveControl(el: Element): boolean {
+  if ((el as HTMLElement).isContentEditable === true) return true;
+  return (
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLTextAreaElement ||
+    el instanceof HTMLSelectElement ||
+    el instanceof HTMLButtonElement ||
+    el instanceof HTMLAnchorElement
+  );
 }
 
 function linkLabel(link: Link, exit: ExitInfo | null): string {

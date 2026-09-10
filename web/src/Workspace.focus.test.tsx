@@ -66,7 +66,10 @@ class FakeEventsSocket implements SocketLike {
   }
 }
 
-/** 永远连不上的终端 WS：这里只关心焦点，不关心协议。 */
+/**
+ * 终端 WS 替身：默认不连；agora-y3h 那条要模拟 attached 到达后再 focus 一次，
+ * 所以暴露 frame / onopen，由测试在面板聚焦之后自己推一帧。
+ */
 class FakeTermSocket implements TerminalSocketLike {
   onopen: ((ev: unknown) => void) | null = null;
   onmessage: ((ev: { data: string }) => void) | null = null;
@@ -74,6 +77,9 @@ class FakeTermSocket implements TerminalSocketLike {
   onerror: ((ev: unknown) => void) | null = null;
   send(): void {}
   close(): void {}
+  frame(f: unknown): void {
+    this.onmessage?.({ data: JSON.stringify(f) });
+  }
 }
 
 function row(id: string): SessionRow {
@@ -89,6 +95,7 @@ const notify: NotifierDeps = {
 
 function setup(rows: SessionRow[], notifyDeps: NotifierDeps = notify) {
   const sock = new FakeEventsSocket();
+  const termSocks: FakeTermSocket[] = [];
   const store = new SessionStore({ connect: () => sock, fetchSnapshot: async () => ({ sessions: rows, unregistered: [] }), coalesceMs: 0 });
   const f: FetchLike = async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
   render(
@@ -98,10 +105,22 @@ function setup(rows: SessionRow[], notifyDeps: NotifierDeps = notify) {
       catalog={catalogApi(f)}
       notifyDeps={notifyDeps}
       health={new HealthWatcher({ fetchHealth: async () => ({ status: "ok", runtime: { status: "ok", reason: null } }) })}
-      terminalConnect={() => new FakeTermSocket()}
+      terminalConnect={() => {
+        const s = new FakeTermSocket();
+        termSocks.push(s);
+        return s;
+      }}
     />,
   );
-  return { sock };
+  return { sock, termSocks };
+}
+
+/** WS 报告 attached：TerminalView 会再 focus 一次（agora-p29 的补交）。 */
+async function fireAttached(sock: FakeTermSocket) {
+  await act(async () => {
+    sock.onopen?.({});
+    sock.frame({ type: "status", status: "attached" });
+  });
 }
 
 async function flush() {
@@ -165,6 +184,62 @@ it("点通知落到另一行：焦点进回答面板的输入框，不被新终�
   await flush();
   expect(screen.getByTestId("crumb").textContent).toContain("b /");
   expect(document.activeElement).toBe(screen.getByTestId("next-input"));
+  expect(focusInTerminal()).toBe(false);
+});
+
+it("点通知落到尚未打开的 WAITING 行：焦点进 Allow 按钮，不被 attached 之后那次 focus 盖掉（agora-y3h）", async () => {
+  // TURN_DONE 那条只赢挂载时的 term.focus()——它落在 <input>，旧 typingElsewhere 护得住。
+  // WAITING 落在 Allow <button>，必须让替身在面板聚焦之后再走一次 attached 补交，才断得出
+  // 「button 也算人正在别处操作」。顺序不能反：先 attached 再 flush，面板的 setTimeout(0)
+  // 会把 Allow 盖回去，这条就会在没修 typingElsewhere 时也绿。
+  const created: NotificationLike[] = [];
+  const granted: NotifierDeps = {
+    permission: () => "granted",
+    request: async () => "granted",
+    create: () => {
+      const n: NotificationLike = { onclick: null, close() {} };
+      created.push(n);
+      return n;
+    },
+    focus: () => {},
+  };
+  const t = setup([row("n:a"), row("n:b")], granted);
+  await act(async () => {
+    t.sock.onopen?.({});
+  });
+  await flush();
+  fireEvent.click(screen.getByTestId("row-n:a"));
+  await flush();
+  expect(focusInTerminal()).toBe(true);
+  await act(async () => {
+    t.sock.send([
+      {
+        type: "session_updated",
+        id: "n:b",
+        session: {
+          ...row("n:b"),
+          status: "waiting",
+          source: "hook",
+          reason: "permission",
+          detail: "Bash: echo hi",
+          pending_decision: { request_id: "req-b", summary: "Bash: echo hi", epoch: 1 },
+        },
+      },
+      { type: "notification", id: "n:b", title: "Claude / b @ n needs you", body: "Bash: echo hi", status: "waiting" },
+    ]);
+  });
+  await flush();
+  expect(created.length).toBe(1);
+  await act(async () => {
+    created[0]!.onclick?.({});
+  });
+  await flush();
+  expect(screen.getByTestId("crumb").textContent).toContain("b /");
+  expect(document.activeElement).toBe(screen.getByTestId("allow"));
+  const term = t.termSocks[t.termSocks.length - 1];
+  expect(term).toBeTruthy();
+  await fireAttached(term!);
+  expect(document.activeElement).toBe(screen.getByTestId("allow"));
   expect(focusInTerminal()).toBe(false);
 });
 

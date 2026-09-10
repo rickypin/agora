@@ -82,7 +82,8 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
     // 面板也画出来了，document.activeElement 仍是 xterm 的 helper TEXTAREA。jsdom 里 TerminalView
     // 是个不会 focus 的替身，这条测不出来，别因为单测绿就把 setTimeout 拿掉。
     // 之后 WS「attached」到达时那一次 focus 有 TerminalView 自己的 typingElsewhere 挡着（活动元素
-    // 是别处的 input 就不抢），所以只需要赢下挂载这一次。
+    // 是别处的可交互控件就不抢——TURN_DONE 的 input 与 WAITING 的 Allow 按钮都算，agora-y3h），
+    // 所以只需要赢下挂载这一次。
     const t = setTimeout(() => {
       // TURN_DONE 落在输入框，WAITING 落在第一个按钮（Allow，或只有"打开终端"时就是它）。
       (inputRef.current ?? rootRef.current?.querySelector("button"))?.focus();

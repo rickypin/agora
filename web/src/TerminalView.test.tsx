@@ -2,7 +2,7 @@
 /**
  * TerminalView 的焦点纪律（agora-p29）：新开的浏览器标签页里点侧栏打开会话，挂载时那一次
  * term.focus() 偶尔不生效，键入不进 pane。守卫三条：① WS 收到 status:attached 之后再 focus 一次，
- * 不是只在挂载时；② 用户已经在别的输入框里打字时 attached 不抢焦点；③ term-host 上的 pointerdown
+ * 不是只在挂载时；② 用户已经在别处操作可交互控件时 attached 不抢焦点（input 与 button 都算，agora-y3h）；③ term-host 上的 pointerdown
  * 把焦点交回 xterm 的 helper textarea。
  *
  * xterm 本体在 jsdom 里开不了（canvas）：这里换成一个只会造 helper textarea、数 focus 次数的替身；
@@ -141,6 +141,21 @@ describe("TerminalView focus (agora-p29)", () => {
     expect(document.activeElement).toBe(filter);
     expect(xterm.focusCalls).toBe(1); // 只有挂载那一次
     filter.remove();
+  });
+
+  it("does not steal focus from a button the user is already interacting with (agora-y3h)", async () => {
+    // WAITING 面板聚焦的是 Allow <button>。旧 typingElsewhere 只认文本输入，attached 会把
+    // 焦点抢回 helper textarea——点通知落到未打开的 WAITING 行就是这条路径。
+    setup();
+    const allow = document.createElement("button");
+    allow.textContent = "Allow";
+    document.body.appendChild(allow);
+    allow.focus();
+    expect(document.activeElement).toBe(allow);
+    await attached();
+    expect(document.activeElement).toBe(allow);
+    expect(xterm.focusCalls).toBe(1); // 只有挂载那一次；补交被挡住，agora-p29 那次仍在
+    allow.remove();
   });
 
   it("pointerdown anywhere on the term-host hands focus back to xterm's helper textarea", () => {
