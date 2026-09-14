@@ -10,7 +10,8 @@
 //! 隔离：agent 的 HOME 是临时目录，用户自己的配置一个字节不动，hook 装进临时 HOME，事件投到
 //! 临时 AGORA_HOME。只借用登录凭据（不借就是 "Not logged in"）：Claude 复制 `~/.claude.json`，
 //! macOS 上再把 `~/Library` 软链进临时 HOME——keychain 是按 HOME 找的，2026-09-05 实测不链就
-//! 找不到凭据；Linux 上复制 `~/.claude/.credentials.json`。Grok / Codex 各复制自己的 auth.json。
+//! 找不到凭据；Linux 上复制 `~/.claude/.credentials.json`，登录态不在那里时再拿
+//! `~/.claude/settings.json`（去掉 `hooks` 那一份，见 `copy_settings_without_hooks`）。Grok / Codex 各复制自己的 auth.json。
 //!
 //! 录新 fixture：`AGORA_SMOKE_RECORD=1 cargo test --test hook_smoke <host> -- --ignored --nocapture`
 //! ——fixture 不存在就写到位，存在就写到旁边的 `.new`，人核对后替换并补 `expect` 行
@@ -94,6 +95,35 @@ fn copy_if_exists(from: &Path, to: &Path) {
     }
 }
 
+/// 把用户 `~/.claude/settings.json` 里**除 `hooks` 以外**的部分摄到临时 HOME。
+///
+/// 为什么需要：凭据可以在那里。实测 2026-09-14（Ubuntu 24.04）本机 `~/.claude.json` 存在、
+/// `~/.claude/.credentials.json` 不存在，登录态靠 `settings.json` 的
+/// `env.CLAUDE_CODE_OAUTH_TOKEN`；seed_credentials 只复制那两个文件就跑不出东西，报
+/// `Not logged in · Please run /login`，拿到的 hook 只有 SessionStart +
+/// UserPromptSubmit + StopFailure + SessionEnd（缺 Stop）。
+///
+/// 为什么不能整份复制（先踩过再说）：那份文件里的 `hooks` 块写的是
+/// `exec /home/ricky/.agora/bin/agora hook --host claude --home /home/ricky/.agora`，跟进临时 HOME 后
+/// 会被 agent 真的执行——开发机上真 daemon 的库里就会多出一个假会话，观者从 Dashboard 一眼看到。
+/// 抽成只删 `hooks` 一个键的写法：凭据借到，路由权留在测试手里（Installer 自往临时文件里加自己的 hooks）。
+fn copy_settings_without_hooks(real: &Path, user: &Path) {
+    let src = real.join(".claude/settings.json");
+    if !src.exists() {
+        return;
+    }
+    let text =
+        fs::read_to_string(&src).unwrap_or_else(|e| panic!("读 {} 失败: {e}", src.display()));
+    let mut value: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("{} 不是合法 JSON: {e}", src.display()));
+    if let Some(map) = value.as_object_mut() {
+        map.remove("hooks");
+    }
+    let dst = user.join(".claude/settings.json");
+    fs::create_dir_all(dst.parent().unwrap()).unwrap();
+    fs::write(&dst, value.to_string()).unwrap_or_else(|e| panic!("写 {} 失败: {e}", dst.display()));
+}
+
 /// 只借凭据，不借配置。
 fn seed_credentials(host: &str, real: &Path, user: &Path) {
     match host {
@@ -103,6 +133,7 @@ fn seed_credentials(host: &str, real: &Path, user: &Path) {
                 &real.join(".claude/.credentials.json"),
                 &user.join(".claude/.credentials.json"),
             );
+            copy_settings_without_hooks(real, user);
             if cfg!(target_os = "macos") {
                 let lib = real.join("Library");
                 if lib.exists() {

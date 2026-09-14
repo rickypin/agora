@@ -13,6 +13,13 @@ fixture 驱动测试的数据（ADR-002 D10）。
 - `<agent>/<version>/hooks/headless.jsonl`（agora-3la.2）由冒烟测试录：`AGORA_SMOKE_RECORD=1 cargo test --test hook_smoke -- --ignored`，
   文件不存在写到位，已存在写成 `.jsonl.new` 供人工比对。正常模式的冒烟只比对 SessionStart 与 Stop 的顶层键集合，
   agent 版本不在表里、目录里没 fixture、键集合漂移都红并提示录新 fixture；没装的 agent 跳过。
+- **版本目录只长两种样子**（规则与兜底在 `tests/fixtures_replay.rs`）：**实测目录**七个场景一个不缺（下面的
+  claude/2.1.260、claude/2.1.261、codex/0.152.1、grok/1.0.13）；或**冒烟-only 目录**——除 `headless.jsonl`
+  外一条都没有（下面的 claude/2.1.270、codex/0.153.4、grok/1.0.30）。这么分是因为冒烟守卫按**精确版本号**
+  点名要 fixture，而补录七个真交互场景是一个 epic 的量：不给这一档，agent 每次小版本升级都要花掉一整天的
+  录制才能消红灯，结果就是红灯一直红（2026-09-14）。录新冒烟 fixture 时把 `expect` 行照上一版本补上（值用
+  `<prompt>` / `<last_assistant_message>` 占位），于是回放测试会拿新版本的**真 payload** 再过一遍状态机——
+  它验的是“同样的结论”，比键集合比对硬得多。录完要在文件头注明与上一版实测目录的差别（没差别也要写“逐键一致”）。
 
 ## claude/2.1.261
 
@@ -58,6 +65,33 @@ fixture 驱动测试的数据（ADR-002 D10）。
 不带 `tool_use_id`（PreToolUse 带）；挂起期间 TUI 不显示审批提示，hook 退出后才弹——见 ADR-002 附录 A。
 `headless.jsonl` 是 2026-09-05 冒烟测试录制模式录的 `codex exec` 一轮（`--dangerously-bypass-hook-trust`：无头下没法在 TUI
 `/hooks` 信任 hook，见 `src/adapter/codex.rs`）。
+
+## claude/2.1.270
+
+冒烟-only。2026-09-14 本机 2.1.270 录的 `claude -p` 一轮：事件名与四个事件的顶层键集合与 claude/2.1.261 的
+`headless.jsonl` 逐键一致（无头仍不带 `model` / `scratchpad_dir`；Stop 仍有 `background_tasks` / `session_crons`，
+`effort` 仍是 `{"level"}` 对象），所以七个交互场景没重录，`expect` 照 2.1.261 补。
+
+本次重录暴露的不是漂移而是测试自己的坑：Linux 上 `~/.claude/.credentials.json` 不存在，登录态在
+`~/.claude/settings.json` 的 `env.CLAUDE_CODE_OAUTH_TOKEN` 里，`seed_credentials` 只复制前两个文件时
+`claude -p` 直接 `Not logged in · Please run /login`，拿到的事件缺 Stop、只有 `StopFailure`。修在
+`tests/hook_smoke.rs::copy_settings_without_hooks`：只搬删掉 `hooks` 键的那一份 settings.json——整份复制会把
+用户自己的 hook 条目（指向 `~/.agora`）带进临时 HOME，这一轮假会话就会投到开发机上真的 daemon 里。
+
+## codex/0.153.4
+
+冒烟-only。2026-09-14 本机 0.153.4（`gpt-6-astra`）录的 `codex exec --skip-git-repo-check
+--dangerously-bypass-hook-trust` 一轮：四个事件的事件名与顶层键集合与 codex/0.152.1 逐键一致，唯一变化是
+`model` 的值（不在 `expect` 里），七个交互场景没重录。
+
+## grok/1.0.30
+
+冒烟-only。2026-09-14 本机 1.0.30 录的 `grok -p` 一轮：序列仍是 session_start(new) → user_prompt_submit →
+stop(end_turn) → session_end(shutdown) → 退出时再一次 stop(shutdown)，顶层键集合与 grok/1.0.13 逐键一致。
+**一处形态变化**：别名键 `hook_event_name` 的值从小写蛇形改成 PascalCase（`session_start` → `SessionStart`），
+首选键 `hookEventName` 仍是小写蛇形——Grok 在向 Claude 的配置形态靠。`src/adapter/grok.rs::event_key` 本来就是
+“去掉 `_` 再小写”归一，两种写法进同一个事件；新 fixture 的 `expect` 行就是这件事的守卫（回放跑的是本次
+真录的 payload，不只是键集合）。七个交互场景没重录。
 
 ## generic/pane
 
