@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "default_worker": "claude",
+  "prepare": [
+    "cp -rf {{repo}}/web/node_modules web/node_modules",
+    "npm --prefix web run build"
+  ],
+  "gates": [
+    {
+      "name": "doc-lint",
+      "command": "scripts/doc-lint.sh",
+      "when": "always"
+    },
+    {
+      "name": "web-typecheck",
+      "command": "npm --prefix web run typecheck",
+      "when": "src",
+      "paths": [
+        "web/**"
+      ]
+    },
+    {
+      "name": "web-test",
+      "command": "npm --prefix web test",
+      "when": "src",
+      "paths": [
+        "web/**"
+      ]
+    },
+    {
+      "name": "web-build",
+      "command": "npm --prefix web run build",
+      "when": "src",
+      "paths": [
+        "web/**"
+      ]
+    },
+    {
+      "name": "cargo-fmt",
+      "command": "cargo fmt --all -- --check",
+      "when": "src",
+      "paths": [
+        "src/**",
+        "tests/**",
+        "rustfmt.toml"
+      ]
+    },
+    {
+      "name": "cargo-clippy",
+      "command": "cargo clippy --all-targets -- -D warnings",
+      "when": "src",
+      "paths": [
+        "src/**",
+        "tests/**",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml"
+      ]
+    },
+    {
+      "name": "cargo-test",
+      "command": "cargo test --all-targets",
+      "when": "src",
+      "paths": [
+        "src/**",
+        "tests/**",
+        "testdata/**",
+        "scripts/**",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml"
+      ],
+      "serial": true
+    }
+  ],
+  "merge": {
+    "after": [
+      "scripts/roadmap-view.sh"
+    ]
+  },
+  "limits": {
+    "max_cost_usd": 3,
+    "max_seconds": 1800
+  }
+}
