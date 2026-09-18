@@ -4,7 +4,7 @@
  * 该不该发由服务端决定：`notification` 事件只在 RUNNING → WAITING / TURN_DONE / FINISHED / FAILED
  * 四种转换上来一条，`notifications.enabled` 关掉就一条也没有（src/events.rs）。这里只管三件事：
  * 权限（问一次，之后不再打扰）、弹（`tag = 会话 id`，同一会话多开几个标签页也只显示一条）、
- * 点击回到该行——WAITING 落到 Dashboard 就地回答，不是终端。
+ * 点击回到该行并把焦点放进主区回答面板（WAITING / TURN_DONE；MISSION §6.6），不是终端。
  *
  * 与 DOM 解耦：`Notification` 构造器与权限经 [`NotifierDeps`] 注入，vitest 在 node 里跑。
  */
@@ -59,7 +59,7 @@ export class Notifier {
 
   constructor(
     private readonly deps: NotifierDeps,
-    /** 点击：切到该会话；`status` 是转换后的状态，WAITING / TURN_DONE 的就地回答区随行展开。 */
+    /** 点击：切到该会话并把焦点放进主区回答面板；`status` 是转换后的状态（WAITING / TURN_DONE；MISSION §6.6）。 */
     private readonly onOpen: (id: string, status: string | null) => void,
   ) {}
 
