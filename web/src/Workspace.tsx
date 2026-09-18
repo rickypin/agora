@@ -210,7 +210,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   );
 
   // 浏览器通知（MISSION §6.6；A18）：点击回到该行——openTab 让它成为侧栏 active 行，主区 crumb 之下
-  // 就画出这一行的回答面板，焦点再落进面板里（MISSION §6.6「点击落到就地回答区」；A50，agora-4yr.1。
+  // 就画出这一行的回答面板，焦点再落进面板里（MISSION §6.6「落到该行，并把焦点放进主区回答面板（A50）」；agora-4yr.1。
   // 面板不在这一行时下面那个 effect 会把请求丢掉，焦点不动）。
   const openFromNotification = useCallback(
     (id: string) => {

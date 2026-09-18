@@ -308,7 +308,7 @@ describe("Workspace", () => {
   });
 
   it("a notification click focuses the panel input", async () => {
-    // MISSION §6.6「点击落到就地回答区」：点通知落到该行之后，人可以直接打字，不用再点一下输入框。
+    // MISSION §6.6「落到该行，并把焦点放进主区回答面板（A50）」：点通知落到该行之后，人可以直接打字，不用再点一下输入框。
     const n = fakeNotify("granted");
     const t = setup([row("n:a"), row("n:b")], [], n.deps);
     await online(t);
