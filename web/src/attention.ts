@@ -264,12 +264,25 @@ export function formatAgo(seconds: number): string {
   return `${Math.floor(h / 24)}d`;
 }
 
+/**
+ * 这一行是从 peer 并入的吗。判据是 `stale` 键在不在：它只出现在 peer 行上，本机行从来没有
+ * （docs/spec/api.md「peer 视图」）——在线的 peer 行是 `stale: false`，不是缺键。
+ */
+export function isPeerRow(row: SessionRow): boolean {
+  return typeof row.stale === "boolean";
+}
+
 /** "waiting 3m"：状态文案 + 从状态起点算起的时长。 */
 export function statusLine(row: SessionRow, nowSeconds: number): string {
   const text = STATUS_TEXT[row.status] ?? row.status;
   const s = row.status_since;
   const ago = typeof s === "number" ? formatAgo(nowSeconds - s) : "";
-  return ago ? `${text} ${ago}` : text;
+  if (!ago) return text;
+  // peer 行的时长是一个**下界**：起点由并入它的这台机器在「第一次看见这个状态」的那一刻打
+  // （ADR-004：不信 peer 报的绝对时刻，只用它报的时长差把起点往前推），真实起点只会更早。
+  // 画成精确值就是撒谎——2026-09-18 Mac 的 daemon 重启把并入视图清空，zuan 那 24 行 8 天的
+  // STARTING 全成了 0.7 h（agora-5gg.12）。本机行的起点是自己打的，精确，不带 ≥。
+  return isPeerRow(row) ? `${text} ≥${ago}` : `${text} ${ago}`;
 }
 
 export interface Counts {

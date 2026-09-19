@@ -20,6 +20,9 @@
 //!    `TokenFileError` 的原话，含 chmod 600 提示），之后每次重读仍失败只 debug，不刷屏。
 //!
 //! 时间一律本节点时钟（`PeerViews::now`）：`last_seen` 与行上的 `status_since` 用同一只表打。
+//! peer 报的绝对时刻不当时间用；唯一被当时间用的是它报的**时长差**（全量响应顶层的 `now` 减行上的
+//! `status_since`，同一只表上两个读数之差，不受时钟偏差影响），进 `PeerViews::replace` 的
+//! `reported_now`——本机重启后第一次见到一个旧状态时，等待时长不至于归零（agora-5gg.12）。
 //! 测试用 `InProcessTransport` 驱动整个循环，退避策略与时钟都可注入，不 sleep 等真实退避。
 
 use std::sync::Arc;
@@ -305,7 +308,11 @@ impl PeerClient {
             tracing::warn!(component = "peer", peer = %self.name, "GET /api/sessions 的响应不是 {{ sessions: [...] }}");
             return Err(PeerError::Unreachable.into());
         };
-        self.publish(self.views.replace(&self.name, rows.clone()));
+        // 它对"当下"的读数（同一只表上打的，unix 秒）。视图只拿它与行里的 `status_since` 相减，
+        // 从不拿它跟自己时钟比——peer 时钟漂移时这个差仍然可信（agora-5gg.12）。老节点不报 →
+        // None，并入退回"本机第一次看见"的下界。
+        let reported_now = body.get("now").and_then(Value::as_i64);
+        self.publish(self.views.replace(&self.name, rows.clone(), reported_now));
         self.peers.seen(&self.name, self.views.now());
         Ok(())
     }

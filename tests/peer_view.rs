@@ -458,7 +458,15 @@ async fn peer_timestamps_use_local_clock() {
     wait_for("a 并入 b", || a.state.peer_views.rows_of("b").len() == 1).await;
     let body = a.list_as_human().await;
     let row = find(rows_of(&body), "on-b");
-    assert_eq!(row["status_since"], T_LOCAL, "等待时长按本机时钟打: {row}");
+    // 行上的时刻是本机那只表打的，不是 peer 报的绝对时刻。它可以比 `T_LOCAL` 早几秒：B 刚起的
+    // 行也有一个「已经驻留了一会儿」的时长差（响应顶层的 `now` 减行上的 `status_since`，同一只
+    // 表上的两个读数），那个差会把下界往前推（agora-5gg.12）——往后推才是问题，那才需要信 peer
+    // 的绝对时刻，下面那条 `assert_ne!` 钉的是这个。
+    let stamped = row["status_since"].as_i64().unwrap();
+    assert!(
+        stamped <= T_LOCAL && T_LOCAL - stamped <= 900,
+        "等待时长按本机时钟打（±peer 报的时长差）: {stamped} vs {T_LOCAL}，{row}"
+    );
     assert_ne!(row["status_since"], peer_since, "不是 peer 报的时间");
     // B 自己看自己仍是它报的时间——改写只发生在并入方。
     assert_eq!(
@@ -501,7 +509,10 @@ async fn peer_timestamps_use_local_clock() {
         .peer_views
         .get(on_b["id"].as_str().unwrap())
         .unwrap();
-    assert_eq!(row["status_since"], T_LOCAL);
+    assert_eq!(
+        row["status_since"], stamped,
+        "状态没变，起点沿用本机打的那一刻"
+    );
     assert_eq!(row["node"], "b");
 }
 
@@ -577,4 +588,125 @@ async fn disconnect_keeps_rows_marked_stale() {
     let p = a.state.peers.get("b").unwrap();
     assert!(p.online && p.last_error.is_none() && !p.retrying, "{p:?}");
     assert!(p.last_seen.unwrap() >= seen_before);
+}
+
+/// B 报的 `status_since` 一律推回 8 天，`now` 仍是它自己的当下：zuan 上一行真实驻留了 8 天的
+/// STARTING，它的 `GET /api/sessions` 就是这个样子（2026-09-18 Mac + zuan 盘点，agora-5gg.12）。
+/// 只改快照，不改事件流——这条守卫要的就是"全量里 peer 说它已经等了 8 天"。
+async fn age_the_status(req: Request, next: Next) -> Response {
+    let snapshot = req.uri().path() == "/api/sessions";
+    let resp = next.run(req).await;
+    if !snapshot {
+        return resp;
+    }
+    let (mut parts, body) = resp.into_parts();
+    let bytes = body.collect().await.unwrap().to_bytes();
+    let Ok(mut v) = serde_json::from_slice::<Value>(&bytes) else {
+        return Response::from_parts(parts, Body::from(bytes));
+    };
+    if let Some(rows) = v["sessions"].as_array_mut() {
+        for r in rows.iter_mut() {
+            if let Some(since) = r["status_since"].as_i64() {
+                r["status_since"] = json!(since - EIGHT_DAYS);
+            }
+        }
+    }
+    // body 重新序列化过，原来的长度头不再对（axum 的 Json 不带 content-length，但中间件挂在
+    // 别处时可能带）：宁可让传输层重算，不要留一个说谎的长度头。
+    parts.headers.remove(header::CONTENT_LENGTH);
+    Response::from_parts(parts, Body::from(v.to_string()))
+}
+
+const EIGHT_DAYS: i64 = 8 * 86400;
+
+/// 这一行在 `a` 的并入视图里"已经等了"多久（本机时钟：`PeerViews::now` 减行上的起点）。
+fn waited_secs(a: &Node, gid: &str) -> i64 {
+    let row = a
+        .state
+        .peer_views
+        .get(gid)
+        .unwrap_or_else(|| panic!("视图里没有 {gid}"));
+    a.state.peer_views.now() - row["status_since"].as_i64().unwrap()
+}
+
+/// 把" aging 过的 B "配成 `a` 的 peer 并起客户端；返回该行的全局 id。
+async fn merge_aged_peer(a: &mut Node, b: &Node, gid: &str) {
+    let t = Arc::new(InProcessTransport::new(
+        "b",
+        a.name,
+        aged_b(b),
+        DEFAULT_TIMEOUT,
+    ));
+    let mut reg = PeerRegistry::new(a.name);
+    for existing in a.state.registry.peers() {
+        reg.insert(existing.clone()).unwrap();
+    }
+    reg.insert(t.clone()).unwrap();
+    a.state.registry = Arc::new(reg);
+    a.start_client(t);
+    wait_for(&format!("{gid} 并入"), || {
+        a.state.peer_views.rows_of("b").len() == 1
+    })
+    .await;
+}
+
+/// 每敲一次都得到一份"行 aged 8 天"的 B（Router 不是 `Clone`，要一份新的就现搭）。
+fn aged_b(b: &Node) -> Router {
+    b.router().layer(middleware::from_fn(age_the_status))
+}
+
+#[tokio::test]
+async fn a_local_restart_does_not_reset_a_peer_rows_wait() {
+    // ADR-004「重连不重置」管的是断线重连，没管**本机**重启：`PeerViews` 是纯内存，daemon 一重启
+    // 就空了，`stamp` 的 prev 为空即打此刻，于是"重连不重置"在本机重启上失效。2026-09-18 Mac
+    // 实测：daemon 重启后 zuan 的 24 行等待时长全是 0.7 h，其中一行真实 STARTING 已经 8 天。
+    // 接上 peer 报的时长差之后：同状态的行重启前后都不小于 peer 报的那个相对时长。
+    let b = Node::new("b");
+    let on_b = b.create_session("on-b").await;
+    let gid = on_b["id"].as_str().unwrap().to_owned();
+
+    // 重启前的 A：这一行它看了 8 天（按 peer 报的）。
+    let mut a = Node::new("a");
+    merge_aged_peer(&mut a, &b, &gid).await;
+    let before = waited_secs(&a, &gid);
+    assert!(
+        before >= EIGHT_DAYS,
+        "第一次并入就该按 peer 报的时长画下界: {before} < {EIGHT_DAYS}"
+    );
+
+    // 本机 daemon 重启 = 换一个进程、`PeerViews` 是全新的空表，peer 那侧一个字没变。
+    // 这一份就是 bug 现场：prev 为空，能带上 8 天的只有 peer 报的时长差。
+    let mut restarted = Node::new("a");
+    merge_aged_peer(&mut restarted, &b, &gid).await;
+    let after = waited_secs(&restarted, &gid);
+    assert!(
+        after >= EIGHT_DAYS,
+        "本机重启后同状态 peer 行的等待时长不小于 peer 报的相对时长: {after} < {EIGHT_DAYS}"
+    );
+    // 人在 API 上看到的那一行同样是下界（浏览器据此画 `≥8d`）。
+    let body = restarted.list_as_human().await;
+    let row = find(rows_of(&body), "on-b");
+    let since = row["status_since"].as_i64().unwrap();
+    assert!(
+        restarted.state.peer_views.now() - since >= EIGHT_DAYS,
+        "GET /api/sessions 里的行不该归零: {row}"
+    );
+    assert_eq!(row["stale"], false, "并入成功，不是最后一眼");
+    // 起点仍是本机时钟的数：它不会晚于本机当下（拿 peer 的绝对时刻来画就会——peer 的表朝未来
+    // 漂多少，行上就超前多少）。
+    assert!(since <= restarted.state.peer_views.now(), "{row}");
+
+    // 状态一变，旧的相对时长不再适用：起点回到本机看见新状态的那一刻（下界，UI 画 `≥`）。
+    restarted
+        .state
+        .peer_views
+        .apply(
+            "b",
+            &json!({ "type": "status_changed", "id": gid, "status": "running", "status_since": agora::clock::now_secs(), "source": "hook", "reason": null, "alive": true }),
+        );
+    let fresh = waited_secs(&restarted, &gid);
+    assert!(
+        fresh < 60,
+        "换了状态就是新的等待，不继承旧状态的 8 天: {fresh}"
+    );
 }

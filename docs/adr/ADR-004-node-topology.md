@@ -46,7 +46,7 @@ daemon↔daemon 链路没有浏览器的同源规则，这是把合并放进节�
 
 - **转发从 peer 收来的会话** → 环路与所有权混淆。守卫：只导出本机会话；fake 节点测试三节点链路不成环（规则 9）。
 - **peer 默认开放或免签发** → "隧道即信任"重演。守卫：未签发机器 token 拒绝一切 Bearer 调用（MISSION §8，A31）。
-- **信任 peer 报的时间戳** → 时钟漂移污染 attention 排序。守卫：peer 视图时间由本节点时钟打。
+- **信任 peer 报的时间戳** → 时钟漂移污染 attention 排序。守卫：peer 视图时间由本节点时钟打。（2026-09-19 附录：这条规则的另一面——它使出来的数是个**下界**，而 UI 把下界画成了精确值。）
 
 ## Consequences
 
@@ -54,3 +54,37 @@ daemon↔daemon 链路没有浏览器的同源规则，这是把合并放进节�
 - 代价：每对 peer 各一行配置与一次 token 签发；N 节点全互联是 N×(N−1) 行——单用户 2–3 台可接受，规模化时再谈发现机制（不在 V1/V2 范围）。
 - Mac 带出门且 zuan 够不着它时，zuan 上显示 Mac 为"上次见到"——用户在哪台机器前面就看得到那台，这是物理事实不是设计缺陷；部署 tailnet 则随处可达。
 - 当前实例的四种形态见 `docs/spec/architecture.md`。
+
+## 附录：本机重启把 peer 行的等待时长归零（2026-09-18，beads `agora-5gg.12`）
+
+**现场**：Mac 的 daemon 重启后，侧栏里 zuan 那 24 行的等待时长全成了 0.7 h；其中 `ef0e50` 真实
+STARTING 已经 8 天。peer 那侧什么都没变，变的是本机。
+
+**为什么**：本 ADR 把"等待时长"的起点交给本节点时钟（上面危险句第 3 条），实现是**本节点第一次看见
+该行处于当前状态**的时刻（`src/peer/view.rs` 的 `stamp`）。这个时刻只活在内存里，本机 daemon 一重启
+就空了——「重连不重置」管的是 peer 断线重连，没管本机重启，于是画出来的数从"我看了它多久"退化成
+"我刚起来"。更根子上的问题是：这个数**一直**是个下界（真实起点可以早于我第一次看见它），而 UI 把
+下界画成了精确值。
+
+**改了什么**（不改本 ADR 的决策：peer 的绝对时刻仍然不信）：
+
+1. **信 peer 报的时长差，不信它的绝对时刻**。`GET /api/sessions` 顶层多一个 `now`：打这份快照时
+   报告方自己时钟的读数。并入方只拿它与行上的 `status_since` 相减——两个读数出自同一只表，差是
+   相对量，两节点之间的时钟偏差在这个减法里自己抵消。只在"本节点第一次看见这一状态"时用它把起点
+   往前推（含本机重启后的第一眼）；状态没变就不再动那个起点——`status_since` 后退一改，前端「看过」
+   的键（`<id>@<status_since>`，`agora-23h`）就对不上，已经看过的 FINISHED 行会弹回 NEEDS
+   ATTENTION。读不出 / 为负 / 超过 30 天一律当它没报：坏掉的 `status_since`（0 / 1970）算出的差不
+   是下界，截断到 30 天照样是撒谎，退回本机此刻只会短、不会长。老节点不报 `now` → 与改之前一致。
+2. **下界画成下界**：peer 行的时长带 `≥`（`web/src/attention.ts` 的 `statusLine`；判据是行上有
+   `stale` 键 = 它是 peer 行）。本机行的起点是自己打的，精确，不带 `≥`。
+
+**没有采纳的**：把 `(id, token, since)` 落盘、重启恢复（B 方案）。它把"我记得看过这行多久"变成第三
+份要维护的持久状态，而它想保住的那个数本来就该由 peer 报（peer 才是它自己状态起点的权威）；而且重启
+恢复出来的起点仍然只是下界，UI 照样得画 `≥`——等于两件事各做一半。
+
+**守卫**：`src/peer/view.rs` 单测 `a_local_restart_keeps_the_wait_the_peer_reports`、
+`a_later_snapshot_does_not_push_an_existing_stamp_earlier`、
+`an_untrusted_reported_wait_is_ignored_rather_than_guessed`；`tests/peer_view.rs::
+a_local_restart_does_not_reset_a_peer_rows_wait`（真客户端循环，peer 报 8 天）、
+`::peer_timestamps_use_local_clock`（绝对时刻仍然不信）；`web/src/attention.test.ts` 的 peer 行时长
+文案。形态变更见 `docs/spec/api.md`「peer 视图」。

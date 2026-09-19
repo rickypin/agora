@@ -97,6 +97,12 @@ pub async fn list(
     Ok(Json(serde_json::json!({
         "sessions": sessions,
         "unregistered": unregistered,
+        // 这份快照出自本节点时钟的哪一刻（unix 秒）。行上的 `status_since` 是本节点的绝对时刻，
+        // 调用方（peer）不许拿自己那只表去减它（ADR-004「不信 peer 报的时间」）；但**同一只表上
+        // 两个读数的差**是相对量，两节点之间的时钟偏差在里面自己抵消掉了——并入方拿 `now` 减行上的
+        // `status_since`，就得到"这一行在它自己节点上已经等了多久"，用它把等待时长的下界往前推
+        // （agora-5gg.12：本机 daemon 重启把 PeerViews 清空，peer 行 8 天的 STARTING 画成 0.7 h）。
+        "now": crate::clock::now_secs(),
     })))
 }
 

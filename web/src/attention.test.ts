@@ -3,6 +3,7 @@ import {
   countByStatus,
   finishedCollapsed,
   formatAgo,
+  isPeerRow,
   loadSeen,
   seenKey,
   needsAttention,
@@ -278,6 +279,24 @@ describe("attention", () => {
     expect(formatAgo(59)).toBe("");
     expect(formatAgo(3600 * 5)).toBe("5h");
     expect(formatAgo(3600 * 72)).toBe("3d");
+  });
+
+  it("marks a peer row's wait as the lower bound it is, and leaves local rows exact (agora-5gg.12)", () => {
+    // peer 行的起点是本机打的（第一次看见这个状态的那一刻），真实起点可能更早 → 只能写 ≥N。
+    expect(
+      statusLine(row("zuan:1", "starting", { status_since: 1000, stale: false }), 1000 + 8 * 3600),
+    ).toBe("starting ≥8h");
+    // stale 的 peer 行同样：只多一个离线标记，时长仍是下界。
+    expect(
+      statusLine(row("zuan:2", "waiting", { status_since: 1000, stale: true, last_seen: "x" }), 1000 + 40 * 60),
+    ).toBe("waiting ≥40m");
+    // 本机行：起点是自己打的、精确值，不许带 ≥（否则用户以为自己的机器也说不准话）。
+    expect(statusLine(row("mac:1", "waiting", { status_since: 1000 }), 1000 + 3 * 60)).toBe("waiting 3m");
+    // 不到一分钟本来就不画时长，也就没有 ≥。
+    expect(statusLine(row("zuan:3", "running", { status_since: 1000, stale: false }), 1030)).toBe("working");
+    // 判据是 stale 键在不在，不是 node 等于谁（本机行也带 node）。
+    expect(isPeerRow(row("mac:1", "waiting", { node: "mac" }))).toBe(false);
+    expect(isPeerRow(row("zuan:1", "waiting", { node: "zuan", stale: false }))).toBe(true);
   });
 
   it("counts by status for the header", () => {

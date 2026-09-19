@@ -13,6 +13,16 @@
 //!    变"的判据（连同 `status` 一起比），不当时间用——断线重连后同一状态的行不会被重置成 0 分钟，
 //!    时钟漂移的 peer 也污染不了 attention 排序。"上次见到"是 `PeerStates::last_seen`，客户端用同
 //!    一个时钟打。其余时间字段（`created_at` / `ended_at`…）是 peer 的 metadata，原样保留。
+//!
+//!    这条规则把等待时长变成了一个**下界**（真实起点可能早于本节点第一次看见它的时刻），而本机重启
+//!    会把 `PeerViews` 清空、下界退化成"刚刚"——2026-09-18 Mac 实测：重启后 zuan 的 24 行全画成
+//!    0.7 h，其中一行真实 STARTING 已经 8 天（agora-5gg.12；ADR-004 附录）。于是补了两件：
+//!    - **信 peer 报的时长差，不信它的绝对时刻**（`replace` 的 `reported_now`）：peer 在
+//!      `GET /api/sessions` 里额外报一个它自己时钟的当下，与它报的 `status_since` 同一只表，相减
+//!      是相对量、时钟偏差自己抵消；新状态（或重启后第一次见到）的本机时刻再往前推到那个读数，
+//!      仍是下界、仍是本节点时钟打的数。
+//!    - **下界在 UI 上画成下界**：peer 行的时长带 `≥`（`web/src/attention.ts` 的 `statusLine`）。
+//!
 //! 3. **断线保留、标 stale**：peer 掉线后行一条不删，每行 `stale: true` 并带 `last_seen`（该 peer
 //!    的"上次见到"，`PeerState::last_seen` 的 UTC 文本，与 `/api/health` peers 段同一个值、同一只
 //!    本机表）；重新连上、全量对齐后 `stale` 回 `false`、`last_seen` 键消失。stale 的两次翻转都发
@@ -32,6 +42,15 @@ use crate::events::Event;
 
 /// 本节点的时钟（unix 秒）。生产是 `clock::now_secs`；测试注入固定值证明"不信 peer 报的时间"。
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+/// peer 报的时长差的可信上限（秒）：超过就当它没报（[`reported_start`] 退回本节点此刻）。
+///
+/// 为什么是"当它没报"而不是"截断到 30 天"：`status_since` 只是 peer 状态机里的一个数，它坏了
+/// （0 / 1970）、或者 peer 的时钟在一次状态驻留期间跳过（VM 睡眠唤醒、NTP 大步校正），都会算出
+/// 几十年的"时长"。这种差不是下界，截断到 30 天照样是撒谎（把刚起的行画成"≥ 30 天"）；退回到
+/// 本节点第一次看见它的时刻才是安全的一侧（只会短、不会长）。尺度按现场取：2026-09-18 盘点里
+/// 驻留最久的行是 STARTING 8 天（zuan `ef0e50`），30 天是留出的余量。
+const MAX_REPORTED_WAIT_SECS: i64 = 30 * 86400;
 
 /// `decision_resolved.via` 的取值表（`src/events.rs` 用 `&'static str`）：peer 报的值只有在这张
 /// 表里才转发，不认识的丢弃——事件形态是 API 的一部分，peer 升级加了新值我们不替它编。
@@ -149,7 +168,10 @@ impl PeerViews {
     /// 全量替换某个 peer 的行（连上时、resync 时）：回到非 stale，返回相对旧视图的差分事件——
     /// 新行 `session_created`、变了的行 `session_updated`、没了的行 `session_removed`。
     /// 不合规则 1 的行丢弃并 warn，不算进视图。
-    pub fn replace(&self, peer: &str, rows: Vec<Value>) -> Vec<Event> {
+    ///
+    /// `reported_now` = peer 打这份快照时它自己时钟的当下（`GET /api/sessions` 顶层的 `now`，
+    /// 老节点没有就是 None）。只用来与行里 peer 报的 `status_since` 相减得时长差，见模块头规则 2。
+    pub fn replace(&self, peer: &str, rows: Vec<Value>, reported_now: Option<i64>) -> Vec<Event> {
         let now = self.now();
         let mut inner = lock(&self.inner);
         let view = inner.peers.entry(peer.to_owned()).or_default();
@@ -161,7 +183,7 @@ impl PeerViews {
             let Some(gid) = accept(peer, &raw) else {
                 continue;
             };
-            let row = stamp(raw, old.get(&gid), now, false, None);
+            let row = stamp(raw, old.get(&gid), now, reported_now, false, None);
             match old.get(&gid) {
                 None => events.push(Event::SessionCreated {
                     id: gid.clone(),
@@ -199,10 +221,14 @@ impl PeerViews {
                 let now = self.now();
                 let mut inner = lock(&self.inner);
                 let view = inner.peers.entry(peer.to_owned()).or_default();
+                // 事件流里没有 peer 自己时钟的当下读数（`status_changed` / `session_updated` 只带
+                // 它的 `status_since`），所以这条路算不出时长差：新状态的起点仍是本机第一次看见它
+                // 的时刻（下界，UI 上画成 `≥N`）。
                 let row = stamp(
                     raw.clone(),
                     view.rows.get(&gid),
                     now,
+                    None,
                     view.stale,
                     view.last_seen,
                 );
@@ -272,7 +298,7 @@ impl PeerViews {
                     }
                 }
                 let (stale, last_seen) = (view.stale, view.last_seen);
-                let row = stamp(raw, Some(prev), now, stale, last_seen);
+                let row = stamp(raw, Some(prev), now, None, stale, last_seen);
                 let json = row.json.clone();
                 view.rows.insert(id.to_owned(), row);
                 drop(inner);
@@ -439,14 +465,27 @@ fn accept(peer: &str, raw: &Value) -> Option<String> {
 }
 
 /// 规则 2 + 3：改写 `status_since` 为本机时刻（状态没变就沿用上次打的），置 `stale` / `last_seen`。
-fn stamp(mut raw: Value, prev: Option<&Row>, now: i64, stale: bool, last_seen: Option<i64>) -> Row {
+///
+/// `reported_now`：只有全量快照有（peer 自己时钟的当下）；事件流那两条路传 None。
+fn stamp(
+    mut raw: Value,
+    prev: Option<&Row>,
+    now: i64,
+    reported_now: Option<i64>,
+    stale: bool,
+    last_seen: Option<i64>,
+) -> Row {
     let token = (
         raw.get("status").and_then(Value::as_str).map(str::to_owned),
         raw.get("status_since").and_then(Value::as_i64),
     );
     let since = match prev {
+        // 状态没变：沿用第一次打的那一刻。这里不再拿 peer 新报的时长差去把它推得更早——
+        // `status_since` 后退一改，前端"看过"的键（`<id>@<status_since>`，agora-23h）就对不上，
+        // 一个已经看过的 FINISHED 行会因此弹回 NEEDS ATTENTION。之后本机时钟自己会把时长算长。
         Some(p) if p.token == token => p.since,
-        _ => now,
+        // 新状态（含本机重启后第一次见到这一行）：本节点此刻 与 peer 报的时长差，取更早的那个。
+        _ => now.min(reported_start(reported_now, token.1, now)),
     };
     set(&mut raw, "status_since", Value::from(since));
     mark(&mut raw, stale, last_seen);
@@ -454,6 +493,24 @@ fn stamp(mut raw: Value, prev: Option<&Row>, now: i64, stale: bool, last_seen: O
         json: raw,
         token,
         since,
+    }
+}
+
+/// peer 报的时长差换算成本节点时钟的一个时刻：`now - (它的 now - 它的 status_since)`。
+///
+/// 两个读数都来自 peer 那一只表，相减是**相对量**，两台机器之间的时钟偏差在里面自己抵消掉了——
+/// 所以"不信 peer 报的绝对时刻"（ADR-004 危险句）守得住，而本机重启后第一次见到一个旧状态时，
+/// 等待时长不再是 0（agora-5gg.12）。读不出 / 非正 / 超过 [`MAX_REPORTED_WAIT_SECS`] 都当它
+/// 没报，退回本节点此刻（= 改之前的行为，一个更弱的下界，不会画成比真相长）。另一重保障在调用方：
+/// `stamp` 取的是 `now.min(...)`，所以万一这里放过一个负的（peer 的时钟倒跳），起点也跑不到本节点
+/// 当下之后去。
+fn reported_start(reported_now: Option<i64>, reported_since: Option<i64>, now: i64) -> i64 {
+    let (Some(peer_now), Some(peer_since)) = (reported_now, reported_since) else {
+        return now;
+    };
+    match peer_now.checked_sub(peer_since) {
+        Some(elapsed) if elapsed > 0 && elapsed <= MAX_REPORTED_WAIT_SECS => now - elapsed,
+        _ => now,
     }
 }
 
@@ -510,6 +567,7 @@ mod tests {
                 row("c:8", "b", "waiting", PEER_T),
                 json!({ "id": "b:2" }),
             ],
+            None,
         );
         assert_eq!(v.rows().len(), 1, "{:?}", v.rows());
         assert_eq!(v.rows()[0]["id"], "b:1");
@@ -534,14 +592,14 @@ mod tests {
     fn status_since_is_stamped_by_the_local_clock_and_kept_while_the_status_holds() {
         // 规则 2：peer 说 2020 年，本机说 2026 年——行上是 2026 年。
         let v = fixed(T0);
-        v.replace("b", vec![row("b:1", "b", "waiting", PEER_T)]);
+        v.replace("b", vec![row("b:1", "b", "waiting", PEER_T)], None);
         assert_eq!(v.get("b:1").unwrap()["status_since"], T0);
         // 重连后全量再来一次、状态没变（peer 报的 token 一样）：沿用第一次打的时刻，不重置成"刚刚"。
         let later = PeerViews {
             clock: Arc::new(|| T0 + 600),
             ..v.clone()
         };
-        let events = later.replace("b", vec![row("b:1", "b", "waiting", PEER_T)]);
+        let events = later.replace("b", vec![row("b:1", "b", "waiting", PEER_T)], None);
         assert_eq!(later.get("b:1").unwrap()["status_since"], T0);
         assert!(events.is_empty(), "内容没变就没有事件: {events:?}");
         // 状态变了：打新的本机时刻，而不是 peer 报的。
@@ -559,6 +617,96 @@ mod tests {
     }
 
     #[test]
+    fn a_local_restart_keeps_the_wait_the_peer_reports() {
+        // 规则 2 的另一半（agora-5gg.12）：2026-09-18 Mac 实测——本机 daemon 重启把 PeerViews
+        // 清空，zuan 那 24 行的等待时长全归零（一行真实 STARTING 已经 8 天的 ef0e50 画成 0.7 h）。
+        // 一份新建的空视图就是重启后那一时刻：行上的下界接上 peer 报的时长差，不再从 0 算。
+        const ELAPSED: i64 = 8 * 86400 + 3600; // 现场：8 天又 1 小时
+        let peer_now = T0 + 6 * 365 * 86400; // peer 的表比本机快 6 年：它的绝对时刻一个都不许用
+        let local_now = T0 + 40 * 86400;
+        let restarted = PeerViews::with_clock(Arc::new(move || local_now));
+        let events = restarted.replace(
+            "b",
+            vec![row("b:1", "b", "starting", peer_now - ELAPSED)],
+            Some(peer_now),
+        );
+        assert!(matches!(&events[0], Event::SessionCreated { id, .. } if id == "b:1"));
+
+        let since = restarted.get("b:1").unwrap()["status_since"]
+            .as_i64()
+            .unwrap();
+        assert!(
+            local_now - since >= ELAPSED,
+            "本机重启后同状态 peer 行的等待时长不小于 peer 报的相对时长: {} < {ELAPSED}",
+            local_now - since
+        );
+        // 写的仍是本节点时钟的数（不是 peer 那个漂了 6 年的绝对时刻），且只被推到下界那一段。
+        assert_ne!(since, peer_now - ELAPSED);
+        assert!(
+            since <= local_now && local_now - since <= ELAPSED + 60,
+            "不在本节点时钟一侧: {since} vs {local_now}"
+        );
+    }
+
+    #[test]
+    fn a_later_snapshot_does_not_push_an_existing_stamp_earlier() {
+        // 状态没变就不动 `status_since`，哪怕 peer 报的时长差变得更大（它的表走得比本机快）：
+        // 前端「看过」的键是 `<id>@<status_since>`（agora-23h），起点后退一改，已经看过的
+        // FINISHED 行就弹回 NEEDS ATTENTION。时长由本机时钟自己接着往上走，不靠回头改起点。
+        const PEER_FAST: i64 = 3 * 86400; // peer 的表一天走三天：差涨得比本机已过的时间快
+        let v = fixed(T0);
+        v.replace(
+            "b",
+            vec![row("b:1", "b", "finished", T0 + PEER_FAST - 600)],
+            Some(T0 + PEER_FAST),
+        );
+        assert_eq!(v.get("b:1").unwrap()["status_since"], T0 - 600);
+        let later = PeerViews {
+            clock: Arc::new(|| T0 + 300),
+            ..v.clone()
+        };
+        // 本机走了 300 s，peer 那只表走了 900 s、它的起点没动 → 它报的差从 600 s 涨到 1500 s：
+        // 照那个差重算会得到 T0 - 1200，起点后退 600 s。
+        let events = later.replace(
+            "b",
+            vec![row("b:1", "b", "finished", T0 + PEER_FAST - 600)],
+            Some(T0 + PEER_FAST + 900),
+        );
+        assert_eq!(
+            later.get("b:1").unwrap()["status_since"],
+            T0 - 600,
+            "起点不后退，否则前端的「看过」认不出还是那一次完成"
+        );
+        assert!(events.is_empty(), "内容没变就没有事件: {events:?}");
+    }
+
+    #[test]
+    fn an_untrusted_reported_wait_is_ignored_rather_than_guessed() {
+        // 三种不可信：老节点不报 `now`；差为负（peer 的时钟在一次驻留里倒跳）；差大得离谱
+        // （`status_since` 坏成 0）。全都退回本机第一次看见它的时刻——只会短、不会长。
+        for (label, reported) in [
+            ("老节点不报 now", None),
+            ("peer 的时钟倒跳", Some(PEER_T - 5)),
+        ] {
+            let v = fixed(T0);
+            v.replace("b", vec![row("b:1", "b", "waiting", PEER_T)], reported);
+            assert_eq!(v.get("b:1").unwrap()["status_since"], T0, "{label}");
+        }
+        let v = fixed(T0);
+        v.replace(
+            "b",
+            vec![row("b:1", "b", "waiting", 0)],
+            Some(T0 + 50 * 365 * 86400),
+        );
+        assert_eq!(
+            v.get("b:1").unwrap()["status_since"],
+            T0,
+            "超过 {} 秒当它没报",
+            MAX_REPORTED_WAIT_SECS
+        );
+    }
+
+    #[test]
     fn stale_flips_with_events_and_a_snapshot_clears_it() {
         // 规则 3 / 不变量 8：掉线行不删、标 stale 并带 last_seen；全量对齐回 false、last_seen 消失；
         // 每次翻转每行一条 session_updated。
@@ -566,7 +714,7 @@ mod tests {
         // peer 报的行里混进一个 last_seen（它不该有）：非 stale 时剥掉，不许漏进视图。
         let mut smuggled = row("b:2", "b", "idle", 2);
         smuggled["last_seen"] = json!("2020-01-01T00:00:00Z");
-        v.replace("b", vec![row("b:1", "b", "running", 1), smuggled]);
+        v.replace("b", vec![row("b:1", "b", "running", 1), smuggled], None);
         assert_eq!(v.is_stale("b"), Some(false));
         assert!(
             v.rows().iter().all(|r| r.get("last_seen").is_none()),
@@ -594,6 +742,7 @@ mod tests {
         let events = v.replace(
             "b",
             vec![row("b:1", "b", "running", 1), row("b:3", "b", "waiting", 3)],
+            None,
         );
         assert_eq!(v.is_stale("b"), Some(false));
         assert!(
@@ -624,7 +773,7 @@ mod tests {
     #[test]
     fn events_are_applied_and_forwarded_with_typed_fields() {
         let v = fixed(T0);
-        v.replace("b", vec![row("b:1", "b", "running", 1)]);
+        v.replace("b", vec![row("b:1", "b", "running", 1)], None);
         // 不认识的行的 status_changed → 重拉；resync → 重拉；pong → 无事。
         assert!(matches!(
             v.apply(
@@ -699,7 +848,7 @@ mod tests {
         assert!(w.wait().await, "reconnect 是强制");
         // 视图每变一次 changed +1。
         let before = *rx.borrow_and_update();
-        v.replace("b", vec![row("b:1", "b", "running", 1)]);
+        v.replace("b", vec![row("b:1", "b", "running", 1)], None);
         rx.changed().await.unwrap();
         assert_eq!(*rx.borrow_and_update(), before + 1);
     }
