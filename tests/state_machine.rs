@@ -1145,3 +1145,97 @@ fn handleless_external_starting_decays_to_turn_done() {
         "{a:?}"
     );
 }
+
+#[test]
+fn runtime_session_gone_finishes_the_row_instead_of_pin_it_at_unknown() {
+    // agora-u5p（docs/analysis/session-status-audit-2026-09-18.md §3.2 / A2，判 (b)）：有 runtime_ref
+    // 而运行时列表里找不到它，进程层过去报的是 UNKNOWN 'runtime session missing'，每一行钉在 ? 没有
+    // 出口。会话销毁时 pane 进程收 SIGHUP，agent 确定不在——那是事实，不是"看不清"（MISSION §4.3），
+    // 所以改成 FINISHED（source process、conf 0.8、reason `runtime session gone`），与 external 行的
+    // `external process gone` 同性质。守卫四段：RUNNING 行当场落 FINISHED；server gone 换一半 reason；
+    // 同状态同分不盖 hook 先说的 `session ended (hook)`；运行时**降级**给的 UNKNOWN 不许被抬成结束。
+    // 关掉 status::runtime_gone 的 FINISHED（改回 unknown）→ 第一段红；把 conf 抬到 1.0 → 第三段红。
+    let dead = |process: Assessment, now| Observation {
+        process,
+        liveness: Liveness::Dead,
+        text: None,
+        runtime: None,
+        epoch: 1,
+        now,
+    };
+    let running = |m: &mut Machine, now| {
+        m.apply(&AgoraEvent::PromptSubmitted("do x".into()), 1, now);
+    };
+
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    running(&mut m, 1);
+    let a = m.observe(dead(
+        agora::status::runtime_gone(agora::status::RuntimeGone::Session, false),
+        5,
+    ));
+    assert_eq!(
+        (a.status, a.source, a.confidence),
+        (Status::Finished, Source::Process, 0.8),
+        "{a:?}"
+    );
+    assert_eq!(
+        a.reason.as_deref(),
+        Some("runtime session gone (session gone; no exit status)"),
+        "{a:?}"
+    );
+
+    // 整个 server 连不上：同一个结论，reason 说得上是 server 的事（一屋子行同时结束的现场）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    running(&mut m, 1);
+    let a = m.observe(dead(
+        agora::status::runtime_gone(agora::status::RuntimeGone::Server, false),
+        5,
+    ));
+    assert_eq!(
+        a.reason.as_deref(),
+        Some("runtime session gone (server gone; no exit status)"),
+        "{a:?}"
+    );
+
+    // 用户按过 Kill 的行：说成 killed by user（events.rs 按这个前缀静音通知）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    running(&mut m, 1);
+    let a = m.observe(dead(
+        agora::status::runtime_gone(agora::status::RuntimeGone::Server, true),
+        5,
+    ));
+    let reason = a.reason.as_deref().unwrap_or_default();
+    assert!(
+        reason.starts_with("killed by user") && reason.contains("runtime session gone"),
+        "{reason}"
+    );
+
+    // hook 先说了结束：同状态同分的进程事实不盖（agora-rzh 同一条理由，0.8 就是为它留的）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionEnded(Some("logout".into())), 1, 10);
+    let a = m.observe(dead(
+        agora::status::runtime_gone(agora::status::RuntimeGone::Session, false),
+        99,
+    ));
+    assert_eq!(
+        (a.status, a.source),
+        (Status::Finished, Source::Hook),
+        "{a:?}"
+    );
+    assert_eq!(a.reason.as_deref(), Some("session ended (hook)"));
+    assert_eq!(m.status_since(), 10, "结束的起点仍是 SessionEnd 那一刻");
+
+    // 对照：运行时整体降级不是"会话没了"。那一臂交给状态机的是 Source::None 的 UNKNOWN，
+    // 它压倒一切地把行按成 UNKNOWN，绝不能在这里落成 FINISHED（否则读不到就写结束）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    running(&mut m, 1);
+    let a = m.observe(dead(
+        Assessment::unknown("runtime unavailable: protocol version mismatch (client 8, server 7)"),
+        5,
+    ));
+    assert_eq!(
+        (a.status, a.source),
+        (Status::Unknown, Source::None),
+        "降级只说看不清: {a:?}"
+    );
+}

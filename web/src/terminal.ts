@@ -23,6 +23,26 @@ export type ServerFrame =
   | { type: "exit"; exit: ExitInfo }
   | { type: "pong" };
 
+/**
+ * 这一行的运行时会话没了（agora-u5p）：`status=finished` 且 `reason` 说 `runtime session gone`。
+ * 判的是 agora 自己写进 reason 的那半句，两种「没了」都算（server gone / session gone），
+ * `killed by user (runtime session gone…)` 也算——在 Dashboard 按过 Kill、后来连 pane 一起消失的
+ * 行同样没有可连的东西（Mac 2026-09-18 现场 b226b5：库里 killed_at 在、状态说看不清）。
+ *
+ * 为什么放在连接层而不是 `TerminalView.tsx`：这一条说的是「这一行还能不能 attach」。挂在组件文件
+ * 里的话，`vi.mock("./TerminalView")` 的局部替身（Workspace.test.tsx、keyboard.test.tsx）会把它
+ * 换成 undefined，Workspace 一渲染就抛——守卫抓到的是测试脚手架，不是行为。
+ */
+export function runtimeSessionGone(
+  row: { status?: unknown; reason?: unknown } | null | undefined,
+): boolean {
+  return (
+    row?.status === "finished" &&
+    typeof row.reason === "string" &&
+    row.reason.includes("runtime session gone")
+  );
+}
+
 export interface TerminalClientOptions {
   /** 建连；默认同源 `/api/sessions/<id>/terminal?cols=&rows=`。 */
   connect?: (id: string, cols: number, rows: number) => TerminalSocketLike;

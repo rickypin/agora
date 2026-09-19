@@ -238,6 +238,9 @@ fn delete_metadata_leaves_alive_session_and_removes_dead_one() {
 fn cleanup_refuses_alive_and_removes_dead() {
     let (m, rt, _db) = mgr();
     let v = m.create(&new_session("c")).unwrap();
+    // 拨过 2 s 的 STARTING 窗口：窗口内的行"列表里还没有它"只说明运行时没来得及报到，
+    // 不许当成运行时会话没了（见 `starting_window_exempts_a_row_that_was_just_created`）。
+    backdate_spawn(&_db, &v.record.id);
     assert!(matches!(
         m.cleanup(&v.record.id),
         Err(SessionError::StillAlive(_))
@@ -249,8 +252,18 @@ fn cleanup_refuses_alive_and_removes_dead() {
     assert!(after.record.ended_at.is_some());
     assert_eq!(
         after.assessment.status,
-        Status::Unknown,
-        "运行时会话没了，metadata 还在"
+        Status::Finished,
+        "运行时会话没了、metadata 还在：这是一条结束的事实，不是永远看不懂的 UNKNOWN（agora-u5p）"
+    );
+    assert!(
+        after
+            .assessment
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("runtime session gone"),
+        "{:?}",
+        after.assessment
     );
 }
 
@@ -262,6 +275,9 @@ fn reconcile_covers_all_six_cases() {
     let missing = m.create(&new_session("missing")).unwrap();
     rt.set_dead(dead.record.runtime_ref.as_deref().unwrap(), Exit::Code(3));
     rt.forget(missing.record.runtime_ref.as_deref().unwrap());
+    // missing 那一行拨过 STARTING 窗口：本代进程刚起 2 s 内"没看见"不算"没了"
+    // （`starting_window_exempts_a_row_that_is_still_starting` 单独守那一条）。
+    backdate_spawn(&db, &missing.record.id);
     rt.insert("fake:agora:ag-orphan", true, None, true);
     rt.insert("fake:default:mywork", true, None, false);
     db.conn()
@@ -302,10 +318,17 @@ fn reconcile_covers_all_six_cases() {
     assert_eq!(views[&dead.record.id].assessment.status, Status::Failed);
     assert!(views[&dead.record.id].record.ended_at.is_some());
     let mv = &views[&missing.record.id];
-    assert_eq!(mv.assessment.status, Status::Unknown);
+    assert_eq!(
+        mv.assessment.status,
+        Status::Finished,
+        "ref 不在列表里 = 运行时会话没了，不是看不清（agora-u5p；ADR-001 D4）"
+    );
+    assert_eq!(mv.assessment.source, agora::status::Source::Process);
+    assert_eq!(mv.assessment.confidence, 0.8, "拿不到退出码，不给满分");
     assert_eq!(
         mv.assessment.reason.as_deref(),
-        Some("runtime session missing")
+        Some("runtime session gone (session gone; no exit status)"),
+        "server 还在应答（fake 默认），所以是 session gone"
     );
     assert!(
         mv.record.ended_at.is_some(),
@@ -317,6 +340,235 @@ fn reconcile_covers_all_six_cases() {
     let back = m2.restart(&missing.record.id, &[]).unwrap();
     assert!(back.alive);
     assert_eq!(back.record.epoch, 2);
+}
+
+#[test]
+fn missing_runtime_session_finishes_the_row_and_writes_ended_at_once() {
+    // agora-u5p（Mac 2026-09-18 现场 A2）：有 runtime_ref、运行时应答正常却不在列表里 ——
+    // 会话连同 pane 都没了，pane 进程那时收 SIGHUP，agent 确定不在。这是结束的事实，不是
+    // "看不清"：报 FINISHED（source process、conf 0.8、reason runtime session gone），
+    // 不再钉在 UNKNOWN。ended_at 同时补上（reconcile 只在启动时跑一次，运行中 server 死等不
+    // 到下一次重启）。
+    let (m, rt, _db) = mgr();
+    let v = m.create(&new_session("gone")).unwrap();
+    backdate_spawn(&_db, &v.record.id);
+    let r = v.record.runtime_ref.as_deref().unwrap().to_owned();
+    assert_eq!(
+        m.get(&v.record.id).unwrap().assessment.status,
+        Status::Running
+    );
+
+    rt.kill_session(&r);
+    let after = m.get(&v.record.id).unwrap();
+    assert_eq!(after.assessment.status, Status::Finished);
+    assert_eq!(after.assessment.source, agora::status::Source::Process);
+    assert_eq!(
+        after.assessment.confidence, 0.8,
+        "拿不到退出码，又不排除 socket 被误删的假阳性，不给满分"
+    );
+    assert_eq!(
+        after.assessment.reason.as_deref(),
+        Some("runtime session gone (session gone; no exit status)")
+    );
+    assert!(!after.alive, "行上同时说清：运行时会话不在");
+    assert!(!after.would_kill(), "FINISHED 行 Restart / Kill 不再要确认");
+    let ended = after
+        .record
+        .ended_at
+        .clone()
+        .expect("运行时会话没了：view 首次观察到就补 ended_at");
+    assert!(
+        after.record.ended_at_approximate,
+        "谁也不知道它何时死的，只能近似"
+    );
+    assert!(
+        agora::clock::age_secs(&ended).unwrap_or(u64::MAX) < 5,
+        "记的是当下的时刻: {ended}"
+    );
+
+    // 幂等：再读一轮不得把 ended_at 刷成更晚的"今天"（否则一apper 行的结束时刻会随轮询漂）。
+    let again = m.get(&v.record.id).unwrap();
+    assert_eq!(again.record.ended_at, after.record.ended_at);
+    assert_eq!(again.assessment.reason, after.assessment.reason);
+}
+
+#[test]
+fn starting_window_exempts_a_row_that_is_still_starting() {
+    // "列表里没有它"要过 STARTING 窗口才算"运行时会话没了"。反例是自家路径：`create_with_prompt`
+    // 与 `restart_with` 在运行时刚返回的那一刻就 `get()`，那一 tick 的列表里可能还没有这个 pane
+    // （`list_socket` 对解析不了的 pane 行也是跳过、不报错）。少了这条守卫，每起一次会话都会先给
+    // 自己写一个 ended_at、报一次 FINISHED，再把行推回 STARTING（`tests/runtime_degraded.rs` 的
+    // 「绝不能因为读不到就写上 ended_at」同一件事，2026-09-19 实测）。
+    let (m, rt, _db) = mgr();
+    let v = m.create(&new_session("fresh")).unwrap();
+    let r = v.record.runtime_ref.as_deref().unwrap().to_owned();
+    rt.kill_session(&r);
+    let after = m.get(&v.record.id).unwrap();
+    assert_eq!(
+        after.assessment.reason.as_deref(),
+        Some("runtime session missing"),
+        "窗口内仍是「没有运行时事实可给」，不抢着下结论"
+    );
+    assert!(after.record.ended_at.is_none(), "更不能写 ended_at");
+    assert_eq!(after.assessment.status, Status::Unknown);
+}
+
+#[test]
+fn server_gone_and_session_gone_are_told_apart_in_the_reason() {
+    // 同一个结论（FINISHED / process / 0.8），reason 分两档：整个 server 连不上，还是只有
+    // 这一个会话没了。排障时这一句就是"为什么一屋子行同时结束"的答案（issue notes ③）。
+    let (m, rt, db) = mgr();
+    let a = m.create(&new_session("a")).unwrap();
+    let b = m.create(&new_session("b")).unwrap();
+    backdate_spawn(&db, &a.record.id);
+    backdate_spawn(&db, &b.record.id);
+    rt.kill_server("agora");
+    let views: HashMap<String, _> = m
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|v| (v.record.id.clone(), v))
+        .collect();
+    for id in [&a.record.id, &b.record.id] {
+        let v = &views[id];
+        assert_eq!(
+            v.assessment.status,
+            Status::Finished,
+            "{id}: {:?}",
+            v.assessment
+        );
+        let reason = v.assessment.reason.as_deref().unwrap_or_default();
+        assert!(
+            reason.contains("runtime session gone") && reason.contains("server gone"),
+            "一屋子的行一起没了，要说得上是 server 的事: {reason}"
+        );
+        assert!(v.record.ended_at.is_some(), "{id} 要补上结束时刻");
+    }
+    // 对照：server 还在应答、只删一个会话，就说 session gone，不抒到 server 头上。
+    let (m2, rt2, db2) = mgr();
+    let c = m2.create(&new_session("c")).unwrap();
+    let d = m2.create(&new_session("d")).unwrap();
+    backdate_spawn(&db2, &c.record.id);
+    rt2.kill_session(c.record.runtime_ref.as_deref().unwrap());
+    let cv = m2.get(&c.record.id).unwrap();
+    assert!(
+        cv.assessment
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("session gone; no exit status"),
+        "{:?}",
+        cv.assessment
+    );
+    assert!(
+        !cv.assessment
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("server gone"),
+        "server 在，不要把话说大"
+    );
+    assert!(
+        matches!(
+            m2.get(&d.record.id).unwrap().assessment.status,
+            Status::Starting | Status::Running
+        ),
+        "server 在、会话也在：只删一个会话不应把别的抒成结束"
+    );
+}
+
+#[test]
+fn runtime_gone_of_a_killed_row_still_says_killed_by_user() {
+    // 库里有 killed_at（用户在 Dashboard 按过 Kill）而运行时会话后来也没了（Mac 现场 b226b5：
+    // killed_at 09-09、状态却说看不清）：按 killed_by_user 说，不弹通知——那是他自己干的。
+    let (m, rt, db) = mgr();
+    let v = m.create(&new_session("k")).unwrap();
+    backdate_spawn(&db, &v.record.id);
+    m.kill(&v.record.id).unwrap();
+    rt.kill_session(v.record.runtime_ref.as_deref().unwrap());
+    let after = m.get(&v.record.id).unwrap();
+    let reason = after.assessment.reason.as_deref().unwrap_or_default();
+    assert_eq!(after.assessment.status, Status::Finished);
+    assert!(
+        reason.starts_with("killed by user") && reason.contains("runtime session gone"),
+        "既要留下 Kill 的事实，也要说清运行时会话不在了: {reason}"
+    );
+}
+
+#[test]
+fn degraded_runtime_never_becomes_runtime_gone() {
+    // ADR-001 D7 的降级路径一个字不改：server 在、但应答不了（协议不匹配）→ UNKNOWN
+    // runtime unavailable，而且绝不写 ended_at（"读不到"不等于"已经死了"）。
+    let (m, rt, db) = mgr();
+    let v = m.create(&new_session("deg")).unwrap();
+    backdate_spawn(&db, &v.record.id);
+    *rt.list_error.lock().unwrap() =
+        Some("protocol version mismatch (client 8, server 7)".to_owned());
+    let views = m.list().unwrap();
+    let got = views.iter().find(|x| x.record.id == v.record.id).unwrap();
+    assert_eq!(got.assessment.status, Status::Unknown);
+    let reason = got.assessment.reason.as_deref().unwrap_or_default();
+    assert!(
+        reason.contains("runtime unavailable") && !reason.contains("runtime session gone"),
+        "{reason}"
+    );
+    assert!(
+        got.record.ended_at.is_none(),
+        "降级期间不得写 ended_at（与 tests/runtime_degraded.rs 同一条纪律）"
+    );
+    // 恢复：server 换代后下一次读就转回活着，不必重启 daemon。
+    *rt.list_error.lock().unwrap() = None;
+    let back = m.get(&v.record.id).unwrap();
+    assert!(back.alive);
+}
+
+#[test]
+fn runtime_gone_notifies_once_and_obeys_killed_by_user() {
+    // 验收：RUNNING → 这条 FINISHED 像 process gone 一样通知一次（求差器第一轮只建基线，
+    // 所以 daemon 重启时发现 server 不在不会弹——只有运行中才响一次）。
+    use agora::events::{Differ, Event};
+    let (m, rt, db) = mgr();
+    let gone = m.create(&new_session("gone")).unwrap();
+    let killed = m.create(&new_session("killed")).unwrap();
+    backdate_spawn(&db, &gone.record.id);
+    backdate_spawn(&db, &killed.record.id);
+    let mut differ = Differ::default();
+    assert!(differ.step("n", &m.list().unwrap()).is_empty());
+
+    rt.kill_session(gone.record.runtime_ref.as_deref().unwrap());
+    m.kill(&killed.record.id).unwrap();
+    rt.kill_session(killed.record.runtime_ref.as_deref().unwrap());
+    let events = differ.step("n", &m.list().unwrap());
+    let notes: Vec<(String, String)> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Notification { id, title, .. } => {
+                Some((id.clone().unwrap_or_default(), title.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notes,
+        vec![(
+            format!("n:{}", gone.record.id),
+            "Shell / gone @ n finished".to_owned()
+        )],
+        "用户自己 Kill 的不弹；运行中会话消失的弹一条: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::StatusChanged {
+                status: Status::Finished,
+                ref reason,
+                ..
+            } if reason.as_deref().unwrap_or_default().contains("runtime session gone")
+        )),
+        "{events:?}"
+    );
+    // 下一轮 nothing changed：不重复弹。
+    assert!(differ.step("n", &m.list().unwrap()).is_empty());
 }
 
 /// 把运行时里的会话标成"在 `exited` 那一刻退出了"（FakeRuntime 的 set_dead 不带时刻）。

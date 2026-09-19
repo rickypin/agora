@@ -164,6 +164,53 @@ fn is_shell_signal_code(code: i32) -> bool {
     matches!(code, 129 | 130 | 137 | 143)
 }
 
+/// 进程层看到的"运行时会话不在列表里"的两种说法（agora-u5p，ADR-001 D4）。
+/// 区别只在 reason：两者的结论都是 FINISHED，把握也都是 0.8（见 [`runtime_gone`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeGone {
+    /// server 还在应答，只有这一个会话没了（`kill-session`、窗口被关、采纳的会话自己退了）。
+    Session,
+    /// 整个运行时 server 连不上：它上面的每一个会话都不可能还存在。
+    Server,
+}
+
+impl RuntimeGone {
+    /// reason 里那半句人话。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RuntimeGone::Session => "session gone",
+            RuntimeGone::Server => "server gone",
+        }
+    }
+}
+
+/// 运行时会话没了：有 `runtime_ref`、运行时正常应答、列表里找不到它。
+///
+/// 这是**结束的事实**而不是"看不清"（MISSION §4.3；ADR-001 D4 于 2026-09-19 据此修订）：
+/// 会话销毁时 pane 进程收 SIGHUP，agent 确定不在，与 external 行的 `external process gone`
+/// 同性质。拿不到退出码（pane 连同会话一起没了），所以：
+/// - conf 0.8 而非 1.0 —— "连不上 socket"有一个已知的假阳性：socket 文件被 tmpfiles 之类清掉
+///   而运行时进程还活着（它会靠 SIGUSR1 重建 socket），那时说"server 没了"是错的（notes ③，
+///   反例写进 ADR-001 D4）；
+/// - 不盖 hook 先说的结束（同 0.8，`Machine::process_fact_is_no_better`）：行上留着宿主自己的
+///   说法，只有 `alive` 变假（agora-rzh 同一条理由）。
+///
+/// 用户按过 Kill（`killed_at` 在）的写成 killed by user：那是他自己干的，不弹通知
+/// （`events.rs` 的通知规则按 reason 前缀静音）。
+///
+/// 运行时整体降级（协议不匹配、超时）不走这里，那是 UNKNOWN `runtime unavailable: …`（D7）。
+pub fn runtime_gone(gone: RuntimeGone, killed_by_user: bool) -> Assessment {
+    let reason = if killed_by_user {
+        format!("killed by user (runtime session gone; {})", gone.as_str())
+    } else {
+        format!("runtime session gone ({}; no exit status)", gone.as_str())
+    };
+    Assessment::new(Status::Finished, Source::Process, 0.8, Some(&reason))
+}
+
+/// 运行时对**这一个会话**答不上话来时的结论。与 [`runtime_gone`] 的分工：这条是"没有运行时事实
+/// 可给"（这一行根本没有句柄，或压根没问过运行时），那条才是"运行时说了：没有这个会话"。
+/// `SessionManager::view` 只在 `runtime_ref` 为 NULL 的行上走到这条臂（external 行恒 NULL）。
 pub fn process_layer(
     runtime: Option<&RuntimeSession>,
     spawn_age_secs: Option<u64>,

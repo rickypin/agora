@@ -548,6 +548,16 @@ impl Runtime for TmuxRuntime {
             .ok_or_else(|| RuntimeError::NotFound(r.clone()))
     }
 
+    /// 与 `list_socket` 同一条结构事实：能不能 connect 上那个 socket（不看文件在不在、不匹配
+    /// stderr 文本，ADR-002 规则 10）。一次 connect，不起子进程。ref 解析不了也说不了 server
+    /// 的事，按"在"答（agora-u5p）。
+    fn server_present(&self, r: &RuntimeRef) -> bool {
+        match self.parse_ref(r) {
+            Ok(p) => self.server_running(p.socket),
+            Err(_) => true,
+        }
+    }
+
     fn attach(&self, r: &RuntimeRef, _size: Size) -> Result<AttachSpec, RuntimeError> {
         let p = self.parse_ref(r)?;
         // -u 强制 UTF-8；`=` 精确匹配；不带 -d，允许多客户端同看（§6.8）。

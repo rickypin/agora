@@ -65,6 +65,7 @@ vi.mock("@xterm/addon-fit", () => ({
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
 import { TerminalView } from "./TerminalView";
+import { runtimeSessionGone } from "./terminal";
 
 class FakeSocket implements TerminalSocketLike {
   onopen: ((ev: unknown) => void) | null = null;
@@ -244,5 +245,92 @@ describe("TerminalView passes the browser platform to the key layer (agora-hhu)"
     ta.dispatchEvent(new InputEvent("input", { data: "中", inputType: "insertCompositionText", bubbles: true }));
     ta.dispatchEvent(new InputEvent("input", { data: "中", inputType: "insertText", bubbles: true }));
     expect(sock.sent).toHaveLength(1);
+  });
+});
+
+
+/**
+ * 运行时会话已不在的行（agora-u5p，Mac 2026-09-18 现场 A2）：终端那一格过去画一个永远连不上的
+ * 「重新连接」——那一行没有 pane 可连，按下去只有一次 `no sessions`。现在画文案 + Restart / 删除记录，
+ * 并且根本不去建那条 WS。
+ */
+describe("TerminalView when the runtime session is gone (agora-u5p)", () => {
+  const goneActions = { onRestart: vi.fn(), onRemove: vi.fn() };
+
+  function setupGone(props: { runtimeGone?: { onRestart: () => void; onRemove: () => void; busy?: boolean; note?: string | null } | null; readOnly?: boolean } = {}) {
+    sock = new FakeSocket();
+    const connectSpy = vi.fn(() => sock as unknown as TerminalSocketLike);
+    const ui = render(
+      <TerminalView
+        sessionId="n:a"
+        connect={connectSpy}
+        readOnly={props.readOnly}
+        runtimeGone={props.runtimeGone === undefined ? goneActions : props.runtimeGone}
+      />,
+    );
+    return { ui, connectSpy };
+  }
+
+  it("recognizes the row by status + reason, not by a string match on the whole sentence", () => {
+    expect(runtimeSessionGone({ status: "finished", reason: "runtime session gone (server gone; no exit status)" })).toBe(true);
+    expect(runtimeSessionGone({ status: "finished", reason: "killed by user (runtime session gone; session gone)" })).toBe(true);
+    // 对照：活着的行、别的结束原因、以及还没判出状态的一行都不算。
+    expect(runtimeSessionGone({ status: "running", reason: null })).toBe(false);
+    expect(runtimeSessionGone({ status: "finished", reason: "exit code 1" })).toBe(false);
+    expect(runtimeSessionGone({ status: "unknown", reason: "runtime unavailable: protocol version mismatch" })).toBe(false);
+    expect(runtimeSessionGone(null)).toBe(false);
+  });
+
+  it("shows the fact instead of a reconnect button and never opens the WS", () => {
+    const { connectSpy } = setupGone();
+    expect(screen.getByTestId("term-link").textContent).toBe("运行时会话已不在");
+    expect(screen.queryByTestId("reconnect")).toBeNull();
+    expect(connectSpy).not.toHaveBeenCalled();
+    expect(screen.getByTestId("gone-restart").textContent).toBe("Restart");
+    expect(screen.getByTestId("gone-remove").textContent).toBe("删除记录");
+  });
+
+  it("the two buttons are the way out", () => {
+    setupGone();
+    fireEvent.click(screen.getByTestId("gone-restart"));
+    fireEvent.click(screen.getByTestId("gone-remove"));
+    expect(goneActions.onRestart).toHaveBeenCalledOnce();
+    expect(goneActions.onRemove).toHaveBeenCalledOnce();
+  });
+
+  it("says why an attempt failed and goes idle while one is running", () => {
+    setupGone({ runtimeGone: { ...goneActions, busy: true, note: "session_gone: 节点说不了" } });
+    expect(screen.getByTestId("gone-note").textContent).toContain("session_gone");
+    expect((screen.getByTestId("gone-restart") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("reconnects once the row comes back to life (Restart 之后不必切行走一圈)", async () => {
+    sock = new FakeSocket();
+    const connectSpy = vi.fn(() => sock as unknown as TerminalSocketLike);
+    const ui = render(
+      <TerminalView sessionId="n:a" connect={connectSpy} runtimeGone={goneActions} />,
+    );
+    expect(connectSpy).not.toHaveBeenCalled();
+    // Restart 成功、事件流把行推回 alive：Workspace 那一侧就不再传 runtimeGone。
+    ui.rerender(<TerminalView sessionId="n:a" connect={connectSpy} runtimeGone={null} />);
+    expect(connectSpy).toHaveBeenCalledOnce();
+    await act(async () => {
+      sock.onopen?.({});
+      sock.frame({ type: "status", status: "attached" });
+    });
+    expect(screen.getByTestId("term-link").textContent).toBe("已连接");
+    expect(screen.queryByTestId("gone-restart")).toBeNull();
+  });
+
+  it("leaves the read-only diff terminal alone: its button is 重新运行", () => {
+    const { connectSpy } = setupGone({ readOnly: true });
+    // 只读终端连的是 git diff 那条 WS，与这一行的运行时会话在不在无关：它照常连。
+    expect(connectSpy).toHaveBeenCalledOnce();
+    act(() => {
+      sock.onmessage?.({ data: JSON.stringify({ type: "exit", exit: { kind: "code", value: 0 } }) });
+    });
+    // 退出后的出口是「重新运行」（再跑一次 git diff），不是被 runtimeGone 换成 Restart。
+    expect(screen.getByTestId("rerun").textContent).toBe("重新运行");
+    expect(screen.queryByTestId("gone-restart")).toBeNull();
   });
 });

@@ -969,18 +969,38 @@ impl SessionManager {
 
     fn view(
         &self,
-        rec: SessionRecord,
+        mut rec: SessionRecord,
         live: &[RuntimeSession],
         degraded: Option<&str>,
     ) -> SessionView {
+        // STARTING 只看本代进程的起始时刻。updated_at 不行：rename / kill / cleanup 都刷新它，
+        // 改名后两秒内会把跑了一天的会话报成 STARTING（agora-xqa.15，2026-09-03）。
+        let spawn_age = rec.spawned_at.as_deref().and_then(age_secs);
+        // 有句柄、运行时应答正常，而这一次的列表里没有它 —— 运行时会话没了（agora-u5p）。
+        // 三个条件缺一不可：
+        // - 降级不算（协议不匹配、超时、server 应答不了都是"读不到"，ADR-001 D7）；
+        // - 本代进程还在 STARTING 窗口里也不算：`create_with_prompt` 与 `restart_with` 在运行时
+        //   刚返回的那一刻就 `get()`，列表还没来得及报到它（`list_socket` 对解析不了的 pane 行
+        //   也是跳过、不报错），"这一 tick 没看见"不等于"没了"。少了这条，每次起会话都会先给自己
+        //   写一个 ended_at 再报 FINISHED（2026-09-19 实测：`tests/runtime_degraded.rs` 的
+        //   「绝不能因为读不到就写上 ended_at」正是抓它的守卫）。
+        // 先算成布尔量而不是在下面的 match 里现取：它只按 rec 的不可变借用求值、算完即结束，
+        // 之后才改 rec 的 ended_at（`rt` 要借 rec 借到函数末尾）。
+        let starting = spawn_age.is_some_and(|a| a < status::STARTING_WINDOW_SECS);
+        let gone = !starting
+            && degraded.is_none()
+            && rec
+                .runtime_ref
+                .as_deref()
+                .is_some_and(|r| !live.iter().any(|s| s.r#ref.0 == r));
+        if gone {
+            self.note_runtime_gone(&mut rec);
+        }
         let rt = rec
             .runtime_ref
             .as_deref()
             .and_then(|r| live.iter().find(|s| s.r#ref.0 == r));
         let killed = rec.killed_at.is_some();
-        // STARTING 只看本代进程的起始时刻。updated_at 不行：rename / kill / cleanup 都刷新它，
-        // 改名后两秒内会把跑了一天的会话报成 STARTING（agora-xqa.15，2026-09-03）。
-        let spawn_age = rec.spawned_at.as_deref().and_then(age_secs);
         let (process, liveness) = match (rec.origin, rt) {
             // 运行时此刻不可信：不知道就报 UNKNOWN，不许拿"读不到"当"已经死了"（ADR-001 D7）。
             _ if degraded.is_some() && rec.runtime_ref.is_some() => (
@@ -1014,7 +1034,21 @@ impl SessionManager {
                 ),
             },
             _ => {
-                let a = status::process_layer(rt, spawn_age, killed);
+                // 运行时会话没了：会话销毁时 pane 进程收 SIGHUP，agent 确定不在——那是事实不是
+                // 猜测，报 FINISHED 而不是 UNKNOWN（agora-u5p；ADR-001 D4 据此修订）。
+                // server 连不上与只有这一个会话没了分开写 reason；判据是运行时的 connect 探活。
+                let a = match (gone, rec.runtime_ref.as_deref()) {
+                    (true, Some(r)) => status::runtime_gone(
+                        if self.runtime.server_present(&RuntimeRef(r.to_owned())) {
+                            status::RuntimeGone::Session
+                        } else {
+                            status::RuntimeGone::Server
+                        },
+                        killed,
+                    ),
+                    // 没有句柄又不是 external（库里不该有这种行）：没有运行时事实可说。
+                    _ => status::process_layer(rt, spawn_age, killed),
+                };
                 let live = if rt.is_some_and(|s| s.alive) {
                     Liveness::Alive
                 } else {
@@ -1480,6 +1514,26 @@ impl SessionManager {
 
     fn mark_ended(&self, id: &str) -> Result<(), SessionError> {
         self.mark_ended_at(id, None)
+    }
+
+    /// 运行时会话没了：第一次观察到时补 `ended_at`（近似——会话连同 pane 一起没了，运行时再也
+    /// 报不出退出时刻）。`reconcile` 只在 daemon 启动时跑一次，运行中才没掉的 server / 会话
+    /// 等不到下一次重启（agora-u5p notes ②，现场：Mac 重启后 6 行 unknown 35m，库里有
+    /// killed_at / ended_at 而状态说看不清）。幂等：库里已有 ended_at 就不动，与 reconcile 的
+    /// missing 分支同一条规则（准确值优先）。写失败只 warn：读路径不因一次 SQLite 忙而报错，
+    /// 状态结论也不依赖它（行照样 FINISHED，只是没有结束时刻）。
+    fn note_runtime_gone(&self, rec: &mut SessionRecord) {
+        if rec.ended_at.is_some() {
+            return;
+        }
+        if let Err(e) = self.mark_ended(&rec.id) {
+            tracing::warn!(component = "session", id = %rec.id, %e, "运行时会话没了，补 ended_at 失败");
+            return;
+        }
+        // 库里的值由 SQLite 的 strftime('now') 生成，内存里这份取同一个秒的文本：为一次
+        // 跨秒的偏差回读一行不划算，下一轮读就是库里的准值。
+        rec.ended_at = Some(clock::format_utc_secs(clock::now_secs()));
+        rec.ended_at_approximate = true;
     }
 
     fn set_killed_at(&self, id: &str, set: bool) -> Result<(), SessionError> {

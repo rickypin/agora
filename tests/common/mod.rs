@@ -36,6 +36,12 @@ pub struct FakeRuntime {
     pub tails: Mutex<HashMap<String, String>>,
     /// `respawn` 收到的命令，按顺序（dvh.13：Restart 的 resume 命令要到运行时才算数）。
     pub respawns: Mutex<Vec<String>>,
+    /// connect 不上的 socket（agora-u5p）：`server_present` 对它答 false，即整个 server 没了。
+    /// 用 [`FakeRuntime::kill_server`] 置它，不要直接写这个集合。
+    pub dead_servers: Mutex<std::collections::HashSet<String>>,
+    /// 置了就让 `list()` 报 [`RuntimeError::ServerUnavailable`]，模拟 ADR-001 D7 的运行时失明
+    /// （server 在、但应答不了：协议不匹配）。真 tmux 那条路见 `tests/runtime_degraded.rs`。
+    pub list_error: Mutex<Option<String>>,
 }
 
 impl FakeRuntime {
@@ -78,6 +84,21 @@ impl FakeRuntime {
     pub fn forget(&self, r#ref: &str) {
         self.sessions.lock().unwrap().remove(r#ref);
     }
+
+    /// 把 socket 上最后一个会话被 `kill-session` 干掉：ref 从列表里消失，但 server 还在应答。
+    /// 与 [`Self::kill_server`] 的区别就是状态层要分开写 reason 的那两种"没了"（agora-u5p）。
+    pub fn kill_session(&self, r#ref: &str) {
+        self.forget(r#ref);
+    }
+
+    /// 模拟 `tmux -L <socket> kill-server`：那个 server 连不上了，它上面的会话一个都不剩。
+    pub fn kill_server(&self, socket: &str) {
+        self.dead_servers.lock().unwrap().insert(socket.to_owned());
+        self.sessions
+            .lock()
+            .unwrap()
+            .retain(|r, _| Self::socket_of(r) != socket);
+    }
 }
 
 impl Runtime for FakeRuntime {
@@ -90,7 +111,17 @@ impl Runtime for FakeRuntime {
         Ok(RuntimeRef(r))
     }
     fn list(&self) -> Result<Vec<RuntimeSession>, RuntimeError> {
+        if let Some(reason) = self.list_error.lock().unwrap().clone() {
+            return Err(RuntimeError::ServerUnavailable { reason });
+        }
         Ok(self.sessions.lock().unwrap().values().cloned().collect())
+    }
+    fn server_present(&self, r: &RuntimeRef) -> bool {
+        !self
+            .dead_servers
+            .lock()
+            .unwrap()
+            .contains(Self::socket_of(&r.0))
     }
     fn inspect(&self, r: &RuntimeRef) -> Result<RuntimeSession, RuntimeError> {
         self.sessions

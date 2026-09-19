@@ -187,6 +187,18 @@ pub trait Runtime: Send + Sync {
     /// 全部 socket 的全部会话，含非 agora 创建的。每 tick 每 socket一次子进程（D6）。
     fn list(&self) -> Result<Vec<RuntimeSession>, RuntimeError>;
     fn inspect(&self, r#ref: &RuntimeRef) -> Result<RuntimeSession, RuntimeError>;
+    /// `list()` 说"列表里没有这个 ref"之后追问一句：它所在的那个 server 还在不在。
+    ///
+    /// 为什么要单独问：`list()` 对"server 没了"返回的是**空列表而不是错误**（ADR-001 D4：
+    /// 没有会话不是故障），于是"有句柄却不在列表里"有两种说法——整个 server 没了，还是只有
+    /// 这一个会话没了。状态层要分开写 reason（agora-u5p）。
+    /// 实现只许用 connect 探活这一类廉价手段：读路径每 tick 会为每一个"不在列表里"的行问一次，
+    /// 起子进程就是每 tick 每行一个 tmux client（ADR-001 D6 的账）。探不到就保守答 `true`。
+    /// 默认 `true`：没有"server"概念的运行时的行只有"会话没了"一种说法。
+    fn server_present(&self, r#ref: &RuntimeRef) -> bool {
+        let _ = r#ref;
+        true
+    }
     fn attach(&self, r#ref: &RuntimeRef, size: Size) -> Result<AttachSpec, RuntimeError>;
     /// 只供观测与预览；返回 ≤ 64 KB 的尾部。
     fn capture_tail(&self, r#ref: &RuntimeRef, lines: u32) -> Result<Vec<u8>, RuntimeError>;

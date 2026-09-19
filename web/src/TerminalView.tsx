@@ -13,12 +13,30 @@ import { TerminalClient, type ExitInfo, type TerminalClientOptions } from "./ter
 /** scrollback 与运行时的 history-limit 对齐（ADR-001 D6）。 */
 export const SCROLLBACK = 10000;
 
+/**
+ * 「运行时会话已不在」那一行的两个出口（agora-u5p）：Restart 在节点侧退化成同名 create
+ * （`SessionManager::restart_with` 的 NotFound 分支，无 scrollback），删除记录只拿掉 agora 的 metadata。
+ * 动作本身长在 Workspace（它才有 api），note 是失败后要说的一句话。
+ */
+export interface RuntimeGoneActions {
+  onRestart: () => void;
+  onRemove: () => void;
+  busy?: boolean;
+  note?: string | null;
+}
+
 type Link = "connecting" | "attached" | "read_only" | "detached" | "exited";
 
 interface Props {
   sessionId: string;
   /** 测试注入：建 WS 的方式；默认同源 `/api/sessions/<id>/terminal`。 */
   connect?: TerminalClientOptions["connect"];
+  /**
+   * 这一行的运行时会话已经没了（agora-u5p）：Workspace 按行本身判定后递两个出口进来。
+   * 给丁就不是这个形状：那一格不画 WS、不画「重新连接」（按多少次都是 `no sessions`），
+   * 改成「运行时会话已不在」+ Restart / 删除记录。缺省 null = 照常连。
+   */
+  runtimeGone?: RuntimeGoneActions | null;
   /** 挂着的终端的 focus()：Workspace 在点已激活的行 / 标签页时把焦点交回来（agora-vcc）。
    * 挂载时填、卸载时清空。 */
   focusRef?: { current: (() => void) | null };
@@ -31,11 +49,15 @@ interface Props {
  * 一个会话的终端：xterm.js + FitAddon ↔ TerminalClient。
  * 组件卸载 = detach（MISSION §4.6）：只关 WS，agent 不受影响。
  */
-export function TerminalView({ sessionId, connect, focusRef, readOnly = false }: Props) {
+export function TerminalView({ sessionId, connect, focusRef, readOnly = false, runtimeGone = null }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const [link, setLink] = useState<Link>("connecting");
   const [exit, setExit] = useState<ExitInfo | null>(null);
   const [attempt, setAttempt] = useState(0);
+  // 只读终端（diff）连的不是会话的 pane，而是同一条 WS 上的 git diff：那一格的「重新运行」
+  // 是真出口，不受这一行的运行时会话在不在影响。
+  const gone = readOnly ? null : runtimeGone;
+  const goneFlag = gone !== null;
 
   useEffect(() => {
     const el = host.current;
@@ -77,7 +99,9 @@ export function TerminalView({ sessionId, connect, focusRef, readOnly = false }:
       },
       onClose: (exited) => setLink(exited ? "exited" : "detached"),
     });
-    client.connect(sessionId, term.cols, term.rows);
+    // 运行时会话没了：不去建那条 WS。连上去只会拿到 `no sessions` + 退出码 1（Mac 现场），
+    // 而那一格本来也没有可重连的东西。
+    if (!goneFlag) client.connect(sessionId, term.cols, term.rows);
     // 只读时这一头就不发 input：服务端也丢，但少发一帧就少一分歧义。
     const send = readOnly ? () => {} : (d: string) => client.sendInput(d);
     const input = term.onData(send);
@@ -130,15 +154,40 @@ export function TerminalView({ sessionId, connect, focusRef, readOnly = false }:
     };
     // connect 是挂载时定死的测试注入，不进依赖：内联闭包每次渲染都是新引用，进了就会
     // 每 setLink 一次重建终端与 WS。focusRef 是 Workspace 的 useRef，引用不变，同理不进。
+    // goneFlag 要进：Restart 把行推回活着的那一刻就是该重连的那一刻（不重挂的话
+    // 那一格会停在「运行时会话已不在」直到用户切行走一圈回来）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, attempt]);
+  }, [sessionId, attempt, goneFlag]);
 
   return (
     <div className="term">
       <div className="term-bar">
-        <span className={`link link-${link}`}>{linkLabel(link, exit)}</span>
-        {link !== "attached" && link !== "read_only" && link !== "connecting" && (
-          <button onClick={() => setAttempt((n) => n + 1)}>{readOnly ? "重新运行" : "重新连接"}</button>
+        <span className={`link link-${gone ? "detached" : link}`} data-testid="term-link">
+          {gone ? "运行时会话已不在" : linkLabel(link, exit)}
+        </span>
+        {gone ? (
+          // 没有 pane 可连的行不画「重新连接」：那是一个永远按不通的出口（agora-u5p）。
+          // 给真出口：Restart（节点侧退化为同名 create）与删除记录。
+          <>
+            <button onClick={gone.onRestart} disabled={gone.busy} data-testid="gone-restart">
+              Restart
+            </button>
+            <button onClick={gone.onRemove} disabled={gone.busy} data-testid="gone-remove">
+              删除记录
+            </button>
+            {gone.note && <span className="muted" data-testid="gone-note">{gone.note}</span>}
+          </>
+        ) : (
+          link !== "attached" &&
+          link !== "read_only" &&
+          link !== "connecting" && (
+            <button
+              onClick={() => setAttempt((n) => n + 1)}
+              data-testid={readOnly ? "rerun" : "reconnect"}
+            >
+              {readOnly ? "重新运行" : "重新连接"}
+            </button>
+          )
         )}
       </div>
       <div className="term-host" ref={host} />

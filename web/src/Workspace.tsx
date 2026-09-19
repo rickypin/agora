@@ -15,8 +15,8 @@ import { loadMode, storeMode, visibleOrder, type SidebarMode } from "./sidebarMo
 import { rowName, Sidebar } from "./Sidebar";
 import { FREEZE_MS, stableOrder, stableSections } from "./stableOrder";
 import { SessionStore, useSessions, useUnregistered } from "./store";
-import { defaultDiffSocket, type TerminalClientOptions } from "./terminal";
-import { TerminalView } from "./TerminalView";
+import { defaultDiffSocket, runtimeSessionGone, type TerminalClientOptions } from "./terminal";
+import { TerminalView, type RuntimeGoneActions } from "./TerminalView";
 
 /**
  * 主区显示什么：侧栏 active 行的终端，或它的只读 diff（agora-h1k.5）。页面只有一个选中集合——侧栏的
@@ -244,6 +244,49 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
 
   const active = view ? byId.get(view.id) : undefined;
   const showDiff = view?.kind === "diff";
+  // 运行时会话已不在的行（agora-u5p，ADR-001 D4）：状态是 FINISHED + reason `runtime session gone`，
+  // 那一格没有 pane 可连。终端栏给真出口：Restart 在节点侧退化成同名 create（无 scrollback），
+  // 删除记录只拿掉 agora 的 metadata（`delete_metadata` 对找不到的会话是直接删行）。
+  // 两个动作都不预弹确认框：这一行是 FINISHED，`would_kill()` 为假，节点也不会要确认；
+  // 真遇上了（状态刚一变）就把节点那句话写在终端栏里，不静默失败。
+  const [goneBusy, setGoneBusy] = useState(false);
+  const [goneNote, setGoneNote] = useState<string | null>(null);
+  const goneActions = useMemo<RuntimeGoneActions | null>(() => {
+    if (!active || showDiff || !runtimeSessionGone(active)) return null;
+    const id = active.id;
+    const fail = (r: { needsConfirmation?: boolean; error?: { error: string; message: string } }) =>
+      setGoneNote(
+        r.needsConfirmation
+          ? "节点要先确认：请在 Session Settings 里 Restart。"
+          : `${r.error?.error ?? "error"}: ${r.error?.message ?? ""}`,
+      );
+    return {
+      busy: goneBusy,
+      note: goneNote,
+      onRestart: () => {
+        setGoneBusy(true);
+        setGoneNote(null);
+        void api.restart(id).then(
+          (r) => {
+            setGoneBusy(false);
+            if (!r.ok) fail(r);
+          },
+          () => setGoneBusy(false),
+        );
+      },
+      onRemove: () => {
+        setGoneBusy(true);
+        setGoneNote(null);
+        void api.deleteMetadata(id).then(
+          (r) => {
+            setGoneBusy(false);
+            if (!r.ok) fail(r);
+          },
+          () => setGoneBusy(false),
+        );
+      },
+    };
+  }, [active, showDiff, goneBusy, goneNote, api]);
   // 聚焦请求只对当前这一帧有效：面板不在（这一行没有可回答的东西，或正在看 diff）就丢掉——
   // 留着它会在这一行下一次变成 TURN_DONE 的那一刻把焦点从终端抢走。
   const panelRow = active && !showDiff && hasRespondPanel(active) ? active : null;
@@ -546,7 +589,13 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
                   external 会话：agora 没有它的终端，只能看状态、经 hook 回答；要操作请去它自己的窗口。
                 </p>
               ) : (
-                <TerminalView key={active.id} sessionId={active.id} connect={terminalConnect} focusRef={terminalFocus} />
+                <TerminalView
+                  key={active.id}
+                  sessionId={active.id}
+                  connect={terminalConnect}
+                  focusRef={terminalFocus}
+                  runtimeGone={goneActions}
+                />
               )}
               {settingsOpen && !showDiff && <SessionSettings row={active} api={api} onClose={() => setSettingsOpen(false)} />}
             </div>

@@ -284,3 +284,64 @@ fn default_pane_title_does_not_shadow_display_name() {
     let v = f.wait(&m, &loud.record.id, |v| v.name == "agent-set-title");
     assert!(!v.record.name_locked, "title 赢不等于落锁");
 }
+
+#[test]
+fn kill_server_finishes_every_row_on_it() {
+    // agora-u5p 的复现（issue 描述末句，Mac 2026-09-18 现场 A2）：隔离 socket 上起一个 shell 会话，
+    // `tmux -L <socket> kill-server`，下一个 tick 这一行就是 FINISHED ——过去是永远钉在
+    // UNKNOWN 'runtime session missing'，主区给一个连不上的"重新连接"。
+    // 这一条同时钉住两半：reason 要说"server gone"（整个 server 没了，不是这一个会话被杀），
+    // 以及 ended_at 当场补上（reconcile 只在 daemon 启动时跑一次，运行中死掉的等不到下一次重启）。
+    let f = Fixture::new();
+    let m = f.manager();
+    let v = m.create(&spec("shell", "sleep 300")).unwrap();
+    let live = f.wait(&m, &v.record.id, |v| v.alive);
+    assert!(live.record.ended_at.is_none());
+    assert!(matches!(
+        live.assessment.status,
+        Status::Starting | Status::Running
+    ));
+
+    assert!(Command::new("tmux")
+        .args(["-L", &f.socket, "kill-server"])
+        .status()
+        .unwrap()
+        .success());
+    // kill-server 之后 connect 立刻 refused；isolate::wait_socket_refuses 等这一步。
+    isolate::wait_socket_refuses(&socket_path(&f.socket));
+
+    let after = f.wait(&m, &v.record.id, |v| {
+        v.assessment.status == Status::Finished
+    });
+    let reason = after.assessment.reason.as_deref().unwrap_or_default();
+    assert!(
+        reason.contains("runtime session gone") && reason.contains("server gone"),
+        "整台 server 没了要说得上是 server 的事: {reason}"
+    );
+    assert_eq!(after.assessment.source, agora::status::Source::Process);
+    assert!(!after.alive);
+    let ended = after
+        .record
+        .ended_at
+        .clone()
+        .expect("运行时会话没了要当场补 ended_at，不能等下次重启");
+    assert!(
+        after.record.ended_at_approximate,
+        "没人报得出退出时刻，只能近似"
+    );
+    assert!(
+        agora::clock::age_secs(&ended).unwrap_or(u64::MAX) < 60,
+        "记的是发现它的当下: {ended}"
+    );
+
+    // 这一行还有出口：Restart 退化成同名 create（ADR-001 D4），新 server 起来、行回活着。
+    let back = m.restart(&v.record.id, &[]).unwrap();
+    assert!(back.alive, "Restart 要能把 server 带回来");
+    assert_eq!(back.record.epoch, 2);
+    assert!(back.record.ended_at.is_none(), "Restart 清掉结束时刻");
+    assert!(Command::new("tmux")
+        .args(["-L", &f.socket, "kill-server"])
+        .status()
+        .unwrap()
+        .success());
+}
