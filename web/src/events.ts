@@ -62,8 +62,9 @@ export interface SessionRow {
   last_seen?: string;
   pending_decision?: { request_id: string; summary: string; epoch: number; host?: string } | null;
   /**
-   * 用户按过 Kill 的时刻（Restart 清空）。`killed_at && alive` = 进程还在吃 TERM、节点的宽限在后台
-   * 走着：设置面板据此显示"正在结束"，直到行推成 FINISHED（agora-284；`docs/spec/ux.md` Kill）。
+   * 用户按过 Kill 的时刻（Restart 清空）。`killed_at && rowProcess(row) === "alive"` = 进程还在吃
+   * TERM、节点的宽限在后台走着：设置面板据此显示"正在结束"，直到行推成 FINISHED（agora-284；
+   * `docs/spec/ux.md` Kill）。读三值不读旧的 `alive`：那个布尔只保留一版（agora-5gg.18）。
    */
   killed_at?: string | null;
   /**
