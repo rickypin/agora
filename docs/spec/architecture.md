@@ -129,6 +129,7 @@ external 行的 STARTING 同样带衰减（agora-rkl，2026-09-18 现场：zuan 
 | 说"怎么没的" | `Runtime::server_present(ref)`（tmux 的实现是 connect 一下那个 unix socket，不起子进程）：连不上 → `runtime session gone (server gone; …)`；连得上 → `(session gone; …)` | 一屋子行同时结束（daemon 停几天后 server 没了）与单个会话被 `kill-session` 是两回事，排障时这一句就是答案 |
 | 结束时刻 | 第一次观察到就补 `ended_at`（近似，`Machine` 之外、与 `reconcile` 共用 `mark_ended`），此后幂等不再刷 | `reconcile` 只在 `main.rs` 启动时跑一次：运行中 server 死掉的行等不到下一次重启（Mac 2026-09-18：库里 killed_at 是 09-09、状态说看不清，同一行自相矛盾） |
 | 通知 | RUNNING / IDLE → 这条 FINISHED 照 `external process gone` 发一次通知；`killed_at` 在的行 reason 写成 `killed by user (runtime session gone; …)`，被 `notification_for` 的前缀静音 | 用户自己按的 Kill 不是需要打扰的事；求差器第一轮只建基线，所以 daemon 重启时发现的那一批不弹，只有运行中死的弹 |
+| 进程三态 | 这条 FINISHED 行的 `process` 是 `gone`（agora-5gg.18 的 Q4：状态 FINISHED / FAILED 一律 gone），投影出的旧 `alive` 为 false；降级那条给 `unknown`，不说假话 | 侧栏、peer 与页面用 `rowProcess()` 判「这一行还有没有进程可谈」，不字符串匹配 reason（agora-0wea 还欠显式类型）；接缝守卫 `tests/session_manager.rs::missing_runtime_session_finishes_the_row_and_writes_ended_at_once` 与 `::degraded_runtime_never_becomes_runtime_gone` 各钉一值 |
 | 覆盖关系 | 0.8 不是 1.0：hook 先说了 `session ended (hook)` / `superseded: …` 的行留 hook 的说法（`Machine::process_fact_is_no_better`）；带退出码的进程事实（1.0）仍然压倒一切 | 同 agora-rzh 那条：行上要说得出是宿主自己结束的、还是只剩"会话没了"这个事实 |
 | UI | 终端那一格不画「重新连接」，画「运行时会话已不在」+ Restart / 删除记录，并且根本不去建那条 WS；判据 `web/src/terminal.ts::runtimeSessionGone`（`status=finished` 且 reason 含 `runtime session gone`），出口在 `web/src/TerminalView.tsx` | 那一行没有 pane，attach 上去只有一次 `no sessions` + 退出码 1；Restart 在节点侧退化成同名 `create`（ADR-001 D4），是本行唯一的真出口 |
 

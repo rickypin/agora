@@ -371,6 +371,10 @@ fn missing_runtime_session_finishes_the_row_and_writes_ended_at_once() {
         Some("runtime session gone (session gone; no exit status)")
     );
     assert!(!after.alive, "行上同时说清：运行时会话不在");
+    // 与 agora-5gg.18 的进程三态接缝（rebase 到 22afc70 之后多出来的一格）：状态是 FINISHED 就一律
+    // `gone`（Q4 裁决：对话结束即不再谈进程），不是 `unknown`——这一行没有 pane 可连是事实。
+    // 旧 `alive` 只是它的投影 false；去掉 derive 的 FINISHED 提前返回，这里会退回 liveness 的编码。
+    assert_eq!(after.process, agora::status::ProcessState::Gone);
     assert!(!after.would_kill(), "FINISHED 行 Restart / Kill 不再要确认");
     let ended = after
         .record
@@ -516,6 +520,9 @@ fn degraded_runtime_never_becomes_runtime_gone() {
         got.record.ended_at.is_none(),
         "降级期间不得写 ended_at（与 tests/runtime_degraded.rs 同一条纪律）"
     );
+    // 同一次「读不到」在进程三态上必须是 `unknown`：上半段给状态机编码成的 Dead 不能原样导出，
+    // 否则 API 上就多出一条假的 gone（agora-5gg.18 的 derive 第三个参数，ADR-001 D7）。
+    assert_eq!(got.process, agora::status::ProcessState::Unknown);
     // 恢复：server 换代后下一次读就转回活着，不必重启 daemon。
     *rt.list_error.lock().unwrap() = None;
     let back = m.get(&v.record.id).unwrap();
