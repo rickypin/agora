@@ -2,8 +2,12 @@
 //! agent 不死、会话与 metadata 完整；probe 守卫拒绝不认识现有库的"新版本"（MISSION §2.3 规则 10）。
 //!
 //! 真二进制 + 隔离 AGORA_HOME（短路径：macOS unix socket 路径上限 104 字节）+ 隔离 tmux socket。
-//! 样板抄自 tests/single_instance.rs（本批 tests/common 归别的任务，不改）。测试里没有 systemd /
-//! launchd，`upgrade` 走的是 pid 文件那一支：SIGTERM 旧 daemon、经链接起新的。
+//! 样板抄自 tests/single_instance.rs（本批 tests/common 归别的任务，不改）。`upgrade` 在测试里走的是
+//! pid 文件那一支：SIGTERM 旧 daemon、经链接起新的——**不是**因为机器上没有 systemd / launchd（开发机
+//! zuan 就装着真的 `agora.service`），而是 upgrade 会核对单元的 ExecStart / program 是不是本 home 的
+//! `bin/agora`，别人的单元不算（agora-wyk：2026-09-14 到 09-19 这里 2/3 用例假红且每跑一次就重启一次
+//! 生产 daemon，修法见 src/cli/upgrade.rs `systemd_unit_serves`）。这两条用例本身就是那条修法的守卫：
+//! 在装着真单元的机器上红回去，说明又只看 is-active 了。
 
 #[path = "common/isolate.rs"]
 mod isolate;

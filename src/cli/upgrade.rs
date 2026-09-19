@@ -10,8 +10,10 @@
 //! ③ 重指 `<AGORA_HOME>/bin/agora`——与 `hooks install` 同一个 [`ensure_bin_link`]，exe 传 canonicalize
 //!    后的真路径。经 `<AGORA_HOME>/bin/agora upgrade …` 被调用时 `current_exe` 是链接本身（macOS 不解析，
 //!    agora-78f）：这里根本不看 `current_exe`，新旧两边都按真路径比，造不出 link → link。
-//! ④ 重启 daemon（`--no-restart` 跳过），按顺序探测：systemd 用户单元 `agora.service` 活着 →
-//!    `systemctl --user restart`；macOS 上 launchd 里有 `dev.agora.daemon` → `launchctl kickstart -k`；
+//! ④ 重启 daemon（`--no-restart` 跳过），按顺序探测：systemd 用户单元 `agora.service` 活着**且它的
+//!    ExecStart 就是本 home 的 `bin/agora`** → `systemctl --user restart`；macOS 上 launchd 里有
+//!    `dev.agora.daemon` 且 program 是本 home 的 `bin/agora` → `launchctl kickstart -k`（只看单元在不在、
+//!    不看它属于哪个 home，装了真 daemon 的开发机上隔离 home 的升级就会去重启人的 daemon，agora-wyk）；
 //!    都不是 → 读 `<AGORA_HOME>/agora.pid`，进程活着就 SIGTERM、等它退出（≤ 10 s，超时报错不 SIGKILL），
 //!    再以 `<AGORA_HOME>/bin/agora serve` 脱离终端起新的（stdout+stderr 追加到 `<AGORA_HOME>/daemon.log`）；
 //!    pid 文件不在或进程不在 → 只重指链接，"daemon 未在运行，下次启动即新版本"。
@@ -430,7 +432,7 @@ fn restart_daemon(
     old_pid: Option<u32>,
     out: &mut dyn Write,
 ) -> Result<RestartOutcome, UpgradeError> {
-    if systemd_unit_active() {
+    if systemd_unit_serves(link) {
         run_checked(
             &["systemctl", "--user", "restart", SYSTEMD_UNIT],
             "systemctl --user restart",
@@ -440,7 +442,7 @@ fn restart_daemon(
     }
     if cfg!(target_os = "macos") {
         let target = launchd_target();
-        if launchd_loaded(&target) {
+        if launchd_serves(&target, link) {
             run_checked(
                 &["launchctl", "kickstart", "-k", &target],
                 "launchctl kickstart -k",
@@ -468,15 +470,56 @@ fn restart_daemon(
     Ok(RestartOutcome::Spawned { old_pid: pid })
 }
 
-/// `systemctl --user is-active agora.service` 答 `active` 才算；systemctl 不存在（macOS）、
-/// 没有用户 systemd、单元没装都算不是。
-fn systemd_unit_active() -> bool {
-    exec(
+/// systemd 用户单元 `agora.service` 活着**且它跑的就是本 home 的 `bin/agora`** 才算命中：
+/// `systemctl --user is-active` 答 `active`，再 `show -p ExecStart` 读单元真正执行的路径，与 `link`
+/// （`<AGORA_HOME>/bin/agora`）比对。systemctl 不存在（macOS）、没有用户 systemd、单元没装都算不是。
+///
+/// 为什么要比路径（agora-wyk，2026-09-14 立案、2026-09-19 修）：is-active 与本次的 `--home` / `AGORA_HOME`
+/// 无关，装了真 daemon 的 Linux 开发机上单元永远 active，于是隔离 home 里的 `agora upgrade`（`tests/upgrade.rs`
+/// 就是这种）也会走这一支去 `systemctl --user restart`——重启的是开发机上真的 daemon，自己那个临时 home
+/// 的新 pid 永远等不到 `/api/health`，2/3 用例红，而且每跑一次门禁就把生产 daemon 重启一次。单元的
+/// ExecStart 由 `scripts/install.sh` 写成 `<AGORA_HOME>/bin/agora serve`（模板 `scripts/templates/agora.service`），
+/// 所以它指向哪个 home 一比就知道。**只有读到了路径且明确不同才排除**：`show` 跑不起来或格式认不出时
+/// 按旧口径（active 即命中），别把一台真装了单元的机器错判成 pid 文件那一支——那一支会 SIGTERM 掉
+/// systemd 管着的 daemon 再另起一个，systemd 的 `Restart=on-failure` 又拉一个，两边打架。
+fn systemd_unit_serves(link: &Path) -> bool {
+    let active = exec(
         &["systemctl", "--user", "is-active", SYSTEMD_UNIT],
         &ExecOptions::default(),
     )
     .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "active")
-    .unwrap_or(false)
+    .unwrap_or(false);
+    if !active {
+        return false;
+    }
+    let shown = exec(
+        &[
+            "systemctl",
+            "--user",
+            "show",
+            "-p",
+            "ExecStart",
+            SYSTEMD_UNIT,
+        ],
+        &ExecOptions::default(),
+    )
+    .ok()
+    .filter(|o| o.status.success())
+    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    match shown.as_deref().and_then(systemd_exec_start_path) {
+        Some(program) => same_binary_path(&program, link),
+        None => true,
+    }
+}
+
+/// 从 `systemctl show -p ExecStart` 的输出里抠出单元执行的路径。格式是
+/// `ExecStart={ path=/home/u/.agora/bin/agora ; argv[]=/home/u/.agora/bin/agora serve ; ignore_errors=no ; … }`
+/// （systemd 255，Ubuntu 24.04 实测 2026-09-19）；认不出返回 `None`，调用方按旧口径处理。
+fn systemd_exec_start_path(show_output: &str) -> Option<PathBuf> {
+    let line = show_output.lines().find(|l| l.starts_with("ExecStart="))?;
+    let rest = line.split_once("path=")?.1;
+    let path = rest.split(" ;").next()?.trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
 fn launchd_target() -> String {
@@ -485,11 +528,49 @@ fn launchd_target() -> String {
     format!("gui/{uid}/{LAUNCHD_LABEL}")
 }
 
-/// `launchctl print gui/<uid>/dev.agora.daemon` 成功 = 单元已装载（没装载是退出码非 0）。
-fn launchd_loaded(target: &str) -> bool {
-    exec(&["launchctl", "print", target], &ExecOptions::default())
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// launchd 里装载了 `dev.agora.daemon`（`launchctl print gui/<uid>/…` 成功；没装载是退出码非 0）
+/// **且它的 program 就是本 home 的 `bin/agora`** 才算命中——与 [`systemd_unit_serves`] 同一个理由：
+/// 装了真单元的 Mac 上跑 `tests/upgrade.rs` 不该去 kickstart 人的 daemon。输出里认不出 `program =`
+/// 一行时按旧口径（装载即命中）。launchd 这一支 2026-09-19 只按 `launchctl print` 的公开输出格式写，
+/// 未在真 Mac 上跑过（改这台机器的人请补一次实测）。
+fn launchd_serves(target: &str, link: &Path) -> bool {
+    let printed = exec(&["launchctl", "print", target], &ExecOptions::default())
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let Some(printed) = printed else {
+        return false;
+    };
+    match launchd_program_path(&printed) {
+        Some(program) => same_binary_path(&program, link),
+        None => true,
+    }
+}
+
+/// 从 `launchctl print` 的输出里抠出 `program = /path`（缩进的一行）。认不出返回 `None`。
+fn launchd_program_path(print_output: &str) -> Option<PathBuf> {
+    let path = print_output
+        .lines()
+        .map(str::trim)
+        .find_map(|l| l.strip_prefix("program = "))?
+        .trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// 两条 `bin/agora` 路径是不是同一个文件位置：先比字面，再把**父目录**各自 canonicalize 后比
+/// （`/Users/u` 经符号链接写法、`./` 之类）。不 canonicalize 文件本身——`bin/agora` 是链接，解析下去
+/// 会变成 `versions/<sha>/agora`，新旧两边指的版本不同就会误判成两个 home。
+fn same_binary_path(unit_program: &Path, link: &Path) -> bool {
+    if unit_program == link {
+        return true;
+    }
+    let canon = |p: &Path| -> Option<PathBuf> {
+        Some(p.parent()?.canonicalize().ok()?.join(p.file_name()?))
+    };
+    match (canon(unit_program), canon(link)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
 }
 
 fn run_checked(argv: &[&str], what: &str) -> Result<(), UpgradeError> {
@@ -738,6 +819,60 @@ mod tests {
             .exit_code(),
             1
         );
+    }
+
+    /// agora-wyk 的守卫：单元活着不等于单元是本 home 的。ExecStart 指向别的 home 要判成"不归这里"，
+    /// 同一个 home 判成"归这里"，认不出格式时交给调用方按旧口径处理（返回 None）。
+    #[test]
+    fn systemd_unit_is_matched_by_exec_start_path_not_just_active() {
+        let shown = "ExecStart={ path=/home/u/.agora/bin/agora ; argv[]=/home/u/.agora/bin/agora serve ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n";
+        let program = systemd_exec_start_path(shown).unwrap();
+        assert_eq!(program, PathBuf::from("/home/u/.agora/bin/agora"));
+        assert!(same_binary_path(
+            &program,
+            Path::new("/home/u/.agora/bin/agora")
+        ));
+        assert!(!same_binary_path(
+            &program,
+            Path::new("/tmp/agora-test/up-7/bin/agora")
+        ));
+        assert_eq!(systemd_exec_start_path("ExecStart=\n"), None);
+        assert_eq!(systemd_exec_start_path("Environment=AGORA_HOME=/x\n"), None);
+    }
+
+    #[test]
+    fn launchd_program_line_is_parsed_from_print_output() {
+        let printed = "gui/501/dev.agora.daemon = {\n\tactive count = 1\n\tpath = /Users/u/Library/LaunchAgents/dev.agora.daemon.plist\n\tstate = running\n\tprogram = /Users/u/.agora/bin/agora\n\targuments = {\n\t\t/Users/u/.agora/bin/agora\n\t\tserve\n\t}\n}\n";
+        assert_eq!(
+            launchd_program_path(printed),
+            Some(PathBuf::from("/Users/u/.agora/bin/agora"))
+        );
+        assert_eq!(
+            launchd_program_path("gui/501/x = {\n\tstate = running\n}\n"),
+            None
+        );
+    }
+
+    /// 父目录经符号链接写法也算同一处；文件本身不解析（bin/agora 是链接，解析下去是 versions/<sha>/agora）。
+    #[test]
+    fn same_binary_path_canonicalizes_parent_but_not_the_link_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::write(home.join("real-a"), b"a").unwrap();
+        std::os::unix::fs::symlink(home.join("real-a"), home.join("bin/agora")).unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&home, &alias).unwrap();
+        assert!(same_binary_path(
+            &alias.join("bin/agora"),
+            &home.join("bin/agora")
+        ));
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(other.join("bin")).unwrap();
+        assert!(!same_binary_path(
+            &other.join("bin/agora"),
+            &home.join("bin/agora")
+        ));
     }
 
     #[test]
