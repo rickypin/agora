@@ -6,7 +6,10 @@
 # bin/agora 指向它、写随登录自启的 systemd 用户单元 / launchd 代理（LANG=C.UTF-8 写在单元里，
 # 这是 devcenter CJK 乱码教训的另一半）。macOS 与 Ubuntu 24.04 都能跑；POSIX sh，不依赖 bash。
 #
-# 幂等：重跑不重复拷贝、不覆盖已有的 config.yaml、单元文件内容没变就不重写（mtime 不动）。
+# 幂等：重跑不重复拷贝、不覆盖已有的 config.yaml、单元文件内容没变就不重写（mtime 不动），
+# 服务已加载且单元没变就不再重启 daemon——重跑安装脚本不该打断正在跑的会话，也不该在 Mac 上
+# 制造一次全量重放（2026-09-18：Mac daemon 停 3.5 天，恢复时一次重放 14026 件、172 s，
+# docs/analysis/session-status-audit-2026-09-18.md §1.2 D1）。
 # 输出纪律：给人看的话一律走 stderr，stdout 留给将来的机器可读输出（MISSION §2.3 规则 10）。
 #
 # 用法见 usage()。测试守卫：tests/install_script.rs。
@@ -41,6 +44,13 @@ usage() {
 
 只在 config.yaml 不存在时写它；二进制按 sha256 放到 <home>/versions/<sha 前 12 位>/agora，
 <home>/bin/agora 是指向它的符号链接（hook 与升级都依赖这条稳定路径）。
+
+环境变量:
+  AGORA_INSTALL_OS   仅测试用：强制按 Darwin 或 Linux 走分支。守卫一律带 --no-service，
+                     launchctl 那半段（print / bootstrap / bootout）不设它就没人跑过
+                     （tests/install_script.rs 拿它把这一半钉住）。
+                     真机安装不要设它——设错会把单元写到 ~/Library/LaunchAgents 再抱怨没有
+                     launchctl。
 EOF
 }
 
@@ -76,10 +86,19 @@ done
 [ -n "$BINARY" ] || { usage; die "--binary 必填"; }
 [ -f "$BINARY" ] || die "--binary 不是文件: $BINARY"
 
+# 系统判定。AGORA_INSTALL_OS 是测试钩子（见 usage）：CI 虽然有 macos runner，守卫却一律带
+# --no-service，launchctl 那一半（print / bootstrap / bootout）此前在任何机器上都没被执行过。
 OS=$(uname -s)
+[ -z "${AGORA_INSTALL_OS:-}" ] || OS=$AGORA_INSTALL_OS
 case "$OS" in
     Darwin|Linux) ;;
-    *) die "不支持的系统: ${OS}（只支持 macOS 与 Linux）" ;;
+    *)
+        if [ "$OS" = "$(uname -s)" ]; then
+            die "不支持的系统: ${OS}（只支持 macOS 与 Linux）"
+        else
+            die "AGORA_INSTALL_OS 只用来在测试里扮演系统，取值只能是 Darwin 或 Linux（现在是 ${OS}）"
+        fi
+        ;;
 esac
 
 : "${HOME:?install.sh: HOME 未设置}"
@@ -342,13 +361,16 @@ render_template() {
 }
 
 # 内容没变就不碰文件（保住 mtime，也让 systemd 的 daemon-reload 少一次没意义的重载）。
+# 顺带把"这次到底改没改"记进 UNIT_CHANGED：launchd 分支要靠它决定是否需要重新 bootstrap。
 write_if_changed() {
     _dst=$1
     _content=$2
+    UNIT_CHANGED=0
     if [ -f "$_dst" ] && [ "$(cat "$_dst")" = "$_content" ]; then
         say "unit: $_dst 未变"
         return 0
     fi
+    UNIT_CHANGED=1
     say "unit: 写入 $_dst"
     if [ "$DRY_RUN" = 1 ]; then
         say "[dry-run] write $_dst"
@@ -359,6 +381,24 @@ write_if_changed() {
     fi
 }
 
+# bootstrap 失败最常见的原因是 gui 域不存在：gui/<uid> 要用户有登录图形会话才在，从 ssh 起的
+# shell 里 bootstrap 会报 "Bootstrap failed: 5: Input/output error"。裸失败既看不出为什么，
+# 又把"要不要 sudo"这个决定悄悄留给下一个人，所以把两条可行的命令打出来再非零退出
+# （ADR-003 的信任边界：改系统设置的每一步都由人敲）。
+# 注：这两条命令的形状来自 launchd 的公开约定，本机（Linux 开发机）无法实测，真 Mac 上的
+# bootstrap 与"杀掉 daemon 能否自动拉起"归人眼验收（agora-5gg 验收 (c)）。
+launchd_bootstrap() {
+    _domain=$1
+    if launchctl bootstrap "$_domain" "$PLIST" >&2; then
+        say "service: $LAUNCHD_LABEL 已 bootstrap（登录即起；非 0 退出由 launchd 拉起）"
+        return 0
+    fi
+    say "service: bootstrap 失败。gui 域只在用户已登录图形会话时存在，从 ssh 装最常见，改用下面任一条："
+    say "  sudo launchctl asuser $(id -u) launchctl bootstrap ${_domain} $PLIST"
+    say "  或在 Mac 本机开终端: launchctl bootstrap ${_domain} $PLIST"
+    return 1
+}
+
 if [ "$OS" = Darwin ]; then
     [ -n "$UNIT_DIR" ] || UNIT_DIR=$HOME/Library/LaunchAgents
     PLIST=$UNIT_DIR/$LAUNCHD_LABEL.plist
@@ -366,15 +406,25 @@ if [ "$OS" = Darwin ]; then
     if [ "$NO_SERVICE" = 1 ]; then
         say "service: --no-service，未 bootstrap；之后手动: launchctl bootstrap gui/$(id -u) $PLIST"
     elif [ "$DRY_RUN" = 1 ]; then
-        say "[dry-run] launchctl bootstrap gui/$(id -u) ${PLIST}（已加载则 kickstart -k）"
+        say "[dry-run] 先看 launchctl print gui/$(id -u)/$LAUNCHD_LABEL：未加载就 bootstrap，已加载但单元内容变了就 bootout + bootstrap，两者都不成立则不动 daemon"
     else
         domain=gui/$(id -u)
         if launchctl print "$domain/$LAUNCHD_LABEL" >/dev/null 2>&1; then
-            say "service: $LAUNCHD_LABEL 已加载，kickstart -k 让它读新单元"
-            launchctl kickstart -k "$domain/$LAUNCHD_LABEL" >&2
+            if [ "$UNIT_CHANGED" = 1 ]; then
+                # kickstart -k 只把已加载的那份定义重启一遍，不重读磁盘上的 plist（launchctl 的
+                # 子命令语义；改单元内容的正规做法是 bootout 再 bootstrap）。拿 kickstart 当
+                # "让它读新单元"会让人以为新版已生效，而实际跑的还是旧定义（旧 PATH、旧 KeepAlive）。
+                # bootout 失败不阻断：接下来 bootstrap 成不成才是判据。
+                say "service: $LAUNCHD_LABEL 已加载且单元内容变了，bootout 后重新 bootstrap"
+                launchctl bootout "$domain/$LAUNCHD_LABEL" >&2 || true
+                launchd_bootstrap "$domain"
+            else
+                # 重跑安装脚本不该把 daemon 抽掉：正在等的会话、正在累加的 hook 都会因这次重启
+                # 重新算一轮（Linux 侧 enable --now 对已 active 的单元也是空操作）。
+                say "service: $LAUNCHD_LABEL 已加载且内容未变，不重启 daemon"
+            fi
         else
-            launchctl bootstrap "$domain" "$PLIST" >&2
-            say "service: $LAUNCHD_LABEL 已 bootstrap（登录即起）"
+            launchd_bootstrap "$domain"
         fi
     fi
 else
