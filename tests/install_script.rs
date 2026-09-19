@@ -327,7 +327,7 @@ fn refuses_tmux_below_minimum() {
 }
 
 // ---------- macOS 分支（launchd） ----------
-// 下面四条靠 AGORA_INSTALL_OS=Darwin + 假 launchctl 在 Linux 上跑真服务分支（agora-5gg.15）。
+// 下面几条靠 AGORA_INSTALL_OS=Darwin + 假 launchctl 在 Linux 上跑真服务分支（agora-5gg.15）。
 // 钉的是脚本对 launchctl 的调用序列与单元内容；真 Mac 上 launchd 能把进程拉起、bootstrap
 // 在 ssh 会话里会不会撞 gui 域，仍归人眼（见 docs/spec/config.md「安装」）。
 
@@ -569,4 +569,85 @@ fn macos_dry_run_and_no_service_never_call_launchctl() {
         launchctl_calls(&log)
     );
     assert!(stderr(&out).contains("--no-service"), "{}", stderr(&out));
+}
+
+#[test]
+fn macos_warns_when_an_unmanaged_daemon_holds_the_home() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("agora");
+    let units = tmp.path().join("units");
+    let (path, log, state) = fake_launchctl(tmp.path());
+    let envs = launchd_env(&log, &state);
+    let args = install_args(&home, &units);
+
+    // 本任务要修的就是 Mac 上那台手工起的 daemon（bd memories mac-agora-daemon-manual-restart）。
+    // 装 launchd 单元时它还活着：agora.pid 分不清是谁起的 daemon（launchd 起手的也写同一个文件），
+    // 但"单元没装载 + pid 活着"两件事同时成立就是确证。用测试进程自己的 pid——它在这一刻必然活着。
+    fs::create_dir_all(&home).unwrap();
+    let pid = std::process::id();
+    fs::write(home.join("agora.pid"), format!("{pid}\n")).unwrap();
+
+    let out = run_env(&args, Some(&path), &envs);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(out.stdout.is_empty());
+    let err = stderr(&out);
+    assert!(err.contains("单元没装载"), "{err}");
+    assert!(err.contains("手工 daemon"), "{err}");
+    // 光说"有个 daemon 在跑"没有可执行性：要把 kill 与复核命令一起给。
+    assert!(err.contains(&format!("kill {pid}")), "{err}");
+    assert!(err.contains("launchctl print gui/"), "{err}");
+    // 只警告不拒装：人把旧进程停掉之后，launchd 的节流重试自己会把它拉起来。
+    let calls = launchctl_calls(&log);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(calls[1].starts_with("bootstrap gui/"), "{calls:?}");
+
+    // 反向对照一：pid 文件不在（干净机器、或上一代 daemon 正常退出删掉了它）就一句警告都不该有，
+    // 否则每次正常安装都白挨一吓。清掉假 launchd 的状态文件，重新走"单元没装载"那一支。
+    fs::remove_file(home.join("agora.pid")).unwrap();
+    fs::remove_file(&state).unwrap();
+    fs::write(&log, "").unwrap();
+    let out = run_env(&args, Some(&path), &envs);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(!err.contains("单元没装载"), "没有 pid 文件却警告了: {err}");
+    assert_eq!(
+        launchctl_calls(&log).len(),
+        2,
+        "这一轮也该 bootstrap: {err}"
+    );
+
+    // 反向对照二：pid 文件内容不是数字（半文件、被人写过）时不去 kill -0 一个不存在的东西。
+    fs::write(home.join("agora.pid"), "not-a-pid\n").unwrap();
+    fs::remove_file(&state).unwrap();
+    fs::write(&log, "").unwrap();
+    let out = run_env(&args, Some(&path), &envs);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        !stderr(&out).contains("单元没装载"),
+        "pid 内容不是数字时不该警告: {}",
+        stderr(&out)
+    );
+
+    // 反向对照三：pid 文件留着但进程早没了（被 kill -9、没走到 Drop）。拿一个自己回收掉的子进程
+    // 的 pid——wait 之后槽位就空了。理论上这个空槽可能被下一次 fork（就是安装脚本本身）占回去而
+    // 假红，本机 pid_max=4194304、概率约 1/在用车位数，2026-09-19 跑 20 次未复现。
+    fs::write(home.join("agora.pid"), format!("{}\n", dead_pid())).unwrap();
+    fs::remove_file(&state).unwrap();
+    fs::write(&log, "").unwrap();
+    let out = run_env(&args, Some(&path), &envs);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        !stderr(&out).contains("单元没装载"),
+        "pid 已经不活着却警告了: {}",
+        stderr(&out)
+    );
+}
+
+/// 一个当前不存在的 pid：spawn 一个 sleep 再 kill + wait 回收，槽位就空了（两个平台都这么拿）。
+fn dead_pid() -> u32 {
+    let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let pid = child.id();
+    let _ = child.kill();
+    child.wait().unwrap();
+    pid
 }

@@ -399,6 +399,25 @@ launchd_bootstrap() {
     return 1
 }
 
+# 手工 nohup 起的 daemon 与 launchd 起的写同一个 <home>/agora.pid，所以「pid 还活着」本身分不出
+# 是谁起的；只有在 launchctl 答「单元没装载」的那一支里它才是确证：这个 home 里跑着一个不受监督的
+# daemon，而它占着端口。这时 bootstrap，launchd 起的那一个会因端口被占立刻退出、再按 launchd 的节流
+# 反复重试（默认 ThrottleInterval=10 s，端口空出来才起得来）——现象正是本任务要修的「停了没人知道」，
+# 所以把旧进程怎么停打出来。10 s 那条与上面 asuser 一样是 launchd 的公开约定，本机（Linux 开发机）
+# 实测不到；这里只警告不 die：人只要把旧进程停掉，重试那一轮自己会起来。
+warn_unmanaged_daemon() {
+    _pidf=$HOME_DIR/agora.pid
+    [ -f "$_pidf" ] || return 0
+    _pid=$(cut -d' ' -f1 "$_pidf" 2>/dev/null | tr -d '[:space:]' || true)
+    case "$_pid" in
+        '' | *[!0-9]*) return 0 ;;
+    esac
+    kill -0 "$_pid" 2>/dev/null || return 0
+    say "service: 注意，$_pidf 里的 pid ${_pid} 还活着，而 launchd 说单元没装载 —— 这是一台不受监督的手工 daemon。"
+    say "         bootstrap 之后 launchd 起的那一个会因端口被占反复重试（约 10 s 一次），端口空出来才起得来。"
+    say "         先停掉旧的: kill ${_pid}，再确认: launchctl print gui/$(id -u)/$LAUNCHD_LABEL"
+}
+
 if [ "$OS" = Darwin ]; then
     [ -n "$UNIT_DIR" ] || UNIT_DIR=$HOME/Library/LaunchAgents
     PLIST=$UNIT_DIR/$LAUNCHD_LABEL.plist
@@ -424,6 +443,7 @@ if [ "$OS" = Darwin ]; then
                 say "service: $LAUNCHD_LABEL 已加载且内容未变，不重启 daemon"
             fi
         else
+            warn_unmanaged_daemon
             launchd_bootstrap "$domain"
         fi
     fi
