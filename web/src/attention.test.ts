@@ -69,6 +69,69 @@ describe("attention", () => {
     expect(sectionOf(row("r", "running"))).toBe("running");
   });
 
+  // agora-5gg.21（决策 agora-5gg.10 选 B 为主）：A46 的「看过」扩到 TURN_DONE——选中看过一次即降到中段，
+  // 新一次 TURN_DONE（新的 status_since）再回来。关键是它降进 RUNNING 段而**不是** Finished 折叠区：
+  // 折叠区的行是 Header「Finished N」一键清理的删除对象，而那一行 pane 里的进程还活着。
+  it("a seen TURN_DONE row drops to the RUNNING segment, never into the Finished folding (agora-5gg.21)", () => {
+    const done = row("d", "turn_done", { origin: "agora", status_since: 10 });
+    const extDone = row("x", "turn_done", { origin: "external", status_since: 20 });
+    const none = new Set<string>();
+    expect(needsAttention(done, none)).toBe(true);
+    expect(sectionOf(done, none)).toBe("attention");
+    const seen = new Set([seenKey(done), seenKey(extDone)]);
+    expect(needsAttention(done, seen)).toBe(false);
+    expect(sectionOf(done, seen)).toBe("running");
+    // 不许进折叠区：`sectionOf === "finished"` 是 Sidebar 一键清理逐行发 DELETE 的依据。
+    expect(finishedCollapsed(done, seen)).toBe(false);
+    expect(sectionOf(done, seen)).not.toBe("finished");
+    // external 的 TURN_DONE 一样降（不看 origin）：FINISHED 那边 external 直接收起靠的是证据 ②（人在终端里
+    // 自己结束了会话），TURN_DONE 的进程还在，工作面在哪都得人自己瞟一眼。
+    expect(needsAttention(extDone, seen)).toBe(false);
+    expect(sectionOf(extDone, seen)).toBe("running");
+    // 新一次完成：status_since 不同 → 旧记号作废，回到 NEEDS ATTENTION。
+    expect(needsAttention(row("d", "turn_done", { origin: "agora", status_since: 11 }), seen)).toBe(true);
+    expect(sectionOf(row("d", "turn_done", { origin: "agora", status_since: 11 }), seen)).toBe("attention");
+    // 记号不越界：同一行的 WAITING 不会被 TURN_DONE 的记号压下去。
+    expect(needsAttention(row("d", "waiting", { status_since: 10 }), seen)).toBe(true);
+    // 分段：看过的 TURN_DONE 进 RUNNING 段（分数 85 高于 running，所以在本段最前），行不丢、折叠区不涨。
+    const rows = [row("run", "running"), done, extDone, row("fin", "finished", { origin: "external" })];
+    const sorted = sortByAttention(rows);
+    const shown = partitionByAttention(sorted, seen);
+    expect(shown.map((r) => r.id)).toEqual(["x", "d", "run", "fin"]);
+    expect(shown.length).toBe(rows.length);
+    expect(shown.filter((r) => sectionOf(r, seen) === "finished").map((r) => r.id)).toEqual(["fin"]);
+  });
+
+  // agora-5gg.21 的可选项目 A（决策 agora-5gg.10）：TURN_DONE 段内按完成时间倒序，WAITING / FAILED 仍升序。
+  it("orders TURN_DONE by newest completion first while WAITING and FAILED keep waiting-longest first (agora-5gg.21)", () => {
+    const rows = [
+      row("w-old", "waiting", { status_since: 100 }),
+      row("w-new", "waiting", { status_since: 300 }),
+      row("f-old", "failed", { status_since: 100 }),
+      row("f-new", "failed", { status_since: 300 }),
+      row("t-old", "turn_done", { status_since: 100 }),
+      row("t-mid", "turn_done", { status_since: 200 }),
+      row("t-new", "turn_done", { status_since: 300 }),
+      row("t-none", "turn_done"), // 旧节点 / 测试桩：不知道何时完成，两个方向都排最后
+    ];
+    expect(sortByAttention(rows).map((r) => r.id)).toEqual([
+      "f-old",
+      "f-new",
+      "w-old",
+      "w-new",
+      "t-new",
+      "t-mid",
+      "t-old",
+      "t-none",
+    ]);
+    // 优先级仍在时长之前：P0 的旧完成不会让 P4 的新完成压住（只改方向不改三层顺序）。
+    const byPriority = [
+      row("t-p4-new", "turn_done", { task: { id: "x-4", title: "t", priority: 4 }, status_since: 900 }),
+      row("t-p0-old", "turn_done", { task: { id: "x-0", title: "t", priority: 0 }, status_since: 100 }),
+    ];
+    expect(sortByAttention(byPriority).map((r) => r.id)).toEqual(["t-p0-old", "t-p4-new"]);
+  });
+
   it("three-way partition keeps sortByAttention order inside every segment (Alt/Option+N invariant, A46)", () => {
     // 故意乱序传入：sortByAttention 先排，partition 只分段不换序。
     const rows = [

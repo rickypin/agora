@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
-import { loadSeen, sectionOf, seenKey, storeSeen, type Section } from "./attention";
+import { loadSeen, sectionOf, seenKey, seenRelevant, storeSeen, type Section } from "./attention";
 import { ChangesApiContext } from "./Changes";
 import { CommandPalette } from "./CommandPalette";
 import { nodeStatuses } from "./Header";
@@ -275,10 +275,11 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     [api, store],
   );
 
-  // 「看过」的 FINISHED 行（MISSION §4.6 证据 ①；A46，agora-j4w.1）：浏览器视图状态，localStorage 记着、
-  // 不进服务端。记的时机是**离开**那一行（切到别的行 / 关闭视图）而不是选中的那一刻：选中期间它得留在
-  // NEEDS ATTENTION 原位——记在选中那一刻它会立刻掉进收起的 Finished 区，主区还开着它的终端、侧栏却找不到
-  // 这一行（2026-09-08 实现时先这么写过）。离开时看它**当时**的状态：选中时还在跑、离开后才 FINISHED 的
+  // 「看过」的行（MISSION §4.6 证据 ①；A46，agora-j4w.1；agora-5gg.21 扩到 TURN_DONE）：浏览器视图状态，
+  // localStorage 记着、不进服务端。记的时机是**离开**那一行（切到别的行 / 关闭视图）而不是选中的那一刻：
+  // 选中期间它得留在 NEEDS ATTENTION 原位——记在选中那一刻它会立刻掉进收起的 Finished 区，主区还开着它的
+  // 终端、侧栏却找不到这一行（2026-09-08 实现时先这么写过）；TURN_DONE 延用同一个时机，两种状态一条通道，
+  // 眼下的行不会在眼皮底下换段。离开时看它**当时**的状态：选中时还在跑、离开后才完成的
   // 不算看过（结果是离开之后才出现的）。
   const [seen, setSeen] = useState<Set<string>>(() => loadSeen());
   const byIdRef = useRef(byId);
@@ -290,8 +291,10 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     prevViewId.current = cur;
     if (prev === null || prev === cur) return;
     const left = byIdRef.current.get(prev);
+    if (!left || !seenRelevant(left.status)) return;
     // external 的 FINISHED 不看 seen 就已经收起（finishedCollapsed），记它只是往 localStorage 里攒垃圾。
-    if (!left || left.status !== "finished" || left.origin === "external") return;
+    // TURN_DONE 没这条豁免（agora-5gg.21）：external 行看过一次也一样降到中段。
+    if (left.status === "finished" && left.origin === "external") return;
     const key = seenKey(left);
     setSeen((s) => {
       if (s.has(key)) return s;
@@ -301,15 +304,17 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     });
   }, [view?.id]);
   // 看过的记号跟着"这一次完成"走：行被删了（Delete metadata）就忘掉，行又跑起来了（Restart）也忘掉——
-  // 下一次 FINISHED 是新结果，得再进一次 NEEDS ATTENTION。记号是 `<id>@<status_since>`（`seenKey`）：
+  // 下一次完成是新结果，得再进一次 NEEDS ATTENTION。记号是 `<id>@<status_since>`（`seenKey`）：
   // 中间的 running 被同一批事件或 resync 跳过时 byId 里从没出现过它，只看"当前是不是 finished"清不掉；
-  // 新一次 FINISHED 的 status_since 不同，键对不上就是旧记号（agora-23h）。首个快照到达之前列表是空的，
+  // 新一次完成的 status_since 不同，键对不上就是旧记号（agora-23h）。TURN_DONE 也一样：下一轮 prompt 把它
+  // 抬回 RUNNING 时记号作废，新一轮完成（新的 status_since）重新回到 NEEDS ATTENTION（agora-5gg.21）。
+  // 哪些状态算"看过一次"问 `seenRelevant`，与写记号那处共用。首个快照到达之前列表是空的，
   // 别把整个集合清掉。
   useEffect(() => {
     if (byId.size === 0) return;
     setSeen((s) => {
       const current = new Set<string>();
-      for (const r of byId.values()) if (r.status === "finished") current.add(seenKey(r));
+      for (const r of byId.values()) if (seenRelevant(r.status)) current.add(seenKey(r));
       const kept = [...s].filter((key) => current.has(key));
       if (kept.length === s.size) return s;
       const next = new Set(kept);

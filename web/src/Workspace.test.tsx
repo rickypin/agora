@@ -716,6 +716,84 @@ describe("Workspace", () => {
     expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own"]);
   });
 
+  // agora-5gg.21（决策 agora-5gg.10 选 B）：A46 的「看过」扩到 TURN_DONE。选中的时刻不记（跟 FINISHED
+  // 同一个时机：离开那一行才记），看过之后降到 RUNNING 段，不进 Finished 折叠区（折叠区的行是 Header 一键清理的删除对象）。
+  it("a seen TURN_DONE row drops into the RUNNING segment and a new completion brings it back (agora-5gg.21)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t = setup([
+      row("n:wait", "waiting"),
+      { ...row("n:done", "turn_done"), origin: "agora", status_since: 100 },
+      row("n:run"),
+    ]);
+    await online(t);
+    const order = () =>
+      Array.from(screen.getByTestId("section-attention").parentElement!.querySelectorAll("[data-testid]"))
+        .map((el) => el.getAttribute("data-testid")!)
+        .filter((id) => id.startsWith("section-") || (id.startsWith("row-") && !id.startsWith("row-node-") && !id.startsWith("row-stale-")));
+    // 未看过：在 NEEDS ATTENTION（waiting 90 高于 turn_done 85）；没有 finished 行就没有折叠区。
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:done", "section-running", "row-n:run"]);
+    expect(screen.queryByTestId("section-finished")).toBeNull();
+    // 选中那一行：主区开着它（回答面板在），侧栏它留在原位，记号还不写。
+    fireEvent.click(screen.getByTestId("row-n:done"));
+    expect(screen.getByTestId("term-n:done")).toBeTruthy();
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:done", "section-running", "row-n:run"]);
+    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual([]);
+    // 离开那一行：记号写入 localStorage，行降到 RUNNING 段最前（分数 85 高于 running），不回 NEEDS ATTENTION。
+    fireEvent.click(screen.getByTestId("row-n:wait"));
+    await settle();
+    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:done@100"]);
+    expect(order()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:done", "row-n:run"]);
+    // 没进折叠区，也就不是「Finished N」一键清理的删除对象（那一行 pane 里的进程还活着）。
+    expect(screen.queryByTestId("section-finished")).toBeNull();
+    expect(screen.queryByTestId("clear-finished")).toBeNull();
+    // 行还停在 TURN_DONE 时，无关事件（别的行变了 → rows / byId 换身份 → 清理记号那条 effect 重跑）
+    // 不能把记号洗掉：作废的口径是"这一行还是不是 finished / turn_done"（`seenRelevant`）。照旧只认
+    // finished 的话，这里集合会被清空、刚降下去的行当场弹回 NEEDS ATTENTION，整套"看过即降"在第二次
+    // 事件之后就失效了。
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:run", status: "running", source: "hook", reason: "activity", alive: true, status_since: 120 }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:done@100"]);
+    expect(order()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:done", "row-n:run"]);
+    // 新一轮：prompt → RUNNING（记号作废）→ 新的 TURN_DONE（新的 status_since）——回到 NEEDS ATTENTION。
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:done", status: "running", source: "hook", reason: "prompt submitted", alive: true, status_since: 150 }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual([]);
+    await act(async () => {
+      t.sock.send([{ type: "status_changed", id: "n:done", status: "turn_done", source: "hook", reason: null, alive: true, status_since: 200 }]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    await settle();
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:done", "section-running", "row-n:run"]);
+    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual([]);
+  });
+
+  // external 的 TURN_DONE 照记、照降（不看 origin）：FINISHED 那边对 external 的豁免靠的是证据 ②（人在终端里
+  // 自己结束了会话，不看 seen 就已经收起），TURN_DONE 的进程还在，那个豁免不适用。
+  it("an external TURN_DONE row is marked seen too (the external exemption is about FINISHED only, agora-5gg.21)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t = setup([
+      row("n:wait", "waiting"),
+      { ...row("n:ext", "turn_done"), origin: "external", status_since: 100 },
+      { ...row("n:ext-fin", "finished"), origin: "external", status_since: 90 },
+    ]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("row-n:ext"));
+    fireEvent.click(screen.getByTestId("row-n:wait"));
+    await settle();
+    // 只有 external 的 TURN_DONE 进集合：external 的 FINISHED 不看 seen 就已经收起，记它只是攒垃圾。
+    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:ext@100"]);
+    expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
+    const order = () =>
+      Array.from(screen.getByTestId("section-attention").parentElement!.querySelectorAll("[data-testid]"))
+        .map((el) => el.getAttribute("data-testid")!)
+        .filter((id) => id.startsWith("section-") || (id.startsWith("row-") && !id.startsWith("row-node-") && !id.startsWith("row-stale-")));
+    expect(order()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:ext", "section-finished"]);
+  });
+
   it("the sidebar mode survives a remount via localStorage (A47)", async () => {
     const mem = new Map<string, string>();
     const fake: Storage = {

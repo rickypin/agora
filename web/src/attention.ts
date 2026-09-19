@@ -3,8 +3,11 @@
  *
  * 纯函数，所有客户端形态用同一条规则渲染同样的行。分数：凡是卡在人身上的
  * （FAILED / WAITING / TURN_DONE / FINISHED）高于不需要人的（RUNNING / STARTING），UNKNOWN 排中间。
- * 同分先按任务优先级（bd 的 P0–P4，无 bd 视为 P2），再按等待时长（状态起点越早越靠前）。
+ * 同分先按任务优先级（bd 的 P0–P4，无 bd 视为 P2），再按等待时长（状态起点越早越靠前）——
+ * 例外是 TURN_DONE：它段内按完成时间**倒序**，新完成在前（agora-5gg.21）。
  * FINISHED 再分来源与看没看过（`finishedCollapsed`，A46）：收起来的进侧栏末尾默认折叠的 Finished 区。
+ * 「看过」2026-09-19 起同样适用于 TURN_DONE（agora-5gg.21，决策 agora-5gg.10）：看过一次降到中段，
+ * 新一次完成再回来——但它降进的是 RUNNING 段，**不是** Finished 折叠区（理由见 `needsAttention`）。
  */
 import type { SessionRow } from "./events";
 
@@ -36,13 +39,17 @@ export function attentionScore(status: string): number {
 }
 
 /**
- * 「看过」的 FINISHED 行集合（MISSION §4.6 三条证据的第 ①；A46，agora-j4w.1）：会话 id 的集合，
+ * 「看过」的行集合（MISSION §4.6 三条证据的第 ①；A46，agora-j4w.1；agora-5gg.21 扩到 TURN_DONE）：
  * 是浏览器视图状态，不是服务端字段。空集 = 谁都没看过。
  *
  * 集合里的元素是 `seenKey`（`<id>@<status_since>`）而不是裸 id（agora-23h，2026-09-08 对抗审查）：记号
  * 得跟着"这一次完成"走。Restart 之后 running → finished 若被同一批事件（EventsClient 300 ms 合并窗）或
  * 断线重连的 resync 跳过中间态，裸 id 的记号没机会作废，新结果直接落进收起的 Finished 区而没人看过。
  * 新一次 FINISHED 的 status_since 必然不同（set_at 随 (status, source) 变刷新），键带上它就能认出是新结果。
+ * TURN_DONE 同理但多一层前提：下一轮要先有人的 prompt → RUNNING（`UserPromptSubmit`，三家都挂了这个 hook）
+ * 才再有一次 turn.ended，中间那一下刷新了 set_at。连续两条 TURN_DONE、中间什么状态都没变时 set_at 不动（
+ * `src/status/machine.rs set()` 只比 (status, source)），记号也就不会作废——那在状态机看来就是同一次完成的
+ * 重复上报，不拿它当新回合。
  */
 export type SeenSet = ReadonlySet<string>;
 
@@ -51,6 +58,14 @@ const NO_SEEN: SeenSet = new Set();
 /** 「看过」集合的键：这一行的这一次完成。没有 status_since 的行（旧节点 / 测试桩）退化为 `<id>@`。 */
 export function seenKey(row: { id: string; status_since?: unknown }): string {
   return `${row.id}@${typeof row.status_since === "number" ? row.status_since : ""}`;
+}
+
+/**
+ * 「看过」只对这两种状态有意义（MISSION §4.6 证据 ①）：FINISHED → 进折叠区，TURN_DONE → 降到中段。
+ * 写记号与清理记号两处都问它（`Workspace.tsx`），别处再判一种状态就会和这里对不上。
+ */
+export function seenRelevant(status: string): boolean {
+  return status === "finished" || status === "turn_done";
 }
 
 /**
@@ -66,9 +81,25 @@ export function finishedCollapsed(row: SessionRow, seen: SeenSet = NO_SEEN): boo
   return row.origin === "external" || seen.has(seenKey(row));
 }
 
-/** NEEDS ATTENTION 区：分数 ≥ FINISHED 的都是"等你"的——除了已收进 Finished 区的 FINISHED 行（`finishedCollapsed`）。 */
+/**
+ * NEEDS ATTENTION 区：分数 ≥ FINISHED 的都是"等你"的——除了已收进 Finished 区的 FINISHED 行
+ * （`finishedCollapsed`），也除了**看过一次**的 TURN_DONE 行（agora-5gg.21，决策 agora-5gg.10）。
+ *
+ * 看过的 TURN_DONE 降到 RUNNING 段而**不是** Finished 折叠区，两件硬理由：① 折叠区的行是 Header
+ * 「Finished N」一键清理的删除对象（`Sidebar.tsx` 的 `clearable` 按 `sectionOf === "finished"` 算），
+ * 那一行只是这一轮做完了、pane 里的进程还活着、下一条指令随时要发——把它算进可清理集合就会删掉活会话的记录；
+ * ② 折叠区默认收起，看过的 TURN_DONE 收进去就等于再也回不来（新一轮完成靠新记号回到 NEEDS
+ * ATTENTION，但人在「按项目」视图与折叠区里根本看不见它）。原问题（zuan capmaster 三行 208–255 h 的
+ * 旧完成永远压在刚做完的行上面）是"压着"，不是"该藏起来"。
+ *
+ * 不看 origin：external 的 TURN_DONE 也降。FINISHED 那边 external 一律直接收起靠的是证据 ②（人在终端里
+ * 自己结束了会话，结束即看过），TURN_DONE 没有这条——它还在跑，工作面在不在 agora 都得人瞟一眼，
+ * 所以两种来源都走"选中看过一次才降"。
+ */
 export function needsAttention(row: SessionRow, seen: SeenSet = NO_SEEN): boolean {
-  return attentionScore(row.status) >= SCORE.finished && !finishedCollapsed(row, seen);
+  if (attentionScore(row.status) < SCORE.finished) return false;
+  if (finishedCollapsed(row, seen)) return false;
+  return !(row.status === "turn_done" && seen.has(seenKey(row)));
 }
 
 export function taskOf(row: SessionRow): TaskInfo | null {
@@ -87,7 +118,17 @@ function since(row: SessionRow): number {
   return typeof s === "number" ? s : Number.MAX_SAFE_INTEGER;
 }
 
-/** 分数降序 → 优先级升序 → 等得久的在前；其余保持原顺序（稳定）。 */
+/**
+ * 分数降序 → 优先级升序 → 等得久的在前；其余保持原顺序（稳定）。
+ *
+ * TURN_DONE 段内方向反过来（agora-5gg.21，决策 agora-5gg.10 的可选项目 A）："等得久的在前"是为 WAITING
+ * 的公平性设计的（谁先卡住谁先被看到），套到"这一轮做完了等你回看"上语义是反的——zuan 的 capmaster 三行
+ * 208–255 h 的旧完成永远压在刚做完的行上面。WAITING / FAILED 仍升序。同分必然同状态（SCORE 一一对应），
+ * 所以取 a 的状态判方向就够。
+ *
+ * 没有 `status_since` 的行（旧节点 / 测试桩）先按"不知道何时完成"排在有时刻的行之后，与方向无关：
+ * 别让"不知道"冒充"最新完成"、钉在段首。两个时刻都没了才比原顺序（稳定）。
+ */
 export function sortByAttention(rows: SessionRow[]): SessionRow[] {
   return rows
     .map((row, i) => ({ row, i }))
@@ -96,14 +137,22 @@ export function sortByAttention(rows: SessionRow[]): SessionRow[] {
       if (s !== 0) return s;
       const p = taskPriority(a.row) - taskPriority(b.row);
       if (p !== 0) return p;
-      const w = since(a.row) - since(b.row);
+      // 时刻缺省的行一律排后面（与方向无关），再按方向比时刻：TURN_DONE 倒序、其余升序。
+      const known = (r: SessionRow) => (typeof r.status_since === "number" ? 0 : 1);
+      const k = known(a.row) - known(b.row);
+      if (k !== 0) return k;
+      const w = (a.row.status === "turn_done" ? -1 : 1) * (since(a.row) - since(b.row));
       if (w !== 0) return w;
       return a.i - b.i;
     })
     .map((x) => x.row);
 }
 
-/** 侧栏的三段：NEEDS ATTENTION → RUNNING（不需要人的一切）→ FINISHED（收起来的已完成，默认折叠）。 */
+/**
+ * 侧栏的三段：NEEDS ATTENTION → RUNNING（不需要人的一切 + 看过一次的 TURN_DONE）→ FINISHED
+ * （收起来的已完成，默认折叠）。看过的 TURN_DONE 落中段是 agora-5gg.21；四段改造（UNCLEAR / WORKING
+ * 改名）归 agora-5gg.11，这里仍按三段说。
+ */
 export type Section = "attention" | "running" | "finished";
 
 export function sectionOf(row: SessionRow, seen: SeenSet = NO_SEEN): Section {
@@ -121,9 +170,14 @@ export function partitionByAttention(rows: SessionRow[], seen: SeenSet = NO_SEEN
 }
 
 /**
- * 「看过」集合的持久化（localStorage；agora-j4w.1）：换个浏览器 / 清了站点数据就从头算——它只是视图状态，
- * 丢了的代价是几行 FINISHED 回到 NEEDS ATTENTION 再看一眼。读写都包 try/catch：隐私窗口、被禁的存储
+ * 「看过」集合的持久化（localStorage；agora-j4w.1，agora-5gg.21 起也存 TURN_DONE 的记号）：换个浏览器 /
+ * 清了站点数据就从头算——它只是视图状态，
+ * 丢了的代价是几行 FINISHED / TURN_DONE 回到 NEEDS ATTENTION 再看一眼。读写都包 try/catch：隐私窗口、被禁的存储
  * 访问 `localStorage` 本身会抛。
+ *
+ * 键名留着 `agora.seen-finished` 没改：`seenKey` = `<id>@<status_since>` 本来就是"这一行的这一次完成"，
+ * 与状态无关，同一集合直接复用（决策 agora-5gg.10）；改键名会把老浏览器里已看的 FINISHED 记号全丢掉，
+ * 那些行会集体回到 NEEDS ATTENTION——为了一个名字不值得。
  */
 export const SEEN_STORAGE_KEY = "agora.seen-finished";
 

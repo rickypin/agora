@@ -105,6 +105,53 @@ it("moves an agora FINISHED row into the Finished section once it is in the seen
   expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
 });
 
+// agora-5gg.21（决策 agora-5gg.10 选 B）：A46 的「看过」扩到 TURN_DONE。记号由 Workspace 在**离开**那一行时
+// 写进 localStorage（守卫 Workspace.test.tsx「a seen TURN_DONE row drops into the RUNNING segment and a new
+// completion brings it back」——Sidebar 自己不写存储，它只按传入的 seen 画分段），这里钉的是画出来的样子：
+// 看过的 TURN_DONE 行画在 RUNNING 段，既不在 NEEDS ATTENTION、也不进 Finished 折叠区——折叠区是 Header
+// 「Finished N」一键清理逐行发 DELETE 的对象，进程还活着、下一条指令随时要发的行不能进去。
+it("a seen TURN_DONE row is drawn under RUNNING and stays out of the Finished section that one-click clear deletes (agora-5gg.21)", async () => {
+  const rows = [row("n:wait", "waiting"), row("n:done", "turn_done", { origin: "agora", status_since: 100 }), row("n:run", "running")];
+  // 未看过：还在 NEEDS ATTENTION（waiting 90 高于 turn done 85，排在它前面）。
+  mount(rows);
+  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "row-n:done", "section-running", "row-n:run"]);
+  cleanup();
+  // 看过一次：降到 RUNNING 段，仍排在 running 行之前（段内保持 sortByAttention 的顺序），没有折叠区标题。
+  const seen: SeenSet = new Set(["n:done@100"]);
+  const { onOpen, visible } = mount(rows, seen);
+  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:done", "row-n:run"]);
+  expect(screen.queryByTestId("section-finished")).toBeNull();
+  // 行一行不少、还能选中：Alt/Option+N 的第 2 条就是它（分段只改归属，不改序号规则）。
+  expect(visible.map((r) => r.id)).toEqual(["n:wait", "n:done", "n:run"]);
+  expect(screen.getByTestId("row-n:done").closest("li")!.getAttribute("data-ordinal")).toBe("2");
+  fireEvent.click(screen.getByTestId("row-n:done"));
+  expect(onOpen).toHaveBeenCalledWith("n:done");
+  cleanup();
+  // 一键清理只对折叠区那行 external FINISHED 发 DELETE：看过的 TURN_DONE 不在删除名单里。
+  const withExt = [...rows, row("n:ext", "finished", { origin: "external", status_since: 5 })];
+  const onDeleteMetadata = vi.fn(async (_id: string) => ({ ok: true as const, value: undefined }));
+  render(
+    <Sidebar
+      rows={partitionByAttention(sortByAttention(withExt), seen)}
+      seen={seen}
+      all={withExt}
+      total={withExt.length}
+      active={null}
+      onOpen={() => {}}
+      filter=""
+      onFilter={() => {}}
+      onDeleteMetadata={onDeleteMetadata}
+    />,
+  );
+  expect(screen.getByTestId("clear-finished").getAttribute("title")).toContain("1 行");
+  fireEvent.click(screen.getByTestId("clear-finished"));
+  fireEvent.click(screen.getByText("Delete 1"));
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  expect(onDeleteMetadata.mock.calls.map((c) => c[0])).toEqual(["n:ext"]);
+});
+
 it("auto-expands the collapsed Finished section when the active row lives in it (agora-4nk)", () => {
   // Alt/Option+N、finished 通知点击、命令面板都是从外面改 active：收起时选中折叠区里的行，该行必须画出来。
   const seen: SeenSet = new Set();
