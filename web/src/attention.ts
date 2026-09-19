@@ -1,5 +1,5 @@
 /**
- * Attention Dashboard 的排序与行文案（MISSION §6.3；ADR-002 D8；agora-dvh.10）。
+ * Attention Dashboard 的排序、分段与行文案（MISSION §6.3；ADR-002 D8；agora-dvh.10）。
  *
  * 纯函数，所有客户端形态用同一条规则渲染同样的行。分数：凡是卡在人身上的
  * （FAILED / WAITING / TURN_DONE / FINISHED）高于不需要人的（RUNNING / STARTING），UNKNOWN 排中间。
@@ -7,7 +7,7 @@
  * 例外是 TURN_DONE：它段内按完成时间**倒序**，新完成在前（agora-5gg.21）。
  * FINISHED 再分来源与看没看过（`finishedCollapsed`，A46）：收起来的进侧栏末尾默认折叠的 Finished 区。
  * 「看过」2026-09-19 起同样适用于 TURN_DONE（agora-5gg.21，决策 agora-5gg.10）：看过一次降到中段，
- * 新一次完成再回来——但它降进的是 RUNNING 段，**不是** Finished 折叠区（理由见 `needsAttention`）。
+ * 新一次完成再回来——但它降进的是 WORKING 段，**不是** Finished 折叠区（理由见 `needsAttention`）。
  */
 import type { SessionRow } from "./events";
 
@@ -85,7 +85,7 @@ export function finishedCollapsed(row: SessionRow, seen: SeenSet = NO_SEEN): boo
  * NEEDS ATTENTION 区：分数 ≥ FINISHED 的都是"等你"的——除了已收进 Finished 区的 FINISHED 行
  * （`finishedCollapsed`），也除了**看过一次**的 TURN_DONE 行（agora-5gg.21，决策 agora-5gg.10）。
  *
- * 看过的 TURN_DONE 降到 RUNNING 段而**不是** Finished 折叠区，两件硬理由：① 折叠区的行是 Header
+ * 看过的 TURN_DONE 降到 WORKING 段而**不是** Finished 折叠区，两件硬理由：① 折叠区的行是 Header
  * 「Finished N」一键清理的删除对象（`Sidebar.tsx` 的 `clearable` 按 `sectionOf === "finished"` 算），
  * 那一行只是这一轮做完了、pane 里的进程还活着、下一条指令随时要发——把它算进可清理集合就会删掉活会话的记录；
  * ② 折叠区默认收起，看过的 TURN_DONE 收进去就等于再也回不来（新一轮完成靠新记号回到 NEEDS
@@ -149,23 +149,40 @@ export function sortByAttention(rows: SessionRow[]): SessionRow[] {
 }
 
 /**
- * 侧栏的三段：NEEDS ATTENTION → RUNNING（不需要人的一切 + 看过一次的 TURN_DONE）→ FINISHED
- * （收起来的已完成，默认折叠）。看过的 TURN_DONE 落中段是 agora-5gg.21；四段改造（UNCLEAR / WORKING
- * 改名）归 agora-5gg.11，这里仍按三段说。
+ * 侧栏的四段：NEEDS ATTENTION → UNCLEAR（说不清的行）→ WORKING（不需要人的一切 + 看过一次的
+ * TURN_DONE）→ FINISHED（收起来的已完成，默认折叠）。四段是 agora-5gg.11：2026-09-18 Mac 截图上
+ * 叫 RUNNING 的那一段 9 行没有一行在跑（UNKNOWN / STARTING / IDLE 全塞在里面），段名名不副实。
+ * **分数表一个字没动**——只改分段：`unknown` 单独成段，`running / starting / idle` 与看过的
+ * TURN_DONE 共用 WORKING 段。看过的 TURN_DONE 落中段是 agora-5gg.21。
  */
-export type Section = "attention" | "running" | "finished";
+export type Section = "attention" | "unclear" | "working" | "finished";
+
+/**
+ * 「说不清」的行：状态 UNKNOWN，以及一切我们不认识、分数落到 unknown 档的状态名（旧节点报来新状态）。
+ * UNCLEAR 段的判据，也是行上那句 reason + 出口提示的判据（`SessionRow.tsx`）——两边问同一个函数，
+ * 不会出现「段里没有 reason 的行」。
+ *
+ * 为什么单独成段而不是留在中段（agora-5gg.11）：UNKNOWN 的分数 40 本来就高于 IDLE / STARTING / RUNNING
+ * （MISSION §6.3「看不清，值得瞟一眼」），混在中段里却被段名说成"在跑"；段名换成 WORKING 也还是混。
+ * 出口（`unknown_cause` 封闭枚举、TTL 淘汰）归 5gg.6 / e08，这一步只管把它摆到看得见的地方。
+ */
+export function unclearStatus(status: string): boolean {
+  return status === "unknown" || SCORE[status] === undefined;
+}
 
 export function sectionOf(row: SessionRow, seen: SeenSet = NO_SEEN): Section {
   if (finishedCollapsed(row, seen)) return "finished";
-  return needsAttention(row, seen) ? "attention" : "running";
+  if (needsAttention(row, seen)) return "attention";
+  return unclearStatus(row.status) ? "unclear" : "working";
 }
 
 /**
- * 先 NEEDS ATTENTION，再 RUNNING，最后 FINISHED 折叠区，各段内部保持传入顺序：侧栏显示顺序 = 这个顺序，
- * Alt/Option+N 跳的也是它——折叠区收起时行不画，序号照数（折叠与否不改变第 N 条是谁，A46）。
+ * 先 NEEDS ATTENTION，再 UNCLEAR，再 WORKING，最后 FINISHED 折叠区，各段内部保持传入顺序：侧栏显示顺序
+ * = 这个顺序，Alt/Option+N 跳的也是它——折叠区收起时行不画，序号照数（折叠与否不改变第 N 条是谁，A46）。
+ * 段与段之间不重排、段内也不丢行，所以序号是 1…N 连续的一条线（每段各有标题时标题也不占序号）。
  */
 export function partitionByAttention(rows: SessionRow[], seen: SeenSet = NO_SEEN): SessionRow[] {
-  const order: Section[] = ["attention", "running", "finished"];
+  const order: Section[] = ["attention", "unclear", "working", "finished"];
   return order.flatMap((section) => rows.filter((r) => sectionOf(r, seen) === section));
 }
 

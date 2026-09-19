@@ -59,7 +59,7 @@ const ROWS = [
 it("collapses the Finished section by default with a count, and NEEDS ATTENTION holds no external FINISHED row (A46)", () => {
   mount(ROWS);
   // 两条 external FINISHED 收起来了：NEEDS ATTENTION 里只有 waiting 与 agora 来源的 FINISHED；折叠区标题带计数。
-  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-running", "row-n:run", "section-finished"]);
+  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-working", "row-n:run", "section-finished"]);
   const head = screen.getByTestId("section-finished");
   expect(head.textContent).toBe("▸ FINISHED 2");
   expect(head.getAttribute("aria-expanded")).toBe("false");
@@ -75,8 +75,8 @@ it("expands the Finished section on click; rows keep attention order, stay selec
   const head = screen.getByTestId("section-finished");
   expect(head.textContent).toBe("▾ FINISHED 2");
   expect(head.getAttribute("aria-expanded")).toBe("true");
-  // 展开后的顺序 = sortByAttention 的顺序（status_since 早的在前），排在 RUNNING 之后。
-  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-running", "row-n:run", "section-finished", "row-n:ext1", "row-n:ext2"]);
+  // 展开后的顺序 = sortByAttention 的顺序（status_since 早的在前），排在 WORKING 段之后。
+  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-working", "row-n:run", "section-finished", "row-n:ext1", "row-n:ext2"]);
   // 序号是整条显示顺序里的位置（折叠与否都一样）：ext1 是第 4 条、ext2 第 5 条，与 Alt/Option+N 用的 visible 一致。
   expect(visible.map((r) => r.id)).toEqual(["n:wait", "n:own", "n:run", "n:ext1", "n:ext2"]);
   expect(screen.getByTestId("row-n:ext1").querySelector(".ord")?.textContent).toBe("4");
@@ -92,34 +92,35 @@ it("expands the Finished section on click; rows keep attention order, stay selec
 
 it("moves an agora FINISHED row into the Finished section once it is in the seen set; running-only lists get no Finished head", () => {
   mount(ROWS, new Set(["n:own@20"]));
-  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:run", "section-finished"]);
+  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "section-working", "row-n:run", "section-finished"]);
   expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 3");
   cleanup();
-  // 没有 FINISHED 行就没有折叠区标题；没有 NEEDS ATTENTION 行也没有 RUNNING 标题（原行为不变）。
+  // 没有 FINISHED 行就没有折叠区标题；只有一段时也没有 WORKING 标题（原行为不变，段名换了规则没换）。
   mount([row("n:a", "running"), row("n:b", "idle")]);
   expect(listOrder()).toEqual(["row-n:b", "row-n:a"]);
   cleanup();
-  // 只有 external FINISHED：没有 NEEDS ATTENTION 标题、没有 RUNNING 标题、只有折叠区。
+  // 只有 external FINISHED：没有 NEEDS ATTENTION 标题、没有 WORKING 标题、只有折叠区。
   mount([row("n:e", "finished", { origin: "external" })]);
   expect(listOrder()).toEqual(["section-finished"]);
   expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
 });
 
 // agora-5gg.21（决策 agora-5gg.10 选 B）：A46 的「看过」扩到 TURN_DONE。记号由 Workspace 在**离开**那一行时
-// 写进 localStorage（守卫 Workspace.test.tsx「a seen TURN_DONE row drops into the RUNNING segment and a new
+// 写进 localStorage（守卫 Workspace.test.tsx「a seen TURN_DONE row drops into the WORKING segment and a new
 // completion brings it back」——Sidebar 自己不写存储，它只按传入的 seen 画分段），这里钉的是画出来的样子：
-// 看过的 TURN_DONE 行画在 RUNNING 段，既不在 NEEDS ATTENTION、也不进 Finished 折叠区——折叠区是 Header
+// 看过的 TURN_DONE 行画在 WORKING 段（agora-5gg.11 之前的段名是 RUNNING），既不在 NEEDS ATTENTION、也不进
+// Finished 折叠区——折叠区是 Header
 // 「Finished N」一键清理逐行发 DELETE 的对象，进程还活着、下一条指令随时要发的行不能进去。
-it("a seen TURN_DONE row is drawn under RUNNING and stays out of the Finished section that one-click clear deletes (agora-5gg.21)", async () => {
+it("a seen TURN_DONE row is drawn under WORKING and stays out of the Finished section that one-click clear deletes (agora-5gg.21)", async () => {
   const rows = [row("n:wait", "waiting"), row("n:done", "turn_done", { origin: "agora", status_since: 100 }), row("n:run", "running")];
   // 未看过：还在 NEEDS ATTENTION（waiting 90 高于 turn done 85，排在它前面）。
   mount(rows);
-  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "row-n:done", "section-running", "row-n:run"]);
+  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "row-n:done", "section-working", "row-n:run"]);
   cleanup();
-  // 看过一次：降到 RUNNING 段，仍排在 running 行之前（段内保持 sortByAttention 的顺序），没有折叠区标题。
+  // 看过一次：降到 WORKING 段，仍排在 running 行之前（段内保持 sortByAttention 的顺序），没有折叠区标题。
   const seen: SeenSet = new Set(["n:done@100"]);
   const { onOpen, visible } = mount(rows, seen);
-  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:done", "row-n:run"]);
+  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "section-working", "row-n:done", "row-n:run"]);
   expect(screen.queryByTestId("section-finished")).toBeNull();
   // 行一行不少、还能选中：Alt/Option+N 的第 2 条就是它（分段只改归属，不改序号规则）。
   expect(visible.map((r) => r.id)).toEqual(["n:wait", "n:done", "n:run"]);
@@ -150,6 +151,45 @@ it("a seen TURN_DONE row is drawn under RUNNING and stays out of the Finished se
     await new Promise((r) => setTimeout(r, 0));
   });
   expect(onDeleteMetadata.mock.calls.map((c) => c[0])).toEqual(["n:ext"]);
+});
+
+// agora-5gg.11：段名要配得上段里的行（2026-09-18 Mac 截图：叫 RUNNING 的那一段 9 行没有一行在跑，
+// UNKNOWN / STARTING / IDLE 全塞在里面）。四段 NEEDS ATTENTION / UNCLEAR / WORKING / FINISHED，
+// 分数表不动；标题只在真有行的段开头画，空段不画。行上的 reason + 出口见 SessionRow.test.tsx。
+it("draws the four section headings and no heading for an empty section (agora-5gg.11)", () => {
+  mount([
+    row("n:wait", "waiting"),
+    row("n:unk", "unknown"),
+    row("n:idle", "idle"),
+    row("n:start", "starting"),
+    row("n:run", "running"),
+    row("n:ext", "finished", { origin: "external" }),
+  ]);
+  expect(listOrder()).toEqual([
+    "section-attention",
+    "row-n:wait",
+    "section-unclear",
+    "row-n:unk",
+    "section-working",
+    "row-n:idle",
+    "row-n:start",
+    "row-n:run",
+    "section-finished",
+  ]);
+  expect(screen.getByTestId("section-unclear").textContent).toBe("UNCLEAR");
+  expect(screen.getByTestId("section-working").textContent).toBe("WORKING");
+  // 旧段名不再出现：RUNNING 这个标题既骗人（段里有 ? 与 …）又和计数行的 `Running`（含 starting）对不上。
+  expect(screen.queryByTestId("section-running")).toBeNull();
+  expect(document.querySelector("aside.sidebar")?.textContent).not.toMatch(/\bRUNNING\b/);
+  cleanup();
+  // 没有 UNKNOWN 行就没有 UNCLEAR 标题（空段不画）。
+  mount([row("n:wait", "waiting"), row("n:run", "running")]);
+  expect(screen.queryByTestId("section-unclear")).toBeNull();
+  expect(listOrder()).toEqual(["section-attention", "row-n:wait", "section-working", "row-n:run"]);
+  cleanup();
+  // NEEDS ATTENTION 空着时 UNCLEAR 仍然画：只有一段可标才不画标题，不能让人把 ? 行当成在跑的。
+  mount([row("n:unk", "unknown"), row("n:run", "running")]);
+  expect(listOrder()).toEqual(["section-unclear", "row-n:unk", "section-working", "row-n:run"]);
 });
 
 it("auto-expands the collapsed Finished section when the active row lives in it (agora-4nk)", () => {
@@ -295,7 +335,8 @@ it("tree mode renders SidebarTree and no section headings (A47 / A48)", () => {
   render(<Sidebar rows={visible} mode="tree" onMode={() => {}} all={ROWS} total={ROWS.length} active={null} onOpen={() => {}} filter="" onFilter={() => {}} />);
   expect(screen.getByTestId("sidebar-tree")).toBeTruthy();
   expect(screen.queryByTestId("section-attention")).toBeNull();
-  expect(screen.queryByTestId("section-running")).toBeNull();
+  expect(screen.queryByTestId("section-unclear")).toBeNull();
+  expect(screen.queryByTestId("section-working")).toBeNull();
   expect(screen.queryByTestId("section-finished")).toBeNull();
   expect(screen.getByTestId("tree-group-node:n").getAttribute("aria-expanded")).toBe("true");
   expect(screen.getByTestId("tree-group-other:n").textContent).toContain("其它目录");

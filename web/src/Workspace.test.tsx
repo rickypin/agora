@@ -588,7 +588,7 @@ describe("Workspace", () => {
     expect(screen.queryByTestId("adopt-tmux:default:manual")).toBeNull();
   });
 
-  it("sorts by attention with NEEDS ATTENTION above RUNNING and ordinals following the display order (A17 A23)", async () => {
+  it("sorts by attention with NEEDS ATTENTION above WORKING and ordinals following the display order (A17 A23)", async () => {
     const t = setup([
       row("n:run"),
       { ...row("n:p3", "waiting"), task: { id: "x-3", title: "低", priority: 3 } },
@@ -599,12 +599,12 @@ describe("Workspace", () => {
     await online(t);
     const rows = screen.getAllByTestId(/^row-n:/).map((el) => el.getAttribute("data-testid"));
     expect(rows).toEqual(["row-n:fail", "row-n:p1", "row-n:p3", "row-n:done", "row-n:run"]);
-    // 分区标题：NEEDS ATTENTION 在最上，RUNNING 在第一条 running 之前。
+    // 分区标题：NEEDS ATTENTION 在最上，WORKING 在第一条 running 之前（agora-5gg.11 段的正式名）。
     const list = screen.getByTestId("section-attention").parentElement!;
     const order = Array.from(list.querySelectorAll("[data-testid]"))
       .map((el) => el.getAttribute("data-testid")!)
       .filter((id) => id.startsWith("section-") || (id.startsWith("row-") && !id.startsWith("row-node-") && !id.startsWith("row-stale-")));
-    expect(order).toEqual(["section-attention", "row-n:fail", "row-n:p1", "row-n:p3", "row-n:done", "section-running", "row-n:run"]);
+    expect(order).toEqual(["section-attention", "row-n:fail", "row-n:p1", "row-n:p3", "row-n:done", "section-working", "row-n:run"]);
     // 第一列是任务：issue id + 标题。
     expect(screen.getByTestId("label-n:p1").textContent).toBe("x-1 高");
     expect(screen.getByTestId("label-n:run").textContent).toBe("run");
@@ -630,17 +630,17 @@ describe("Workspace", () => {
       Array.from(screen.getByTestId("section-attention").parentElement!.querySelectorAll("[data-testid]"))
         .map((el) => el.getAttribute("data-testid")!)
         .filter((id) => id.startsWith("section-") || (id.startsWith("row-") && !id.startsWith("row-node-") && !id.startsWith("row-stale-")));
-    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-running", "row-n:run", "section-finished"]);
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-working", "row-n:run", "section-finished"]);
     expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
     // 点开 own：它还在 NEEDS ATTENTION（主区开着它的终端，侧栏不能让它消失进折叠区）。
     fireEvent.click(screen.getByTestId("row-n:own"));
     expect(screen.getByTestId("term-n:own")).toBeTruthy();
-    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-running", "row-n:run", "section-finished"]);
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-working", "row-n:run", "section-finished"]);
     // 再点别的行：own 进折叠区，计数 +1；localStorage 记下了。冻结期间它先留在原位（A51 的守卫在下面
     // 「a row that becomes finished during a freeze…」那条），3 s 落位后才是这里断言的三段。
     fireEvent.click(screen.getByTestId("row-n:wait"));
     await settle();
-    expect(order()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:run", "section-finished"]);
+    expect(order()).toEqual(["section-attention", "row-n:wait", "section-working", "row-n:run", "section-finished"]);
     expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 2");
     expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:own@"]);
     // Alt/Option+N 的序号跟着三段拼接走：折叠区收着时第 3 条仍是 ext（wait, run, ext, own）。
@@ -717,8 +717,8 @@ describe("Workspace", () => {
   });
 
   // agora-5gg.21（决策 agora-5gg.10 选 B）：A46 的「看过」扩到 TURN_DONE。选中的时刻不记（跟 FINISHED
-  // 同一个时机：离开那一行才记），看过之后降到 RUNNING 段，不进 Finished 折叠区（折叠区的行是 Header 一键清理的删除对象）。
-  it("a seen TURN_DONE row drops into the RUNNING segment and a new completion brings it back (agora-5gg.21)", async () => {
+  // 同一个时机：离开那一行才记），看过之后降到 WORKING 段，不进 Finished 折叠区（折叠区的行是 Header 一键清理的删除对象）。
+  it("a seen TURN_DONE row drops into the WORKING segment and a new completion brings it back (agora-5gg.21)", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const t = setup([
       row("n:wait", "waiting"),
@@ -731,18 +731,18 @@ describe("Workspace", () => {
         .map((el) => el.getAttribute("data-testid")!)
         .filter((id) => id.startsWith("section-") || (id.startsWith("row-") && !id.startsWith("row-node-") && !id.startsWith("row-stale-")));
     // 未看过：在 NEEDS ATTENTION（waiting 90 高于 turn_done 85）；没有 finished 行就没有折叠区。
-    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:done", "section-running", "row-n:run"]);
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:done", "section-working", "row-n:run"]);
     expect(screen.queryByTestId("section-finished")).toBeNull();
     // 选中那一行：主区开着它（回答面板在），侧栏它留在原位，记号还不写。
     fireEvent.click(screen.getByTestId("row-n:done"));
     expect(screen.getByTestId("term-n:done")).toBeTruthy();
-    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:done", "section-running", "row-n:run"]);
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:done", "section-working", "row-n:run"]);
     expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual([]);
-    // 离开那一行：记号写入 localStorage，行降到 RUNNING 段最前（分数 85 高于 running），不回 NEEDS ATTENTION。
+    // 离开那一行：记号写入 localStorage，行降到 WORKING 段最前（分数 85 高于 running），不回 NEEDS ATTENTION。
     fireEvent.click(screen.getByTestId("row-n:wait"));
     await settle();
     expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:done@100"]);
-    expect(order()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:done", "row-n:run"]);
+    expect(order()).toEqual(["section-attention", "row-n:wait", "section-working", "row-n:done", "row-n:run"]);
     // 没进折叠区，也就不是「Finished N」一键清理的删除对象（那一行 pane 里的进程还活着）。
     expect(screen.queryByTestId("section-finished")).toBeNull();
     expect(screen.queryByTestId("clear-finished")).toBeNull();
@@ -755,7 +755,7 @@ describe("Workspace", () => {
       await new Promise((r) => setTimeout(r, 5));
     });
     expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:done@100"]);
-    expect(order()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:done", "row-n:run"]);
+    expect(order()).toEqual(["section-attention", "row-n:wait", "section-working", "row-n:done", "row-n:run"]);
     // 新一轮：prompt → RUNNING（记号作废）→ 新的 TURN_DONE（新的 status_since）——回到 NEEDS ATTENTION。
     await act(async () => {
       t.sock.send([{ type: "status_changed", id: "n:done", status: "running", source: "hook", reason: "prompt submitted", alive: true, status_since: 150 }]);
@@ -767,7 +767,7 @@ describe("Workspace", () => {
       await new Promise((r) => setTimeout(r, 5));
     });
     await settle();
-    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:done", "section-running", "row-n:run"]);
+    expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:done", "section-working", "row-n:run"]);
     expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual([]);
   });
 
@@ -791,7 +791,7 @@ describe("Workspace", () => {
       Array.from(screen.getByTestId("section-attention").parentElement!.querySelectorAll("[data-testid]"))
         .map((el) => el.getAttribute("data-testid")!)
         .filter((id) => id.startsWith("section-") || (id.startsWith("row-") && !id.startsWith("row-node-") && !id.startsWith("row-stale-")));
-    expect(order()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:ext", "section-finished"]);
+    expect(order()).toEqual(["section-attention", "row-n:wait", "section-working", "row-n:ext", "section-finished"]);
   });
 
   it("the sidebar mode survives a remount via localStorage (A47)", async () => {
@@ -857,9 +857,9 @@ describe("Workspace", () => {
       t.sock.send([{ type: "status_changed", id: "n:s", status: "waiting", source: "text", reason: "prompt", alive: true }]);
       await new Promise((r) => setTimeout(r, 5));
     });
-    // WAITING 90 > TURN_DONE 85：s 排到 h 前面；两条都在 NEEDS ATTENTION，RUNNING 标题消失。
+    // WAITING 90 > TURN_DONE 85：s 排到 h 前面；两条都在 NEEDS ATTENTION，WORKING 标题消失。
     expect(screen.getAllByTestId(/^row-n:/).map((el) => el.getAttribute("data-testid"))).toEqual(["row-n:s", "row-n:h"]);
-    expect(screen.queryByTestId("section-running")).toBeNull();
+    expect(screen.queryByTestId("section-working")).toBeNull();
   });
 
   it("shows the hook-not-connected hint from the server and drops it once hooks are heard (agora-dvh.15)", async () => {
@@ -1076,7 +1076,7 @@ describe("Workspace · 重排稳定（A51，agora-4yr.4）", () => {
     });
     // 落位：b 到 NEEDS ATTENTION 顶部。a 只是被挤着挪了一格，LIS 留下 a、c，只点亮真正跳了的 b。
     expect(rowOrder()).toEqual(["n:b", "n:a", "n:c"]);
-    expect(sectioned()).toEqual(["section-attention", "row-n:b", "section-running", "row-n:a", "row-n:c"]);
+    expect(sectioned()).toEqual(["section-attention", "row-n:b", "section-working", "row-n:a", "row-n:c"]);
     expect(rowLi("n:b").classList.contains("moved")).toBe(true);
     expect(rowLi("n:a").classList.contains("moved")).toBe(false);
     expect(rowLi("n:c").classList.contains("moved")).toBe(false);
@@ -1140,16 +1140,16 @@ describe("Workspace · 重排稳定（A51，agora-4yr.4）", () => {
       row("n:wait", "waiting"),
     ]);
     await online(t);
-    expect(sectioned()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-running", "row-n:run", "section-finished"]);
+    expect(sectioned()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-working", "row-n:run", "section-finished"]);
     fireEvent.click(screen.getByTestId("row-n:own"));
     fireEvent.click(screen.getByTestId("row-n:wait"));
     // 冻结期间：own 还在原位、还在 DOM 里（「不许在冻结期间隐藏行」），三段表头与计数一个字没变。
-    expect(sectioned()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-running", "row-n:run", "section-finished"]);
+    expect(sectioned()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-working", "row-n:run", "section-finished"]);
     expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
     expect(rowLi("n:own").getAttribute("data-ordinal")).toBe("2");
     // 3 s 落位之后才收进折叠区，计数才跟着变。
     await settle();
-    expect(sectioned()).toEqual(["section-attention", "row-n:wait", "section-running", "row-n:run", "section-finished"]);
+    expect(sectioned()).toEqual(["section-attention", "row-n:wait", "section-working", "row-n:run", "section-finished"]);
     expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 2");
   });
 

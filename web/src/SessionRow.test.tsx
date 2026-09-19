@@ -256,6 +256,44 @@ it("a stale row without last_seen still renders (offline, no time) instead of cr
   expect(staleSeen(row({ stale: true, last_seen: SEEN }))?.text).toBe(`○ 上次见到 ${clockText(SEEN)}`);
 });
 
+// agora-5gg.11：侧栏四段化之后，UNCLEAR 段的名字只说"这一行的状态说不清"，看得懂得靠行上这一句——
+// 服务端那句 reason 原样（不翻译成人的话：那已经是人写的句子）+ 按 origin 分的一句出口。
+it("an UNKNOWN row carries the server reason plus an exit on the row itself (agora-5gg.11)", () => {
+  mount(row({ id: "n:a", status: "unknown", origin: "agora", reason: "hooks silent; no process handle" }));
+  const hint = screen.getByTestId("unclear-n:a");
+  expect(hint.textContent).toBe("hooks silent; no process handle · 选中它，打开它的终端看一眼");
+  // 长 reason 在 260 px 的窄列里会被省略号裁掉（.row .preview 是 nowrap），全文放 title 兜底。
+  expect(hint.getAttribute("title")).toContain("hooks silent; no process handle");
+  expect(hint.getAttribute("title")).toContain("选中它，打开它的终端看一眼");
+  cleanup();
+  // external 行 agora 手里没有运行时句柄、没有终端可开（`Workspace.tsx` 的 no-terminal 那段话）：
+  // 出口不能写成"打开终端"，那是个点了什么都不会发生的承诺。
+  mount(row({ id: "n:e", status: "unknown", origin: "external", reason: "hooks silent; no process handle" }));
+  expect(screen.getByTestId("unclear-n:e").textContent).toBe("hooks silent; no process handle · 等下一条 hook，或去它自己的窗口看");
+  cleanup();
+  // 没有 reason 也照样给出口：比"什么都不知道"多一句能做的事。
+  mount(row({ id: "n:u", status: "unknown" }));
+  expect(screen.getByTestId("unclear-n:u").textContent).toBe("说不清它在做什么 · 选中它，打开它的终端看一眼");
+  // 同一句原因只画一次：UNKNOWN 行不再走 lines 那条"两者都没有时退回状态理由"的退路。
+  cleanup();
+  mount(row({ id: "n:d", status: "unknown", origin: "agora", reason: "hooks silent; no process handle" }));
+  expect((screen.getByTestId("row-n:d").textContent ?? "").match(/hooks silent; no process handle/g)?.length).toBe(1);
+  cleanup();
+  // 有 pane preview 的 UNKNOWN 行：预览照旧，原因 + 出口另起一行，两者不互相顶掉。
+  mount(row({ id: "n:p", status: "unknown", preview: "git push origin main", reason: "runtime unavailable" }));
+  expect(screen.getByTestId("preview-n:p").textContent).toBe("git push origin main");
+  expect(screen.getByTestId("unclear-n:p").textContent).toContain("runtime unavailable");
+  cleanup();
+  // 我们不认识的状态名同一段（`unclearStatus` 是段与行共用的唯一判据）。
+  mount(row({ id: "n:x", status: "detached" }));
+  expect(screen.getByTestId("unclear-n:x")).toBeTruthy();
+  cleanup();
+  // 别的状态没有这一行：running / waiting 仍走原来的 pane preview 退路，不多占一行。
+  mount(row({ id: "n:r", status: "running", reason: "activity" }));
+  expect(screen.queryByTestId("unclear-n:r")).toBeNull();
+  expect(screen.getByTestId("preview-n:r").textContent).toBe("activity");
+});
+
 // 验收标准三条（A40）2026-09-10 随 Acceptance 搬去 web/src/RowResult.test.tsx（agora-4yr.3）：
 // 那两段进了主区的看结果面板，行里再没有它们。行的守卫改由 Sidebar.test.tsx 的
 // 「the sidebar DOM never contains respond-, acceptance- or changes- testids」负责。

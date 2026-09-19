@@ -128,7 +128,7 @@ it("a finished row stays in place with the done class (A48)", () => {
   expect(screen.getByTestId("row-mac:a").closest("li.done")).not.toBeNull();
   expect(screen.getByTestId("row-mac:fin").closest("li.done")).toBeNull();
   expect(screen.getByTestId("row-mac:w").querySelector(".dot")?.textContent).toBe("✗");
-  // 没有 Finished 折叠区、没有三段标题。
+  // 没有 Finished 折叠区、没有四段标题。
   expect(screen.queryByTestId("section-finished")).toBeNull();
 });
 

@@ -12,7 +12,7 @@ import { buildTree, flattenTree, loadCollapsed, rowGroupKeys, storeCollapsed, ty
  * → 会话行，无仓库的行归「其它目录」。规则在 sidebarTreeModel.ts（文件名不叫 sidebarTree.ts：macOS 大小写不敏感，与本文件 SidebarTree.tsx 裸导入撞名，2026-09-09 实测 tsc TS1149）；本组件只画：组头是按钮（aria-expanded，折叠记
  * localStorage），折叠时组头右侧显示这组里 needsAttention 的行数（按过滤前的 all 算——过滤只是少画几行）；
  * 行复用 <SidebarRow> 原样，序号是 DFS 序，折叠的组行不画序号照数（MISSION §6.5，与 A46 Finished 区同一规则）。
- * FINISHED 行不搬家：留在原组里淡显（`li.done`）。不画三段标题、没有 Finished 折叠区（取舍）。
+ * FINISHED 行不搬家：留在原组里淡显（`li.done`）。不画四段标题、没有 Finished 折叠区（取舍）。
  *
  * 组头的就地动作（A48，agora-uvd.4；MISSION §6.4「常用项目最多 2–3 次操作」）：worktree 组头右侧「+」
  * 带着 Node / Project / Worktree 打开 New Agent 对话框（只剩选 Agent 一步），「shell」连对话框都不开、

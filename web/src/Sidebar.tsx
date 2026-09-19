@@ -71,10 +71,10 @@ export function clearSummary(r: { removed: number; skipped: number; failed: numb
 }
 
 interface SidebarProps {
-  /** 已经按 attention 排好、NEEDS ATTENTION → RUNNING → FINISHED 三段拼好的显示顺序——Alt/Option+N 跳的
-   * 就是这个顺序（agora-xqa.14 验收）；本组件只在分区交界处插标题、把 Finished 段折起来。 */
+  /** 已经按 attention 排好、NEEDS ATTENTION → UNCLEAR → WORKING → FINISHED 四段拼好的显示顺序——
+   * Alt/Option+N 跳的就是这个顺序（agora-xqa.14 验收）；本组件只在分区交界处插标题、把 Finished 段折起来。 */
   rows: SessionRow[];
-  /** 侧栏视图（A47，agora-uvd.2）：缺省 attention，既有测试一行不改。tree 时不画三段标题、平铺全部行。 */
+  /** 侧栏视图（A47，agora-uvd.2）：缺省 attention，既有测试一行不改。tree 时不画四段标题、平铺全部行。 */
   mode?: SidebarMode;
   onMode?: (mode: SidebarMode) => void;
   /** 看过的 FINISHED 行（MISSION §4.6；A46）：与 Workspace 拼 rows 时用的是同一个集合，交界才对得上。 */
@@ -105,7 +105,7 @@ interface SidebarProps {
   /** 一键清理用的 DELETE metadata（agora-j4w.2）；不给就没有清理按钮。 */
   onDeleteMetadata?: (id: string) => Promise<WriteResult<unknown>>;
   /** 冻结期间每行的分段归属（A51，agora-4yr.4，`stableSections`）：不给就实时算，既有调用方一行不改。
-   * 冻的是「顺序 + 分段」两件事——三段表头与折叠区是按位置推的，光冻顺序会让表头插到列表中间、
+   * 冻的是「顺序 + 分段」两件事——四段表头与折叠区是按位置推的，光冻顺序会让表头插到列表中间、
    * 计数错、FINISHED 行从 DOM 消失。 */
   sections?: readonly Section[];
   /** 刚落位、位置变了的行（A51，agora-4yr.4）：这一帧给它们 `li.moved`，1.2 s 的背景高亮。 */
@@ -236,15 +236,20 @@ export function Sidebar({
     setClearNote(clearSummary(result));
   }
   const ownClearable = clearable.filter((r) => r.origin !== "external").length;
-  // 三段的交界：rows 已经按 attention → running → finished 拼好（partitionByAttention），这里只在交界处插标题。
+  // 四段的交界：rows 已经按 attention → unclear → working → finished 拼好（partitionByAttention），这里只在交界处插标题。
   // tree 视图整段列表换成 <SidebarTree>（A48，agora-uvd.3）：组头、折叠与 DFS 序号都在那边；下面 attention
   // 分支一个字不动。
   const showSections = mode !== "tree";
   // 冻结期间用 Workspace 冻下来的那份分段（A51，agora-4yr.4）；没给就照旧实时算。
   const sections = givenSections ?? rows.map((r) => sectionOf(r, seen));
-  const firstRunning = sections.indexOf("running");
+  const firstUnclear = sections.indexOf("unclear");
+  const firstWorking = sections.indexOf("working");
   const firstFinished = sections.indexOf("finished");
   const hasAttention = sections[0] === "attention";
+  // UNCLEAR / WORKING 的标题标的是「交界」：只剩一段时上面什么都没有可标，就不画标题（只有 running / idle
+  // 的列表原本也没有 RUNNING 标题，四段化不改这条）。NEEDS ATTENTION 例外——它是段首、人打开页面找的就是
+  // 它，有行就画；FINISHED 的标题是折叠按钮（`▸ FINISHED N`），不只是为了标交界。
+  const hasBoundary = new Set(sections).size > 1;
   const finishedCount = firstFinished < 0 ? 0 : rows.length - firstFinished;
   // Finished 区默认收起（A46：2026-09-08 现场 58 行里 39 行是 external FINISHED，摊开就是它们占满第一屏）；
   // 折叠状态只活在这个组件里，刷新页面回到收起。收起时行不画但序号照数：Alt/Option+N 的第 N 条与
@@ -380,9 +385,16 @@ export function Sidebar({
       <ul>
         {rows.map((r, i) => (
           <Fragment key={r.id}>
-            {showSections && i === firstRunning && hasAttention && (
-              <li className="section-row" data-testid="section-running">
-                <span className="muted">RUNNING</span>
+            {showSections && hasBoundary && i === firstUnclear && (
+              <li className="section-row" data-testid="section-unclear">
+                <span className="muted" title="说不清状态的行：行上带原因与下一步">
+                  UNCLEAR
+                </span>
+              </li>
+            )}
+            {showSections && hasBoundary && i === firstWorking && (
+              <li className="section-row" data-testid="section-working">
+                <span className="muted">WORKING</span>
               </li>
             )}
             {showSections && i === firstFinished && (

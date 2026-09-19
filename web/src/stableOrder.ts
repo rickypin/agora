@@ -6,7 +6,7 @@
  * 让我看见**。这里只放纯函数，触发条件（指针进出侧栏、键盘交互与 3 s 定时器）在 `Workspace.tsx`。
  *
  * 冻结的对象是**顺序 + 分段归属**，不只是顺序（2026-09-10 交叉验证；反例见 `stableSections`）：
- * `Sidebar.tsx` 的三段表头是按位置推的，只冻顺序会让表头插到列表中间、计数错、FINISHED 行从 DOM
+ * `Sidebar.tsx` 的四段表头是按位置推的，只冻顺序会让表头插到列表中间、计数错、FINISHED 行从 DOM
  * 消失——正好违反本任务自己写的「不许在冻结期间隐藏行」。
  *
  * 不冻的东西同样重要：行对象一律取自 `next`，所以状态符号、预览文案、`waiting 3m` 全是新的，只有
@@ -17,8 +17,8 @@ import type { Section } from "./attention";
 /** 冻结窗口：指针离开侧栏、或最后一次键盘 / 点击交互之后这么久才落位。写死 3 s，不做配置。 */
 export const FREEZE_MS = 3000;
 
-/** 三段的先后，与 `attention.ts` 的 `partitionByAttention` 同一条。 */
-export const SECTION_ORDER: readonly Section[] = ["attention", "running", "finished"];
+/** 四段的先后，与 `attention.ts` 的 `partitionByAttention` 同一条。 */
+export const SECTION_ORDER: readonly Section[] = ["attention", "unclear", "working", "finished"];
 
 export interface StableResult<T> {
   order: T[];
@@ -128,16 +128,16 @@ export interface SectionedResult<T> {
 /**
  * 每行的分段归属：`frozen` 时老行沿用冻结那一刻的段，新行按实时 `sectionOf` 算。
  *
- * 为什么非冻不可（2026-09-10 交叉验证，代码里的反例）：`Sidebar.tsx` 的 `firstRunning` /
- * `firstFinished` / `finishedCount` 全靠 `rows.map(sectionOf)` 三段**连续**，且 finished 段收起时
+ * 为什么非冻不可（2026-09-10 交叉验证，代码里的反例）：`Sidebar.tsx` 的 `firstWorking` /
+ * `firstFinished` / `finishedCount` 全靠 `rows.map(sectionOf)` 四段**连续**，且 finished 段收起时
  * 那些行根本不渲染。只冻顺序的话，行留在旧位置而段用新状态算，一条日常路径就能把列表打烂：逐个
  * 处理时点下一行会把上一行写进 `seen`，`finishedCollapsed` 立刻为真，而 `onOpen` 自己就调
  * `touchSidebar()` 冻着顺序——那一行当场从 DOM 消失，FINISHED 表头插到列表中间，计数把它之后所有
  * 行都算进去。守卫见 `Workspace.test.tsx`「a row that becomes finished during a freeze…」。
  *
  * 冻完还要**稳定重排一次**：老行的段本来就是非降序的（冻结那一刻由 `partitionByAttention` 保证），
- * 三段各自 filter 对它们是恒等变换、一行都不会动；只有冻结期间新插进来的行会被挪进自己那一段，
- * 免得它把三段切断（这是 Sidebar 唯一的前提）。状态符号仍走 `row.status` 实时更新，与分段无关。
+ * 四段各自 filter 对它们是恒等变换、一行都不会动；只有冻结期间新插进来的行会被挪进自己那一段，
+ * 免得它把四段切断（这是 Sidebar 唯一的前提）。状态符号仍走 `row.status` 实时更新，与分段无关。
  */
 export function stableSections<T extends { id: string }>(
   prev: ReadonlyMap<string, Section> | null,

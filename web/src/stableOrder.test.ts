@@ -60,33 +60,39 @@ describe("stableOrder（A51，agora-4yr.4）", () => {
     expect(frozen.order[1]).toBe(next[0]);
   });
 
-  it("frozen freezes the section of every row and keeps the three sections contiguous (A51)", () => {
-    // 冻结那一刻：wait / own 在 NEEDS ATTENTION，run 在 RUNNING，ext 在折叠区。
+  it("frozen freezes the section of every row and keeps the sections contiguous (A51)", () => {
+    // 冻结那一刻：wait / own 在 NEEDS ATTENTION，run 在 WORKING，ext 在折叠区。
     const prev = new Map<string, Section>([
       ["wait", "attention"],
       ["own", "attention"],
-      ["run", "running"],
+      ["run", "working"],
       ["ext", "finished"],
     ]);
     // 冻结期间 own 被写进 seen（实时算法说它该进折叠区）——它必须留在原位、仍算 attention 段，
     // 否则 Sidebar 会把它从 DOM 里抹掉（那正是「不许在冻结期间隐藏行」）。
-    const live = (row: Row): Section => (row.id === "own" || row.id === "ext" ? "finished" : row.id === "run" ? "running" : "attention");
+    const live = (row: Row): Section => (row.id === "own" || row.id === "ext" ? "finished" : row.id === "run" ? "working" : "attention");
     const held = stableSections(prev, rows("wait", "own", "run", "ext"), live, true);
     expect(ids(held.order)).toEqual(["wait", "own", "run", "ext"]);
-    expect(held.sections).toEqual(["attention", "attention", "running", "finished"]);
-    // 冻结期间新来的行按实时段落位，并被挪进自己那一段——三段必须连续，Sidebar 的表头与计数全靠这个。
-    const withNew = stableSections(prev, rows("wait", "own", "fresh", "run", "ext"), (row) => (row.id === "fresh" ? "running" : live(row)), true);
+    expect(held.sections).toEqual(["attention", "attention", "working", "finished"]);
+    // 冻结期间新来的行按实时段落位，并被挪进自己那一段——各段必须连续，Sidebar 的表头与计数全靠这个。
+    const withNew = stableSections(prev, rows("wait", "own", "fresh", "run", "ext"), (row) => (row.id === "fresh" ? "working" : live(row)), true);
     expect(ids(withNew.order)).toEqual(["wait", "own", "fresh", "run", "ext"]);
-    expect(withNew.sections).toEqual(["attention", "attention", "running", "running", "finished"]);
+    expect(withNew.sections).toEqual(["attention", "attention", "working", "working", "finished"]);
     expect(contiguous(withNew.sections)).toBe(true);
+    // 四段（agora-5gg.11）：冻结期间新来的 UNKNOWN 行归 unclear 段，排在 attention 之后、working 之前——
+    // Sidebar 的表头与折叠区计数全靠各段连续。
+    const withUnk = stableSections(prev, rows("wait", "own", "unk", "run", "ext"), (row) => (row.id === "unk" ? "unclear" : live(row)), true);
+    expect(ids(withUnk.order)).toEqual(["wait", "own", "unk", "run", "ext"]);
+    expect(withUnk.sections).toEqual(["attention", "attention", "unclear", "working", "finished"]);
+    expect(contiguous(withUnk.sections)).toBe(true);
     // 不冻结就是实时分段，一行不动。
     const liveResult = stableSections(prev, rows("wait", "own", "run", "ext"), live, false);
-    expect(liveResult.sections).toEqual(["attention", "finished", "running", "finished"]);
+    expect(liveResult.sections).toEqual(["attention", "finished", "working", "finished"]);
   });
 });
 
-/** 三段各自成块、且顺序是 attention → running → finished。 */
+/** 各段自成一个块、且顺序是 attention → unclear → working → finished（四段，agora-5gg.11）。 */
 function contiguous(sections: Section[]): boolean {
-  const rank: Record<Section, number> = { attention: 0, running: 1, finished: 2 };
+  const rank: Record<Section, number> = { attention: 0, unclear: 1, working: 2, finished: 3 };
   return sections.every((s, i) => i === 0 || rank[sections[i - 1]] <= rank[s]);
 }

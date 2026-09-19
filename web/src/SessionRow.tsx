@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { promptRepeatsLabel, taskLabel } from "./attention";
+import { promptRepeatsLabel, taskLabel, unclearStatus } from "./attention";
 import type { SessionRow } from "./events";
 import { RowIdentity } from "./RowIdentity";
 
@@ -57,6 +57,16 @@ export function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
+/**
+ * UNCLEAR 行的出口（agora-5gg.11）：一句能做的事，不说「刷新试试」那种不算出口的出口。
+ * 判据是 origin 而不是 alive：external 行 agora 手里没有运行时句柄（`docs/spec/api.md`「外部会话」），
+ * 工作面在宿主自己的窗口；其余（agora / adopted）有 pane，选中就在主区看到它的终端。
+ * 「为什么说不清」不在这——那是 reason 的活，`unknown_cause` 封闭枚举归 5gg.6。
+ */
+export function unclearExit(row: SessionRow): string {
+  return row.origin === "external" ? "等下一条 hook，或去它自己的窗口看" : "选中它，打开它的终端看一眼";
+}
+
 /** 侧栏过滤匹配的字段（docs/spec/ux.md：name / node / agent / preview）：任务标签与两行预览也算。
  * 从 Sidebar.tsx 挪来（agora-uvd.2）：sidebarMode.ts 要它，不能再从 Sidebar 进，否则 uvd.3 一加运行时
  * import 就成环。Sidebar 原样再导出，调用方一行不改。 */
@@ -100,9 +110,17 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
   // 装了 hook 却从没收到过事件（Codex 未在 /hooks 信任是最常见的一种，agora-dvh.15）：
   // 行上一行醒目提示，全文放 title；服务端判定，前端不猜。
   const unheard = str(row.hooks_unheard);
+  // UNCLEAR 段的成员（agora-5gg.11）：段名只说「看不清」，看得懂得靠服务端那句 reason。
+  // 行上原样带它（不翻译成人的话：reason 已经是人写的句子，再加工只会把「说不清」遮掉一层），
+  // 后面接一句出口：能开终端的行（agora / adopted）选中就在主区看到它的 pane；external 行没有终端可开
+  // （`Workspace.tsx` 的 no-terminal 那段话），能做的只有等下一条 hook、或回它自己的窗口。
+  const unclear = unclearStatus(row.status);
+  const why = str(row.reason);
   // 两行预览读自 hook（❯ 用户最后输入 / ↳ agent 正在做或最后说的）；没有 hook 的会话保持一行
   // pane preview；两者都没有时退回状态理由（MISSION §6.3；ADR-002 D8）。
-  const lines = prompt || progress ? null : preview || String(row.reason ?? "");
+  // UNKNOWN 行不走最后那一级退路：reason 由下面那块 `unclear-<id>` 连同出口一起画，走这里会把同一句
+  // 话画两遍（agora-5gg.11）。
+  const lines = prompt || progress ? null : preview || (unclear ? "" : String(row.reason ?? ""));
   return (
     // data-ordinal 挂在 <li> 上而不是只靠行里那个 span（agora-5ri）：span 从来只画 1…9，第 10 行往后
     // 渲染的是空字符串，代检按 `.ord` 文本读序号在 2026-09-08 现场那种 58 行的列表里直接读不到。
@@ -135,6 +153,16 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
           {lines && (
             <span className="preview muted" data-testid={`preview-${row.id}`}>
               {lines}
+            </span>
+          )}
+          {unclear && (
+            <span
+              className="preview unclear-reason"
+              data-testid={`unclear-${row.id}`}
+              title={`为什么说不清：${why || "节点没给原因"}\n出口：${unclearExit(row)}`}
+            >
+              {why || "说不清它在做什么"}
+              <span className="unclear-exit"> · {unclearExit(row)}</span>
             </span>
           )}
           {unheard && (
