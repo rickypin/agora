@@ -33,7 +33,7 @@ interface Props {
   connect?: TerminalClientOptions["connect"];
   /**
    * 这一行的运行时会话已经没了（agora-u5p）：Workspace 按行本身判定后递两个出口进来。
-   * 给丁就不是这个形状：那一格不画 WS、不画「重新连接」（按多少次都是 `no sessions`），
+   * 给了就不是这个形状：那一格不画 WS、不画「重新连接」（按多少次都是 `no sessions`），
    * 改成「运行时会话已不在」+ Restart / 删除记录。缺省 null = 照常连。
    */
   runtimeGone?: RuntimeGoneActions | null;

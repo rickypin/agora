@@ -209,8 +209,9 @@ pub fn runtime_gone(gone: RuntimeGone, killed_by_user: bool) -> Assessment {
 }
 
 /// 运行时对**这一个会话**答不上话来时的结论。与 [`runtime_gone`] 的分工：这条是"没有运行时事实
-/// 可给"（这一行根本没有句柄，或压根没问过运行时），那条才是"运行时说了：没有这个会话"。
-/// `SessionManager::view` 只在 `runtime_ref` 为 NULL 的行上走到这条臂（external 行恒 NULL）。
+/// 可给"，那条才是"运行时说了：没有这个会话"。两种行走到这里：`runtime_ref` 为 NULL 的行
+/// （external 行恒 NULL），以及有句柄但本代进程还在 STARTING 窗口里、这一 tick 运行时还没报到
+/// 它的行（agora-u5p：那种"没看见"不能当成"没了"，否则每起一次会话都先给自己写一个 ended_at）。
 pub fn process_layer(
     runtime: Option<&RuntimeSession>,
     spawn_age_secs: Option<u64>,

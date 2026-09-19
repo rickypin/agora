@@ -386,7 +386,7 @@ fn missing_runtime_session_finishes_the_row_and_writes_ended_at_once() {
         "记的是当下的时刻: {ended}"
     );
 
-    // 幂等：再读一轮不得把 ended_at 刷成更晚的"今天"（否则一apper 行的结束时刻会随轮询漂）。
+    // 幂等：再读一轮不得把 ended_at 刷成更晚的"今天"（否则一行的结束时刻会随轮询一路往前漂）。
     let again = m.get(&v.record.id).unwrap();
     assert_eq!(again.record.ended_at, after.record.ended_at);
     assert_eq!(again.assessment.reason, after.assessment.reason);
@@ -444,7 +444,7 @@ fn server_gone_and_session_gone_are_told_apart_in_the_reason() {
         );
         assert!(v.record.ended_at.is_some(), "{id} 要补上结束时刻");
     }
-    // 对照：server 还在应答、只删一个会话，就说 session gone，不抒到 server 头上。
+    // 对照：server 还在应答、只删一个会话，就说 session gone，不推到 server 头上。
     let (m2, rt2, db2) = mgr();
     let c = m2.create(&new_session("c")).unwrap();
     let d = m2.create(&new_session("d")).unwrap();
@@ -473,7 +473,7 @@ fn server_gone_and_session_gone_are_told_apart_in_the_reason() {
             m2.get(&d.record.id).unwrap().assessment.status,
             Status::Starting | Status::Running
         ),
-        "server 在、会话也在：只删一个会话不应把别的抒成结束"
+        "server 在、会话也在：只删一个会话不应把别的算成结束"
     );
 }
 
