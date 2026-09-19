@@ -522,3 +522,84 @@ async fn every_row_carries_the_process_tri_state_and_alive_is_its_projection() {
     assert_eq!(dead["process"], "gone", "{dead}");
     assert_eq!(dead["alive"], false, "{dead}");
 }
+
+#[tokio::test]
+async fn a_row_ended_by_its_host_reports_gone_on_the_wire_while_its_pid_is_still_alive() {
+    // Q4 那条裁决的**线上形态**（裁决 agora-5gg.4 选 A，实施 agora-5gg.18）：进程号还活着、对话已经
+    // 结束，行上就是 `finished` + `process: gone`。2026-09-18 Mac 现场那 10 行 `finished` +
+    // `alive: true` 全是这个形状（superseded / SessionEnd 留下的旧行，那个 pid 正跑着新对话），
+    // 旧布尔在那儿说的是假话。上一那条守卫测的是探活结果与状态的组合，这一条测**两者相反**的格子：
+    // 进程事实是 alive、状态已经是 FINISHED，导出必须是 gone（`finished + alive:true` 反例）。
+    //
+    // 进程号取本测试进程自己的 pid：一定活着，`note_external_pid` 顺带记下的启动时刻也天然对得上
+    // （随手编一个号会撞上 pid 复用检查、被判成 gone，测的就不是这一格了）。
+    //
+    // 改坏两处各红一次：把 manager 的 `alive: process == ProcessState::Alive` 换回旧公式
+    // `rt.is_some_and(|s| s.alive) || liveness == Liveness::Alive` → 第二组的 alive 断言红（那一刻
+    // 探活是活的）；去掉 `ProcessState::derive` 的 FINISHED / FAILED 提前返回 → process 断言红。
+    let fx = Fx::new();
+    let cookie = fx.cookie();
+    let id = fx
+        .sessions
+        .register_external(&agora::session::ExternalSession {
+            agent_type: "claude".into(),
+            agent_session_id: "ended-but-running".into(),
+            runtime_ref: None,
+            working_directory: None,
+        })
+        .unwrap();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    fx.sessions
+        .note_external_pid(&id, std::process::id(), now_ms);
+    let row_of = |body: &Value| -> Value {
+        body["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["local_id"] == json!(&id))
+            .cloned()
+            .unwrap_or_else(|| panic!("列表里没有 {id}: {body}"))
+    };
+
+    // 结束前：探到一个活着的进程号，三值与旧布尔同向（这一格新旧一致，不能只靠它）。
+    let (status, body) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let before = row_of(&body);
+    assert_ne!(before["status"], "finished", "还没结束: {before}");
+    assert_eq!(
+        before["process"], "alive",
+        "探活拿到了活着的进程号: {before}"
+    );
+    assert_eq!(before["alive"], true, "{before}");
+
+    // 人在提示符上退出、宿主来得及发 SessionEnd：这一行的对话到此为止，而那个 pid 还在
+    // （Claude 的 /clear 更典型——同一个进程紧接着跑新对话）。
+    // epoch 从行上读：register_external 登记出来的行不一定在 epoch 0，而 apply_hook 对旧 epoch
+    // 只回一句 false、不报错——拿 0 硬写会静默丢掉这条 SessionEnd，行停在 unknown 上红下一条断言。
+    let epoch = fx.sessions.get(&id).unwrap().record.epoch;
+    fx.sessions
+        .apply_hook(
+            &id,
+            epoch,
+            &[agora::status::AgoraEvent::SessionEnded(Some(
+                "prompt_input_exit".into(),
+            ))],
+        )
+        .unwrap();
+    let (status, body) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = row_of(&body);
+    assert_eq!(after["status"], "finished", "{after}");
+    assert_eq!(after["source"], "hook", "{after}");
+    assert_eq!(
+        after["process"], "gone",
+        "对话结束即不再谈进程（Q4），哪怕进程号还探得到: {after}"
+    );
+    assert_eq!(
+        after["alive"], false,
+        "旧布尔是 process 的投影，不能拿探活结果冒充: {after}"
+    );
+}
