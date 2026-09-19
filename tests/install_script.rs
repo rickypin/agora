@@ -643,6 +643,57 @@ fn macos_warns_when_an_unmanaged_daemon_holds_the_home() {
     );
 }
 
+#[test]
+fn agora_install_os_only_lets_you_pretend_to_be_a_supported_os() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("agora");
+    let units = tmp.path().join("units");
+    let (path, log, state) = fake_launchctl(tmp.path());
+    let args = install_args(&home, &units);
+
+    // 钩子只能扮演脚本真的支持的两个系统。设成第三个值时报错要点名 AGORA_INSTALL_OS：
+    // 只说「不支持的系统: FreeBSD」会把人推向「那是不是该加个 FreeBSD 分支」，
+    // 而这个变量在真机安装上根本不该出现（设错会把单元写到 ~/Library/LaunchAgents）。
+    let envs = [
+        ("AGORA_INSTALL_OS", "FreeBSD"),
+        ("LAUNCHCTL_LOG", log.to_str().unwrap()),
+        ("LAUNCHD_STATE", state.to_str().unwrap()),
+    ];
+    let out = run_env(&args, Some(&path), &envs);
+    assert!(
+        !out.status.success(),
+        "AGORA_INSTALL_OS=FreeBSD 该被拒绝: {}",
+        stderr(&out)
+    );
+    assert!(out.stdout.is_empty());
+    let err = stderr(&out);
+    assert!(err.contains("AGORA_INSTALL_OS"), "{err}");
+    assert!(!home.exists(), "拒绝时不该建 AGORA_HOME");
+    assert!(!units.exists(), "拒绝时不该写单元文件");
+    assert!(
+        !log.exists(),
+        "拒绝时不该叫 launchctl: {:?}",
+        launchctl_calls(&log)
+    );
+
+    // 对照：钩子设成真实存在的 Linux 分支（本机就是 Linux 时也走同一条判断，不能因为
+    // 「钩子的值 == uname」就误落进上面那句 die），该正常写出 systemd 单元。
+    // 用 --no-service：这条断言的是分支选择，不是本机的 systemd。
+    let mut envs: Vec<(&str, &str)> = envs.to_vec();
+    envs[0] = ("AGORA_INSTALL_OS", "Linux");
+    let mut args = args.clone();
+    args.push("--no-service");
+    let out = run_env(&args, Some(&path), &envs);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        units.join("agora.service").is_file(),
+        "钩子该走 systemd 一支: {}",
+        stderr(&out)
+    );
+    assert!(!units.join("dev.agora.daemon.plist").is_file());
+    assert!(!log.exists(), "--no-service 不该叫 launchctl");
+}
+
 /// 一个当前不存在的 pid：spawn 一个 sleep 再 kill + wait 回收，槽位就空了（两个平台都这么拿）。
 fn dead_pid() -> u32 {
     let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
