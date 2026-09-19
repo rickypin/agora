@@ -208,3 +208,168 @@ fn replay_orders_by_time_across_sessions() {
         .collect();
     assert_eq!(order, vec![10, 20, 30]);
 }
+
+/// 一行真实存在的会话（FakeRuntime 起的，epoch 1），投递件带它的身份。
+fn session_row(sessions: &Arc<SessionManager>) -> String {
+    sessions
+        .create(&NewSession {
+            display_name: "swept".into(),
+            agent_type: "claude".into(),
+            working_directory: std::env::temp_dir(),
+            worktree: None,
+            task_ref: None,
+            command: "claude".into(),
+            env: vec![],
+            size: Size::default(),
+        })
+        .unwrap()
+        .record
+        .id
+}
+
+/// `delivery` 同一条信封，payload 多带几个字段：PermissionRequest 要有 `tool_name` 才留得下摘要。
+fn delivery_with(
+    session: &str,
+    epoch: i64,
+    event: &str,
+    ms: u64,
+    extra: serde_json::Value,
+) -> Delivery {
+    let mut d = delivery(session, epoch, event, ms);
+    if let (Some(base), Some(more)) = (d.payload.as_object_mut(), extra.as_object()) {
+        base.extend(more.clone());
+    }
+    d
+}
+
+/// MISSION §5.1（A36 不变量 10 的另一半）：daemon 在、可它正忙着——启动那次 `replay()` 只扫一份
+/// 快照，而 socket 在那之前的 reconcile / 重跑完之前就 bind 了，窗口里到达、socket 又没接住的投递件
+/// 不能一直躺到下次重启（2026-09-18 Mac：replay 跑了 172 s，6 个 Pre/PostToolUse 躺到人来查）。
+/// `Receiver::replay_stale_pending` 挂在 serve 之后与每 5 s 的 sweep 上兜底（agora-5gg.1）。
+/// 守卫：删掉 `sweep()` 开头那一行调用，下面"一个周期之后 pending 空"红。
+#[test]
+fn events_landing_during_replay_are_consumed_without_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let inbox = Inbox::new(dir.path());
+    let sessions = Arc::new(SessionManager::new(
+        Arc::new(Db::open_in_memory().unwrap()),
+        Arc::new(FakeRuntime::default()),
+    ));
+    let id = session_row(&sessions);
+    // 宽限期由下一条单独守；这条要验的是"一个 sweep 周期之内"，所以拿掉它（生产默认 30 s，
+    // 见 `PENDING_REPLAY_AGE`）。
+    let receiver =
+        Receiver::new(dir.path(), sessions.clone()).with_pending_sweep_age(Duration::ZERO);
+
+    // 启动重放：此刻投递箱里只有开局那两条，快照扫完 `replay` 就返回了。
+    inbox.write(&delivery(&id, 1, "SessionStart", 10)).unwrap();
+    inbox
+        .write(&delivery_with(
+            &id,
+            1,
+            "UserPromptSubmit",
+            11,
+            serde_json::json!({"prompt":"push it"}),
+        ))
+        .unwrap();
+    assert_eq!(receiver.replay().unwrap(), 2);
+    assert!(inbox.pending().unwrap().is_empty());
+    assert_ne!(
+        sessions.get(&id).unwrap().assessment.status,
+        Status::Waiting,
+        "补投之前这行还没在等人"
+    );
+
+    // 重放那份快照之后才到达的一条，而且没有 socket 唤醒它（现场：backlog 没排上队 / connect 被拒）。
+    inbox
+        .write(&delivery_with(
+            &id,
+            1,
+            "PermissionRequest",
+            20,
+            serde_json::json!({"tool_name":"Bash","tool_input":{"command":"ls"}}),
+        ))
+        .unwrap();
+
+    // 没有第二次重启、没有 socket 唤醒：一轮 sweep 就该把它消费掉。
+    receiver.sweep();
+    assert!(
+        inbox.pending().unwrap().is_empty(),
+        "兜底重放没扫投递箱：sweep 一个周期之后那条投递件还躺在 pending 里（agora-5gg.1）"
+    );
+    assert_eq!(
+        walkdir(&inbox.done_dir()).len(),
+        3,
+        "补投的投递件要照常进 done/ 留排障归档"
+    );
+    let v = sessions.get(&id).unwrap();
+    assert_eq!(
+        (v.assessment.status, v.assessment.source),
+        (Status::Waiting, Source::Hook),
+        "{:?}",
+        v.assessment
+    );
+    assert_eq!(v.detail.as_deref(), Some("Bash: ls"));
+    // 补投走 `ingest`，不登记挂起（登记在 socket 那条路的 `begin_wake`）：没有活连接可答。
+    assert!(
+        receiver.pending(&id).is_empty(),
+        "兜底重放不该替一条已经断掉的连接登记挂起"
+    );
+    assert_eq!(receiver.received_for(&id).len(), 3);
+
+    // 幂等：done/ 里的不会被应用第二次，ledger 也不长。
+    receiver.sweep();
+    assert_eq!(receiver.received_for(&id).len(), 3);
+
+    // daemon 起来之后补投那一次（`main.rs`，serve 之后）走的是同一个入口：bin 的启动时序在集成
+    // 测试里没法稳定插进去（要它落在 bind 与 accept 之间），至少把它的接缝钉在这里。
+    inbox.write(&delivery(&id, 1, "Stop", 30)).unwrap();
+    assert_eq!(
+        receiver.replay_stale_pending(),
+        1,
+        "serve 之后补投的那个入口没消费投递件"
+    );
+    assert_eq!(
+        sessions.get(&id).unwrap().assessment.status,
+        Status::TurnDone,
+        "补投的 Stop 该把行推到 TURN_DONE"
+    );
+}
+
+/// 宽限期是条真边界，不是装饰：刚落盘的投递件多半正有人在 socket 上等答复，兜底重放抢下来会让那条
+/// 连接拿到"路径不在投递箱里"的错误、也让这次权限请求进不了挂起表（`ingest` 不登记挂起）。
+/// 守卫：把 `pending_file_is_due` 改成恒真 → 第一段红；改成恒假 → 第二段红。
+#[test]
+fn freshly_written_deliveries_wait_out_the_grace_period() {
+    let dir = tempfile::tempdir().unwrap();
+    let inbox = Inbox::new(dir.path());
+    let sessions = Arc::new(SessionManager::new(
+        Arc::new(Db::open_in_memory().unwrap()),
+        Arc::new(FakeRuntime::default()),
+    ));
+    let id = session_row(&sessions);
+    let grace = Duration::from_millis(250);
+    let receiver = Receiver::new(dir.path(), sessions.clone()).with_pending_sweep_age(grace);
+    inbox.write(&delivery(&id, 1, "SessionStart", 10)).unwrap();
+    assert_eq!(receiver.replay().unwrap(), 1);
+
+    inbox.write(&delivery(&id, 1, "Stop", 20)).unwrap();
+    receiver.sweep();
+    assert_eq!(
+        inbox.pending().unwrap().len(),
+        1,
+        "还在宽限期内的投递件被兜底重放抢走了：socket 上正等答复的那条连接会拿不到自己的文件"
+    );
+
+    std::thread::sleep(grace * 2);
+    receiver.sweep();
+    assert!(
+        inbox.pending().unwrap().is_empty(),
+        "过了宽限期还没被兜底重放消费：滞留的投递件又得等下次重启了"
+    );
+    assert_eq!(
+        sessions.get(&id).unwrap().assessment.status,
+        Status::TurnDone,
+        "补投走的是同一条 ingest，状态机看到的还是 hook 层的事实"
+    );
+}

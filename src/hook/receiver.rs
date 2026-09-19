@@ -5,10 +5,11 @@
 //! 上限、超时、解除规则都在这里；哪些事件算解除、映射成什么事件，问宿主的 `AgentHooks`。
 
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use tokio::sync::oneshot;
 
@@ -18,7 +19,7 @@ use crate::local::Response;
 use crate::session::{ExternalSession, Origin, PendingDecision, SessionManager};
 use crate::status::AgoraEvent;
 
-use super::inbox::{Delivery, Inbox, DONE_RETENTION};
+use super::inbox::{delivery_time_secs, now_unix_ms, Delivery, Inbox, DONE_RETENTION};
 use super::HookError;
 
 pub const MAX_HOLDS_PER_SESSION: usize = 8;
@@ -33,6 +34,14 @@ pub const HOLD_SETTLE: Duration = Duration::from_secs(2);
 /// 两次归档清理之间至少隔多久。sweep 每 5 s 一轮，扫目录不该跟着这个频率走；保留期本身是
 /// 24 h（`DONE_RETENTION`），迟一个小时删对排障没有影响（agora-t36）。
 pub const PRUNE_INTERVAL: Duration = Duration::from_secs(3600);
+/// 兜底重放（[`Receiver::replay_stale_pending`]）只碰落盘早于 N 秒的投递件。为什么要留这道宽限：
+/// 投递件刚写下的那几毫秒里，它的主人往往已经连上 socket、正等 daemon 读它（`hook::cmd::deliver`）。
+/// 兜底这条路走的是 `ingest`，而 `ingest` 不登记挂起（登记在 `begin_wake`）：抢先把文件挪进
+/// `done/`，那条连接会拿到"路径不在投递箱里"的错误、那次权限请求也永远不会出现在 Dashboard 上
+/// （hook fail-open 退 0，人只在终端里被问，所以是降级不是崩）。N 要盖住"活 daemon 从落盘到 ingest"
+/// 的最坏延迟：非挂起事件的客户端只等 2 s（`cmd::ACK_TIMEOUT`），挂起事件在 accept 之后立刻 ingest
+/// 并把文件挪走，所以 30 s 是十倍以上的余量；真滞留下来的（2026-09-18 现场是几分钟到几天）等得起。
+pub const PENDING_REPLAY_AGE: Duration = Duration::from_secs(30);
 
 /// 一条已应用的事件：状态机（agora-dvh.4）的输入，现阶段只进账本。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +93,13 @@ pub struct Receiver {
     done_retention: Duration,
     prune_interval: Duration,
     last_prune: Mutex<Option<Instant>>,
+    /// 兜底重放的宽限期（[`PENDING_REPLAY_AGE`]）；测试用它把它缩到毫秒级。
+    pending_sweep_age: Duration,
+    /// 兜底重放已经 warn 过的读不动 / 应用不上的投递件：同一个坏文件每 5 s 撞一次，
+    /// 不该刷 5 s 一条日志。只在内存里，文件消失就忘掉。
+    pending_bad: Mutex<BTreeSet<PathBuf>>,
+    /// 投递箱权限是否已经 warn 过：第一轮 warn，之后降到 debug，直到它被修好。
+    inbox_perm_warned: AtomicBool,
 }
 
 /// 账本里记的事件名：只给排障看，所以键名风格两种都认，不算核心层懂 payload。
@@ -138,6 +154,9 @@ impl Receiver {
             done_retention: DONE_RETENTION,
             prune_interval: PRUNE_INTERVAL,
             last_prune: Mutex::new(None),
+            pending_sweep_age: PENDING_REPLAY_AGE,
+            pending_bad: Mutex::new(BTreeSet::new()),
+            inbox_perm_warned: AtomicBool::new(false),
         }
     }
 
@@ -158,6 +177,13 @@ impl Receiver {
     /// 测试用：只改节流间隔，保留期仍是默认的 24 h。
     pub fn with_prune_interval(mut self, interval: Duration) -> Self {
         self.prune_interval = interval;
+        self
+    }
+
+    /// 测试用：只改兜底重放的宽限期（默认 [`PENDING_REPLAY_AGE`]）。
+    /// `Duration::ZERO` = 每轮 sweep 都把投递箱里的东西全拿了应用。
+    pub fn with_pending_sweep_age(mut self, age: Duration) -> Self {
+        self.pending_sweep_age = age;
         self
     }
 
@@ -212,6 +238,109 @@ impl Receiver {
         // 走同一条节流：启动这次一定跑（还没记过时刻），之后一小时内的 sweep 不重复扫。
         self.maybe_prune_done();
         Ok(n)
+    }
+
+    /// 兜底重放：把投递箱里落盘已够久、还没人消费的投递件按时间序应用一遍，返回应用条数。
+    ///
+    /// 启动时 [`Self::replay`] 只看那一刻的快照，而 socket 在那之前的 reconcile / 重放（同步等、
+    /// 2026-09-18 现场 172 s）之前就 bind 了：bind 与 accept 之间到达的 hook 连接排内核 backlog
+    /// （std UnixListener 是 128），任何一个没排上队的（backlog 满、connect 被拒、客户端被宿主按
+    /// timeout 杀掉）投递件就再没人读，一直等到下次重启——2026-09-18 Mac 上 6 个 Pre/PostToolUse
+    /// 躺在投递箱那个会话的目录里至今没进 done（MISSION §5.1「hook 事件在 daemon 不在时不得
+    /// 丢失」不等价于「daemon 忙着的时候也不得丢失」）。两个入口共用这一条：serve 起来之后补扫一次
+    /// （`main.rs`），之后 sweep 每周期兜底一次。
+    ///
+    /// 可重复跑：`ingest` 应用成功就把文件挪进 `done/`；就算挪之前崩了，检查点里的"已处理文件名"
+    /// 会让状态机在同名文件再应用时返回 `Ok(false)`（`apply_delivered_hook`）。只碰落盘早于
+    /// [`PENDING_REPLAY_AGE`] 的文件，理由见那个常量。
+    pub fn replay_stale_pending(&self) -> usize {
+        if let Err(err) = self.inbox.check_inbox_permissions() {
+            // 启动那道权限门在这条路上也得拦着（只查 `inbox/` 那一支，不陪着扫 `done/`）：
+            // 不拦就等于 `replay()` 拒绝读的投递箱会在下一个 sweep 周期被这里悄悄消费掉。
+            if self.inbox_perm_warned.swap(true, Ordering::Relaxed) {
+                tracing::debug!(component = "hook", %err, "投递箱权限仍然过宽，兜底重放跳过");
+            } else {
+                tracing::warn!(component = "hook", %err, "投递箱权限过宽，兜底重放跳过");
+            }
+            return 0;
+        }
+        self.inbox_perm_warned.store(false, Ordering::Relaxed);
+        let pending = match self.inbox.pending() {
+            Ok(p) => p,
+            Err(err) => {
+                tracing::debug!(component = "hook", %err, "扫投递箱失败，兜底重放这一轮跳过");
+                return 0;
+            }
+        };
+        let mut applied = 0;
+        for path in pending {
+            if !self.pending_file_is_due(&path) {
+                continue;
+            }
+            match self.ingest(&path) {
+                // Ok(None)：旧 epoch、或检查点已处理过同名文件——ingest 已把文件挪进 done/。
+                Ok(Some(_)) => applied += 1,
+                Ok(None) => {}
+                Err(err) => {
+                    // 读不动 / 解析不了 / 库出错的：留在原地等下一轮，但同一个路径只 warn 一次
+                    // （sweep 每 5 s 一轮，坏文件会一直撞在这里）。
+                    let mut bad = self.pending_bad.lock().unwrap_or_else(|p| p.into_inner());
+                    if bad.insert(path.clone()) {
+                        tracing::warn!(component = "hook", path = %path.display(), %err, "兜底重放跳过");
+                    } else {
+                        tracing::debug!(component = "hook", path = %path.display(), %err, "兜底重放仍然跳过");
+                    }
+                }
+            }
+        }
+        // 已经被消费掉 / 被 prune 掉的坏文件不该在本进程里记一辈子。
+        {
+            let mut bad = self.pending_bad.lock().unwrap_or_else(|p| p.into_inner());
+            bad.retain(|p| p.exists());
+        }
+        if applied > 0 {
+            tracing::info!(
+                component = "hook",
+                replayed = applied,
+                "兜底重放消费了滞留的投递件"
+            );
+            // 与 `replay` 尾部同一条：补进来的事件里可能有新的 external 行，把同一进程上一行的
+            // 对话结束掉。
+            match self.sessions.supersede_external_rows() {
+                Ok(ended) if !ended.is_empty() => {
+                    tracing::info!(component = "hook", rows = ?ended, "同一进程换了对话，旧行结束");
+                }
+                Ok(_) => {}
+                Err(err) => tracing::warn!(component = "hook", %err, "取代旧行失败"),
+            }
+        }
+        applied
+    }
+
+    /// 这份投递件够不够老、可以被兜底重放拿走（宽限期的理由见 [`PENDING_REPLAY_AGE`]）。
+    /// mtime 读不动或晚于现在（时钟回拨）→ 退回文件名里的 ts（事件自己的时刻）；连 ts 都没有
+    /// （手写的、名字不是 `<ts>-<seq>.json`）就当够老：真实 hook 写的那两份时间戳都在，落这一档的
+    /// 不会是正有人在 socket 上等答复的东西。
+    fn pending_file_is_due(&self, path: &Path) -> bool {
+        if self.pending_sweep_age.is_zero() {
+            return true; // 测试用：不设宽限期
+        }
+        let now = now_unix_ms();
+        let limit = self.pending_sweep_age.as_millis() as u64;
+        let written = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .or_else(|| {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                delivery_time_secs(&name).map(|s| s.max(0) as u64 * 1000)
+            });
+        match written {
+            // 未来的时间戳（机器时钟往回拨过）也当够老：它不是刚写下等人拿的东西。
+            Some(ts) if ts <= now => now - ts >= limit,
+            _ => true,
+        }
     }
 
     /// 首次升级没有检查点时，利用仍保留的 done 文件补建；之后不依赖这份排障归档。
@@ -745,12 +874,16 @@ impl Receiver {
         self.holds.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 
-    /// 定期扫：超时的与进程已退出的会话解除挂起。`wake` 自己也有超时，这里是双保险，
+    /// 定期扫：先把落盘够久却没人消费的投递件补投一遍（`replay_stale_pending`，socket 那条路
+    /// 漏掉的东西在这儿兜底），再解超时与进程已退出的挂起。`wake` 自己也有超时，这里是双保险，
     /// 主要为进程退出——没有事件会替死掉的 agent 发 SessionEnd。顺带按 `PRUNE_INTERVAL`
     /// 节流清一次归档：原先 `prune_done` 只在 `replay()` 尾部跑，而 replay 只在启动时跑一次，
     /// 于是"保留 24 h"实际成了"下次重启时清掉 24 h 以前的"，daemon 不重启就无界增长
     /// （2026-09-10 现场：开发机 done/ 87 MB / 12274 文件，靠频繁重启才没露馅；agora-t36）。
     pub fn sweep(&self) {
+        // 先补投递箱再处理挂起：兜底重放可能正把解除事件（PostToolUse / Stop / SessionEnd）补进来，
+        // 后面那几段以"状态机里没这个键"放掉 hold，读到已经更新的挂起表才不会误放。
+        self.replay_stale_pending();
         self.maybe_prune_done();
         let expired: Vec<((String, String), String)> = {
             let holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());

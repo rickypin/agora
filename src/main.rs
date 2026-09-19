@@ -334,6 +334,25 @@ async fn serve() -> i32 {
     });
     let socket_task = tokio::spawn(sock.serve(handler));
 
+    // socket 已经在 accept 了，回头再扫一遍投递箱：bind 在最前（agora-apr），上面那次 `replay()`
+    // 只看得到它跑的那一刻的快照，而 bind 与 accept 之间到达的 hook 只能指望内核 backlog——
+    // 没排上队的投递件就再没人读（2026-09-18 Mac：replay 跑了 172 s，窗口里落下的 6 个
+    // Pre/PostToolUse 一直躺到下次重启；MISSION §5.1）。之后每 5 s 的 sweep 里还有同一条
+    // （`Receiver::replay_stale_pending`）当长期兜底；放 blocking 线程、不 await：积压可能很大
+    // （那次是 14026 件），不该拖住后面的 HTTP 监听器起来。
+    let drain_hooks = hooks.clone();
+    tokio::spawn(async move {
+        match tokio::task::spawn_blocking(move || drain_hooks.replay_stale_pending()).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                component = "hook",
+                replayed = n,
+                "socket 起来后补投了窗口里落下的投递件"
+            ),
+            Err(err) => tracing::warn!(component = "hook", %err, "补投投递件的任务失败"),
+        }
+    });
+
     let mut state = AppState::new(auth, sessions.clone(), &settings.node_id);
     state.agents = Arc::new(settings.raw.agents.clone());
     state.projects = Arc::new(

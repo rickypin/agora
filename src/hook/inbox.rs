@@ -110,13 +110,24 @@ impl Inbox {
     /// `hooks/` 及其下目录必须属于自己且 group / other 没有任何位：过宽拒绝读（ADR-002
     /// "什么会让它变危险"）。目录不存在视为空投递箱，不算错。
     pub fn check_permissions(&self) -> Result<(), HookError> {
-        let root = self.hooks_dir();
+        self.check_tree(&self.hooks_dir())
+    }
+
+    /// 只查 `inbox/` 那一支。sweep 的兜底重放（`Receiver::replay_stale_pending`）每 5 s 读一次
+    /// 投递箱，跟着 `check_permissions` 全扫会把 `done/`（上万个文件）也陪着扫；但它读的确实是要
+    /// 被应用的事件，所以这道门本身不能省——省了就等于启动时拒绝读的权限过宽投递箱，会在下一个
+    /// sweep 周期被兜底重放悄悄消费掉（`tests/hooks_inbox.rs::rejects_wrong_permissions` 守的那条）。
+    pub fn check_inbox_permissions(&self) -> Result<(), HookError> {
+        self.check_tree(&self.inbox_dir())
+    }
+
+    fn check_tree(&self, root: &Path) -> Result<(), HookError> {
         if !root.exists() {
             return Ok(());
         }
         // SAFETY: getuid 没有前置条件、不会失败。
         let me = unsafe { libc::getuid() };
-        let mut stack = vec![root];
+        let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
             let display = dir.display().to_string();
             let meta = std::fs::metadata(&dir).map_err(|source| HookError::Io {
