@@ -1024,3 +1024,124 @@ fn process_gone_does_not_overwrite_the_hook_session_end() {
     ));
     assert_eq!((a.status, a.source), (Status::Failed, Source::Process));
 }
+
+#[test]
+fn handleless_external_starting_decays_to_turn_done() {
+    // agora-rkl（2026-09-18 现场：zuan 的 ef0e50 钉在 starting 180 h、a3a2a0 10 h，Mac 的
+    // trion 2 d、dbs-operator 15 h）：只收到过 SessionStart 的 external 行永远停在 STARTING——
+    // 它的进程层恒为 Source::None，observe 第 1 步提前返回，observe_hooked 的衰减（agora-okr）
+    // 够不着。守卫：无句柄（Liveness::Unknown）与进程号活着（Liveness::Alive）两种 external 行
+    // 都在 startup_grace 之后落 TURN_DONE `awaiting first prompt`；宽限内不动；宽限内来了活动
+    // 就回 RUNNING、中间不出现 TURN_DONE；无句柄行沉默过 external_silent_after 仍归 UNKNOWN
+    // （沉默兜底在同一 tick 里落最后结论）；进程没了（Dead）不衰减，仍由进程层说结束。
+    // 关掉 observe 第 1 步 external 分支里的 decay_starting → 前两段 TURN_DONE 断言红。
+    let external = |liveness, now| Observation {
+        process: Assessment::unknown(match liveness {
+            Liveness::Alive => "external session: process alive, hook only",
+            Liveness::Unknown => "external session: no runtime, hook only",
+            Liveness::Dead => "external session: process gone",
+        }),
+        liveness,
+        text: None,
+        runtime: None,
+        epoch: 1,
+        now,
+    };
+
+    // 无句柄（Codex Desktop、丢了进程号的旧检查点）：宽限内钉住，宽限一到就降。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    assert_eq!(m.current().status, Status::Starting);
+    assert_eq!(
+        m.observe(external(Liveness::Unknown, 9)).status,
+        Status::Starting,
+        "宽限内不动"
+    );
+    let a = m.observe(external(Liveness::Unknown, 10));
+    assert_eq!(
+        (a.status, a.source),
+        (Status::TurnDone, Source::Hook),
+        "{a:?}"
+    );
+    assert!(
+        a.reason
+            .as_deref()
+            .unwrap()
+            .contains("awaiting first prompt"),
+        "{a:?}"
+    );
+    assert!(a.confidence < 1.0 && a.confidence >= 0.9);
+    assert_eq!(m.status_since(), 10);
+    // 之后不再漂：起点稳定在衰减那一刻（agora-385 的老账）。
+    for now in [12, 60, 3600] {
+        let a = m.observe(external(Liveness::Unknown, now));
+        assert_eq!(a.status, Status::TurnDone, "{a:?}");
+        assert_eq!(m.status_since(), 10);
+    }
+    // 出口还是那些：人给了第一条指令就开一轮。
+    m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 3601);
+    assert_eq!(m.current().status, Status::Running);
+
+    // 进程号活着的（zuan ef0e50：Claude 在终端里起、人走开了 7 天半）：不衰减就永远 "starting"，
+    // 而 2 h 沉默兜底只对 Unknown 生效，所以这一档只有这条衰减能把行送到 TURN_DONE。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    let a = m.observe(external(Liveness::Alive, 180 * 3600));
+    assert_eq!(
+        (a.status, a.source),
+        (Status::TurnDone, Source::Hook),
+        "{a:?}"
+    );
+    assert!(
+        a.reason
+            .as_deref()
+            .unwrap()
+            .contains("awaiting first prompt"),
+        "{a:?}"
+    );
+
+    // compact 一类：宽限内就有活动 → RUNNING，中间不出现 TURN_DONE（原规则不变）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    m.apply(&AgoraEvent::Activity("PreToolUse Bash".into()), 1, 2);
+    assert_eq!(m.current().status, Status::Running);
+    assert_eq!(
+        m.observe(external(Liveness::Unknown, 20)).status,
+        Status::Running
+    );
+
+    // 无句柄 + 沉默 ≥ external_silent_after：兜底仍然优先落 UNKNOWN——agent 大概早退了，
+    // "看不清"比"等指令"诚实（agora-tql 的原意）。衰减先写 TURN_DONE，同一 tick 被兜底改写。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    let a = m.observe(external(Liveness::Unknown, 2 * 3600));
+    assert_eq!(
+        (a.status, a.source),
+        (Status::Unknown, Source::Hook),
+        "{a:?}"
+    );
+    assert_eq!(a.reason.as_deref(), Some("hooks silent; no process handle"));
+
+    // 进程没了：不衰减，进程层说结束（"进程退出压倒一切"不分 origin）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    let gone = Assessment::new(
+        Status::Finished,
+        Source::Process,
+        0.8,
+        Some("external process gone (no exit status)"),
+    );
+    let a = m.observe(Observation {
+        process: gone,
+        liveness: Liveness::Dead,
+        text: None,
+        runtime: None,
+        epoch: 1,
+        now: 60,
+    });
+    assert_eq!(
+        (a.status, a.source),
+        (Status::Finished, Source::Process),
+        "{a:?}"
+    );
+}

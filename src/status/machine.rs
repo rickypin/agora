@@ -11,7 +11,9 @@
 //! 2. 有 hook 的会话：WAITING / TURN_DONE 只来自 hook；文本层永远抬不上去，活动层不产生 IDLE。
 //!    hook 沉默（`silence_after` 无事件）而屏幕像在等人 → UNKNOWN `hooks silent`，不猜 WAITING。
 //!    hook 层的 STARTING 在 `startup_grace` 内没有后续事件 → TURN_DONE `awaiting first prompt`
-//!    （起好了、等第一条指令；agora-okr）。
+//!    （起好了、等第一条指令；agora-okr）。这条衰减不分 origin：external 行到不了本条（第 1 步就
+//!    返回了），所以在第 1 步的 external 分支里各落一次，两处共用 [`Machine::decay_starting`]
+//!    （agora-rkl）。
 //! 3. 无 hook 的会话：文本 WAITING 要连续 2 tick 一致（conf ≤ 0.8）；`idle_after` 无输出 → IDLE
 //!    （conf 0.6）；输出恢复 → RUNNING。
 //! 4. 驻留：低层来源在 `high_hold`（30 s）内不覆盖高层写入的状态；resize / attach / detach
@@ -619,7 +621,24 @@ impl Machine {
         if obs.liveness == Liveness::Dead || obs.process.source == Source::None {
             if obs.liveness != Liveness::Dead && self.current.source == Source::Hook {
                 // 外部会话：没有退出事实（进程号活着 / 根本不知道），hook 说什么就是什么。
-                // 例外（agora-tql，2026-09-08 现场 11 行僵尸）：根本不知道进程活没活（Codex Desktop 的
+                // 例外之一（agora-rkl，2026-09-18 现场：zuan 的 ef0e50 钉在 starting 180 h、
+                // a3a2a0 10 h，Mac 的 trion 2 d、dbs-operator 15 h）：只收到过 SessionStart 的
+                // external 行。`observe_hooked` 里那条衰减（agora-okr）对它们**不可达**——external
+                // 行三种进程层全是 `Source::None`，第一句就 return 了，于是 STARTING 的出口只剩
+                // 2 h 的沉默兜底，而那条还只对 `Liveness::Unknown` 生效：进程号活着（Claude 在
+                // 终端里起、人走开了）的行永远停在 "… starting"。对人来说这行要做的事与 agora
+                // 起的会话一模一样是"给它指令"，按 origin 分叉没有依据（MISSION §4.3「hook 层的
+                // STARTING 最多停 10 s」不区分 origin）。Alive | Unknown 都衰减；Dead 到下面走
+                // 进程事实。
+                // 放在沉默兜底之前只是把阅读顺序写成"先归位、再兜底"：两者用同一个 quiet 时钟，
+                // 谁先谁后结果一样（兜底一旦落 UNKNOWN，下面的 STARTING 门就关上不再开）。
+                // 实测：把衰减移到兜底之后，下面两个守卫逐行同色（2026-09-19）。
+                if self.current.status == Status::Starting
+                    && now - self.last_hook_at.unwrap_or(self.since) >= self.startup_grace_secs()
+                {
+                    self.decay_starting(now);
+                }
+                // 例外之二（agora-tql，2026-09-08 现场 11 行僵尸）：根本不知道进程活没活（Codex Desktop 的
                 // 共用 app-server、daemon 重启后丢了进程号的旧检查点）而 hook 又沉默了
                 // `external_silent_after` 以上 → UNKNOWN。这一行没有 pane，D1 的沉默规则够不着；没有
                 // 进程号，进程层永远说不了"结束"；agent 早退了的行会永远钉在 TURN_DONE、排在 NEEDS
@@ -693,6 +712,22 @@ impl Machine {
             return true;
         }
         false
+    }
+
+    /// hook 层的 STARTING 在启动宽限内没有后续事件 → TURN_DONE `awaiting first prompt`
+    /// （agora-okr；agora-rkl 把同一条规则接到 external 行上）。宽限由调用方判：有运行时的行
+    /// 在 `observe_hooked` 里，external 行在 `observe` 第 1 步的分支里——两处共用这一个结论，
+    /// reason / conf 不许按 origin 分叉。
+    fn decay_starting(&mut self, now: i64) {
+        self.set(
+            Assessment::new(
+                Status::TurnDone,
+                Source::Hook,
+                0.9,
+                Some("session started, awaiting first prompt"),
+            ),
+            now,
+        );
     }
 
     fn observe_hooked(
@@ -782,15 +817,7 @@ impl Machine {
             if self.current.status == Status::Starting
                 && now - quiet_since >= self.startup_grace_secs()
             {
-                self.set(
-                    Assessment::new(
-                        Status::TurnDone,
-                        Source::Hook,
-                        0.9,
-                        Some("session started, awaiting first prompt"),
-                    ),
-                    now,
-                );
+                self.decay_starting(now);
             }
             return self.current.clone();
         }

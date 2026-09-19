@@ -422,11 +422,125 @@ fn starting_decays_through_session_manager_and_after_checkpoint_restore() {
         .contains("awaiting first prompt"));
 }
 
+#[test]
+fn handleless_external_starting_decays_through_session_manager_and_after_checkpoint_restore() {
+    // agora-rkl（2026-09-18 现场：zuan 的 ef0e50 钉在 starting 180 h、a3a2a0 10 h，Mac 的
+    // trion 2 d、dbs-operator 15 h）：只收到过 SessionStart 的 external 行永远 "… starting"——
+    // 它的进程层恒为 Source::None，Machine::observe 第 1 步提前 return，observe_hooked 里
+    // 那条衰减（agora-okr）对它们不可达，STARTING 就没有出口（这行要人做的事明明是"给它
+    // 指令"）。从 SessionManager 入口覆盖（agora-uez 的教训：只喂 Machine 会漏掉接线错误），
+    // 再走 agora-9dj 的检查点恢复路径。无句柄（信封不带 CLAUDE_PID）是现场里最常见的一档：
+    // Codex Desktop、丢了进程号的旧检查点；它落 Liveness::Unknown，2 h 沉默兜底也接不住
+    // STARTING（兜底只说"看不清"，不说"等指令"）。
+    // 检查点只在 hook 事件时写、衰减不写盘，所以重启恢复出来的仍是 STARTING。
+    // 宽限 3 s 的理由见上一个测试（agora-q8x）：整秒时钟比较，1 s 宽限会在跨秒那一瞬假阴性。
+    const GRACE: Duration = Duration::from_secs(3);
+    let grace = MachineConfig {
+        startup_grace: GRACE,
+        ..Default::default()
+    };
+    // 等到状态离开 STARTING（最多宽限 + 3 s），返回最后一次看到的视图；断言留给调用方原样做。
+    let wait_decay = |s: &SessionManager, id: &str| {
+        let deadline = std::time::Instant::now() + GRACE + common::isolate::PROC;
+        loop {
+            let v = s.get(id).unwrap();
+            if v.assessment.status != Status::Starting || std::time::Instant::now() >= deadline {
+                return v;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let rt = Arc::new(common::FakeRuntime::default());
+    let s = Arc::new(SessionManager::new(db.clone(), rt.clone()).with_status_config(grace.clone()));
+    let r = Receiver::new(home.path(), s.clone());
+    let inbox = Inbox::new(home.path());
+    let start = |session: &str| json!({"hook_event_name":"SessionStart","session_id": session, "cwd": "/work/trion", "source": "startup"});
+    let register =
+        |session: &str| external_delivery_with_env(session, BTreeMap::new(), 1, start(session));
+    let id = r
+        .ingest(&inbox.write(&register("ext-stuck")).unwrap())
+        .unwrap()
+        .unwrap()
+        .session_key;
+    let v = s.get(&id).unwrap();
+    assert_eq!(
+        (v.assessment.status, v.assessment.source),
+        (Status::Starting, Source::Hook)
+    );
+    assert!(!v.alive, "没有可信进程号：不说活着，也不说死了");
+    let v = wait_decay(&s, &id);
+    assert_eq!(
+        (v.assessment.status, v.assessment.source),
+        (Status::TurnDone, Source::Hook),
+        "无句柄 external 行的 STARTING 必须衰减：{:?}",
+        v.assessment
+    );
+    assert!(v
+        .assessment
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("awaiting first prompt"));
+    // 出口照常：人给了第一条指令就开一轮。
+    s.apply_hook(&id, 1, &[AgoraEvent::PromptSubmitted("first".into())])
+        .unwrap();
+    assert_eq!(s.get(&id).unwrap().assessment.status, Status::Running);
+
+    // 重启路径：另起一行只收到 SessionStart 的，检查点里停在 STARTING，恢复后照样衰减。
+    let id2 = r
+        .ingest(&inbox.write(&register("ext-restart")).unwrap())
+        .unwrap()
+        .unwrap()
+        .session_key;
+    drop(r);
+    drop(s);
+    drop(db);
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let restarted = Arc::new(SessionManager::new(db, rt).with_status_config(grace));
+    restarted.reconcile().unwrap();
+    Receiver::new(home.path(), restarted.clone())
+        .replay()
+        .unwrap();
+    let v = wait_decay(&restarted, &id2);
+    assert_eq!(
+        (v.assessment.status, v.assessment.source),
+        (Status::TurnDone, Source::Hook),
+        "从检查点恢复的 STARTING 同样衰减：{:?}",
+        v.assessment
+    );
+    assert!(v
+        .assessment
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("awaiting first prompt"));
+    // 恢复不靠进程事实：这一行从来没有可信进程号，alive 仍为假。
+    assert!(!v.alive);
+}
+
 /// 无句柄 external 行的投递件：没有 AGORA_*，身份是 (host, agent_session_id)，进程号在 CLAUDE_PID。
 /// 时刻从"现在"起算（`ms` 只是序号）：进程号要与报来它的 hook 时刻对一下，进程不得晚于 hook。
 fn external_delivery(
     agent_session: &str,
     pid: u32,
+    ms: u64,
+    payload: serde_json::Value,
+) -> Delivery {
+    external_delivery_with_env(
+        agent_session,
+        BTreeMap::from([("CLAUDE_PID".to_owned(), pid.to_string())]),
+        ms,
+        payload,
+    )
+}
+
+/// 同上，但 `agent_env` 由调用方给：空表 = 宿主没报进程号（Codex Desktop 的共用 app-server、
+/// 没有 `CLAUDE_PID` 的宿主）→ `SessionManager.external_pids` 里没有这一行 → `Liveness::Unknown`。
+fn external_delivery_with_env(
+    agent_session: &str,
+    agent_env: BTreeMap<String, String>,
     ms: u64,
     payload: serde_json::Value,
 ) -> Delivery {
@@ -441,7 +555,7 @@ fn external_delivery(
             agora_session_id: None,
             agora_epoch: None,
             agent_session_id: agent_session.into(),
-            agent_env: BTreeMap::from([("CLAUDE_PID".to_owned(), pid.to_string())]),
+            agent_env,
             runtime_env: BTreeMap::new(),
             ppid: 1,
             received_at: String::new(),
