@@ -23,7 +23,7 @@ use crate::runtime::{
 };
 use crate::status::{
     self, AgentProcess, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation,
-    Status,
+    ProcessState, Status,
 };
 use crate::task::{TaskIndex, TaskInfo};
 
@@ -137,6 +137,13 @@ pub struct SessionView {
     pub record: SessionRecord,
     /// 一行显示的名字：没改过名时 pane title 赢，改过之后 display_name 永远赢（§4.5）。
     pub name: String,
+    /// 进程三态（Q4 裁决 agora-5gg.4；`docs/spec/api.md`「会话形态」）：`alive | gone | unknown`。
+    /// 有句柄的行按 pane 活性，external 行按检查点里的进程号探活，无可信进程号才是 `unknown`；
+    /// 状态为 FINISHED / FAILED 时一律 `gone`。
+    pub process: ProcessState,
+    /// **旧字段，只保留一版**（恒等于 `process == alive`）：给还没升级的 peer 与页面读。
+    /// 读进程就用 [`SessionView::process`]：布尔表达不了「不知道」（盘点 B2）。真删它要跟着一次
+    /// major bump（api.md「api_version 兼容规则」：删字段不算 minor）。
     pub alive: bool,
     pub exit: Option<crate::runtime::Exit>,
     pub pid: Option<u32>,
@@ -1097,6 +1104,15 @@ impl SessionManager {
             "terminal"
         };
         let respond_within_secs = hook_host.map(|h| h.hold_timeout().as_secs());
+        // 进程三态（Q4 裁决 agora-5gg.4，agora-5gg.18）：上半段的 `liveness` 是给状态机看的，
+        // `process` 是给调用方看的——两者不同处只在"对话已结束就不再谈进程"与"运行时读不到"
+        // 这两处。第三个参数照抄上半段那个分支的条件（`degraded` + 有句柄）：上半段在这种情况
+        // 给出 Liveness::Dead 是内部编码，derive 里要还原成 unknown（ADR-001 D7）。
+        let process = ProcessState::derive(
+            assessment.status,
+            liveness,
+            degraded.is_some() && rec.runtime_ref.is_some(),
+        );
         let name = match rt {
             Some(s) if !rec.name_locked && !s.title.trim().is_empty() => s.title.clone(),
             _ => rec.display_name.clone(),
@@ -1104,7 +1120,9 @@ impl SessionManager {
         SessionView {
             pending_decision,
             name,
-            alive: rt.is_some_and(|s| s.alive) || liveness == Liveness::Alive,
+            process,
+            // 旧字段：与 process 严格一致，未升级的 peer / 页面只读它（下一版删）。
+            alive: process == ProcessState::Alive,
             exit: rt.and_then(|s| s.exit.clone()),
             pid: rt.and_then(|s| s.pid),
             managed: rt.is_some_and(|s| s.managed),

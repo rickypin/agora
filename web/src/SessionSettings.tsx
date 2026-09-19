@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { RestartResult, SessionApi } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
-import type { SessionRow } from "./events";
+import { rowProcess, type SessionRow } from "./events";
 import { rowName } from "./Sidebar";
 
 interface Props {
@@ -37,9 +37,10 @@ export function SessionSettings({ row, api, onClose }: Props) {
   const [restartNote, setRestartNote] = useState<string | null>(null);
   /** 确认之后到节点返回之前：Kill 走 TERM → 5 s → KILL 宽限（ADR-001 D2），shell 会吃满，
    * 只把按钮变灰会让人以为没点上（agora-9nv）。节点现在只同步等 1 s、没退就带着 killed_at
-   * 立即返回（agora-284），所以 Kill 的"正在结束"还要看行本身：killed_at 已写而进程仍 alive。 */
+   * 立即返回（agora-284），所以 Kill 的"正在结束"还要看行本身：killed_at 已写而进程仍活着。
+   * 读 `process` 不读旧的 `alive`（agora-5gg.18）：那个字段只保留一版，下一版删。 */
   const [ending, setEnding] = useState<"kill" | "restart" | null>(null);
-  const killing = ending ?? (row.killed_at && row.alive ? "kill" : null);
+  const killing = ending ?? (row.killed_at && rowProcess(row) === "alive" ? "kill" : null);
   const canRestart = typeof row.command === "string" && row.command.trim() !== "";
 
   useEffect(() => {

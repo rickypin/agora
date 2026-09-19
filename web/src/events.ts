@@ -10,11 +10,48 @@
 import type { PeerHealth } from "./health";
 import { apiFetch } from "./net";
 
+/**
+ * 进程三态（Q4 裁决 agora-5gg.4；`docs/spec/api.md`「会话形态」）。
+ * - `alive`：探到了，进程还在；
+ * - `gone`：对话结束了（FINISHED / FAILED 一律如此，哪怕那个 pid 还在跑别的对话）或探到进程没了；
+ * - `unknown`：agora 说不上（无可信进程号的 external 行，Codex Desktop 那一类）。
+ *
+ * 旧的 `alive` 布尔把后两者压成一个 `false`（盘点 B2：7 行 turn_done + alive:false 与真没了的行
+ * 长得一样），所以只保留一版。
+ */
+export type ProcessState = "alive" | "gone" | "unknown";
+
+const PROCESS_STATES: readonly string[] = ["alive", "gone", "unknown"];
+
+/** 运行时守卫：行与事件都来自别的节点的文本，不在词表里的字面量一律当「没说」。 */
+export function isProcessState(v: unknown): v is ProcessState {
+  return typeof v === "string" && PROCESS_STATES.includes(v);
+}
+
+/**
+ * 读一行当前的进程三态。没升级的 peer（api_version minor < 1.7）不发 `process`，
+ * 从旧布尔退回两值：`false` 在旧形态里既可能是真没了也可能是「不知道」，这里读成 `gone`——
+ * 猜错的方向是少说一次未知，不影响按钮与排序（新节点升级后走全量重拉，自然拿到三值）。
+ */
+export function rowProcess(row: SessionRow): ProcessState {
+  return isProcessState(row.process) ? row.process : row.alive ? "alive" : "gone";
+}
+
 export interface SessionRow {
   id: string;
   node: string;
   status: string;
+  /**
+   * 旧字段（= `process === "alive"`），服务端只保留一版（agora-5gg.18）：新调用方读
+   * [`SessionRow.process`]。用 [`rowProcess`] 读进程事实，它对没升级的 peer 行自动退回这里。
+   */
   alive: boolean;
+  /**
+   * 进程三态（Q4 裁决 agora-5gg.4；`docs/spec/api.md`「会话形态」）：见 [`ProcessState`]。
+   * peer 行可能是没升级的节点来的（同 major、minor 更旧），**这个键可以不存在** —— 读它走
+   * [`rowProcess`]，不要直接 `row.process === "gone"`。
+   */
+  process?: ProcessState;
   /** 只有并入的 peer 行带它：该 peer 掉线后保留的最后一眼（MISSION §3.5；不变量 8）；本机行没有。 */
   stale?: boolean;
   /**
@@ -73,6 +110,8 @@ export type AgoraEvent =
       source: string;
       reason: string | null;
       alive: boolean;
+      /** 进程三态（agora-5gg.18）：与 `alive` 同时带；没升级的节点不发。 */
+      process?: ProcessState;
       detail?: string | null;
       prompt?: string | null;
       progress?: string | null;
@@ -265,12 +304,17 @@ export class EventsClient {
         const row = this.sessions.get(e.id);
         if (!row) return false;
         const next: SessionRow = { ...row, status: e.status, source: e.source, reason: e.reason, alive: e.alive };
+        // `process` 只认词表里的值（对端是别的节点的二进制，多一个不认识的字面量不算新闻）。
+        // 事件没带 = 对端还没升级：行上也不留旧的三值，否则会出现 `alive: false` 而 `process:
+        // "alive"` 这种自己打自己的行，而 rowProcess 会拿那个陈旧值说话。带了却不认识：保留上一眼。
+        if (isProcessState(e.process)) next.process = e.process;
+        else if (e.process === undefined) delete next.process;
         // 预览与起点字段：事件没带（undefined）就沿用旧值，带了 null 就是清空。
         for (const k of ["detail", "prompt", "progress", "preview", "status_since", "hooks_unheard"] as const) {
           if (e[k] !== undefined) next[k] = e[k];
         }
         if (
-          (["status", "source", "reason", "alive", "detail", "prompt", "progress", "preview", "status_since", "hooks_unheard"] as const).every(
+          (["status", "source", "reason", "alive", "process", "detail", "prompt", "progress", "preview", "status_since", "hooks_unheard"] as const).every(
             (k) => row[k] === next[k],
           )
         )

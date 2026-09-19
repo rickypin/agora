@@ -446,3 +446,79 @@ async fn restart_resumes_self_reported_conversation_and_create_pins_one() {
     assert!(custom["agent_session_id"].is_null(), "{custom}");
     assert_eq!(custom["command"], "myagent");
 }
+
+#[tokio::test]
+async fn every_row_carries_the_process_tri_state_and_alive_is_its_projection() {
+    // Q4（裁决 agora-5gg.4，实施 agora-5gg.18）：`process` ∈ {alive, gone, unknown} 是三值事实，
+    // 旧布尔 `alive` 只保留一版、恒等于 (process == alive)。三态各造一行：
+    //   alive   —— 刚创建的 shell 行，pane 活着；
+    //   unknown —— 没有可信进程号的 external 行（Codex Desktop 那一类）：布尔只能说"不是活着"，
+    //              而它和真的探到没了在 API 上长得一样（盘点 B2，Mac 2026-09-18 7 行）；
+    //   gone    —— 进程以非零码退出（FAILED 也一律 gone：对话结束就不再谈进程）。
+    // 把 alive 与 process 写成两份独立的事实 → 投影断言红；把无进程号那一支并到 gone →
+    // 那两条 unknown 断言红。
+    let fx = Fx::new();
+    let cookie = fx.cookie();
+
+    let ext = fx
+        .sessions
+        .register_external(&agora::session::ExternalSession {
+            agent_type: "codex".into(),
+            agent_session_id: "desktop-thread".into(),
+            runtime_ref: None,
+            working_directory: None,
+        })
+        .unwrap();
+    let created = create(&fx, &cookie, "tri").await;
+    let gid = created["id"].as_str().unwrap().to_owned();
+
+    // 每一行的通用不变量（不分状态、不分 origin）。
+    let check = |body: &Value, tag: &str| {
+        for row in body["sessions"].as_array().unwrap() {
+            let p = row["process"].as_str().unwrap_or_default();
+            assert!(matches!(p, "alive" | "gone" | "unknown"), "{tag}: {row}");
+            assert_eq!(
+                row["alive"],
+                json!(p == "alive"),
+                "{tag}: alive 必须是 process 的投影: {row}"
+            );
+        }
+    };
+    let row_of = |body: &Value, id: &str| -> Value {
+        body["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["local_id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("列表里没有 {id}: {body}"))
+    };
+
+    let (status, body) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    check(&body, "初始");
+    let handleless = row_of(&body, &ext);
+    assert_eq!(
+        handleless["process"], "unknown",
+        "没有可信进程号：agora 说不上进程在不在: {handleless}"
+    );
+    assert_eq!(
+        handleless["status"], "unknown",
+        "而且这不是'结束'给的 unknown: {handleless}"
+    );
+    assert_eq!(handleless["alive"], false, "旧布尔只能压成假: {handleless}");
+    assert_eq!(row_of(&body, local(&gid))["process"], "alive");
+
+    // 进程没了：FAILED（非零码）与 FINISHED 同一待遇，一律 gone。
+    fx.rt.set_dead(
+        created["runtime_ref"].as_str().unwrap(),
+        agora::runtime::Exit::Code(3),
+    );
+    let (status, body) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    check(&body, "退出后");
+    let dead = row_of(&body, local(&gid));
+    assert_eq!(dead["status"], "failed", "{dead}");
+    assert_eq!(dead["process"], "gone", "{dead}");
+    assert_eq!(dead["alive"], false, "{dead}");
+}

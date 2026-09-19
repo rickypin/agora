@@ -256,6 +256,8 @@ Session {
 
 `status / exit_code / last_activity_at` 是运行时与 observer 的实时结果，**不落库**（不变量 7）；SQLite 只存上面的 metadata。`project`（仓库根 / 名字 / worktree / 分支 / 是否主 worktree）是按 `working_directory` 派生的实时字段，与 `status` 同一待遇：异步补齐、按 TTL 重查、**不落库**（不变量 7）——库里只有 `working_directory`，字段形状见 `docs/spec/api.md`（A49，2026-09-09，agora-uvd.1）。
 
+进程一栏同样是实时字段，而且是**三值**：`process: alive | gone | unknown`（裁决 agora-5gg.4 选 A，2026-09-19 agora-5gg.18）。取值规则：有运行时句柄的行按 pane 活性给 `alive | gone`；external 行按检查点里的 agent 进程号探活给 `alive | gone`，没有可信进程号（宿主不报、或报来的是所有对话共用的服务进程）给 `unknown`——**「不知道」是一个取值，不是一个 false**，布尔表达不了它（`docs/analysis/session-status-audit-2026-09-18.md` B1 / B2）；`status` 为 FINISHED / FAILED 时一律 `gone`：对话结束即不再谈进程，哪怕那个 pid 还在跑别的对话。旧的 `alive` 布尔是它的投影（恒等于 `process == alive`），只给未升级的 peer 与页面保留一版，下一版删；形态与兼容规则见 `docs/spec/api.md`「会话形态」「api_version 兼容规则」。
+
 节点身份不进本机模型：每个节点只存自己的 session。对外（浏览器与 peer）会话以 `<node>:<id>` 标识，`node` 是节点 id（§9.1）；peer 的会话并入视图时保留来源节点，绝不改写。
 
 ### 4.3 状态定义

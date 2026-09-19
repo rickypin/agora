@@ -68,6 +68,8 @@ select:disabled { opacity: 0.5; }
    不该比 NEEDS ATTENTION 更抢眼；出口那半句再降一档，眼睛先读原因。 */
 .row .unclear-reason { color: var(--muted); }
 .row .unclear-reason .unclear-exit { opacity: 0.7; }
+/* 进程三态里的「说不上」（agora-5gg.18）：比 preview 更轻，别和 ⚠ hook 没接上抢注意力。 */
+.row .proc-flag { color: var(--muted); opacity: 0.8; }
 .row .meta .state { flex: none; margin-left: auto; white-space: nowrap; }
 .sidebar .counts { margin: 0 10px 6px; font-size: 12px; }
 /* 侧栏视图切换（A47，agora-uvd.2）：一行两钮，选中态走 aria-pressed。 */

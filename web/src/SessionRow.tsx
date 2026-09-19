@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { promptRepeatsLabel, taskLabel, unclearStatus } from "./attention";
-import type { SessionRow } from "./events";
+import { rowProcess, type SessionRow } from "./events";
 import { RowIdentity } from "./RowIdentity";
 
 export { staleSeen } from "./RowIdentity";
@@ -116,6 +116,10 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
   // （`Workspace.tsx` 的 no-terminal 那段话），能做的只有等下一条 hook、或回它自己的窗口。
   const unclear = unclearStatus(row.status);
   const why = str(row.reason);
+  // 进程三态（Q4 裁决 agora-5gg.4，agora-5gg.18）。三种取值里只有「说不上」值得在行上多说一句：
+  // `alive` 不用说（行本身就在跑），`gone` 由状态符号（✓ / ✗）说过了。旧布尔把「不知道」压成
+  // false，盘点时那 7 行 turn_done 看上去像「agent 说做完了但进程没了」，其实是从未取得过进程号。
+  const proc = rowProcess(row);
   // 两行预览读自 hook（❯ 用户最后输入 / ↳ agent 正在做或最后说的）；没有 hook 的会话保持一行
   // pane preview；两者都没有时退回状态理由（MISSION §6.3；ADR-002 D8）。
   // UNKNOWN 行不走最后那一级退路：reason 由下面那块 `unclear-<id>` 连同出口一起画，走这里会把同一句
@@ -168,6 +172,15 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
           {unheard && (
             <span className="preview hooks-unheard" data-testid={`hooks-unheard-${row.id}`} title={unheard}>
               ⚠ hook 没接上：{unheard}
+            </span>
+          )}
+          {proc === "unknown" && (
+            <span
+              className="preview proc-flag"
+              data-testid={`proc-${row.id}`}
+              title="没有可信的进程号（宿主不报、或报来的是所有对话共用的服务进程）：agora 说不出这个进程还在不在，hook 沉默一阵会退成 UNKNOWN"
+            >
+              · 进程未知
             </span>
           )}
         </span>

@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EventsClient, type SessionRow, type SocketLike } from "./events";
+import {
+  EventsClient,
+  isProcessState,
+  rowProcess,
+  type SessionRow,
+  type SocketLike,
+} from "./events";
 
 class FakeSocket implements SocketLike {
   onopen: ((ev: unknown) => void) | null = null;
@@ -26,7 +32,7 @@ class FakeSocket implements SocketLike {
 }
 
 function row(id: string, status = "running"): SessionRow {
-  return { id, node: "n", status, alive: true };
+  return { id, node: "n", status, alive: true, process: "alive" };
 }
 
 describe("EventsClient", () => {
@@ -87,6 +93,39 @@ describe("EventsClient", () => {
     sockets[0].serverSend([{ type: "session_updated", id: "n:b", session: { ...row("n:b", "starting"), name: "renamed" } }]);
     await vi.advanceTimersByTimeAsync(300);
     expect(onChange.mock.calls.length).toBe(calls + 2);
+  });
+
+  it("patches the process tri state in place and never leaves it disagreeing with alive (agora-5gg.18)", async () => {
+    sockets[0].serverOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.sessions.get("n:a")?.process).toBe("alive");
+
+    // 升级了的节点：status_changed 带 process，就地 patch。这一行就是盘点 B2：turn_done
+    // 而 agora 说不上进程在不在——旧布尔只能报 alive:false，看上去像「做完了且进程没了」。
+    sockets[0].serverSend([
+      { type: "status_changed", id: "n:a", status: "turn_done", source: "hook", reason: null, alive: false, process: "unknown" },
+    ]);
+    await vi.advanceTimersByTimeAsync(300);
+    let r = client.sessions.get("n:a")!;
+    expect([r.status, r.process, r.alive]).toEqual(["turn_done", "unknown", false]);
+    expect(rowProcess(r)).toBe("unknown");
+
+    // 不认识的取值（对端二进制比页面新）：不写进视图，保留上一眼。
+    sockets[0].serverSend([
+      { type: "status_changed", id: "n:a", status: "running", source: "hook", reason: null, alive: false, process: "sleeping" },
+    ]);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(client.sessions.get("n:a")?.process).toBe("unknown");
+
+    // 没升级的节点（minor 更旧）不带 process：行上也不留旧值，否则会出现 alive 与 process
+    // 自己打自己的行（patch 过 unknown 之后又来一条只带 alive 的事件）。
+    sockets[0].serverSend([
+      { type: "status_changed", id: "n:a", status: "finished", source: "process", reason: null, alive: false },
+    ]);
+    await vi.advanceTimersByTimeAsync(300);
+    r = client.sessions.get("n:a")!;
+    expect("process" in r).toBe(false);
+    expect(rowProcess(r)).toBe("gone");
   });
 
   it("re-pulls the snapshot after a reconnect and on resync, never polling", async () => {
@@ -176,5 +215,28 @@ describe("EventsClient", () => {
     expect(onRevoked).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(sockets.length).toBe(first + 2);
+  });
+});
+
+describe("进程三态的类型守卫（Q4，agora-5gg.18）", () => {
+  it("只认 api.md 锁定的那三个词", () => {
+    // 词表是 API 形态：`docs/spec/api.md`「会话形态」+ api_version 1.7。守卫钉住浏览器侧认的字面量，
+    // 服务端改名（或改名一半）会在这里红，而不是静默把 `gone` 当成「没说」。
+    for (const w of ["alive", "gone", "unknown"]) expect(isProcessState(w)).toBe(true);
+    for (const v of [null, undefined, "", "dead", "ALIVE", 0, 1, true, {}]) {
+      expect(isProcessState(v)).toBe(false);
+    }
+  });
+
+  it("rowProcess 优先读三值，缺键的旧 peer 行退回 alive 投影", () => {
+    const base = { id: "n:a", node: "n", status: "turn_done", alive: false };
+    expect(rowProcess({ ...base, process: "unknown" })).toBe("unknown");
+    expect(rowProcess({ ...base, process: "gone" })).toBe("gone");
+    // 没升级的节点：minor 更旧，不发 process。`alive: false` 在旧形态里可能是"没了"也可能是
+    // "不知道"，这里读成 gone——少说一次未知，不会把未知说成活着。
+    expect(rowProcess({ ...base })).toBe("gone");
+    expect(rowProcess({ ...base, alive: true })).toBe("alive");
+    // 行上有 process 就以它为准：alive 只是投影，两者不一致时（对端 bug）信三值。
+    expect(rowProcess({ ...base, alive: true, process: "gone" })).toBe("gone");
   });
 });

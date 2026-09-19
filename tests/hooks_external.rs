@@ -17,7 +17,7 @@ use agora::adapter::Decision;
 use agora::hook::{Delivery, Envelope, Inbox, Receiver};
 use agora::local::Response;
 use agora::session::Origin;
-use agora::status::{Source, Status};
+use agora::status::{ProcessState, Source, Status};
 
 use common::{Fx, HOST};
 
@@ -295,6 +295,10 @@ async fn external_session_ends_on_session_end_hook() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["status"], "starting", "{body}");
     assert_eq!(
+        body["process"], "unknown",
+        "Desktop 没有可信进程号，三值要能说'不知道'（agora-5gg.18）：{body}"
+    );
+    assert_eq!(
         body["alive"], false,
         "Desktop 的 ppid 是共用 app-server，不能当 alive：{body}"
     );
@@ -310,6 +314,10 @@ async fn external_session_ends_on_session_end_hook() {
     );
     let (_, body) = call(&fx, &cookie, Method::GET, &path, None).await;
     assert_eq!(body["status"], "turn_done", "{body}");
+    assert_eq!(
+        body["process"], "unknown",
+        "TURN_DONE 而进程在不在没人知道（盘点 B2 那一格）不能写成没了：{body}"
+    );
 
     // 用户在 Desktop 里结束这个线程：SessionEnd(reason=other)。下一 tick 就是 FINISHED。
     ingest(
@@ -320,6 +328,10 @@ async fn external_session_ends_on_session_end_hook() {
     let (_, body) = call(&fx, &cookie, Method::GET, &path, None).await;
     assert_eq!(body["status"], "finished", "{body}");
     assert_eq!(body["source"], "hook", "{body}");
+    assert_eq!(
+        body["process"], "gone",
+        "对话结束即不再谈进程（Q4）：{body}"
+    );
     assert!(
         body["reason"].as_str().unwrap_or_default().contains("hook"),
         "{body}"
@@ -670,6 +682,11 @@ async fn a_new_conversation_on_the_same_process_supersedes_the_old_external_row(
     let v = fx.sessions.get(&first).unwrap();
     assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
     assert_eq!(v.assessment.source, Source::Hook);
+    // Q4（agora-5gg.18）：这个 pid 还活着（它正跑着 second 那条对话），旧行也一律报 gone。
+    // 旧代码在这里是 finished + alive:true（盘点 B1，Mac 现场 10 行）。去掉 FINISHED/FAILED
+    // 那一支的提前返回 → 这两条各自红。
+    assert_eq!(v.process, ProcessState::Gone, "{:?}", v.assessment);
+    assert!(!v.alive, "旧布尔是 process == alive 的投影");
     assert!(
         v.assessment
             .reason
@@ -746,6 +763,8 @@ async fn hook_session_end_survives_the_agent_process_going_away() {
     // 行的 source 仍 hook、reason 仍 `session ended (hook)`、alive 变假；对照：从没收到 SessionEnd、
     // 只有进程消失的行 reason 是 `external process gone`、source process。
     // 关掉 Machine::observe 第 1 步的 process_fact_is_no_better 判断 → 第一行的 reason 断言红。
+    // 关掉 agora-5gg.18 的「FINISHED / FAILED 一律 gone」→ SessionEnd 后那一组 process/alive 红
+    // （那一瞬进程还活着，旧代码报的是 finished + alive:true）。
     let (fx, receiver, home) = with_hooks();
     let cookie = fx.cookie();
     let spawn = || {
@@ -789,6 +808,7 @@ async fn hook_session_end_survives_the_agent_process_going_away() {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["status"], "turn_done", "{body}");
         assert_eq!(body["alive"], true, "{body}");
+        assert_eq!(body["process"], "alive", "探活拿到了进程号：{body}");
     }
 
     // 人在提示符上两次 Ctrl+C：Claude 发 SessionEnd(prompt_input_exit)，进程随即退出。
@@ -805,12 +825,17 @@ async fn hook_session_end_survives_the_agent_process_going_away() {
     let (_, body) = call(&fx, &cookie, Method::GET, &path_of(&hand), None).await;
     assert_eq!(body["status"], "finished", "{body}");
     assert_eq!(body["reason"], "session ended (hook)", "{body}");
+    // Q4（agora-5gg.18）：这一秒 by_hand 还活着，行上却要说 gone——对话结束就不再谈进程。
+    // 旧代码在这里是 finished + alive:true（盘点 B1，Mac 2026-09-18 现场 10 行）。
+    assert_eq!(body["process"], "gone", "进程还在也要说结束：{body}");
+    assert_eq!(body["alive"], false, "旧布尔跟着三值走：{body}");
     let since = body["status_since"].as_i64().unwrap();
     by_hand.kill().unwrap();
     by_hand.wait().unwrap();
     let (_, body) = call(&fx, &cookie, Method::GET, &path_of(&hand), None).await;
     assert_eq!(body["status"], "finished", "{body}");
     assert_eq!(body["alive"], false, "进程确实没了：{body}");
+    assert_eq!(body["process"], "gone", "{body}");
     assert_eq!(body["source"], "hook", "进程消失不换掉 hook 的说法：{body}");
     assert_eq!(body["reason"], "session ended (hook)", "{body}");
     assert_eq!(
@@ -824,6 +849,7 @@ async fn hook_session_end_survives_the_agent_process_going_away() {
     let (_, body) = call(&fx, &cookie, Method::GET, &path_of(&hup), None).await;
     assert_eq!(body["status"], "finished", "{body}");
     assert_eq!(body["alive"], false, "{body}");
+    assert_eq!(body["process"], "gone", "{body}");
     assert_eq!(body["source"], "process", "{body}");
     assert_eq!(
         body["reason"], "external process gone (no exit status)",

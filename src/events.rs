@@ -17,7 +17,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::session::{Origin, SessionManager, SessionView};
-use crate::status::{Source, Status};
+use crate::status::{ProcessState, Source, Status};
 
 /// 每个订阅者能落后的事件数；超过就 Resync。
 pub const CAPACITY: usize = 256;
@@ -42,6 +42,9 @@ pub enum Event {
         status: Status,
         source: Source,
         reason: Option<String>,
+        /// 进程三态（Q4，agora-5gg.18）。`alive` 是它的布尔投影、只保留一版：两个都带，
+        /// 未升级的页面读 `alive`、升级了的读 `process`。
+        process: ProcessState,
         alive: bool,
         /// hook 给的问题 / 最后一条回复；变了也算状态变化（就地回答要显示它）。
         detail: Option<String>,
@@ -139,6 +142,9 @@ struct Seen {
     status: Status,
     source: Source,
     reason: Option<String>,
+    /// 进程三值与布尔投影一起记：只带 `alive` 的旧进程看不出 `gone` 与 `unknown` 的区别，
+    /// 而那一切换了是要发事件的（盘点 B2）。
+    process: ProcessState,
     alive: bool,
     detail: Option<String>,
     prompt: Option<String>,
@@ -160,6 +166,7 @@ fn seen(v: &SessionView) -> Seen {
         status: v.assessment.status,
         source: v.assessment.source,
         reason: v.assessment.reason.clone(),
+        process: v.process,
         alive: v.alive,
         detail: v.detail.clone(),
         prompt: v.prompt.clone(),
@@ -307,6 +314,7 @@ impl Differ {
                         status: s.status,
                         source: s.source,
                         reason: s.reason.clone(),
+                        process: s.process,
                         alive: s.alive,
                         detail: s.detail.clone(),
                         prompt: s.prompt.clone(),
@@ -432,6 +440,7 @@ mod tests {
             status: st,
             source: Source::Process,
             reason: None,
+            process: ProcessState::Alive,
             alive: true,
             detail: None,
             prompt: None,
@@ -603,7 +612,7 @@ mod tests {
 
     /// 无 hook 会话的一行视图：状态、reason 与起点都取自真实的状态机，不手写——手写两份一样的行
     /// 什么都测不出来，这条守卫要抓的正是状态机吐出的 reason 每 tick 不同（agora-385）。
-    fn shell_view(m: &crate::status::Machine, alive: bool) -> SessionView {
+    fn shell_view(m: &crate::status::Machine, process: ProcessState) -> SessionView {
         SessionView {
             record: crate::session::SessionRecord {
                 id: "s1".into(),
@@ -627,7 +636,9 @@ mod tests {
                 origin: crate::session::Origin::Agora,
             },
             name: "shell-01".into(),
-            alive,
+            process,
+            // 旧布尔永远是三值的投影（agora-5gg.18）：造行也不手写两个独立的事实。
+            alive: process == ProcessState::Alive,
             exit: None,
             pid: Some(1),
             managed: true,
@@ -682,12 +693,14 @@ mod tests {
         assert_eq!(tick(&mut m, &rt, 60).status, Status::Idle);
         let mut differ = Differ::default();
         assert!(
-            differ.step("n", &[shell_view(&m, true)]).is_empty(),
+            differ
+                .step("n", &[shell_view(&m, ProcessState::Alive)])
+                .is_empty(),
             "第一轮只建基线"
         );
         for now in [62, 64, 66] {
             tick(&mut m, &rt, now);
-            let events = differ.step("n", &[shell_view(&m, true)]);
+            let events = differ.step("n", &[shell_view(&m, ProcessState::Alive)]);
             assert!(
                 events.is_empty(),
                 "t={now}: IDLE 行没变，不该有事件: {events:?}"
@@ -696,7 +709,7 @@ mod tests {
         // 输出恢复 → RUNNING：这才是一条 status_changed，起点是恢复那一刻。
         rt.output_at = Some(70);
         tick(&mut m, &rt, 70);
-        let events = differ.step("n", &[shell_view(&m, true)]);
+        let events = differ.step("n", &[shell_view(&m, ProcessState::Alive)]);
         assert!(
             matches!(
                 &events[..],
@@ -718,7 +731,7 @@ mod tests {
         use crate::project::ProjectInfo;
         use crate::status::{Machine, MachineConfig};
         let m = Machine::new(MachineConfig::default(), false, 1, 0);
-        let none = shell_view(&m, true);
+        let none = shell_view(&m, ProcessState::Alive);
         let mut differ = Differ::default();
         assert!(
             differ.step("n", std::slice::from_ref(&none)).is_empty(),
@@ -740,5 +753,42 @@ mod tests {
         );
         let events = differ.step("n", &[some]);
         assert!(events.is_empty(), "project 没变不该再发: {events:?}");
+    }
+
+    #[test]
+    fn a_process_tri_state_change_is_a_status_change_even_when_nothing_else_moves() {
+        // agora-5gg.18（裁决 Q4）：`process` 进了求差器的 Seen。现场形状（盘点 B2）：同一行从
+        // "探到进程号还在"换成"这个宿主没给可信进程号"（daemon 重启后检查点里没回填上 pid），
+        // status / source / reason 一个字都没变，只有进程事实从 alive 变成 unknown——那是一条
+        // 人要看一眼的变化，不能吐掉。从 Seen 里去掉 process → 第二轮什么都不发，第一条断言红。
+        use crate::status::{Machine, MachineConfig};
+        let m = Machine::new(MachineConfig::default(), false, 1, 0);
+        let alive = shell_view(&m, ProcessState::Alive);
+        let mut differ = Differ::default();
+        assert!(
+            differ.step("n", std::slice::from_ref(&alive)).is_empty(),
+            "第一轮只建基线"
+        );
+        let unknown = shell_view(&m, ProcessState::Unknown);
+        let events = differ.step("n", std::slice::from_ref(&unknown));
+        match &events[..] {
+            [Event::StatusChanged {
+                process,
+                alive: alive_flag,
+                ..
+            }] => {
+                assert_eq!(*process, ProcessState::Unknown);
+                assert!(!alive_flag, "旧布尔是 process == alive 的投影");
+            }
+            other => panic!("只换了 process，应发一条 status_changed: {other:?}"),
+        }
+        // 发到线上的形态（docs/spec/api.md 事件流）：两个字段都在，老页面读 alive、新页面读 process。
+        let j = serde_json::to_value(&events[0]).unwrap();
+        assert_eq!(j["process"], "unknown", "{j}");
+        assert_eq!(j["alive"], false, "{j}");
+        assert!(
+            differ.step("n", &[unknown]).is_empty(),
+            "同一眼不该再发第二条"
+        );
     }
 }

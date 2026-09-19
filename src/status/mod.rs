@@ -110,6 +110,47 @@ impl Assessment {
     }
 }
 
+/// 会话形态导出给调用方的进程三值（Q4 裁决 agora-5gg.4 选 A；`docs/spec/api.md`「会话形态」）。
+///
+/// 与 [`Liveness`] 的分工：`Liveness` 是状态机内部的输入——"最后看到的那个进程号此刻在不在"；
+/// `ProcessState` 是给人看的事实，在此之上多一条裁决：**对话结束即不再谈进程**，FINISHED / FAILED
+/// 行一律 `gone`，哪怕那个 pid 还在跑别的对话（2026-09-18 Mac 盘点：10 行 `finished` + `alive: true`，
+/// 全是 superseded / SessionEnd 留下的旧行）。反过来的另一半是 `unknown`：Codex Desktop 这类
+/// 无可信进程号的 external 行，agora 说不上进程在不在，布尔 `alive` 把它压成 `false` 就等于
+/// 说"没了"，而它和真的探到没了（现场另有 7 行 `turn_done`）在 API 上长得一样（盘点 B2）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessState {
+    Alive,
+    Gone,
+    Unknown,
+}
+
+impl ProcessState {
+    /// 从状态机结论 + [`Liveness`] 导出 `process`。`runtime_unreadable` 是"这一代运行时会话
+    /// 根本没读到"（协议不匹配、版本低于下限那一类运行时降级），不是"读到了、里面没有它"。
+    ///
+    /// 三条规则按此顺序：
+    /// 1. FINISHED / FAILED 一律 `gone`——裁决 Q4，压过一切进程事实；
+    /// 2. 运行时整体读不到 → `unknown`。ADR-001 D7「不许拿读不到当已经死了」：`view()` 上半段在
+    ///    这种情况下把 liveness 压成 [`Liveness::Dead`] 只为了让状态机别把"读不到"当成"还活着"，
+    ///    那是一处内部编码，导出时必须还原（不还原就会给出一条假的 `gone`，2026-09-19 定）；
+    /// 3. 其余按三值直译：alive → `alive`、dead → `gone`、没有可信进程号 → `unknown`。
+    pub fn derive(status: Status, liveness: Liveness, runtime_unreadable: bool) -> Self {
+        if matches!(status, Status::Finished | Status::Failed) {
+            return ProcessState::Gone;
+        }
+        if runtime_unreadable {
+            return ProcessState::Unknown;
+        }
+        match liveness {
+            Liveness::Alive => ProcessState::Alive,
+            Liveness::Dead => ProcessState::Gone,
+            Liveness::Unknown => ProcessState::Unknown,
+        }
+    }
+}
+
 /// 本代进程起始后多少秒内、还没有任何活动信息时算 STARTING。
 pub const STARTING_WINDOW_SECS: u64 = 2;
 
@@ -180,5 +221,87 @@ pub fn process_layer(
             0.0,
             Some("process exited, exit status not yet collected"),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Liveness, ProcessState, Status};
+    use serde_json::json;
+
+    #[test]
+    fn process_state_wire_names_are_the_locked_vocabulary() {
+        // `process` 的取值是 API 形态（docs/spec/api.md「会话形态」；调用方按它分支、不做字符串
+        // 匹配，MISSION §2.3 规则 10）。写死字面量：改 `rename_all` 或改变体名都会红这里。
+        assert_eq!(
+            serde_json::to_value(ProcessState::Alive).unwrap(),
+            json!("alive")
+        );
+        assert_eq!(
+            serde_json::to_value(ProcessState::Gone).unwrap(),
+            json!("gone")
+        );
+        assert_eq!(
+            serde_json::to_value(ProcessState::Unknown).unwrap(),
+            json!("unknown")
+        );
+        assert_eq!(
+            serde_json::from_value::<ProcessState>(json!("gone")).unwrap(),
+            ProcessState::Gone
+        );
+    }
+
+    #[test]
+    fn finished_and_failed_always_report_gone_whatever_the_process_says() {
+        // 裁决 Q4（agora-5gg.4）：对话结束即不再谈进程。现场（2026-09-18 Mac）10 行
+        // `finished` + `alive: true` 都是 superseded / SessionEnd 的旧行——pid 还活着，因为它
+        // 正在跑新对话。关掉 derive 的第一个分支 → 这些断言全红。
+        for st in [Status::Finished, Status::Failed] {
+            for lv in [Liveness::Alive, Liveness::Dead, Liveness::Unknown] {
+                assert_eq!(
+                    ProcessState::derive(st, lv, false),
+                    ProcessState::Gone,
+                    "{st:?} + {lv:?}"
+                );
+                // 运行时读不到也不能越过这条：状态机既然已经说"结束"，结束就是事实。
+                assert_eq!(
+                    ProcessState::derive(st, lv, true),
+                    ProcessState::Gone,
+                    "{st:?} + {lv:?} + unreadable"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unreadable_runtime_is_unknown_not_gone() {
+        // ADR-001 D7：不许拿"读不到"当"已经死了"。view() 上半段在降级时给出 Liveness::Dead
+        // 只是内部编码（让状态机别把失明当成活着），导出时必须还原成 unknown。
+        // 关掉 derive 的 runtime_unreadable 分支 → 第一组断言红（报成 gone）。
+        for lv in [Liveness::Alive, Liveness::Dead, Liveness::Unknown] {
+            assert_eq!(
+                ProcessState::derive(Status::Unknown, lv, true),
+                ProcessState::Unknown,
+                "{lv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn liveness_maps_straight_through_otherwise() {
+        // 盘点 B2：没有可信进程号（Liveness::Unknown）不能压成"没了"。
+        // 把 Unknown 那一支并到 Gone → 第二条断言红。
+        assert_eq!(
+            ProcessState::derive(Status::Running, Liveness::Alive, false),
+            ProcessState::Alive
+        );
+        assert_eq!(
+            ProcessState::derive(Status::TurnDone, Liveness::Unknown, false),
+            ProcessState::Unknown
+        );
+        assert_eq!(
+            ProcessState::derive(Status::Unknown, Liveness::Dead, false),
+            ProcessState::Gone
+        );
     }
 }

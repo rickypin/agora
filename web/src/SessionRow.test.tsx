@@ -297,3 +297,27 @@ it("an UNKNOWN row carries the server reason plus an exit on the row itself (ago
 // 验收标准三条（A40）2026-09-10 随 Acceptance 搬去 web/src/RowResult.test.tsx（agora-4yr.3）：
 // 那两段进了主区的看结果面板，行里再没有它们。行的守卫改由 Sidebar.test.tsx 的
 // 「the sidebar DOM never contains respond-, acceptance- or changes- testids」负责。
+
+it("marks the rows whose process agora cannot speak of, and only those (Q4, agora-5gg.18)", () => {
+  // 三值里只有 `unknown` 需要在行上补一句：`alive` 不用标（行本身就在跑），`gone` 由状态符号
+  // （✓ / ✗）说。旧布尔把 unknown 压成 alive:false，于是 Codex Desktop 那 7 行 turn_done 看上去
+  // 像"agent 说做完了、进程却没了"（盘点 B2）——这一条钉的就是那个区分还留在行上。
+  mount(row({ status: "turn_done", alive: false, process: "unknown" }));
+  const flag = screen.getByTestId("proc-n:a");
+  expect(flag.textContent).toContain("进程未知");
+  expect(flag.getAttribute("title")).toContain("进程号");
+  expect(cssRule(".row .proc-flag")).toContain("var(--muted)");
+  cleanup();
+
+  mount(row({ status: "running", alive: true, process: "alive" }));
+  expect(screen.queryByTestId("proc-n:a")).toBeNull();
+  cleanup();
+
+  mount(row({ status: "finished", alive: false, process: "gone" }));
+  expect(screen.queryByTestId("proc-n:a")).toBeNull();
+  cleanup();
+
+  // 没升级的 peer 行不带 process：按 alive 投影读，不乱标。
+  mount(row({ status: "finished", alive: false }) as SessionRow);
+  expect(screen.queryByTestId("proc-n:a")).toBeNull();
+});
