@@ -146,3 +146,117 @@ fn external_starting_is_never_a_dead_end() {
         "{a:?}"
     );
 }
+
+/// 有 `runtime_ref`、运行时此刻正常应答、而列表里找不到这一行——进程层给出的事实由
+/// `SessionManager::view` 的上半段算好后喂进来（真值表不起运行时，见文件头）。这一格过去是
+/// UNKNOWN `runtime session missing`，每一行钉在 ? 没有出口；agora-u5p 判它是结束的事实。
+/// 降级那行放进来是为了对照：同一条读路径，"运行时答话说没有"与"运行时读不到"不是一件事。
+fn gone(gone: agora::status::RuntimeGone, killed_by_user: bool) -> Assessment {
+    agora::status::runtime_gone(gone, killed_by_user)
+}
+
+/// 一行真值：进程层给什么、该落成什么、reason 里必须有的那半句、为什么是它。
+/// 表做成函数而不是 const：`gone()` 要 format! 出 reason，编译期算不出来（上面
+/// `EXTERNAL_STARTING` 那张表只放字段值，放得下 const）。
+#[derive(Debug)]
+struct GoneRow {
+    given: Assessment,
+    want: (Status, Source),
+    reason: &'static str,
+    why: &'static str,
+}
+
+fn runtime_session_gone_rows() -> Vec<GoneRow> {
+    vec![
+        GoneRow {
+            given: gone(agora::status::RuntimeGone::Session, false),
+            want: (Status::Finished, Source::Process),
+            reason: "runtime session gone (session gone",
+            why: "会话连同 pane 一起没了 ⇒ pane 进程收 SIGHUP，agent 确定不在（Mac 2026-09-18 A2）",
+        },
+        GoneRow {
+            given: gone(agora::status::RuntimeGone::Server, false),
+            want: (Status::Finished, Source::Process),
+            reason: "runtime session gone (server gone",
+            why: "整个 server 连不上：一屋子行同时结束，reason 要说得出是哪一种没了",
+        },
+        GoneRow {
+            given: gone(agora::status::RuntimeGone::Session, true),
+            want: (Status::Finished, Source::Process),
+            reason: "killed by user (runtime session gone",
+            why: "人在 Dashboard 按过 Kill：结论一样，口径按他做的那件事写，通知静音（§4.6）",
+        },
+        GoneRow {
+            given: Assessment::unknown("runtime unavailable: protocol version mismatch"),
+            want: (Status::Unknown, Source::None),
+            reason: "runtime unavailable",
+            why: "运行时整体读不到 ≠ 会话没了（ADR-001 D7）：这一格不许抬成结束，也不写 ended_at",
+        },
+    ]
+}
+
+#[test]
+fn runtime_session_gone_is_a_fact_with_an_exit_not_a_dead_end() {
+    // 每一行都从 RUNNING 起步：求差器第一轮只建基线（notes ④），这里要看的是"运行中死了怎么落"。
+    // 关掉 status::runtime_gone 的 Status::Finished（改回 unknown）→ 前三行的 Finished 红；
+    // 删掉降级那一行对应的 UNKNOWN 分支（把读不到当已死）→ 第四行红。
+    for row in runtime_session_gone_rows() {
+        let mut m = Machine::new(cfg(), true, 1, 0);
+        m.apply(&AgoraEvent::SessionStarted, 1, 0);
+        m.observe(Observation {
+            process: Assessment::new(Status::Running, Source::Process, 1.0, None),
+            liveness: Liveness::Alive,
+            text: None,
+            runtime: None,
+            epoch: 1,
+            now: 30,
+        });
+        let a = m.observe(Observation {
+            process: row.given.clone(),
+            liveness: Liveness::Dead,
+            text: None,
+            runtime: None,
+            epoch: 1,
+            now: 60,
+        });
+        assert_eq!(
+            (a.status, a.source),
+            row.want,
+            "{row:?} → {a:?}（{}）",
+            row.why
+        );
+        assert!(
+            a.reason.as_deref().unwrap_or_default().contains(row.reason),
+            "{row:?} → {a:?}"
+        );
+    }
+}
+
+#[test]
+fn runtime_session_gone_does_not_outvote_a_hook_that_spoke_first() {
+    // 0.8 不是 1.0（agora-rzh 同一条理由）：宿主自己说了 `session ended (hook)` 的行，后来的
+    // "会话没了"只把进程事实带上行，不抢 hook 的说法。把 conf 抬到 1.0 → reason 被抢成
+    // `runtime session gone …` 而红（`Machine::process_fact_is_no_better` 不再成立）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    m.observe(Observation {
+        process: Assessment::new(Status::Running, Source::Process, 1.0, None),
+        liveness: Liveness::Alive,
+        text: None,
+        runtime: None,
+        epoch: 1,
+        now: 30,
+    });
+    m.apply(&AgoraEvent::SessionEnded(Some("other".into())), 1, 40);
+    let a = m.observe(Observation {
+        process: gone(agora::status::RuntimeGone::Session, false),
+        liveness: Liveness::Dead,
+        text: None,
+        runtime: None,
+        epoch: 1,
+        now: 60,
+    });
+    assert_eq!(a.status, Status::Finished, "{a:?}");
+    assert_eq!(a.source, Source::Hook, "{a:?}");
+    assert_eq!(a.reason.as_deref(), Some("session ended (hook)"), "{a:?}");
+}
