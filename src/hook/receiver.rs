@@ -255,7 +255,7 @@ impl Receiver {
     /// [`PENDING_REPLAY_AGE`] 的文件，理由见那个常量。
     pub fn replay_stale_pending(&self) -> usize {
         if let Err(err) = self.inbox.check_inbox_permissions() {
-            // 启动那道权限门在这条路上也得拦着（只查 `inbox/` 那一支，不陪着扫 `done/`）：
+            // 启动那道权限门在这条路上也得拦着（只查 `hooks/` 根与 `inbox/` 那一支，不陪着扫 `done/`）：
             // 不拦就等于 `replay()` 拒绝读的投递箱会在下一个 sweep 周期被这里悄悄消费掉。
             if self.inbox_perm_warned.swap(true, Ordering::Relaxed) {
                 tracing::debug!(component = "hook", %err, "投递箱权限仍然过宽，兜底重放跳过");

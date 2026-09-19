@@ -113,41 +113,40 @@ impl Inbox {
         self.check_tree(&self.hooks_dir())
     }
 
-    /// 只查 `inbox/` 那一支。sweep 的兜底重放（`Receiver::replay_stale_pending`）每 5 s 读一次
-    /// 投递箱，跟着 `check_permissions` 全扫会把 `done/`（上万个文件）也陪着扫；但它读的确实是要
-    /// 被应用的事件，所以这道门本身不能省——省了就等于启动时拒绝读的权限过宽投递箱，会在下一个
+    /// 查 `hooks/` 根目录**本身**加 `inbox/` 那一支。sweep 的兜底重放（`Receiver::replay_stale_pending`）
+    /// 每 5 s 读一次投递箱，跟着 `check_permissions` 全扫会把 `done/`（上万个文件）也陪着扫；但它读的
+    /// 确实是要被应用的事件，所以这道门本身不能省——省了就等于启动时拒绝读的权限过宽投递箱，会在下一个
     /// sweep 周期被兜底重放悄悄消费掉（`tests/hooks_inbox.rs::rejects_wrong_permissions` 守的那条）。
+    ///
+    /// 根目录那一级不能省（2026-09-19 手工代检在真 daemon 上实测：只从 `inbox/` 起步的写法在
+    /// `hooks/` 0775 时照样一个周期就把投递件消费掉了）：`hooks/` 过宽正是「别人能自己建出整棵
+    /// `inbox/` 往里塞伪造事件」那一级，而启动那次 `replay()` 拒绝读它——一道启动时拦得住、运行中
+    /// 放过去的门等于没有。多付的代价是一个 stat。
     pub fn check_inbox_permissions(&self) -> Result<(), HookError> {
-        self.check_tree(&self.inbox_dir())
+        // SAFETY: getuid 没有前置条件、不会失败。
+        let me = unsafe { libc::getuid() };
+        let hooks = self.hooks_dir();
+        if hooks.exists() {
+            self.check_one(&hooks, me)?;
+        }
+        self.check_branch(&self.inbox_dir(), me)
     }
 
     fn check_tree(&self, root: &Path) -> Result<(), HookError> {
+        // SAFETY: getuid 没有前置条件、不会失败。
+        let me = unsafe { libc::getuid() };
+        self.check_branch(root, me)
+    }
+
+    /// `root` 本身满足门要求，且它下面每一级子目录都满足。目录不存在视为空，不算错。
+    fn check_branch(&self, root: &Path, me: u32) -> Result<(), HookError> {
         if !root.exists() {
             return Ok(());
         }
-        // SAFETY: getuid 没有前置条件、不会失败。
-        let me = unsafe { libc::getuid() };
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
+            self.check_one(&dir, me)?;
             let display = dir.display().to_string();
-            let meta = std::fs::metadata(&dir).map_err(|source| HookError::Io {
-                path: display.clone(),
-                source,
-            })?;
-            if meta.uid() != me {
-                return Err(HookError::WrongOwner {
-                    path: display,
-                    owner: meta.uid(),
-                    me,
-                });
-            }
-            let mode = meta.mode() & 0o777;
-            if mode & 0o077 != 0 {
-                return Err(HookError::TooOpen {
-                    path: display,
-                    mode,
-                });
-            }
             for entry in std::fs::read_dir(&dir).map_err(|source| HookError::Io {
                 path: display.clone(),
                 source,
@@ -160,6 +159,30 @@ impl Inbox {
                     stack.push(entry.path());
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// 一个目录本身：属主是自己、group / other 没有任何位。
+    fn check_one(&self, dir: &Path, me: u32) -> Result<(), HookError> {
+        let display = dir.display().to_string();
+        let meta = std::fs::metadata(dir).map_err(|source| HookError::Io {
+            path: display.clone(),
+            source,
+        })?;
+        if meta.uid() != me {
+            return Err(HookError::WrongOwner {
+                path: display,
+                owner: meta.uid(),
+                me,
+            });
+        }
+        let mode = meta.mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(HookError::TooOpen {
+                path: display,
+                mode,
+            });
         }
         Ok(())
     }

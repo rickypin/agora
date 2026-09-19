@@ -373,3 +373,66 @@ fn freshly_written_deliveries_wait_out_the_grace_period() {
         "补投走的是同一条 ingest，状态机看到的还是 hook 层的事实"
     );
 }
+
+/// 兜底重放那道权限门连 `hooks/` 根一起查：`hooks/` 本身过宽时，启动那次 `replay()` 拒读，
+/// 5 s 一轮的兜底也不能把它静默消费掉——一道启动拦得住、运行中放过去的门等于没有，而
+/// `hooks/` 过宽正是别人能自己建出整棵投递箱往里塞伪造事件的那一级（ADR-002「什么会让它变危险」）。
+/// 这一条是 2026-09-19 在真 daemon 上手工代检实测到的：`chmod 775 hooks/` 之后，那份够老的投递件
+/// 照旧在一个周期里进了 done/。守卫：把 `check_inbox_permissions` 改回只走 `inbox/` 那一支 → 第一段红。
+#[test]
+fn stale_replay_checks_the_hooks_root_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let inbox = Inbox::new(dir.path());
+    let sessions = Arc::new(SessionManager::new(
+        Arc::new(Db::open_in_memory().unwrap()),
+        Arc::new(FakeRuntime::default()),
+    ));
+    let id = session_row(&sessions);
+    let receiver =
+        Receiver::new(dir.path(), sessions.clone()).with_pending_sweep_age(Duration::ZERO);
+    inbox.write(&delivery(&id, 1, "SessionStart", 10)).unwrap();
+    assert_eq!(receiver.replay().unwrap(), 1);
+
+    std::fs::set_permissions(
+        dir.path().join("hooks"),
+        std::fs::Permissions::from_mode(0o775),
+    )
+    .unwrap();
+    inbox.write(&delivery(&id, 1, "Stop", 20)).unwrap();
+    // 前提：启动那一支确实拒读这份投递箱（前提没了这段就守不到东西）。
+    let err = receiver.replay().unwrap_err();
+    assert!(matches!(err, HookError::TooOpen { .. }), "{err}");
+    // 兜底那一支不能绕过它。
+    assert_eq!(
+        receiver.replay_stale_pending(),
+        0,
+        "hooks/ 根权限过宽时兜底重放还是把投递件消费了（agora-5gg.1）"
+    );
+    assert_eq!(
+        inbox.pending().unwrap().len(),
+        1,
+        "被拒读的投递件该原地等人 chmod，不该进 done/"
+    );
+    assert_eq!(receiver.received_for(&id).len(), 1);
+    assert_ne!(
+        sessions.get(&id).unwrap().assessment.status,
+        Status::TurnDone
+    );
+
+    // 修回去：同一个入口下一轮就补投，不需要重启。
+    std::fs::set_permissions(
+        dir.path().join("hooks"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    assert_eq!(
+        receiver.replay_stale_pending(),
+        1,
+        "权限修回去后兜底重放该把它补投，否则滞留的投递件又得等下次重启"
+    );
+    assert!(inbox.pending().unwrap().is_empty());
+    assert_eq!(
+        sessions.get(&id).unwrap().assessment.status,
+        Status::TurnDone
+    );
+}
