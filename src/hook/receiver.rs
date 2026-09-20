@@ -931,9 +931,10 @@ impl Receiver {
     /// 定期扫：先把落盘够久却没人消费的投递件补投一遍（`replay_stale_pending`，socket 那条路
     /// 漏掉的东西在这儿兜底），再解超时与进程已退出的挂起。`wake` 自己也有超时，这里是双保险，
     /// 主要为进程退出——没有事件会替死掉的 agent 发 SessionEnd。顺带按 `PRUNE_INTERVAL`
-    /// 节流清一次归档：原先 `prune_done` 只在 `replay()` 尾部跑，而 replay 只在启动时跑一次，
-    /// 于是"保留 24 h"实际成了"下次重启时清掉 24 h 以前的"，daemon 不重启就无界增长
+    /// 节流清一次归档与无行的 hook 检查点：原先 `prune_done` 只在 `replay()` 尾部跑，而 replay 只在
+    /// 启动时跑一次，于是"保留 24 h"实际成了"下次重启时清掉 24 h 以前的"，daemon 不重启就无界增长
     /// （2026-09-10 现场：开发机 done/ 87 MB / 12274 文件，靠频繁重启才没露馅；agora-t36）。
+    /// 无行检查点的清理是同一只手顺带扫到的另一堆文件（agora-5gg.14，见 `maybe_prune_done`）。
     pub fn sweep(&self) {
         // 先补投递箱再处理挂起：兜底重放可能正把解除事件（PostToolUse / Stop / SessionEnd）补进来，
         // 后面那几段以"状态机里没这个键"放掉 hold，读到已经更新的挂起表才不会误放。
@@ -996,6 +997,8 @@ impl Receiver {
     }
 
     /// 距上次清理够久了才真的扫目录；时刻先记后扫，扫得慢也不会两轮叠在一起。
+    /// 两条清理共用这一条节流（名字只说了归档，事实是两条，agora-5gg.14）：归档与孤儿检查点都是
+    /// 「扫一次目录」，都不该跟着 5 s 一轮的 sweep 走（agora-t36 同一条理由）。
     fn maybe_prune_done(&self) {
         {
             let mut last = self.last_prune.lock().unwrap_or_else(|p| p.into_inner());
@@ -1005,6 +1008,22 @@ impl Receiver {
             *last = Some(Instant::now());
         }
         self.inbox.prune_done(self.done_retention);
+        // 无行的 hook 检查点：没有行就没人会加载它们（`restore_hook_checkpoints` 按行迭代），删了
+        // 不丢东西——它们已经不可恢复。只在内存里判不出来源，所以这一行要能把文件名交给排障的人。
+        // 失败只 warn：下一轮 sweep 还走这条路，不值得报事故。
+        match self.sessions.prune_orphan_hook_checkpoints() {
+            Ok(files) if !files.is_empty() => {
+                tracing::info!(
+                    component = "hook",
+                    files = ?files,
+                    "hooks/state/ 里没有对应行的检查点已删（文件名是 id 的逐字节 hex）"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(component = "hook", %err, "清理无行的 hook 检查点失败，下一轮再试")
+            }
+        }
     }
 
     pub async fn run_sweeper(self: Arc<Self>, every: Duration) {

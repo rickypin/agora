@@ -981,6 +981,108 @@ fn pruning_is_throttled_so_the_five_second_sweep_does_not_scan_every_round() {
     );
 }
 
+/// agora-5gg.14：`hooks/state/` 里没有对应行的检查点由 sweep 顺手清掉。
+/// 现场（2026-09-18 Mac）：`state/393031303531.json` 躺在那儿，local_id `901051` 在库与 API 里
+/// 都没有行——`restore_hook_checkpoints` 只按行迭代，这种文件既不会被加载也不会复活，没人清就
+/// 一辈子占着那个位置。
+///
+/// 改坏一次看见红：
+/// - 去掉 `Receiver::maybe_prune_done` 末尾对 `prune_orphan_hook_checkpoints` 的调用 → 前两条断言红（文件还在）；
+/// - `hook_state::prune_orphans` 的 keep 集合塞成空（等价于「本轮没读到库」）→ 「有行的一个字节都不该动」红；
+/// - 把那一条 info 改成逐文件一行、或降成 debug → 日志那三条断言各红一条。
+#[test]
+fn the_sweep_deletes_hook_checkpoints_that_have_no_row() {
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let rt = Arc::new(common::FakeRuntime::default());
+    let s = Arc::new(SessionManager::new(db, rt));
+    let id = create(&s, "claude");
+    let inbox = Inbox::new(home.path());
+    // 节流间隔 0：每轮 sweep 都真扫目录（同上面 done/ 那条守卫的用法）。
+    let r = Receiver::new(home.path(), s.clone()).with_prune_interval(Duration::ZERO);
+
+    // 有行的那一份：走真投递链路、由 ingest 写出，不手写。
+    let path = inbox
+        .write(&delivery(
+            &id,
+            1,
+            1,
+            json!({"hook_event_name":"UserPromptSubmit","prompt":"implement"}),
+        ))
+        .unwrap();
+    r.ingest(&path).unwrap();
+    let live = checkpoint_path(home.path(), &id);
+    let live_before = std::fs::read(&live).unwrap();
+    let live_name = live.file_name().unwrap().to_string_lossy().into_owned();
+
+    // 无行的那两份：`901051` 逐字节 hex 就是 `393031303531`（Mac 现场那个文件名）；`.part` 是
+    // `save` 崩在中途留下的形状，同一条规则。
+    let state = home.path().join("hooks/state");
+    let orphan = state.join("393031303531.json");
+    let orphan_part = state.join("393031303531.part");
+    std::fs::write(&orphan, b"{\"version\":3}").unwrap();
+    std::fs::write(&orphan_part, b"{\"version\":3").unwrap();
+
+    let logs = common::capture_logs(|| r.sweep());
+
+    assert!(
+        !orphan.exists(),
+        "sweep 应该删掉无行的检查点（agora-5gg.14）"
+    );
+    assert!(!orphan_part.exists(), "无行的 `.part` 同一条规则");
+    assert_eq!(
+        std::fs::read(&live).unwrap(),
+        live_before,
+        "有行的检查点一个字节都不该动"
+    );
+    assert!(s.get(&id).is_ok(), "这一轮只清文件，不碰库里的行");
+
+    // 验收点：日志一条（不是一文件一条），正文点名被删的文件，不牵连有行的那个。
+    let lines: Vec<&str> = logs.lines().filter(|l| l.contains("没有对应行")).collect();
+    assert_eq!(lines.len(), 1, "应该只有一行 info，实际:\n{logs}");
+    assert!(
+        lines[0].contains("INFO"),
+        "记的是 info 而不是 warn: {}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("393031303531.json") && lines[0].contains("393031303531.part"),
+        "文件名要交给排障的人（它是 id 的 hex）: {}",
+        lines[0]
+    );
+    assert!(
+        !lines[0].contains(&live_name),
+        "有行的不该出现在被删的名单里: {}",
+        lines[0]
+    );
+}
+
+/// 无行检查点的清理挂在 `PRUNE_INTERVAL` 那条节流上，不跟 5 s 一轮的 sweep 走（扫目录的代价与
+/// done/ 同一条理由）。改坏法：把 `prune_orphan_hook_checkpoints` 的调用从 `maybe_prune_done`
+/// 里挪到 `sweep` 开头（绕开节流）→ 这条红。
+#[test]
+fn orphan_checkpoint_pruning_rides_the_same_throttle_as_the_archive() {
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let rt = Arc::new(common::FakeRuntime::default());
+    let s = Arc::new(SessionManager::new(db, rt));
+    let r = Receiver::new(home.path(), s).with_prune_interval(Duration::from_secs(3600));
+
+    // 第一轮 sweep 记下时刻（本进程里还没扫过，一定跑）。
+    r.sweep();
+
+    // 之后才出现的孤儿：还在节流窗口里，第二轮不该去扫 `state/`。
+    let state = home.path().join("hooks/state");
+    std::fs::create_dir_all(&state).unwrap();
+    let orphan = state.join("393031303531.json");
+    std::fs::write(&orphan, b"{\"version\":3}").unwrap();
+    r.sweep();
+    assert!(
+        orphan.exists(),
+        "距上次清理不到 PRUNE_INTERVAL，这一轮 sweep 不该再扫一次目录（agora-5gg.14）"
+    );
+}
+
 /// agora-t36 的守卫之三：归档里的大结果被截断，状态机看到的仍是完整 payload；`tool_input` 不截。
 #[test]
 fn a_big_tool_result_is_truncated_in_the_archive_but_reaches_the_state_machine_whole() {

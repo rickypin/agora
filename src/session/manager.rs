@@ -610,6 +610,34 @@ impl SessionManager {
             .is_some_and(|dir| super::hook_state::exists(dir, id))
     }
 
+    /// 清掉 `hooks/state/` 里没有对应行的检查点文件，返回删掉的文件名（id 的 hex，
+    /// `393031303531.json` 就是 local_id `901051`）。挂在 sweep 的节流上，不在启动路径上抢时
+    /// 间（agora-5gg.14）。
+    ///
+    /// 孤儿从哪来：`restore_hook_checkpoints` 只按 `all_records()` 迭代，所以没有行的文件既不会被
+    /// 加载、也不会复活——它就一辈子躺在那儿（Mac 2026-09-18 现场：`state/393031303531.json`，
+    /// 库与 API 里都没有 901051 这一行）。`delete_metadata` 会删检查点，但它的 `remove` 失败只
+    /// warn 一句就被吞掉（权限、NFS 抖动）；`apply_hook_inner` 开头查到行、尾部才落盘，中间行被
+    /// 删掉也会写出一份无行的检查点；更早版本的写入路径同样留过对不上行的名字。
+    ///
+    /// 库里一行都没有时删光 `state/` 也不算过火：这些文件本来就已经是孤儿——`restore_hook_checkpoints`
+    /// 同样按行迭代，除了这一条清理再没人会读它们。
+    ///
+    /// 判「有没有行」要的是库，不是 `list()`：后者还要去问运行时，运行时降级时它只会给出能列出来的
+    /// 那些行——把「读不到」当成「没有行」就等于删光所有活会话的检查点。同理，`all_records()` 报错
+    /// 必须整轮放弃（往上传，让调用方 warn 后下一轮再试），绝不能当成「库里没行」。
+    pub fn prune_orphan_hook_checkpoints(&self) -> Result<Vec<String>, SessionError> {
+        let Some(dir) = lock(&self.hook_state_dir).clone() else {
+            return Ok(Vec::new());
+        };
+        let ids = self
+            .all_records()?
+            .into_iter()
+            .map(|rec| rec.id)
+            .collect::<Vec<_>>();
+        Ok(super::hook_state::prune_orphans(&dir, ids))
+    }
+
     pub fn add_pending_decision(&self, id: &str, pending: PendingDecision) {
         lock(&self.decisions)
             .entry(id.to_owned())

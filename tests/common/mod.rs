@@ -324,3 +324,38 @@ pub async fn expect_close_code(ws: &mut Ws, code: u16, within: Duration) -> Stri
 
 /// 复查间隔调短到测试能等的量级；缺省 5 s 是线上的（`api::REVOKE_CHECK_INTERVAL`）。
 pub const FAST_REVOKE_CHECK: Duration = Duration::from_millis(100);
+
+// ---------- 日志断言（agora-5gg.14） ----------
+
+/// 把跑 `f` 期间本线程吐出的 tracing 行攒进内存，整段交回。
+///
+/// 为什么需要它：集成测试里没人装 subscriber，`tracing::info!` 出去就到不了任何地方，而有些验收
+/// 点钉的就是「日志一条」（如 sweep 清掉无行的 hook 检查点）。用 `set_default` 而不是
+/// `set_global_default`：只装当前线程，同一个二进制里并行跑的别的测试不受影响，也不会出现
+/// 「谁先装全局谁说了算」。前提是被测代码同步跑在调用线程上（`Receiver::sweep()` 是）。
+/// 抄的是 `src/peer/client.rs` 单测里那份——那边是模块私有的，集成测试够不着。
+pub fn capture_logs(f: impl FnOnce()) -> String {
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    let buf: Arc<Mutex<Vec<u8>>> = Arc::default();
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    impl Write for Sink {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let sink = buf.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || Sink(sink.clone()))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    f();
+    let bytes = buf.lock().unwrap().clone();
+    String::from_utf8(bytes).unwrap()
+}
