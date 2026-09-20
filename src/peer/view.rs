@@ -109,10 +109,16 @@ struct Inner {
 }
 
 /// 客户端任务对一条 peer 事件的处理结果。
+///
+/// `Publish` 装的是 `Box<Event>`：Event 的最大变体是 `status_changed`（十几个 `Option<String>` 加
+/// 一条 `end_cause`），agora-5gg.6 给它补上 `end_cause` / `unknown_cause` 之后整个枚举到了 208 字节，
+/// clippy 的 `large_enum_variant`（200 字节线）就红了 —— 而这两个空变体跟着一起变宽。搬运点只有
+/// `client.rs` 那一处（`publish(*e)` 一次 move，不多一次分配），所以按 clippy 的建议 box，而不是
+/// 加 `#[allow]`：以后往会话形态与 `status_changed` 里加字段不该再撞同一条线（2026-09-20 实测）。
 #[derive(Debug)]
 pub enum Applied {
     /// 视图改了：把这条事件发进本机 EventBus。
-    Publish(Event),
+    Publish(Box<Event>),
     /// 视图对不上了（peer 说 resync、或 status_changed 指向没见过的行）：重拉全量。
     Resync,
     /// 无事（pong、不认识的类型、被规则 1 丢弃的行）。
@@ -236,7 +242,7 @@ impl PeerViews {
                 view.rows.insert(gid.clone(), row);
                 drop(inner);
                 self.bump();
-                Applied::Publish(if kind == "session_created" {
+                Applied::Publish(Box::new(if kind == "session_created" {
                     Event::SessionCreated {
                         id: gid,
                         session: json,
@@ -246,7 +252,7 @@ impl PeerViews {
                         id: gid,
                         session: json,
                     }
-                })
+                }))
             }
             "session_removed" => {
                 let Some(id) = id.filter(|i| owned(i)) else {
@@ -262,7 +268,7 @@ impl PeerViews {
                     return Applied::Ignored;
                 }
                 self.bump();
-                Applied::Publish(Event::SessionRemoved { id: id.to_owned() })
+                Applied::Publish(Box::new(Event::SessionRemoved { id: id.to_owned() }))
             }
             "status_changed" => {
                 let Some(id) = id.filter(|i| owned(i)) else {
@@ -304,10 +310,10 @@ impl PeerViews {
                 drop(inner);
                 self.bump();
                 // 整行重发而不是转发 status_changed：行已经按本机时钟改写过，浏览器就地替换即可。
-                Applied::Publish(Event::SessionUpdated {
+                Applied::Publish(Box::new(Event::SessionUpdated {
                     id: id.to_owned(),
                     session: json,
-                })
+                }))
             }
             "decision_resolved" => {
                 let (Some(id), Some(tool_use_id), Some(via)) = (
@@ -321,11 +327,11 @@ impl PeerViews {
                     tracing::debug!(component = "peer", %peer, via, "decision_resolved 的 via 不认识，丢弃");
                     return Applied::Ignored;
                 };
-                Applied::Publish(Event::DecisionResolved {
+                Applied::Publish(Box::new(Event::DecisionResolved {
                     id: id.to_owned(),
                     tool_use_id: tool_use_id.to_owned(),
                     via,
-                })
+                }))
             }
             "notification" => {
                 // 跨节点的"谁在等我"就是靠它（MISSION §0.2 一天的形态第 1 步）；只转发指向该 peer
@@ -346,12 +352,12 @@ impl PeerViews {
                     .get("status")
                     .cloned()
                     .and_then(|s| serde_json::from_value(s).ok());
-                Applied::Publish(Event::Notification {
+                Applied::Publish(Box::new(Event::Notification {
                     id,
                     title: text("title"),
                     body: text("body"),
                     status,
-                })
+                }))
             }
             "resync" => Applied::Resync,
             _ => Applied::Ignored,
@@ -607,8 +613,12 @@ mod tests {
             "b",
             &json!({ "type": "status_changed", "id": "b:1", "status": "running", "status_since": PEER_T + 5, "source": "hook", "reason": null, "alive": true }),
         );
-        let Applied::Publish(Event::SessionUpdated { id, session }) = out else {
-            panic!("{out:?}");
+        // Publish 装的是 Box<Event>（见 Applied 的注释）：先拆箱再认变体，box 模式还在不稳定。
+        let Applied::Publish(ev) = out else {
+            panic!("{out:?}")
+        };
+        let Event::SessionUpdated { id, session } = *ev else {
+            panic!("{ev:?}");
         };
         assert_eq!(id, "b:1");
         assert_eq!(session["status"], "running");
@@ -792,18 +802,27 @@ mod tests {
         ));
         // removed：视图里删掉并转发。
         let out = v.apply("b", &json!({ "type": "session_removed", "id": "b:1" }));
-        assert!(matches!(out, Applied::Publish(Event::SessionRemoved { id }) if id == "b:1"));
+        let Applied::Publish(ev) = out else {
+            panic!("应转发一条 removed: {out:?}")
+        };
+        assert!(
+            matches!(&*ev, Event::SessionRemoved { id } if id == "b:1"),
+            "{ev:?}"
+        );
         assert!(v.get("b:1").is_none());
         // notification：status 反序列化成枚举；不属于 b 的会话不转发。
         let out = v.apply(
             "b",
             &json!({ "type": "notification", "id": "b:1", "title": "Claude / x @ b needs input", "body": "Bash: rm", "status": "waiting" }),
         );
-        let Applied::Publish(Event::Notification {
+        let Applied::Publish(ev) = out else {
+            panic!("{out:?}")
+        };
+        let Event::Notification {
             id, title, status, ..
-        }) = out
+        } = *ev
         else {
-            panic!("{out:?}");
+            panic!("{ev:?}");
         };
         assert_eq!(id.as_deref(), Some("b:1"));
         assert_eq!(title, "Claude / x @ b needs input");
@@ -821,10 +840,7 @@ mod tests {
                 "b",
                 &json!({ "type": "decision_resolved", "id": "b:1", "tool_use_id": "t1", "via": "dashboard" })
             ),
-            Applied::Publish(Event::DecisionResolved {
-                via: "dashboard",
-                ..
-            })
+            Applied::Publish(ev) if matches!(&*ev, Event::DecisionResolved { via: "dashboard", .. })
         ));
         assert!(matches!(
             v.apply(

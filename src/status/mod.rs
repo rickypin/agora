@@ -86,13 +86,127 @@ pub enum Source {
     None,
 }
 
+/// 宿主 `SessionEnd` 里"对话清了、这一行继续"的那个原话。三处读的是同一个词，所以只写一处：
+/// [`HostEndReason::from_host`] 的归一化表、`Machine::apply_at` 的"clear 不改状态"例外
+/// （agora-vfi）、`Receiver::clear_ends_external_row` 的改写判据（agora-s3r）。
+/// 2026-09-20 之前它散在 `src/status/machine.rs` 与 `src/hook/receiver.rs` 里各自写字面量。
+pub const HOST_END_CLEAR: &str = "clear";
+
+/// 宿主 `SessionEnd` 自带的 reason 归一化之后的封闭集合（agora-5gg.6）。
+///
+/// 三家的原话词表不同（见 `src/adapter/*.rs` 的映射表：clear / resume / logout /
+/// prompt_input_exit / shutdown / other，还会随宿主升级添词），所以原话**不进枚举**——
+/// 原话留在给人看的 `reason` 里，枚举只留"人该做什么"分得开的五档。认不出的一律
+/// `Other`：新词不该让 agora 读不懂这一行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostEndReason {
+    /// `/clear`：对话清了、进程活着。有 pane 的行这不是结束（同一行继续，agora-vfi）；
+    /// 无句柄 external 行的身份就是这个对话 id，所以是结束（agora-s3r）。
+    Clear,
+    /// 换到别的对话（`/resume`、`--resume` 交接）。
+    Resume,
+    /// 登出。
+    Logout,
+    /// 人自己在提示符退出、或宿主正常收尾关闭（宿主的 `prompt_input_exit` / `shutdown` 都归这里）。
+    Exit,
+    /// 认不出的原话，包括宿主根本没给 reason。
+    Other,
+}
+
+impl HostEndReason {
+    /// 归一化宿主原话。**全函数**：任何字符串都得到一个值，认不出就是 `Other`，所以调用方
+    /// 不必、也不该再拿原话做判断（MISSION §2.3 规则 10）。
+    ///
+    /// 只看第一个空白分隔的词：无句柄 external 行的 `/clear` 被 receiver 改写成
+    /// `clear (external row: …)` 这种带解释的长句（`src/hook/receiver.rs` 的
+    /// `clear_ends_external_row`，agora-s3r），它说的仍然是一回事，归一化不该被括号里那句打掉。
+    /// 三家实测的原话都不含空格（2026-09-20 核对 testdata 的真录与三家模块文档）。
+    pub fn from_host(raw: Option<&str>) -> Self {
+        match raw.map(|s| s.split_whitespace().next().unwrap_or_default()) {
+            Some(HOST_END_CLEAR) => HostEndReason::Clear,
+            Some("resume") => HostEndReason::Resume,
+            Some("logout") => HostEndReason::Logout,
+            // prompt_input_exit：人在提示符上两次 Ctrl+C；shutdown：宿主自己收尾。
+            // 两条都是"人/宿主正常退出的"，对 agora 的动作一样：这一行不用再管。
+            Some("exit") | Some("prompt_input_exit") | Some("shutdown") => HostEndReason::Exit,
+            _ => HostEndReason::Other,
+        }
+    }
+}
+
+/// 一行**结束**的原因（封闭集合，agora-5gg.6；`docs/spec/api.md`「会话形态」）。
+///
+/// 修的是这件事：同一个"结束"在行上有好几种说法——Claude 换对话留下的旧行是
+/// `session ended (hook)`、Grok 的是 `superseded: …`、探活发现的又是
+/// `external process gone (no exit status)`、运行时没了是
+/// `runtime session gone (…)`——而宿主 `SessionEnd` 自带的 reason（clear / resume /
+/// logout / …）在 `machine.rs` 那里整个被吞掉。调用方（`src/events.rs` 的通知规则、
+/// 前端的"这一格该给什么出口"、以后按结束原因分类清理的策略）只能对一句人话做
+/// `starts_with` —— 那正是 MISSION §2.3 规则 10 禁止的形状：拿给人看的文本做判断。
+/// 措辞从此可以随便改，枚举是封闭的。
+///
+/// 形态与 [`crate::runtime::Exit`] 一致（`tag = kind` / `content = value`），调用方读
+/// `kind` 分支、要细节再读 `value`；带 `value` 的四档（`exit_code`、`signal`、
+/// `host_session_end`、`runtime_gone`）之外都是裸 `{ "kind": … }`。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum EndCause {
+    /// 运行时报来的退出码：0 → FINISHED，非 0 → FAILED。
+    ExitCode(i32),
+    /// 运行时报来的信号名（`hup` / `term`…，与 `exit` 字段同一形态）。
+    Signal(String),
+    /// 用户在 Dashboard / CLI 按过 Kill（`sessions.killed_at` 在）。它压过 `exit_code` /
+    /// `signal` / `runtime_gone`：调用方要的正是"这是他自己干的、不用管退出的细节"，
+    /// 通知据此静音（`src/events.rs`）；哪个码、运行时还在不在留在 `reason` 那句话里。
+    KilledByUser,
+    /// 宿主自己发了 `SessionEnd`。值是归一化后的宿主 reason（[`HostEndReason`]）。
+    HostSessionEnd(HostEndReason),
+    /// 同一个 agent 进程换到了新对话，这一行的对话到此为止（agora-tql）。
+    Superseded,
+    /// external 行的 agent 进程号探不到了，而宿主从头到尾没说过结束：崩溃、关窗口、
+    /// 机器重启（agora-rzh 要分开的正是这一档与 `host_session_end`）。
+    ProcessGone,
+    /// 有 `runtime_ref` 而运行时的列表里没有它（agora-u5p）。值分 server gone / session gone。
+    RuntimeGone(RuntimeGone),
+}
+
+/// 一行说不清的原因（封闭集合，agora-5gg.6）。与 [`EndCause`] 对称：`reason` 给人看，
+/// 这个给程序按类型分支。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnknownCause {
+    /// 运行时整体读不到（协议不匹配、超时）。ADR-001 D7：读不到 ≠ 已死，所以不是 `gone`。
+    RuntimeUnavailable,
+    /// hook 沉默到 `hooks.silence_after`，只剩屏幕可看（ADR-002 D1）。
+    HooksSilentScreen,
+    /// 挂着的权限 / 提问从屏幕上消失了（agora-9cd）：终端里答了或中断了，宿主一个事件都没发。
+    PromptGone,
+    /// 无句柄 external 行 hook 沉默到 `hooks.external_silent_after`（agora-tql）。
+    HooksSilentNoHandle,
+    /// 还没有任何可观测事实：状态机刚建起来，或 external 行只有 hook 能说话。
+    NoObservation,
+    /// 运行时说进程退了、退出码还没收集到（下一 tick 补上）。归不进上面任何一档。
+    ExitStatusMissing,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Assessment {
     pub status: Status,
     pub source: Source,
     /// 0.0–1.0；API 返回、日志记录，UI 不显示（MISSION §5.3）。
     pub confidence: f32,
+    /// 给人看的一句话，措辞随版本变，**程序不得据它判断**（MISSION §2.3 规则 10）。
     pub reason: Option<String>,
+    /// `status` 是 FINISHED / FAILED 时：结束的原因（封闭枚举，agora-5gg.6）。
+    /// 唯一的 `None` 来源是这条修复之前写下的 hook 检查点恢复出来的结束行
+    /// （`#[serde(default)]`，见 [`crate::status::HOOK_SNAPSHOT_VERSION`] 的说法）：
+    /// 那一格的 `reason` 照旧在，只是调用方拿不到类型。
+    #[serde(default)]
+    pub end_cause: Option<EndCause>,
+    /// `status` 是 UNKNOWN 时：为什么说不清（封闭枚举，agora-5gg.6）。缺省同上。
+    #[serde(default)]
+    pub unknown_cause: Option<UnknownCause>,
 }
 
 impl Assessment {
@@ -102,9 +216,26 @@ impl Assessment {
             source,
             confidence,
             reason: reason.map(str::to_owned),
+            end_cause: None,
+            unknown_cause: None,
         }
     }
 
+    /// 给结论补上结束的原因。**每一个写进会话形态的 FINISHED / FAILED 都要走这一步**
+    /// （守卫 `tests/status_truth_table.rs::every_finished_and_failed_row_names_its_end_cause`）。
+    pub fn with_end(mut self, cause: EndCause) -> Self {
+        self.end_cause = Some(cause);
+        self
+    }
+
+    /// 同上，UNKNOWN 的原因（守卫 `::every_unknown_row_names_its_unknown_cause`）。
+    pub fn with_unknown(mut self, cause: UnknownCause) -> Self {
+        self.unknown_cause = Some(cause);
+        self
+    }
+
+    /// 没有原因的 UNKNOWN：**只能用作喂进状态机的观测输入**（"这一层今天没有话要说"），
+    /// 不许写进结论；写结论用 [`Assessment::new`] + [`Assessment::with_unknown`]。
     pub fn unknown(reason: &str) -> Self {
         Assessment::new(Status::Unknown, Source::None, 0.0, Some(reason))
     }
@@ -166,7 +297,8 @@ fn is_shell_signal_code(code: i32) -> bool {
 
 /// 进程层看到的"运行时会话不在列表里"的两种说法（agora-u5p，ADR-001 D4）。
 /// 区别只在 reason：两者的结论都是 FINISHED，把握也都是 0.8（见 [`runtime_gone`]）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RuntimeGone {
     /// server 还在应答，只有这一个会话没了（`kill-session`、窗口被关、采纳的会话自己退了）。
     Session,
@@ -196,7 +328,7 @@ impl RuntimeGone {
 ///   说法，只有 `alive` 变假（agora-rzh 同一条理由）。
 ///
 /// 用户按过 Kill（`killed_at` 在）的写成 killed by user：那是他自己干的，不弹通知
-/// （`events.rs` 的通知规则按 reason 前缀静音）。
+/// （`events.rs` 的通知规则按 `end_cause = killed_by_user` 静音，agora-5gg.6 起不再摸 reason）。
 ///
 /// 运行时整体降级（协议不匹配、超时）不走这里，那是 UNKNOWN `runtime unavailable: …`（D7）。
 pub fn runtime_gone(gone: RuntimeGone, killed_by_user: bool) -> Assessment {
@@ -205,7 +337,38 @@ pub fn runtime_gone(gone: RuntimeGone, killed_by_user: bool) -> Assessment {
     } else {
         format!("runtime session gone ({}; no exit status)", gone.as_str())
     };
-    Assessment::new(Status::Finished, Source::Process, 0.8, Some(&reason))
+    // Kill 过的行只报 `killed_by_user`，不带 session/server：那一格的细节在 reason 里，而调用方
+    // 拿到的"不用管它为什么退"这件事已经被 Kill 说完了（EndCause::KilledByUser 的注释）。
+    let cause = if killed_by_user {
+        EndCause::KilledByUser
+    } else {
+        EndCause::RuntimeGone(gone)
+    };
+    Assessment::new(Status::Finished, Source::Process, 0.8, Some(&reason)).with_end(cause)
+}
+
+/// external 行（无运行时句柄）的"进程没了"：`kill(pid, 0)` 探不到、或号被复用了。
+///
+/// 从 agora-5gg.6 起与 [`runtime_gone`] 住在一起：以前这句 reason 与 conf 写在
+/// `SessionManager::view` 的 match 臂里，枚举、把握、人话三件事分居两处，要补上
+/// `end_cause` 都得先找到那个臂。措辞不许改（`tests/hooks_external.rs`、`docs/spec/api.md`
+/// 均按字面引用），`end_cause` 恒为 [`EndCause::ProcessGone`]：宿主一个事件都没发、只剩探活，
+/// 与人在终端里自己退出的（`host_session_end`）是两件事（agora-rzh）。
+pub fn external_process_gone() -> Assessment {
+    Assessment::new(
+        Status::Finished,
+        Source::Process,
+        0.8,
+        Some("external process gone (no exit status)"),
+    )
+    .with_end(EndCause::ProcessGone)
+}
+
+/// 运行时整体降级（协议不匹配、超时、socket 读不出）：UNKNOWN，不是结束（ADR-001 D7）。
+/// 与 [`runtime_gone`] 的分工就建在这一格上："运行时读不到" ≠ "运行时会话没了"。
+pub fn runtime_unavailable(why: &str) -> Assessment {
+    Assessment::unknown(&format!("runtime unavailable: {why}"))
+        .with_unknown(UnknownCause::RuntimeUnavailable)
 }
 
 /// 运行时对**这一个会话**答不上话来时的结论。与 [`runtime_gone`] 的分工：这条是"没有运行时事实
@@ -218,7 +381,10 @@ pub fn process_layer(
     killed_by_user: bool,
 ) -> Assessment {
     let Some(rt) = runtime else {
-        return Assessment::unknown("runtime session missing");
+        // 没有运行时事实可说（`runtime_ref` NULL、或本代还在 STARTING 窗口里）：这不是"看不清细节"，
+        // 是根本没观测（agora-5gg.6：这一句曾长期是钉在 UNKNOWN 那一格上的唯一说法）。
+        return Assessment::unknown("runtime session missing")
+            .with_unknown(UnknownCause::NoObservation);
     };
     if rt.alive {
         let starting = spawn_age_secs.is_some_and(|a| a < STARTING_WINDOW_SECS);
@@ -234,7 +400,8 @@ pub fn process_layer(
         );
     }
     match &rt.exit {
-        Some(Exit::Code(0)) => Assessment::new(Status::Finished, Source::Process, 1.0, None),
+        Some(Exit::Code(0)) => Assessment::new(Status::Finished, Source::Process, 1.0, None)
+            .with_end(EndCause::ExitCode(0)),
         // agora-3ib（2026-09-04 实测 Claude 2.1.260）：agent 收到 agora 的 SIGTERM 后自己捕获并以
         // 128+signo 退出（143），或被 sh 包装成退出码，运行时报的是 Code 不是 Signal。用户自己按的
         // Kill 不能显示成 FAILED，所以 128+TERM/INT/HUP 在 killed_by_user 时也算 FINISHED。
@@ -244,31 +411,36 @@ pub fn process_layer(
             Source::Process,
             1.0,
             Some(&format!("killed by user (exit code {n})")),
-        ),
+        )
+        .with_end(EndCause::KilledByUser),
         Some(Exit::Code(n)) => Assessment::new(
             Status::Failed,
             Source::Process,
             1.0,
             Some(&format!("exit code {n}")),
-        ),
+        )
+        .with_end(EndCause::ExitCode(*n)),
         Some(Exit::Signal(sig)) if killed_by_user => Assessment::new(
             Status::Finished,
             Source::Process,
             1.0,
             Some(&format!("killed by user (signal {sig})")),
-        ),
+        )
+        .with_end(EndCause::KilledByUser),
         Some(Exit::Signal(sig)) => Assessment::new(
             Status::Failed,
             Source::Process,
             1.0,
             Some(&format!("signal {sig}")),
-        ),
+        )
+        .with_end(EndCause::Signal(sig.clone())),
         None => Assessment::new(
             Status::Unknown,
             Source::Process,
             0.0,
             Some("process exited, exit status not yet collected"),
-        ),
+        )
+        .with_unknown(UnknownCause::ExitStatusMissing),
     }
 }
 

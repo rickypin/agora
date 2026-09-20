@@ -25,6 +25,12 @@
 //! 未知会话装了 hook 的话，事件一到就自动升级，而不是永远靠文本猜。
 //!
 //! 状态不落 SQLite（不变量 7）；daemon 重启先恢复 hook 观测检查点，再由进程事实与新事件裁决。
+//!
+//! 每一条写进结论的 FINISHED / FAILED 都带 `end_cause`、每一条 UNKNOWN 都带 `unknown_cause`
+//! （封闭枚举，agora-5gg.6）：`reason` 只是给人看的那一句，程序按类型分支（MISSION §2.3 规则 10）。
+//! 唯一的例外是这条修复之前写下的 hook 检查点恢复出来的结束行——它只有 `reason`，读到 `None`
+//! （见 [`HookSnapshot`]）。守卫 `tests/status_truth_table.rs::every_finished_and_failed_row_names_its_end_cause`、
+//! `::every_unknown_row_names_why_it_is_unknown`。
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -32,7 +38,10 @@ use std::time::Duration;
 
 use crate::runtime::{RuntimeSession, Size};
 
-use super::{AgoraEvent, Assessment, DetectionResult, Source, Status};
+use super::{
+    AgoraEvent, Assessment, DetectionResult, EndCause, HostEndReason, Source, Status, UnknownCause,
+    HOST_END_CLEAR,
+};
 
 #[derive(Debug, Clone)]
 pub struct MachineConfig {
@@ -247,7 +256,8 @@ impl Machine {
             declared_hooks,
             heard_hooks: false,
             epoch,
-            current: Assessment::unknown("no observation yet"),
+            current: Assessment::unknown("no observation yet")
+                .with_unknown(UnknownCause::NoObservation),
             set_at: now,
             last_hook_at: None,
             last_event_at: None,
@@ -426,23 +436,30 @@ impl Machine {
             .unwrap_or_else(|| self.last_hook_at.unwrap_or(self.since))
     }
 
-    /// 当前是屏幕给的 UNKNOWN：hook 会话里 `Source::Text` 的 UNKNOWN 只有两个来源——`observe_hooked`
-    /// 的"提示消失"规则（`permission prompt gone; hooks silent`，agora-9cd）与 D1 沉默规则
+    /// 当前是屏幕给的 UNKNOWN：hook 会话里只有两条规则拿屏幕写 UNKNOWN——`observe_hooked` 的
+    /// "提示消失"规则（`permission prompt gone; hooks silent`，agora-9cd）与 D1 沉默规则
     /// （`hooks silent; screen: …`）。两者都是"hook 没说话、只有屏幕可看"，所以下一条 hook 事件在
     /// 它身上就是可信的证据：DecisionResolved 抬回 RUNNING、Idle 落 TURN_DONE（apply_at 两臂共用）。
+    /// 按 `unknown_cause` 判而不比对 reason / source（agora-5gg.6，MISSION §2.3 规则 10：程序不拿
+    /// 给人看的文本做判断）。
     /// 不用 `screen_released` 标记判断：它只覆盖"提示消失"那一条，沉默规则的 UNKNOWN 没有它
-    /// （2026-09-06 agora-01g）。初始的 `Assessment::unknown("no observation yet")` 是 `Source::None`、
-    /// 运行时降级的 UNKNOWN 是 `Source::Process`，都不在这里。
+    /// （2026-09-06 agora-01g）。初始的"还没观测到"与运行时降级 / 退出码未收集那几档 UNKNOWN
+    /// 各自有自己的 cause，都不在这里。
     fn unknown_from_screen(&self) -> bool {
-        self.current.status == Status::Unknown && self.current.source == Source::Text
+        self.current.status == Status::Unknown
+            && matches!(
+                self.current.unknown_cause,
+                Some(UnknownCause::HooksSilentScreen | UnknownCause::PromptGone)
+            )
     }
 
     /// 当前是"没有进程号、hook 沉默"给的 UNKNOWN（agora-tql）：与屏幕给的 UNKNOWN 一样，hook 的下一条
     /// 事件在它身上就是可信证据——Idle 落 TURN_DONE、DecisionResolved 抬 RUNNING。
+    /// 同样按 `unknown_cause` 判（agora-5gg.6）：以前比对 `EXTERNAL_SILENT_REASON` 那句人话，
+    /// 改措辞就会默默拆掉这条规则。
     fn unknown_from_handleless_silence(&self) -> bool {
         self.current.status == Status::Unknown
-            && self.current.source == Source::Hook
-            && self.current.reason.as_deref() == Some(EXTERNAL_SILENT_REASON)
+            && self.current.unknown_cause == Some(UnknownCause::HooksSilentNoHandle)
     }
 
     /// 没有任何可观测事实、只有时间的 UNKNOWN：屏幕给的与无句柄沉默给的。
@@ -622,13 +639,24 @@ impl Machine {
             // 进程层的 FINISHED / FAILED 才压倒一切（本函数开头那条 early return）。
             AgoraEvent::SessionEnded(reason) => {
                 self.pending.clear();
-                (reason.as_deref() != Some("clear"))
-                    .then(|| hook(Status::Finished, 0.8, Some("session ended (hook)")))
+                // 宿主的原话归一化成封闭枚举后进 `end_cause`（agora-5gg.6）：以前 reason 一律写
+                // `session ended (hook)`，clear / resume / logout / prompt_input_exit 全被吞掉，
+                // 换对话留下的旧行与人在提示符退出的行在 API 上长得一样，调用方只能字符串匹配。
+                // 上面那条 `!= Some(HOST_END_CLEAR)` 仍按原话判（不是按归一化后的枚举判）：它区分的
+                // 是"宿主说的是同一行继续的 clear"还是"receiver 把 external 行的 clear 改写成了一句
+                // 带解释的话"——两条归一化后都是 `clear`，差别只在原话长度（agora-s3r）。
+                let cause = EndCause::HostSessionEnd(HostEndReason::from_host(reason.as_deref()));
+                (reason.as_deref() != Some(HOST_END_CLEAR)).then(|| {
+                    hook(Status::Finished, 0.8, Some("session ended (hook)")).with_end(cause)
+                })
             }
             // 与 SessionEnded 同一档：进程还在，但它已经在跑别的对话了。
             AgoraEvent::Superseded => {
                 self.pending.clear();
-                Some(hook(Status::Finished, 0.8, Some(SUPERSEDED_REASON)))
+                Some(
+                    hook(Status::Finished, 0.8, Some(SUPERSEDED_REASON))
+                        .with_end(EndCause::Superseded),
+                )
             }
         };
         // 挂起集合一变（新挂起、答了一个、全清）屏幕证据重新收集：上一条提示见没见过说不了下一条。
@@ -709,7 +737,8 @@ impl Machine {
                             Source::Hook,
                             0.5,
                             Some(EXTERNAL_SILENT_REASON),
-                        ),
+                        )
+                        .with_unknown(UnknownCause::HooksSilentNoHandle),
                         now,
                     );
                 }
@@ -803,7 +832,8 @@ impl Machine {
                 text.map(|t| t.reason.as_str()).unwrap_or_default()
             );
             self.set(
-                Assessment::new(Status::Unknown, Source::Text, 0.5, Some(&reason)),
+                Assessment::new(Status::Unknown, Source::Text, 0.5, Some(&reason))
+                    .with_unknown(UnknownCause::HooksSilentScreen),
                 now,
             );
             return self.current.clone();
@@ -850,7 +880,8 @@ impl Machine {
                             Source::Text,
                             0.5,
                             Some("permission prompt gone; hooks silent"),
-                        ),
+                        )
+                        .with_unknown(UnknownCause::PromptGone),
                         now,
                     );
                     return self.current.clone();

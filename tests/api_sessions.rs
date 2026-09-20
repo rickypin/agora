@@ -607,3 +607,132 @@ async fn a_row_ended_by_its_host_reports_gone_on_the_wire_while_its_pid_is_still
         "旧布尔是 process 的投影，不能拿探活结果冒充: {after}"
     );
 }
+
+/// 封闭集合的字面量副本：调用方（页面、peer、以后的清理策略）拿它们做分支，所以线上形态钉在这里，
+/// 而不是只钉在 `src/status/mod.rs` 的 serde 属性上。新增一档不改进这张表 = 红。
+const CLOSED_END_CAUSE_KINDS: &[&str] = &[
+    "exit_code",
+    "signal",
+    "killed_by_user",
+    "host_session_end",
+    "superseded",
+    "process_gone",
+    "runtime_gone",
+];
+const CLOSED_UNKNOWN_CAUSES: &[&str] = &[
+    "runtime_unavailable",
+    "hooks_silent_screen",
+    "prompt_gone",
+    "hooks_silent_no_handle",
+    "no_observation",
+    "exit_status_missing",
+];
+
+/// 每一行都过一遍：`end_cause` / `unknown_cause` 各归各的状态，取值都在成员表里。
+fn check_causes(body: &Value, tag: &str) {
+    for row in body["sessions"].as_array().unwrap() {
+        let (status, end, unknown) = (&row["status"], &row["end_cause"], &row["unknown_cause"]);
+        match status.as_str().unwrap_or_default() {
+            s @ ("finished" | "failed") => {
+                let kind = end["kind"].as_str().unwrap_or_default();
+                assert!(
+                    CLOSED_END_CAUSE_KINDS.contains(&kind),
+                    "{tag}: {s} 行的 end_cause={end} 不在封闭集合里: {row}"
+                );
+                if kind == "host_session_end" {
+                    let v = end["value"].as_str().unwrap_or_default();
+                    assert!(
+                        ["clear", "resume", "logout", "exit", "other"].contains(&v),
+                        "{tag}: 宿主的原话漏进了枚举（value={v}）: {row}"
+                    );
+                }
+                assert!(
+                    unknown.is_null(),
+                    "{tag}: 结束了就不带 unknown_cause: {row}"
+                );
+            }
+            "unknown" => {
+                assert!(end.is_null(), "{tag}: 没结束就不带 end_cause: {row}");
+                let v = unknown.as_str().unwrap_or_default();
+                assert!(
+                    !unknown.is_null() && CLOSED_UNKNOWN_CAUSES.contains(&v),
+                    "{tag}: unknown 行的 unknown_cause={unknown} 不在封闭集合里: {row}"
+                );
+            }
+            _ => assert!(
+                end.is_null() && unknown.is_null(),
+                "{tag}: 还在跑的行两个都不该有: {row}"
+            ),
+        }
+    }
+}
+
+#[tokio::test]
+async fn every_ended_and_unclear_row_carries_a_closed_cause_on_the_wire() {
+    // agora-5gg.6（MISSION §2.3 规则 10）：`reason` 是给人看的一句话，调用方读的是 `end_cause` /
+    // `unknown_cause`。真值表（`tests/status_truth_table.rs`）测的是状态机的结论，这一条测**线上形态**：
+    // 字段真的从 `Assessment` flatten 进了会话行、老节点缺失时读成 null 而不是缺键。
+    // 改坏一次看红：去掉 `Assessment` 上那两个 `#[serde(default)]` 字段 → 前两组断言红（缺键读成
+    // null 会让 finished 行没有 end_cause）；把 `Exit::Code(3)` 那条 `.with_end` 拿掉 → 那一格红。
+    let fx = Fx::new();
+    let cookie = fx.cookie();
+    let row_of = |body: &Value, id: &str| -> Value {
+        body["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["local_id"] == json!(id))
+            .cloned()
+            .unwrap_or_else(|| panic!("列表里没有 {id}: {body}"))
+    };
+
+    // 一格：没有可信进程号的 external 行 —— status unknown，说不清的原因要有名字。
+    let ext = fx
+        .sessions
+        .register_external(&agora::session::ExternalSession {
+            agent_type: "codex".into(),
+            agent_session_id: "handleless".into(),
+            runtime_ref: None,
+            working_directory: None,
+            created_at: None,
+            origin: agora::session::Origin::External,
+        })
+        .unwrap();
+    // 二、三格：跑起来再以两种退出码退掉的行 —— end_cause 的 value 就是那个码。
+    let crashed = create(&fx, &cookie, "crash").await;
+    let clean = create(&fx, &cookie, "clean").await;
+    let (status, body) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    check_causes(&body, "初始");
+    assert_eq!(
+        row_of(&body, &ext)["unknown_cause"],
+        "no_observation",
+        "external 行一条 hook 都没收到：说不清，但要说得出为什么说不清: {body}"
+    );
+    assert!(
+        row_of(&body, local(crashed["id"].as_str().unwrap()))["end_cause"].is_null(),
+        "还在跑的行不该有 end_cause: {body}"
+    );
+
+    fx.rt.set_dead(
+        crashed["runtime_ref"].as_str().unwrap(),
+        agora::runtime::Exit::Code(3),
+    );
+    fx.rt.set_dead(
+        clean["runtime_ref"].as_str().unwrap(),
+        agora::runtime::Exit::Code(0),
+    );
+    let (status, body) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    check_causes(&body, "退出后");
+    assert_eq!(
+        row_of(&body, local(crashed["id"].as_str().unwrap()))["end_cause"],
+        json!({ "kind": "exit_code", "value": 3 }),
+        "FAILED 行要说得出是哪个码: {body}"
+    );
+    assert_eq!(
+        row_of(&body, local(clean["id"].as_str().unwrap()))["end_cause"],
+        json!({ "kind": "exit_code", "value": 0 }),
+        "{body}"
+    );
+}

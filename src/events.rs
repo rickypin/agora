@@ -17,7 +17,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::session::{Origin, SessionManager, SessionView};
-use crate::status::{ProcessState, Source, Status};
+use crate::status::{EndCause, ProcessState, Source, Status, UnknownCause};
 
 /// 每个订阅者能落后的事件数；超过就 Resync。
 pub const CAPACITY: usize = 256;
@@ -42,6 +42,12 @@ pub enum Event {
         status: Status,
         source: Source,
         reason: Option<String>,
+        /// 结束 / 说不清的**类型**（封闭枚举，agora-5gg.6）：`reason` 是给人看的那一句，
+        /// 措辞可以随版本变，调用方按这两个字段分支而不做字符串匹配（MISSION §2.3 规则 10）。
+        /// 与 `status` 一致：FINISHED / FAILED 带 `end_cause`、UNKNOWN 带 `unknown_cause`，其余两个皆 null
+        /// （修复前写的 hook 检查点恢复出来的结束行除外，见 `Assessment::end_cause`）。
+        end_cause: Option<EndCause>,
+        unknown_cause: Option<UnknownCause>,
         /// 进程三态（Q4，agora-5gg.18）。`alive` 是它的布尔投影、只保留一版：两个都带，
         /// 未升级的页面读 `alive`、升级了的读 `process`。
         process: ProcessState,
@@ -142,6 +148,9 @@ struct Seen {
     status: Status,
     source: Source,
     reason: Option<String>,
+    /// 结束 / 说不清的类型：与 reason 一起进比对（同一句话被改成另一种 end_cause 是要人看一眼的）。
+    end_cause: Option<EndCause>,
+    unknown_cause: Option<UnknownCause>,
     /// 进程三值与布尔投影一起记：只带 `alive` 的旧进程看不出 `gone` 与 `unknown` 的区别，
     /// 而那一切换了是要发事件的（盘点 B2）。
     process: ProcessState,
@@ -166,6 +175,8 @@ fn seen(v: &SessionView) -> Seen {
         status: v.assessment.status,
         source: v.assessment.source,
         reason: v.assessment.reason.clone(),
+        end_cause: v.assessment.end_cause.clone(),
+        unknown_cause: v.assessment.unknown_cause,
         process: v.process,
         alive: v.alive,
         detail: v.detail.clone(),
@@ -201,15 +212,20 @@ impl Default for Differ {
 /// `sleep 70; exit 1` 因为先过了 60 s 的 IDLE 而一条没弹。RUNNING → IDLE / UNKNOWN 不算
 /// （那是 agora 没把握，不是 agent 需要人）；STARTING → FAILED 也不算（起不来会立刻在列表里看到）；
 /// TURN_DONE → FINISHED 也不算（2026-09-04 实测：Claude 的 /exit 与 Kill 都是从 TURN_DONE 退出，
-/// 人刚收过 "finished its turn"，再来一条 "finished" 只是噪音）。用户自己按的 Kill（reason
-/// `killed by user…`）即使从 RUNNING 落到 FINISHED 也不通知：是他自己干的。
+/// 人刚收过 "finished its turn"，再来一条 "finished" 只是噪音）。用户自己按的 Kill
+/// （`end_cause = killed_by_user`）即使从 RUNNING 落到 FINISHED 也不通知：是他自己干的。
 /// 驻留时间在状态层已经处理（ADR-002 D1），这里看到的转换都是稳定的；同一会话每次真的从
 /// RUNNING 落到这四态各发一条，不去重——每次权限请求都需要人。
-/// external 行人自己在终端里结束的（SessionEnd / `/clear` 的 superseded 走 hook 层，`source = hook`）
+/// external 行人自己在终端里结束的（宿主的 `host_session_end`、换对话的 `superseded`）
 /// 同 Kill 一个道理——是他自己干的，不通知（agora-j4w.4；MISSION §4.6 证据 ②）；只有进程消失
-/// （`source = process`，`external process gone`：崩溃、被杀、Codex 关窗口——Codex 关窗口不发
-/// SessionEnd，bd memories `external-exit-hooks-ctrlc-vs-hup` 2026-09-08 实测，接受它被当成意外通知一次）
-/// 才通知。agora / adopted 行的 FINISHED 通知不变。
+/// （`end_cause = process_gone`：崩溃、被杀、关窗口不发 SessionEnd 的那一家——bd memories
+/// `external-exit-hooks-ctrlc-vs-hup` 2026-09-08 实测，接受它被当成意外通知一次）才通知。
+/// agora / adopted 行的 FINISHED 通知不变。
+///
+/// 上面两条判据从 agora-5gg.6 起读 [`EndCause`] 而不读 `reason` 文本：以前第一条款是
+/// `reason.starts_with("killed by user")`、第二条是 `source != process`，前者拿一句人话做判断
+/// （MISSION §2.3 规则 10 的形状），后者分不出"宿主说了结束"与"只是没人报结束"。
+/// 结论形状一字未改，守卫见 `notification_for_branches_on_end_cause_not_on_reason_text`。
 /// `origin = headless` 的行一种转换都不通知（裁决 agora-5gg.7 选 B，agora-5gg.20）：宿主自己起的
 /// 无头一轮与内部子代理不是等人的会话。
 /// 一次状态转换的事实（求差器已比对过的那一行）。
@@ -223,9 +239,9 @@ pub struct Transition<'a> {
     pub origin: Origin,
     pub prev: Status,
     pub next: Status,
-    /// 转换后这条结论的来源层（ADR-002 D1）。
-    pub source: Source,
-    pub reason: Option<&'a str>,
+    /// 结束的类型（封闭枚举）。只有落到 FINISHED / FAILED 的转换上才有值，其余转换是 None。
+    /// 这里故意**不带** `reason`：通知该不该发是一个判断，判断只能拿类型做（规则 10）。
+    pub end_cause: Option<&'a EndCause>,
     pub detail: Option<&'a str>,
 }
 
@@ -238,12 +254,11 @@ pub fn notification_for(t: Transition<'_>) -> Option<Event> {
         origin,
         prev,
         next,
-        source,
-        reason,
+        end_cause,
         detail,
     } = t;
     if !matches!(prev, Status::Running | Status::Idle)
-        || reason.is_some_and(|r| r.starts_with("killed by user"))
+        || matches!(end_cause, Some(EndCause::KilledByUser))
     {
         return None;
     }
@@ -253,7 +268,10 @@ pub fn notification_for(t: Transition<'_>) -> Option<Event> {
         // 每一条 WAITING / TURN_DONE 都弹一下，人的通知会被它们淹没。
         return None;
     }
-    if origin == Origin::External && next == Status::Finished && source != Source::Process {
+    if origin == Origin::External
+        && next == Status::Finished
+        && !matches!(end_cause, Some(EndCause::ProcessGone))
+    {
         return None;
     }
     let verb = match next {
@@ -322,6 +340,8 @@ impl Differ {
                         status: s.status,
                         source: s.source,
                         reason: s.reason.clone(),
+                        end_cause: s.end_cause.clone(),
+                        unknown_cause: s.unknown_cause,
                         process: s.process,
                         alive: s.alive,
                         detail: s.detail.clone(),
@@ -351,8 +371,7 @@ impl Differ {
                         origin: v.record.origin,
                         prev: prev.status,
                         next: s.status,
-                        source: s.source,
-                        reason: s.reason.as_deref(),
+                        end_cause: s.end_cause.as_ref(),
                         detail: s.detail.as_deref(),
                     }));
                 }
@@ -441,6 +460,7 @@ pub async fn watch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::status::HostEndReason;
 
     fn status(id: &str, st: Status) -> Event {
         Event::StatusChanged {
@@ -448,6 +468,8 @@ mod tests {
             status: st,
             source: Source::Process,
             reason: None,
+            end_cause: None,
+            unknown_cause: None,
             process: ProcessState::Alive,
             alive: true,
             detail: None,
@@ -490,8 +512,7 @@ mod tests {
                 origin: Origin::Agora,
                 prev,
                 next,
-                source: Source::Hook,
-                reason: None,
+                end_cause: None,
                 detail: Some("Bash: rm -rf x\n第二行"),
             })
         };
@@ -547,8 +568,8 @@ mod tests {
                 origin: Origin::Agora,
                 prev: Running,
                 next: Finished,
-                source: Source::Process,
-                reason: Some("killed by user (exit code 143)"),
+                // 用户在 Dashboard 按过 Kill：process_layer / runtime_gone 都会给这一档（agora-5gg.6）。
+                end_cause: Some(&EndCause::KilledByUser),
                 detail: None,
             })
             .is_none(),
@@ -558,11 +579,11 @@ mod tests {
 
     #[test]
     fn external_rows_ended_by_hook_do_not_notify_but_process_gone_does() {
-        // agora-j4w.4：人在终端里自己结束的 external 会话（SessionEnd / `/clear` 的 superseded，source hook）
-        // 不弹 "finished"；只有进程消失（source process）才弹。agora / adopted 行的 FINISHED 照旧。
-        // 守卫：关掉 notification_for 里的 origin/source 判断 → 第一段 is_none 断言红。
+        // agora-j4w.4：人在终端里自己结束的 external 会话（宿主的 SessionEnd、换对话的 superseded）
+        // 不弹 "finished"；只有进程消失才弹。agora / adopted 行的 FINISHED 照旧。
+        // 守卫：关掉 notification_for 里 origin + end_cause 那一块 → 前两段 is_none 断言红。
         use Status::*;
-        let n = |origin, source, reason| {
+        let n = |origin, cause| {
             notification_for(Transition {
                 id: "n:1",
                 agent_type: "myagent",
@@ -571,38 +592,95 @@ mod tests {
                 origin,
                 prev: Running,
                 next: Finished,
-                source,
-                reason: Some(reason),
+                end_cause: Some(cause),
                 detail: None,
             })
         };
+        // 数组 + 引用：避开创循环变量又要在断言消息里用它时的生命周期抹不平。
+        const ENDED_BY_HOST: &[EndCause] = &[
+            EndCause::HostSessionEnd(HostEndReason::Exit),
+            EndCause::HostSessionEnd(HostEndReason::Clear),
+            EndCause::Superseded,
+        ];
+        for cause in ENDED_BY_HOST {
+            let muted = n(Origin::External, cause).is_none();
+            assert!(muted, "external 行由宿主说的结束是人自己干的：{cause:?}");
+        }
         assert!(
-            n(Origin::External, Source::Hook, "session ended (hook)").is_none(),
-            "external 的 SessionEnd 是人自己结束的"
+            n(Origin::External, &EndCause::ProcessGone).is_some(),
+            "进程消失（崩溃 / 宿主不发 SessionEnd 的那一家关窗口）才是意外，要通知"
         );
+        const ANY_END: &[EndCause] = &[
+            EndCause::HostSessionEnd(HostEndReason::Exit),
+            EndCause::ExitCode(0),
+            EndCause::ProcessGone,
+        ];
+        for cause in ANY_END {
+            let agora = n(Origin::Agora, cause).is_some();
+            let adopted = n(Origin::Adopted, cause).is_some();
+            assert!(agora, "agora 起的行不受影响：{cause:?}");
+            assert!(adopted, "adopted 行同：{cause:?}");
+        }
+    }
+
+    #[test]
+    fn notification_for_branches_on_end_cause_not_on_the_reason_text() {
+        // agora-5gg.6（MISSION §2.3 规则 10）：通知的两条判断以前是 `reason.starts_with("killed by
+        // user")` 与 `source != process`——前者拿给人看的一句话做判断，后者靠来源层猜"人说了没说"。
+        // 现在 Transition 里根本没有 reason 这一格（编译期就拿不进去），判断只看 end_cause：
+        // - 同样一句人话（现场上是同一行 killed by user，`reason` 一字不变）end_cause 不是
+        //   killed_by_user → 照通知；
+        // - 同样一句人话换成 killed_by_user → 不通知。
+        // 守卫：把两条 end_cause 判断退回成 reason 文本匹配 → 编译不过（没有 reason 这一格）；
+        // 把 external 那一块退回成 `source != Process` → 第二段 is_none 断言红（hook 说的
+        // process_gone 与人自己退出的行长得一样）。
+        let n = |origin, cause, detail| {
+            notification_for(Transition {
+                id: "n:1",
+                agent_type: "myagent",
+                name: "row",
+                node: "mac",
+                origin,
+                prev: Status::Running,
+                next: Status::Finished,
+                end_cause: Some(cause),
+                detail,
+            })
+        };
+        // 人话一模一样的两行（同一行 Kill 后运行时报 143）：唯一区别是 end_cause。
+        let the_same_sentence = "killed by user (exit code 143)";
         assert!(
             n(
-                Origin::External,
-                Source::Hook,
-                "superseded by a new conversation"
+                Origin::Agora,
+                &EndCause::KilledByUser,
+                Some(the_same_sentence)
             )
             .is_none(),
-            "/clear 换了对话也是人自己干的"
+            "killed_by_user 不通知"
+        );
+        assert!(
+            n(
+                Origin::Agora,
+                &EndCause::ExitCode(143),
+                Some(the_same_sentence)
+            )
+            .is_some(),
+            "同一句人话，但类型不是用户杀的 → 照通知：判的是枚举不是文本"
+        );
+        // external 行的分档同理不再看来源层：hook 报的进程消失要通知，process 报的宿主结束不通知。
+        assert!(
+            n(Origin::External, &EndCause::ProcessGone, None).is_some(),
+            "hook 还是 process 报的都不相干，process_gone 就通知"
         );
         assert!(
             n(
                 Origin::External,
-                Source::Process,
-                "external process gone (no exit status)"
+                &EndCause::HostSessionEnd(HostEndReason::Exit),
+                None,
             )
-            .is_some(),
-            "进程消失（崩溃 / Codex 关窗口）才是意外，要通知"
+            .is_none(),
+            "宿主说了结束就是人自己干的，哪怕这一条结论由哪一层说不清"
         );
-        assert!(
-            n(Origin::Agora, Source::Hook, "session ended (hook)").is_some(),
-            "agora 起的行不受影响"
-        );
-        assert!(n(Origin::Adopted, Source::Process, "exited").is_some());
     }
 
     #[test]

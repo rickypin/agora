@@ -1150,27 +1150,19 @@ impl SessionManager {
         let (process, liveness) = match (rec.origin, rt) {
             // 运行时此刻不可信：不知道就报 UNKNOWN，不许拿"读不到"当"已经死了"（ADR-001 D7）。
             _ if degraded.is_some() && rec.runtime_ref.is_some() => (
-                Assessment::unknown(&format!(
-                    "runtime unavailable: {}",
-                    degraded.unwrap_or_default()
-                )),
+                status::runtime_unavailable(degraded.unwrap_or_default()),
                 Liveness::Dead,
             ),
             (origin, None) if origin.is_handleless() => {
                 match lock(&self.external_pids).get(&rec.id).cloned() {
                     // 没有退出码可拿：进程没了就只知道"结束了"，不分 FINISHED / FAILED。
                     // 号还在但启动时刻对不上：号被别的进程复用了，原来那个也是没了（agora-tql）。
-                    Some(p) if !agent_process_alive(&p) => (
-                        Assessment::new(
-                            Status::Finished,
-                            status::Source::Process,
-                            0.8,
-                            Some("external process gone (no exit status)"),
-                        ),
-                        Liveness::Dead,
-                    ),
+                    Some(p) if !agent_process_alive(&p) => {
+                        (status::external_process_gone(), Liveness::Dead)
+                    }
                     Some(_) => (
-                        Assessment::unknown("external session: process alive, hook only"),
+                        Assessment::unknown("external session: process alive, hook only")
+                            .with_unknown(status::UnknownCause::NoObservation),
                         Liveness::Alive,
                     ),
                     // 没有可信进程号（Adapter 的 agent_pid 给 None：Codex Desktop 的共用 app-server、
@@ -1178,7 +1170,8 @@ impl SessionManager {
                     // 无头会话常常就是这一格：宿主的 hook 环境里没有进程号变量（老版本）、
                     // 子代理跟宿主进程同生同灭，拿不到一个属于“这一行”的进程号。
                     None => (
-                        Assessment::unknown("external session: no runtime, hook only"),
+                        Assessment::unknown("external session: no runtime, hook only")
+                            .with_unknown(status::UnknownCause::NoObservation),
                         Liveness::Unknown,
                     ),
                 }

@@ -290,7 +290,7 @@ impl PeerClient {
         let mut resync = false;
         for event in &batch {
             match self.views.apply(&self.name, event) {
-                Applied::Publish(e) => self.events.publish(e),
+                Applied::Publish(e) => self.events.publish(*e),
                 Applied::Resync => resync = true,
                 Applied::Ignored => {}
             }

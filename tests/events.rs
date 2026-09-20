@@ -88,6 +88,8 @@ async fn subscriber_gets_created_status_and_removed_in_coalesced_batches() {
             status: st,
             source: Source::Process,
             reason: None,
+            end_cause: None,
+            unknown_cause: None,
             process: agora::status::ProcessState::Alive,
             alive: true,
             detail: None,

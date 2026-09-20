@@ -17,7 +17,7 @@ use crate::adapter::{self, AgentHooks, Decision, Release};
 use crate::events::{global_id, Event, EventBus};
 use crate::local::Response;
 use crate::session::{ExternalSession, Origin, PendingDecision, SessionManager};
-use crate::status::AgoraEvent;
+use crate::status::{AgoraEvent, HOST_END_CLEAR};
 
 use super::inbox::{delivery_time_secs, now_unix_ms, Delivery, Inbox, DONE_RETENTION};
 use super::HookError;
@@ -117,7 +117,7 @@ fn clear_ends_external_row(events: &[AgoraEvent]) -> Vec<AgoraEvent> {
     events
         .iter()
         .map(|e| match e {
-            AgoraEvent::SessionEnded(Some(r)) if r == "clear" => {
+            AgoraEvent::SessionEnded(Some(r)) if r == HOST_END_CLEAR => {
                 AgoraEvent::SessionEnded(Some(CLEAR_ENDS_EXTERNAL_ROW.to_owned()))
             }
             e => e.clone(),
