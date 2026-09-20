@@ -210,6 +210,8 @@ impl Default for Differ {
 /// （`source = process`，`external process gone`：崩溃、被杀、Codex 关窗口——Codex 关窗口不发
 /// SessionEnd，bd memories `external-exit-hooks-ctrlc-vs-hup` 2026-09-08 实测，接受它被当成意外通知一次）
 /// 才通知。agora / adopted 行的 FINISHED 通知不变。
+/// `origin = headless` 的行一种转换都不通知（裁决 agora-5gg.7 选 B，agora-5gg.20）：宿主自己起的
+/// 无头一轮与内部子代理不是等人的会话。
 /// 一次状态转换的事实（求差器已比对过的那一行）。
 #[derive(Debug, Clone, Copy)]
 pub struct Transition<'a> {
@@ -243,6 +245,12 @@ pub fn notification_for(t: Transition<'_>) -> Option<Event> {
     if !matches!(prev, Status::Running | Status::Idle)
         || reason.is_some_and(|r| r.starts_with("killed by user"))
     {
+        return None;
+    }
+    if origin == Origin::Headless {
+        // 宿主自己起的无头一轮 / 子代理（裁决 agora-5gg.7 选 B）：任何转换都不弹。
+        // 它们不是一条等人的会话，Mac 现场一次 handoff 就能堆七行（agora-5gg.7 盘点），
+        // 每一条 WAITING / TURN_DONE 都弹一下，人的通知会被它们淹没。
         return None;
     }
     if origin == Origin::External && next == Status::Finished && source != Source::Process {

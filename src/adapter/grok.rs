@@ -225,6 +225,12 @@ impl AgentHooks for Grok {
         (ppid > 1).then_some(ppid)
     }
 
+    // `is_headless` 用默认实现（恒 false）：Grok 的无头一轮（`grok -p`）与交互会话的 SessionStart
+    // 逐键相同——实测 1.0.13 / 1.0.30（`testdata/grok/1.0.13/hooks/headless.jsonl` 对同目录
+    // `turn_complete.jsonl`：两份都是 `cwd / sessionId / session_id / hookEventName / permissionMode /
+    // source / timestamp / workspaceRoot`）。结构上分不出无头就不猜，照常登记成 `external`
+    // （裁决 agora-5gg.7 选 B；agora-5gg.20）。headless 行不通知、满 24 h 不论状态即删，误判的代价比漏判大。
+
     fn parse(&self, payload: &Value) -> Vec<AgoraEvent> {
         let mut out = Vec::new();
         // 子 agent 的事件带 subagentType（文档），不是这个会话的状态。

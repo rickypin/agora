@@ -205,6 +205,14 @@ impl AgentHooks for Codex {
         (ppid > 1).then_some(ppid)
     }
 
+    // `is_headless` 在这里用默认实现（恒 false）：`codex exec` 的 SessionStart 与交互 TUI 逐键相同
+    // ——实测 0.152.1（2026-09-05 录，`testdata/codex/0.152.1/hooks/headless.jsonl` 对同目录
+    // `turn_complete.jsonl`：两份都是 `cwd / hook_event_name / model / permission_mode / session_id /
+    // source / transcript_path`），载荷结构上分不出无头，就不猜（裁决 agora-5gg.7 选 B 里"录不出结构
+    // 差异的宿主照常登记"那一档，agora-5gg.20）。要判先得有专用 fixture：
+    // `testdata/codex/<版本>/hooks/exec.jsonl`（exec 一轮）与 `subagent.jsonl`（Desktop 的子代理线程），
+    // 键集合真比出差异之后再实现这个方法。误判的代价不对称：headless 行不通知、满 24 h 不论状态即删。
+
     fn parse(&self, payload: &Value) -> Vec<AgoraEvent> {
         let mut out = Vec::new();
         let tool = str_of(payload, &["tool_name"]).unwrap_or("tool");

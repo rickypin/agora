@@ -468,6 +468,7 @@ async fn every_row_carries_the_process_tri_state_and_alive_is_its_projection() {
             runtime_ref: None,
             working_directory: None,
             created_at: None,
+            origin: agora::session::Origin::External,
         })
         .unwrap();
     let created = create(&fx, &cookie, "tri").await;
@@ -548,6 +549,7 @@ async fn a_row_ended_by_its_host_reports_gone_on_the_wire_while_its_pid_is_still
             runtime_ref: None,
             working_directory: None,
             created_at: None,
+            origin: agora::session::Origin::External,
         })
         .unwrap();
     let now_ms = std::time::SystemTime::now()

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
-import { loadSeen, sectionOf, seenKey, seenRelevant, storeSeen, type Section } from "./attention";
+import { isHandleless, isHeadless, loadSeen, sectionOf, seenKey, seenRelevant, storeSeen, type Section } from "./attention";
 import { ChangesApiContext } from "./Changes";
 import { CommandPalette } from "./CommandPalette";
 import { nodeStatuses } from "./Header";
@@ -335,6 +335,8 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     if (prev === null || prev === cur) return;
     const left = byIdRef.current.get(prev);
     if (!left || !seenRelevant(left.status)) return;
+    // headless 行在任何状态下都已经收起（`finishedCollapsed` 第一行），seen 永不被读，记号是纯垃圾。
+    if (isHeadless(left)) return;
     // external 的 FINISHED 不看 seen 就已经收起（finishedCollapsed），记它只是往 localStorage 里攒垃圾。
     // TURN_DONE 没这条豁免（agora-5gg.21）：external 行看过一次也一样降到中段。
     if (left.status === "finished" && left.origin === "external") return;
@@ -583,10 +585,15 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
                   readOnly
                   focusRef={terminalFocus}
                 />
-              ) : active.origin === "external" ? (
-                // external 会话没有运行时句柄（MISSION §5.5）：只有状态与 hook 的 respond，没有终端可挂。
+              ) : isHandleless(active) ? (
+                // external / headless 会话都没有运行时句柄（MISSION §5.5）：只有状态与经 hook 的
+                // respond，没有终端可挂。headless 那一格连“去它自己的窗口”都没有——那是宿主自己起的
+                // 一次性子进程，输出留在宿主那里。判据走 `isHandleless`：漏一种就是一行根本拿不到
+                // 句柄的行去 attach 一个不存在的 pane（agora-5gg.20）。
                 <p className="muted empty" data-testid="no-terminal">
-                  external 会话：agora 没有它的终端，只能看状态、经 hook 回答；要操作请去它自己的窗口。
+                  {isHeadless(active)
+                    ? "headless 会话：宿主自己起的一次性对话，agora 里没有它的终端，只能看状态、经 hook 回答。"
+                    : "external 会话：agora 没有它的终端，只能看状态、经 hook 回答；要操作请去它自己的窗口。"}
                 </p>
               ) : (
                 <TerminalView

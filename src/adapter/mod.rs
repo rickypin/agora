@@ -186,6 +186,18 @@ pub trait AgentHooks: Send + Sync {
     ) -> Option<u32> {
         None
     }
+
+    /// 这条 payload 的会话是不是**无头一次性会话 / 宿主内部的子代理**（裁决 agora-5gg.7 选 B →
+    /// `origin = headless`：照常登记，但默认折叠、不通知、满 24 h 不论状态即删）。
+    ///
+    /// **只看载荷结构**，不看环境变量、不看进程树：hook 能看见的就是这一份 JSON，别的都是猜。
+    /// 录不出结构差异的宿主返回 false（默认），照常按 `external` 登记——宁可不折叠，不要把一条
+    /// 人的会话当成无头会话删掉（headless 行 24 h 后不论状态都会被删，误判的代价比漏判大）。
+    /// 只在登记那一条投递件上问一次（`Receiver::locate_external`）：错过 SessionStart 的行（停机
+    /// 期间攒下的投递只剩 Stop）不会回头补判。
+    fn is_headless(&self, _payload: &serde_json::Value) -> bool {
+        false
+    }
 }
 
 /// 文本兜底（ADR-002 D6）：只服务无 hook 的会话；默认是 [`text::detect`] 的通用启发式，

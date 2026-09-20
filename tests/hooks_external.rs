@@ -18,10 +18,11 @@ use agora::clock;
 use agora::events::{Differ, Event};
 use agora::hook::{Delivery, Envelope, Inbox, Receiver};
 use agora::local::Response;
-use agora::session::Origin;
+use agora::runtime::Runtime;
+use agora::session::{Db, Origin, SessionManager};
 use agora::status::{ProcessState, Source, Status};
 
-use common::{Fx, HOST};
+use common::{FakeRuntime, Fx, HOST};
 
 fn delivery(
     agent_session: &str,
@@ -68,7 +69,16 @@ fn delivery_for(
     }
 }
 
+/// 交互会话的 SessionStart：带 `model` + `scratchpad_dir`（testdata/claude/2.1.261/hooks/
+/// turn_complete.jsonl 逐键）。这两个键是无头判据的一部分（agora-5gg.20），不写的合成载荷会被
+/// 登记成 `headless` 行——要验无头就明写 `headless_session_start`，别拿漏了两个键当无头。
 fn session_start(agent_session: &str) -> Value {
+    json!({ "hook_event_name": "SessionStart", "session_id": agent_session, "cwd": "/work/agora",
+        "source": "startup", "model": "claude-opus-4-8", "scratchpad_dir": "/tmp/claude-scratch" })
+}
+
+/// 无头一轮（`claude -p`）的 SessionStart：只剩公共键（testdata/claude/2.1.270/hooks/headless.jsonl）。
+fn headless_session_start(agent_session: &str) -> Value {
     json!({ "hook_event_name": "SessionStart", "session_id": agent_session, "cwd": "/work/agora", "source": "startup" })
 }
 
@@ -386,7 +396,8 @@ async fn external_row_ends_when_claude_clears_to_a_new_id() {
         home.path(),
         &delivery(
             "new-id",
-            json!({ "hook_event_name": "SessionStart", "session_id": "new-id", "cwd": "/work/agora", "source": "clear" }),
+            json!({ "hook_event_name": "SessionStart", "session_id": "new-id", "cwd": "/work/agora", "source": "clear",
+                "model": "claude-opus-4-8", "scratchpad_dir": "/tmp/claude-scratch" }),
             &env,
             &[],
         ),
@@ -1069,7 +1080,8 @@ async fn external_row_that_moves_on_again_loses_its_ended_at() {
         home.path(),
         &delivery(
             "resumed",
-            json!({ "hook_event_name": "SessionStart", "session_id": "resumed", "cwd": "/work/agora", "source": "resume" }),
+            json!({ "hook_event_name": "SessionStart", "session_id": "resumed", "cwd": "/work/agora", "source": "resume",
+                "model": "claude-opus-4-8", "scratchpad_dir": "/tmp/claude-scratch" }),
             &[],
             &[],
         ),
@@ -1283,7 +1295,8 @@ async fn a_resume_handoff_before_the_first_prompt_leaves_no_row() {
         home.path(),
         &delivery(
             "clear-new-id",
-            json!({ "hook_event_name": "SessionStart", "session_id": "clear-new-id", "cwd": "/work/agora", "source": "clear" }),
+            json!({ "hook_event_name": "SessionStart", "session_id": "clear-new-id", "cwd": "/work/agora", "source": "clear",
+                "scratchpad_dir": "/tmp/claude-scratch" }),
             &cleared_env,
             &[],
         ),
@@ -1387,5 +1400,100 @@ async fn a_resume_handoff_before_the_first_prompt_leaves_no_row() {
             want
         },
         "留下的还是那两条"
+    );
+}
+
+/// 无头一次性会话登记成 `origin = headless`，满 24 h 不论什么状态都被 sweep 删掉，
+/// 客户端看到的是与 `DELETE /api/sessions/:id` 同一条 `session_removed`。
+#[tokio::test]
+async fn a_headless_session_registers_as_headless_and_expires_whatever_its_status_is() {
+    // 裁决 agora-5gg.7 选 B（agora-5gg.20）：宿主自己起的 `claude -p` / 子代理照常登记，但它不是一条
+    // 等人回看的会话：默认折叠（`web/src/attention.ts`）、不通知（`tests/events.rs`）、
+    // 满 24 h 不论状态即删（它常常连 SessionEnd 都没有，拿状态当门槛就永远清不掉）。
+    // 判据只有载荷结构：无头的 SessionStart 只剩公共键（testdata/claude/2.1.270/hooks/headless.jsonl）。
+    // 改坏：`expire_external_finished` 里 headless 那一格写回 `matches!(status, Finished)` →
+    // 下面「停在 turn_done 的无头行也被删」红；`locate_external` 不判 is_headless → 第一段 origin 红。
+    const DAY: u64 = 86_400;
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let rt = Arc::new(FakeRuntime::default());
+    let sessions = Arc::new(
+        SessionManager::new(db, rt as Arc<dyn Runtime>)
+            .with_external_finished_ttl(Duration::from_secs(DAY)),
+    );
+    let receiver = Arc::new(Receiver::new(home.path(), sessions.clone()));
+
+    // 同一批投递里放一条真交互会话：两边只差 SessionStart 的那几个键，另每一格都跟着翻。
+    let one_shot = ingest(
+        &receiver,
+        home.path(),
+        &delivery("headless-1", headless_session_start("headless-1"), &[], &[]),
+    )
+    .unwrap();
+    let interactive = ingest(
+        &receiver,
+        home.path(),
+        &delivery("talkative-1", session_start("talkative-1"), &[], &[]),
+    )
+    .unwrap();
+    assert_ne!(one_shot, interactive);
+    assert_eq!(
+        sessions.record(&one_shot).unwrap().origin,
+        Origin::Headless,
+        "无头的 SessionStart 登记成 headless"
+    );
+    assert_eq!(
+        sessions.record(&interactive).unwrap().origin,
+        Origin::External,
+        "交互会话不受影响"
+    );
+    // 线上形态：`origin` 直接是 "headless"（`Origin` 的 serde 是小写名，无迁移）。老页面读不懂
+    // 这个值只会把它当有句柄的行去 attach 终端，不会读错别的字段（`docs/spec/api.md`「版本」）。
+    let wire = serde_json::to_value(sessions.get(&one_shot).unwrap()).unwrap();
+    assert_eq!(wire["origin"], "headless", "{wire}");
+
+    // 两边都停在 TURN_DONE（`claude -p` 答完就退，Stop 之后什么都没有了）。
+    for (id, name) in [(&one_shot, "headless-1"), (&interactive, "talkative-1")] {
+        let path = Inbox::new(home.path())
+            .write(&delivery(
+                name,
+                json!({"hook_event_name": "Stop", "session_id": name, "last_assistant_message": "pong"}),
+                &[],
+                &[],
+            ))
+            .unwrap();
+        receiver.ingest(&path).unwrap();
+        assert_eq!(
+            sessions.get(id).unwrap().assessment.status,
+            Status::TurnDone,
+            "{name} 停在 turn_done"
+        );
+    }
+
+    let mut differ = agora::events::Differ::default();
+    assert!(
+        differ.step("n", &sessions.list().unwrap()).is_empty(),
+        "第一轮只建基线"
+    );
+
+    // 25 h 后：只有无头那一行到期（external 的 TURN_DONE 还在等人瞟一眼，不动）。
+    assert_eq!(
+        sessions
+            .sweep(agora::clock::now_secs() + 25 * 3600)
+            .unwrap(),
+        vec![one_shot.clone()],
+        "停在 turn_done 的无头行也被删"
+    );
+    assert!(sessions.get(&one_shot).is_err(), "行已删");
+    assert!(
+        sessions.get(&interactive).is_ok(),
+        "同样停在 turn_done 的 external 行不动"
+    );
+    let events = differ.step("n", &sessions.list().unwrap());
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, agora::events::Event::SessionRemoved { id } if id == &format!("n:{one_shot}"))),
+        "客户端看到的还是那一条 session_removed：{events:?}"
     );
 }

@@ -28,8 +28,8 @@ status:
   idle_after: "60s"
   detector_interval: "2s"
 sessions:                     # §4.6「已退出会话的清理」
-  external_finished_ttl: "24h"  # external 来源的 FINISHED 行（hook 结束 / superseded / 进程消失）结束这么久后自动删 metadata；"0" 关闭。只碰 external：它没有运行时会话与输出，删的只是 agora 的两行记录，不算回收；agora / adopted 行仍由人清理（agora-j4w.3）
-  external_unknown_ttl: "24h"   # 无可信进程号的 external 行落 UNKNOWN `hooks silent; no process handle` 持续这么久后自动删 metadata；"0" 关闭。这一格 UNKNOWN 没有终端可打开、Kill / Restart 都做不了，只能等下一条 hook，所以它必须是暂态（agora-e08）
+  external_finished_ttl: "24h"  # external 来源的 FINISHED 行（hook 结束 / superseded / 进程消失）、headless 来源的任何状态行，结束 / 登记这么久后自动删 metadata；"0" 关闭。只碰无句柄那两档：它们没有运行时会话与输出，删的只是 agora 的两行记录，不算回收；agora / adopted 行仍由人清理（agora-j4w.3）
+  external_unknown_ttl: "24h"   # 无可信进程号的 external 行落 UNKNOWN `hooks silent; no process handle` 持续这么久后自动删 metadata；"0" 关闭。这一格 UNKNOWN 没有终端可打开、Kill / Restart 都做不了，只能等下一条 hook，所以它必须是暂态（agora-e08）。headless 行落进同一格时也走这一条，但它另有一条不论状态的出口（agora-5gg.20，见上面的 external_finished_ttl）
 hooks:                        # ADR-002 D1 / D5 / D3
   silence_after: "10m"        # 有 hook 的 agent 无事件超过此时长且屏幕像在等人 → UNKNOWN（hook 沉默规则）
   unheard_after: "90s"        # 装了 hook 却一条事件没收到过、终端在启动 10 s 宽限后又活动了这么久 → 行上"hook 没接上"提示
@@ -88,7 +88,7 @@ CREATE TABLE sessions (
     created_at DATETIME NOT NULL,                      -- external 行取登记它的那条 hook 信封的时刻，不是 daemon 写库的当下（§4.2，agora-5gg.3）
     ended_at DATETIME,                             -- 该行结束的时刻（§4.2）：运行时报的退出时刻 / hook SessionEnd 的事件时刻 / superseded 的新对话首条事件时刻 / 探到进程没了的 tick；等待时长、attention 与 external_finished_ttl 用，A42
     updated_at DATETIME NOT NULL,
-    origin TEXT NOT NULL DEFAULT 'agora',          -- agora | adopted | external（§5.5）
+    origin TEXT NOT NULL DEFAULT 'agora',          -- agora | adopted | external | headless（§5.5；headless = 宿主自己起的无头会话，agora-5gg.20）
     spawned_at DATETIME,                           -- 本代进程（epoch）起始时刻：create / respawn 写；STARTING 窗口只看它（v2）
     killed_at DATETIME,                            -- 用户执行过 Kill 的时刻，Restart 清空；事件不是活性，重启后仍报 killed by user（v2，ADR-001 D4）
     ended_at_approximate BOOLEAN NOT NULL DEFAULT FALSE  -- ended_at 是 daemon 时钟补的近似值（运行时会话已不在 / 运行时还没报退出时刻），不是运行时报的退出时刻；准确值到了就覆盖近似值，Restart 清空（v5，A42，agora-h1k.4）

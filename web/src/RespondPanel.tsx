@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { SessionApi } from "./api";
+import { isHandleless } from "./attention";
 import type { SessionRow } from "./events";
 import { MarkdownView } from "./MarkdownView";
 
@@ -100,9 +101,9 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
   const canDecide = waiting && row.reason === "permission" && row.respond_via === "hook" && !!pending;
   const within = typeof row.respond_within_secs === "number" ? row.respond_within_secs : null;
   const shortHold = canDecide && within !== null && within < SHORT_HOLD_SECS;
-  // external 会话没有运行时句柄（MISSION §5.5）：主区那一格是"没有终端"的说明文字，
-  // 把焦点交给它没有意义，按钮直接不画。它仍然能经 hook 回答（Allow / Deny 照旧）。
-  const hasTerminal = row.origin !== "external";
+  // external / headless 会话没有运行时句柄（MISSION §5.5）：主区那一格是"没有终端"的说明文字，
+  // 把焦点交给它没有意义，按钮直接不画。它们仍然能经 hook 回答（Allow / Deny 照旧）。
+  const hasTerminal = !isHandleless(row);
   const lastLines = detail === null ? [] : detail.split("\n");
   // 展开是单向的：展开后按钮消失，不变「收起」。回复是"看结果"的东西，看完就该给下一条指令
   // （输入框在面板最上面），再折回去没有用；40vh 的限高保证展开也不会把终端挤没。

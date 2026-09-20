@@ -961,6 +961,23 @@ describe("Workspace", () => {
     expect(mounted).toEqual([]);
   });
 
+  // 裁决 agora-5gg.7 选 B（实施 agora-5gg.20）：origin = headless 与 external 一样没有运行时句柄，
+  // 主区那一格是"没有终端"的说明文字 —— 挂上 TerminalView 就是去 attach 一个不存在的 pane。
+  it("a headless session is tagged, folds without being seen, and opens without a terminal (agora-5gg.20)", async () => {
+    const t = setup([{ ...row("n:hl", "turn_done"), origin: "headless", status_since: 10 }]);
+    await online(t);
+    // 折叠：不看状态，也不等人选中看过一次；NEEDS ATTENTION 里没有它。
+    expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
+    expect(screen.queryByTestId("section-attention")).toBeNull();
+    // 展开折叠区看它的标签，再选中它。
+    fireEvent.click(screen.getByTestId("section-finished"));
+    expect(screen.getByText("headless")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("row-n:hl"));
+    expect(screen.getByTestId("no-terminal")).toBeTruthy();
+    expect(screen.getByTestId("no-terminal").textContent).toContain("headless");
+    expect(mounted).toEqual([]);
+  });
+
   it("labels the node on every row once the local node is known, local ones uncolored (A49; reverses agora-7ku.5)", async () => {
     // MISSION §3.5 每行标明节点；本机 id 来自 /api/system（setup 里是 "n"），本机也标、不着色。
     const t = setup([row("n:a"), { ...row("zuan:7"), node: "zuan", stale: true }]);

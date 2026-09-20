@@ -270,3 +270,101 @@ where
         }
     }
 }
+
+/// `origin = headless` 的行（宿主自己起的无头一轮 / 内部子代理，裁决 agora-5gg.7 选 B）任何转换
+/// 都不发通知；同一批转换在 external 行上照发——没有这条对照，"通知整条坏了"也算通过。
+#[test]
+fn headless_rows_never_notify_on_any_transition() {
+    // 改坏：删掉 `src/events.rs` notification_for 里 `origin == Origin::Headless` 那条早退 →
+    // headless 那一行会在 WAITING / TURN_DONE / FAILED 三处各多一条通知，第一段断言红。
+    use agora::events::{Differ, Event};
+    use agora::runtime::Runtime;
+    use agora::session::{Db, ExternalSession, Origin, SessionManager};
+    use agora::status::AgoraEvent;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let rt = Arc::new(common::FakeRuntime::default());
+    let sessions = Arc::new(SessionManager::new(db, rt as Arc<dyn Runtime>));
+    let register = |origin: Origin, id: &str| {
+        sessions
+            .register_external(&ExternalSession {
+                agent_type: "claude".into(),
+                agent_session_id: id.into(),
+                runtime_ref: None,
+                working_directory: Some(PathBuf::from("/work/agora")),
+                created_at: None,
+                origin,
+            })
+            .unwrap()
+    };
+    let one_shot = register(Origin::Headless, "headless-1");
+    let terminal = register(Origin::External, "terminal-1");
+    assert_eq!(sessions.record(&one_shot).unwrap().origin, Origin::Headless);
+
+    // 一条会话会走的四次"需要人"：提问、这一轮做完、失败、结束。两行走完全同一条序列。
+    let script: [Vec<AgoraEvent>; 8] = [
+        vec![AgoraEvent::PromptSubmitted("hi".into())],
+        vec![AgoraEvent::InputNeeded {
+            tool_use_id: "q1".into(),
+            question: "which?".into(),
+        }],
+        vec![AgoraEvent::DecisionResolved(Some("q1".into()))],
+        vec![AgoraEvent::TurnEnded(Some("pong".into()))],
+        vec![AgoraEvent::PromptSubmitted("again".into())],
+        vec![AgoraEvent::TurnFailed("rate_limit".into())],
+        vec![AgoraEvent::PromptSubmitted("once more".into())],
+        vec![AgoraEvent::SessionEnded(Some("prompt_input_exit".into()))],
+    ];
+
+    let mut differ = Differ::new(true);
+    differ.step("n", &sessions.list().unwrap());
+    let mut notified: Vec<String> = Vec::new();
+    for events in &script {
+        for id in [&one_shot, &terminal] {
+            sessions.apply_hook(id, 1, events).unwrap();
+        }
+        for e in differ.step("n", &sessions.list().unwrap()) {
+            if let Event::Notification { id: Some(id), .. } = e {
+                notified.push(id.clone());
+            }
+        }
+    }
+    // external 行：WAITING / TURN_DONE / FAILED 各一条（hook 的 FINISHED 不弹，agora-j4w.4）。
+    assert_eq!(
+        notified,
+        vec![
+            format!("n:{terminal}"),
+            format!("n:{terminal}"),
+            format!("n:{terminal}")
+        ],
+        "对照行该发三条：{notified:?}"
+    );
+    // headless 行一条没有。求差器确实看见了它的转换（否则上面两条断言都只是"事件根本没产生"）：
+    // 转换事件照发，静音的只有 notification 这一种。
+    let mut probe = Differ::new(true);
+    probe.step("n", &sessions.list().unwrap());
+    sessions
+        .apply_hook(&one_shot, 1, &[AgoraEvent::PromptSubmitted("hi".into())])
+        .unwrap();
+    sessions
+        .apply_hook(
+            &one_shot,
+            1,
+            &[AgoraEvent::InputNeeded {
+                tool_use_id: "q2".into(),
+                question: "which?".into(),
+            }],
+        )
+        .unwrap();
+    let changed = probe.step("n", &sessions.list().unwrap());
+    assert!(
+        matches!(
+            &changed[0],
+            Event::StatusChanged { id, status, .. }
+                if id == &format!("n:{one_shot}") && *status == agora::status::Status::Waiting
+        ),
+        "无头行的状态转换照常上报，只是不弹通知：{changed:?}"
+    );
+}

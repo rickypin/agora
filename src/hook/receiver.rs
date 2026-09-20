@@ -382,7 +382,7 @@ impl Receiver {
             let Some(rec) = rec else {
                 continue;
             };
-            let handleless_external = rec.origin == Origin::External && rec.runtime_ref.is_none();
+            let handleless_external = rec.origin.is_handleless() && rec.runtime_ref.is_none();
             let selected = *restore.entry(rec.id.clone()).or_insert_with(|| {
                 if !self.sessions.has_hook_checkpoint(&rec.id) {
                     return true;
@@ -590,6 +590,14 @@ impl Receiver {
                     // 这一行从那条事件起算，不是从 daemon 把它写进库起算：停机期间攒下的投递
                     // 重放时，写库那一刻全落在重放那两分钟里（agora-5gg.3，2026-09-19 Mac 实测）。
                     created_at: Some(env.received_unix_ms as i64 / 1000),
+                    // 宿主自己起的一次性会话 / 子代理登记成 `headless`（裁决 agora-5gg.7 选 B）：
+                    // 判据只看这一条投递件的载荷结构，录不出差异的宿主（Codex exec / Desktop：
+                    // SessionStart 与交互逐键相同）就照常落 `external`。
+                    origin: if hooks.is_headless(&delivery.payload) {
+                        Origin::Headless
+                    } else {
+                        Origin::External
+                    },
                 };
                 match self.sessions.register_external(&spec) {
                     // `session_created` 由事件监视器的下一 tick 差分发出，这里不重复广播。

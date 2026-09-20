@@ -121,6 +121,10 @@ pub struct ExternalSession {
     /// 那两分钟里，Mac 实测 46 行的 created_at 比它们自己的第一条事件晚 62 h（agora-5gg.3，
     /// 2026-09-19）。None = 没有信封在手（单测手工登记、API 路径），退回 SQLite 的 'now'。
     pub created_at: Option<i64>,
+    /// `External` 或 `Headless`：无句柄这一档里的两种面貌，拿登记那条投递件的载荷问 Adapter
+    /// [`AgentHooks::is_headless`](crate::adapter::AgentHooks::is_headless)（裁决 agora-5gg.7 选 B）。
+    /// 有 `runtime_ref` 时这个字段不起作用：那走采纳路径，origin 是 `adopted`。
+    pub origin: Origin,
 }
 
 /// 活着的挂起请求；request_id 每次重新生成，不复用宿主的工具名。
@@ -867,7 +871,10 @@ impl SessionManager {
     /// - 定位到了可采纳 socket 上的 pane：那条运行时会话已登记就复用它（补 `agent_session_id`），
     ///   没登记就以 `adopted` 登记——hook 已经证明里面是哪个 agent，比 Unknown Agent 强；
     /// - 没有运行时句柄：`external` 行（`runtime_ref` NULL），状态 / 两行 / 通知照常，
-    ///   存活靠 [`SessionManager::note_external_pid`]。
+    ///   存活靠 [`SessionManager::note_external_pid`]；`spec.origin = Headless` 时同一行登记成
+    ///   `headless`（宿主自己起的无头一轮 / 子代理：不通知、满 24 h 不论状态即删，agora-5gg.20）。
+    ///   `spec.origin` 填了这两个之外的值按 `external` 落库：`agora` / `adopted` 意味着有句柄，
+    ///   与这条路径矛盾，不能让调用方写进库里一个不存在这种形态的行。
     pub fn register_external(&self, spec: &ExternalSession) -> Result<String, SessionError> {
         if let Some(r) = &spec.runtime_ref {
             let existing: Option<String> = self
@@ -900,6 +907,12 @@ impl SessionManager {
             return Ok(view.record.id);
         }
         let id = self.fresh_id()?;
+        // 只认无句柄那两档（见函数上的文档）：填错不报错，落回 `external`。
+        let origin = if spec.origin.is_handleless() {
+            spec.origin
+        } else {
+            Origin::External
+        };
         let display_name = spec
             .working_directory
             .as_deref()
@@ -912,7 +925,7 @@ impl SessionManager {
                 working_directory, agent_session_id, epoch, created_at, updated_at, origin)
              VALUES (?1, NULL, ?2, 0, ?3, ?4, ?5, 1,
                 COALESCE(?6, strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-                strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'external')",
+                strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?7)",
             params![
                 id,
                 display_name,
@@ -923,6 +936,8 @@ impl SessionManager {
                 spec.agent_session_id,
                 // external 行的起点是事件的时刻，不是 daemon 把它写进库的那一刻（agora-5gg.3）。
                 spec.created_at.map(clock::format_utc_secs),
+                // external | headless（agora-5gg.20）：库列是自由文本，无迁移。
+                origin.as_str(),
             ],
         )?;
         Ok(id)
@@ -966,7 +981,9 @@ impl SessionManager {
             let Ok(rec) = self.record(&id) else {
                 continue;
             };
-            if rec.origin != Origin::External || rec.runtime_ref.is_some() {
+            // headless 行同样适用：一个 CLI 进程一次只跑一个对话，宿主拿同一个进程号起
+            // 第二个对话（无头 worker 循环）时旧行也一样结束。
+            if !rec.origin.is_handleless() || rec.runtime_ref.is_some() {
                 continue;
             }
             let key = (rec.agent_type.clone(), p.pid);
@@ -1089,7 +1106,7 @@ impl SessionManager {
         // `runtime_ref` 恒 NULL，`gone` 要求有句柄。跟 `gone` 一样先算成布尔量：下面的 match
         // 要拿 `rec` 不可变借用到函数末尾。
         let external_gone = !gone
-            && rec.origin == Origin::External
+            && rec.origin.is_handleless()
             && lock(&self.external_pids)
                 .get(&rec.id)
                 .cloned()
@@ -1111,29 +1128,33 @@ impl SessionManager {
                 )),
                 Liveness::Dead,
             ),
-            (Origin::External, None) => match lock(&self.external_pids).get(&rec.id).cloned() {
-                // 没有退出码可拿：进程没了就只知道"结束了"，不分 FINISHED / FAILED。
-                // 号还在但启动时刻对不上：号被别的进程复用了，原来那个也是没了（agora-tql）。
-                Some(p) if !agent_process_alive(&p) => (
-                    Assessment::new(
-                        Status::Finished,
-                        status::Source::Process,
-                        0.8,
-                        Some("external process gone (no exit status)"),
+            (origin, None) if origin.is_handleless() => {
+                match lock(&self.external_pids).get(&rec.id).cloned() {
+                    // 没有退出码可拿：进程没了就只知道"结束了"，不分 FINISHED / FAILED。
+                    // 号还在但启动时刻对不上：号被别的进程复用了，原来那个也是没了（agora-tql）。
+                    Some(p) if !agent_process_alive(&p) => (
+                        Assessment::new(
+                            Status::Finished,
+                            status::Source::Process,
+                            0.8,
+                            Some("external process gone (no exit status)"),
+                        ),
+                        Liveness::Dead,
                     ),
-                    Liveness::Dead,
-                ),
-                Some(_) => (
-                    Assessment::unknown("external session: process alive, hook only"),
-                    Liveness::Alive,
-                ),
-                // 没有可信进程号（Adapter 的 agent_pid 给 None：Codex Desktop 的共用 app-server、
-                // 没有进程号变量的宿主）：状态机只看 hook，SessionEnd 让它 FINISHED（agora-vfi）。
-                None => (
-                    Assessment::unknown("external session: no runtime, hook only"),
-                    Liveness::Unknown,
-                ),
-            },
+                    Some(_) => (
+                        Assessment::unknown("external session: process alive, hook only"),
+                        Liveness::Alive,
+                    ),
+                    // 没有可信进程号（Adapter 的 agent_pid 给 None：Codex Desktop 的共用 app-server、
+                    // 没有进程号变量的宿主）：状态机只看 hook，SessionEnd 让它 FINISHED（agora-vfi）。
+                    // 无头会话常常就是这一格：宿主的 hook 环境里没有进程号变量（老版本）、
+                    // 子代理跟宿主进程同生同灭，拿不到一个属于“这一行”的进程号。
+                    None => (
+                        Assessment::unknown("external session: no runtime, hook only"),
+                        Liveness::Unknown,
+                    ),
+                }
+            }
             _ => {
                 // 运行时会话没了：会话销毁时 pane 进程收 SIGHUP，agent 确定不在——那是事实不是
                 // 猜测，报 FINISHED 而不是 UNKNOWN（agora-u5p；ADR-001 D4 据此修订）。
@@ -1505,11 +1526,12 @@ impl SessionManager {
         self.expire_external_finished(now)
     }
 
-    /// external 行的两条自动出口（都不看节流，节流挂在 [`Self::sweep`] 那一层）：FINISHED（hook 结束、
-    /// superseded、进程消失都算）按 `sessions.external_finished_ttl`，UNKNOWN
-    /// `hooks silent; no process handle` 按 `sessions.external_unknown_ttl`。删走的是
+    /// 无句柄那两档（external / headless）的自动出口（都不看节流，节流挂在 [`Self::sweep`] 那一层）：
+    /// external 的 FINISHED（hook 结束、superseded、进程消失都算）按 `sessions.external_finished_ttl`，
+    /// external 的 UNKNOWN `hooks silent; no process handle` 按 `sessions.external_unknown_ttl`，
+    /// headless 不论状态按 `sessions.external_finished_ttl`（第三个 arm，见下文）。删走的是
     /// `DELETE /api/sessions/:id` 同一条路径：hook 检查点、状态机、挂起一起清。
-    /// 只碰 external：agora / adopted 的 FINISHED 行有运行时会话与 scrollback，MISSION §4.6「不得在
+    /// 只碰无句柄那两档：agora / adopted 的行有运行时会话与 scrollback，MISSION §4.6「不得在
     /// 用户看到结果之前清理」对它们仍成立。结束时刻取 `ended_at`（MISSION §4.2 修订；agora-5gg.3，
     /// 2026-09-20）：三种结束（hook SessionEnd / superseded / 探到进程没了）现在都会写它，而且它是
     /// 库里的值——`status_since` 是状态机的内存时钟，只靠进程消失结束的行 daemon 重启后从头计（旧注释
@@ -1518,7 +1540,11 @@ impl SessionManager {
     /// 实测 35 行），它们只能拿旧时钟算。
     ///
     /// 名字里的 finished 只对应第一个 arm（历史名字，agora-j4w.3）：第二个 arm 是 agora-e08 补的出口——
-    /// 无句柄、无终端、Kill / Restart 都做不了的一行，沉默到 ttl 之后与 FINISHED 走同一条 DELETE 路径。
+    /// 无句柄、无终端、Kill / Restart 都做不了的一行，沉默到 ttl 之后与 FINISHED 走同一条 DELETE 路径；
+    /// 第三个 arm 是 agora-5gg.20 补的：`headless`（宿主自己起的一次性会话与子代理）不论状态都到期，
+    /// 因为它不是一条等人回看的会话，没有“结果还没被人看到”这回事，而且常常连 SessionEnd 都没有
+    /// （宿主自己起的那一轮答完即退，SessionEnd 与 Stop 同秒；worker 挂在崩溃上更是什么都没了），
+    /// 拿状态当门槛就让它们永远凑在库里。
     pub fn expire_external_finished(&self, now: i64) -> Result<Vec<String>, SessionError> {
         let finished_ttl = self.external_finished_ttl.as_secs() as i64;
         let unknown_ttl = self.external_unknown_ttl.as_secs() as i64;
@@ -1527,9 +1553,10 @@ impl SessionManager {
         }
         let mut removed = Vec::new();
         for v in self.list()? {
-            if v.record.origin != Origin::External {
+            if !v.record.origin.is_handleless() {
                 continue;
             }
+            let headless = v.record.origin == Origin::Headless;
             // 两条出口各自拿自己的 ttl 与自己的时钟；其余状态没有到期一说（还在跑的行不该背着自己消失）。
             let (ttl, since) = match v.assessment.status {
                 Status::Finished if finished_ttl > 0 => (
@@ -1557,6 +1584,20 @@ impl SessionManager {
                 {
                     (unknown_ttl, v.status_since)
                 }
+                // headless 的第三个出口（裁决 agora-5gg.7 选 B，agora-5gg.20）：不论什么状态，
+                // 按 `external_finished_ttl` 到期。排在 e08 那一格之后是有意的——一行无头会话
+                // 真的落进「hook 沉默」那句 UNKNOWN 时，先按 e08 的 unknown_ttl 走（默认同为
+                // 24 h，谁先到都一样；unknown_ttl 关掉时才由这一格兜住），别让新增的一格把
+                // 「UNKNOWN 是暂态」那条出口的空档重新撑开。时钟同第一个 arm：结束了的读
+                // `ended_at`，还挂着（RUNNING / TURN_DONE / FAILED）的只能读 status_since。
+                _ if headless && finished_ttl > 0 => (
+                    finished_ttl,
+                    v.record
+                        .ended_at
+                        .as_deref()
+                        .and_then(clock::parse_utc_secs)
+                        .unwrap_or(v.status_since),
+                ),
                 _ => continue,
             };
             let age = now - since;
@@ -1568,10 +1609,11 @@ impl SessionManager {
                 component = "session",
                 id = %v.record.id,
                 agent = %v.record.agent_type,
+                origin = v.record.origin.as_str(),
                 status = ?v.assessment.status,
-                silent_for_secs = age,
+                expired_for_secs = age,
                 reason = v.assessment.reason.as_deref().unwrap_or_default(),
-                "external 行超过 sessions.external_finished_ttl / external_unknown_ttl，删 metadata"
+                "无句柄行超过 sessions.external_finished_ttl / external_unknown_ttl，删 metadata"
             );
             removed.push(v.record.id);
         }

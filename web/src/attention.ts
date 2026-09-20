@@ -69,14 +69,41 @@ export function seenRelevant(status: string): boolean {
 }
 
 /**
+ * `origin = headless` 的行：宿主自己起的一次性会话（`claude -p` / `codex exec`）与宿主内部的子代理
+ * （裁决 agora-5gg.7 选 B，实施 agora-5gg.20）。它们确实在跑、偶尔会挂权限，但不是一条等人回看的
+ * 会话：一次 handoff 就能堆七行，摆在 NEEDS ATTENTION 里把人的会话冲掉了。
+ */
+export function isHeadless(row: SessionRow): boolean {
+  return row.origin === "headless";
+}
+
+/**
+ * agora 手里没有运行时句柄的那两种来源：`external`（人在另一个终端窗口里裸跑的 agent）与它的细分
+ * `headless`（宿主自己起的无头会话）。两者都没有 pane、没有终端 WS、没有 Restart，能给的只有状态
+ * 与经 hook 的 allow / deny。判据是 origin 而不是 `runtime_ref`：那个字段不在行上（`docs/spec/api.md`「外部会话」）。
+ * 漏一处，headless 行就会在那一格被当成有终端的会话（`Workspace.tsx` 会去 attach 一个不存在的 pane）。
+ */
+export function isHandleless(row: SessionRow): boolean {
+  return row.origin === "external" || isHeadless(row);
+}
+
+/**
  * FINISHED 行分来源（MISSION §6.3 排序表；A46）：
  * - origin = external：一律不算"等你"——它的工作面在别的窗口，人在终端里自己结束了会话（§4.6 证据 ②），
  *   agora 这边没有 pane、没有 Restart，能给的只有两行摘要，所以直接进折叠的 Finished 区。不看 reason
  *   分类：Claude / Grok 连关窗口都发 SessionEnd、Codex 关窗口不发（bd memories external-exit-hooks-ctrlc-vs-hup，
  *   2026-09-08 实测），按 reason 分既不可靠也不必要。
  * - origin = agora / adopted：看过（选中展开过一次）之前算"等你"，看过之后进 Finished 区。
+ * - origin = headless：不看状态、不看看过，一律收起（见 [`isHeadless`]）。
+ *
+ * 折叠区的行是 Header「Finished N」一键清理的删除名单（`Sidebar.tsx` 的 `clearable` 按
+ * `sectionOf === "finished"` 算），所以一行还在跑的无头会话也可能被那一键删掉记录——它本来就满
+ * 24 h 不论状态都会被 `expire_external_finished` 自动删（agora-5gg.20），人手动删同一行不是新权力。
  */
 export function finishedCollapsed(row: SessionRow, seen: SeenSet = NO_SEEN): boolean {
+  // headless 不看状态：它从来不是「等你回看结果」（§4.6 的三条证据一条都不成立：没有工作面、
+  // 没有人结束过它、也没有人会去选中它），停在 TURN_DONE / UNKNOWN 也一样进折叠区。
+  if (isHeadless(row)) return true;
   if (row.status !== "finished") return false;
   return row.origin === "external" || seen.has(seenKey(row));
 }
@@ -92,7 +119,8 @@ export function finishedCollapsed(row: SessionRow, seen: SeenSet = NO_SEEN): boo
  * ATTENTION，但人在「按项目」视图与折叠区里根本看不见它）。原问题（zuan capmaster 三行 208–255 h 的
  * 旧完成永远压在刚做完的行上面）是"压着"，不是"该藏起来"。
  *
- * 不看 origin：external 的 TURN_DONE 也降。FINISHED 那边 external 一律直接收起靠的是证据 ②（人在终端里
+ * 不看 origin（headless 除外，它在上面就被 `finishedCollapsed` 收走了）：external 的 TURN_DONE 也降。
+ * FINISHED 那边 external 一律直接收起靠的是证据 ②（人在终端里
  * 自己结束了会话，结束即看过），TURN_DONE 没有这条——它还在跑，工作面在不在 agora 都得人瞟一眼，
  * 所以两种来源都走"选中看过一次才降"。
  */

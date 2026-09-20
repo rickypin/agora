@@ -167,6 +167,11 @@ impl Adapter for Claude {
     }
 }
 
+/// 交互模式的 SessionStart 会带、无头一轮不带的键（实测名单见 [`AgentHooks::is_headless`]）。
+/// 这是减法判据：载荷里出现名单中任何一个键就当它是交互会话，认不出来的形状一律不判成无头——
+/// 漏判只少一个折叠与一次早删，误判会把一条人的会话推进"不通知 + 满 24 h 不论状态即删"。
+const INTERACTION_ONLY_KEYS: &[&str] = &["model", "scratchpad_dir", "permission_mode", "effort"];
+
 fn tool_input(payload: &Value) -> Option<&Value> {
     payload.get("tool_input")
 }
@@ -219,6 +224,30 @@ impl AgentHooks for Claude {
         _ppid: u32,
     ) -> Option<u32> {
         env.get("CLAUDE_PID")?.trim().parse().ok()
+    }
+
+    /// 无头一次性会话（`claude -p`）的 SessionStart 只剩公共键，交互模式才带的四个键一个都没有：
+    /// `model` / `scratchpad_dir` / `permission_mode` / `effort`（裁决 agora-5gg.7 选 B；判据只用载荷结构）。
+    ///
+    /// 实录（`testdata/claude/<版本>/hooks/`）：
+    /// - 无头 2.1.261 / 2.1.270：SessionStart = `session_id / transcript_path / cwd / hook_event_name / source`
+    ///   五个键（`headless.jsonl` 头注；`task_notification.jsonl` 也是 `claude -p` 录的，同形）。
+    /// - 交互 2.1.261 全套：`model` + `scratchpad_dir`；2.1.260 真录（`ask_user_question.jsonl`）：`model`。
+    ///
+    /// 为什么不只问 `model` / `scratchpad_dir`（决策原文那两个键）：`testdata/claude/2.1.260/hooks/`
+    /// 里 `turn_complete.jsonl` / `clear.jsonl` 两条合成的七场景 fixture 也缺这两个键，却带着
+    /// `permission_mode` / `effort`（`docs/adr/ADR-002-state-source-layering.md` 的 2.1.258 无头实测把
+    /// 它们列为公共键）。只看那两个键会把这类形状判成无头，而误判的代价不对称：headless 行不通知、
+    /// 满 24 h 不论状态就删（把一条人的会话当工具体静默抹掉）。四个键都在就当作交互会话，判不出来
+    /// 的照常按 `external` 登记——漏判只少一个折叠与早删，误判会吞掉一行。新版本真录到无头 SessionStart
+    /// 带 `permission_mode` / `effort` 时，把这两个键从名单里摘掉（回退到只看 model / scratchpad_dir）。
+    fn is_headless(&self, payload: &Value) -> bool {
+        // 只认 SessionStart：其余事件两种模式逐键一致（2.1.270 头注：Stop 照样带
+        // background_tasks / session_crons），拿它们判就是猜。
+        event_name(payload) == Some("SessionStart")
+            && INTERACTION_ONLY_KEYS
+                .iter()
+                .all(|k| payload.get(*k).is_none())
     }
 
     fn parse(&self, payload: &Value) -> Vec<AgoraEvent> {
@@ -333,6 +362,122 @@ mod tests {
             CLAUDE.parse(&html)[0],
             AgoraEvent::PromptSubmitted(_)
         ));
+    }
+
+    /// 逐条 fixture 的第一条 SessionStart：无头录制判 headless，交互录制不判。
+    #[test]
+    fn headless_shape_is_read_from_every_recorded_session_start() {
+        // 守卫：把 INTERACTION_ONLY_KEYS 掏成空名单 → 所有 SessionStart 都判 headless，
+        // interactive 那一批红；去掉 `event_name == SessionStart` 那道门 → 无头 fixture 里的
+        // UserPromptSubmit / Stop（与交互逐键同形）也判 headless，下面的“只认 SessionStart”红。
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/claude");
+        let mut headless: Vec<String> = Vec::new();
+        let mut interactive: Vec<String> = Vec::new();
+        for path in fixture_paths(&root) {
+            let rel = path
+                .strip_prefix(root.parent().unwrap())
+                .unwrap()
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            match first_session_start(&path).as_ref() {
+                Some(p) if CLAUDE.is_headless(p) => headless.push(rel),
+                Some(_) => interactive.push(rel),
+                // 没录 SessionStart 的文件（2.1.260 的 api_error / interrupted …）不进门。
+                None => {}
+            }
+        }
+        headless.sort();
+        interactive.sort();
+        assert_eq!(
+            headless,
+            vec![
+                // 三条真录的无头会话：2.1.270 冒烟、2.1.261 冒烟，以及 2.1.261 用 `claude -p`
+                // 录的后台任务通知（头注：“无头模式 payload 没有 scratchpad_dir”）。
+                "claude/2.1.261/hooks/headless.jsonl",
+                "claude/2.1.261/hooks/task_notification.jsonl",
+                "claude/2.1.270/hooks/headless.jsonl",
+            ],
+            "被判成无头的 fixture 名单变了：新录了无头场景就补进来；如果是真交互录制被判成了\
+             无头，那是误判——headless 行不通知、满 24 h 不论状态即删"
+        );
+        // 交互 fixture 全部落在另一边：2.1.261 真录带 model + scratchpad_dir，2.1.260 真录
+        // （ask_user_question）只带 model，2.1.260 合成的两条带 permission_mode + effort。
+        assert!(
+            interactive.len() >= 10,
+            "交互 fixture 一条都没判出来？{interactive:?}"
+        );
+        for name in [
+            "claude/2.1.261/hooks/turn_complete.jsonl",
+            "claude/2.1.261/hooks/clear.jsonl",
+            "claude/2.1.260/hooks/ask_user_question.jsonl",
+            "claude/2.1.260/hooks/turn_complete.jsonl",
+            "claude/2.1.260/hooks/clear.jsonl",
+        ] {
+            assert!(
+                interactive.iter().any(|f| f == name),
+                "{name} 是交互会话，不能判成 headless"
+            );
+        }
+    }
+
+    #[test]
+    fn only_session_start_carries_the_headless_shape() {
+        // 无头的其它事件与交互逐键同形，拿它们判就会猜：2.1.270 真录的 UserPromptSubmit 带
+        // permission_mode（交互也有），不是无头信号。
+        let prompt = json!({"hook_event_name":"UserPromptSubmit","session_id":"s",
+            "prompt":"<prompt>","permission_mode":"default"});
+        assert!(
+            !CLAUDE.is_headless(&prompt),
+            "UserPromptSubmit 不是 SessionStart：再像无头也不判"
+        );
+        let stop = json!({"hook_event_name":"Stop","session_id":"s"});
+        assert!(
+            !CLAUDE.is_headless(&stop),
+            "缺全部交互键的 Stop 也不算：判据只认 SessionStart"
+        );
+        // 形状完整但缺交互键的 SessionStart 才算。
+        let bare = json!({"hook_event_name":"SessionStart","session_id":"s","source":"startup"});
+        assert!(CLAUDE.is_headless(&bare));
+        // 四个交互键中任一个在→ 不判（宁漏不误）。
+        for key in INTERACTION_ONLY_KEYS {
+            let mut p = bare.clone();
+            p[key] = json!("x");
+            assert!(!CLAUDE.is_headless(&p), "{key} 在载荷里：这不能算无头");
+        }
+    }
+
+    fn fixture_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        for version in std::fs::read_dir(root).unwrap().flatten() {
+            let hooks = version.path().join("hooks");
+            if !hooks.is_dir() {
+                continue;
+            }
+            for f in std::fs::read_dir(&hooks).unwrap().flatten() {
+                if f.path().extension().is_some_and(|e| e == "jsonl") {
+                    out.push(f.path());
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// 一个 fixture 里第一条 SessionStart 的 payload（没录到就 None）。
+    fn first_session_start(path: &std::path::Path) -> Option<Value> {
+        for line in std::fs::read_to_string(path).unwrap().lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let v: Value =
+                serde_json::from_str(line).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let payload = v.get("payload")?;
+            if event_name(payload) == Some("SessionStart") {
+                return Some(payload.clone());
+            }
+        }
+        None
     }
 
     #[test]

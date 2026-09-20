@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import { agentBadge } from "./agentBadge";
-import { statusLine } from "./attention";
+import { isHandleless, statusLine } from "./attention";
 import type { SessionRow } from "./events";
 import { clockText } from "./Header";
 import { nodeHue } from "./nodeColor";
@@ -107,7 +107,9 @@ export function RowIdentity({
             <span className="node-label">{row.node}</span>
           </span>
         )}
-        {row.origin === "external" && <span className="origin">external</span>}
+        {/* 无句柄的行才标 origin：agora 起的行不需要解释自己从哪来。headless 也标出来，
+            否则一行被 24 h 自动删的会话在侧栏里长得和一条终端会话一样（agora-5gg.20）。 */}
+        {isHandleless(row) && <span className="origin">{String(row.origin)}</span>}
         {seen && (
           <span className="stale-seen" data-testid={`row-stale-${row.id}`} title={seen.title}>
             {seen.text}

@@ -142,6 +142,13 @@ it("an external row has no terminal to hand the focus to, so it offers no such b
   expect(screen.queryByTestId("open-terminal")).toBeNull();
 });
 
+it("a headless row has no terminal either: the focus button is gone, Allow / Deny stay (agora-5gg.20)", () => {
+  // 无头会话（`claude -p` / 子代理）与 external 同一档：agora 手里没有句柄（`isHandleless`）。
+  setup({ origin: "headless", reason: "permission", respond_via: "hook", detail: "Bash" });
+  expect(screen.getByTestId("allow")).toBeTruthy();
+  expect(screen.queryByTestId("open-terminal")).toBeNull();
+});
+
 it("a long reply is folded to 12 lines with an expand button; a short one has no button (A50)", () => {
   // agora-4yr.2：按**源文本**的行数截，不是 CSS 限高——jsdom 不做布局，限高在这里根本测不到，
   // 而且限高会随字号 / 表格飘。展开是单向的：点完按钮就消失（回复看完就该给下一条指令）。

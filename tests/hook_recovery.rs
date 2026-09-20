@@ -456,7 +456,11 @@ fn handleless_external_starting_decays_through_session_manager_and_after_checkpo
     let s = Arc::new(SessionManager::new(db.clone(), rt.clone()).with_status_config(grace.clone()));
     let r = Receiver::new(home.path(), s.clone());
     let inbox = Inbox::new(home.path());
-    let start = |session: &str| json!({"hook_event_name":"SessionStart","session_id": session, "cwd": "/work/trion", "source": "startup"});
+    let start = |session: &str| {
+        json!({"hook_event_name":"SessionStart","session_id": session, "cwd": "/work/trion", "source": "startup",
+        // 交互会话的形状：缺了交互模式才带的键就会被登记成 headless（判据见 `src/adapter/claude.rs`）。
+        "model": "claude-opus-4-8", "scratchpad_dir": "/tmp/claude-scratch"})
+    };
     let register =
         |session: &str| external_delivery_with_env(session, BTreeMap::new(), 1, start(session));
     let id = r
@@ -745,7 +749,7 @@ fn external_agent_pid_survives_daemon_restart_and_guards_pid_reuse() {
         let s = Arc::new(SessionManager::new(db, rt.clone()));
         let r = Receiver::new(home.path(), s.clone());
         let inbox = Inbox::new(home.path());
-        let start = json!({"hook_event_name":"SessionStart","session_id":"ext-1","cwd":"/work/agora","source":"startup"});
+        let start = json!({"hook_event_name":"SessionStart","session_id":"ext-1","cwd":"/work/agora","source":"startup", "model": "claude-opus-4-8", "scratchpad_dir": "/tmp/claude-scratch"});
         let path = inbox
             .write(&external_delivery("ext-1", child.id(), 1, start))
             .unwrap();
@@ -794,7 +798,7 @@ fn external_agent_pid_survives_daemon_restart_and_guards_pid_reuse() {
         let s = Arc::new(SessionManager::new(db, rt.clone()));
         let r = Receiver::new(home.path(), s.clone());
         let inbox = Inbox::new(home.path());
-        let start = json!({"hook_event_name":"SessionStart","session_id":"ext-2","cwd":"/work/agora","source":"startup"});
+        let start = json!({"hook_event_name":"SessionStart","session_id":"ext-2","cwd":"/work/agora","source":"startup", "model": "claude-opus-4-8", "scratchpad_dir": "/tmp/claude-scratch"});
         let path = inbox
             .write(&external_delivery("ext-2", other.id(), 3, start))
             .unwrap();
@@ -857,7 +861,7 @@ fn v2_checkpoint_seen_at_in_seconds_is_upgraded_to_millis_on_restore() {
         let s = Arc::new(SessionManager::new(db, rt.clone()));
         let r = Receiver::new(home.path(), s.clone());
         let inbox = Inbox::new(home.path());
-        let start = json!({"hook_event_name":"SessionStart","session_id":"ext-v2","cwd":"/work/agora","source":"startup"});
+        let start = json!({"hook_event_name":"SessionStart","session_id":"ext-v2","cwd":"/work/agora","source":"startup", "model": "claude-opus-4-8", "scratchpad_dir": "/tmp/claude-scratch"});
         let path = inbox
             .write(&external_delivery("ext-v2", child.id(), 1, start))
             .unwrap();

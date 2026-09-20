@@ -42,6 +42,7 @@ fn external(m: &SessionManager, agent_session: &str) -> String {
         runtime_ref: None,
         working_directory: Some(PathBuf::from("/work/agora")),
         created_at: None,
+        origin: Origin::External,
     })
     .unwrap()
 }
@@ -291,7 +292,8 @@ fn hook_finished_external_row_keeps_its_end_time_across_daemon_restart_and_expir
         let r = Receiver::new(home.path(), s.clone());
         let inbox = Inbox::new(home.path());
         let events = [
-            json!({"hook_event_name":"SessionStart","session_id":"ext-ec4","cwd":"/work/agora","source":"startup"}),
+            json!({"hook_event_name":"SessionStart","session_id":"ext-ec4","cwd":"/work/agora","source":"startup",
+            "model": "claude-opus-4-8", "scratchpad_dir": "/tmp/claude-scratch"}),
             json!({"hook_event_name":"Stop","session_id":"ext-ec4","last_assistant_message":"done"}),
             json!({"hook_event_name":"SessionEnd","session_id":"ext-ec4","reason":"prompt_input_exit"}),
         ];

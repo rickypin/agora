@@ -74,6 +74,32 @@ describe("attention", () => {
   // agora-5gg.21（决策 agora-5gg.10 选 B 为主）：A46 的「看过」扩到 TURN_DONE——选中看过一次即降到中段，
   // 新一次 TURN_DONE（新的 status_since）再回来。关键是它降进 WORKING 段（四段化前叫 RUNNING 段）而
   // **不是** Finished 折叠区：折叠区的行是 Header「Finished N」一键清理的删除对象，而那一行 pane 里的进程还活着。
+  // 裁决 agora-5gg.7 选 B（实施 agora-5gg.20）：宿主自己起的无头一轮（`claude -p`）与内部子代理
+  // 登记成 `origin = headless`。它们不是一条等人回看的会话，所以**不看状态**一律进折叠区。
+  it("headless rows fold whatever status they are in (agora-5gg.7 B → agora-5gg.20)", () => {
+    const none = new Set<string>();
+    for (const status of ["failed", "waiting", "turn_done", "finished", "unknown"]) {
+      const r = row(`h-${status}`, status, { origin: "headless" });
+      expect(finishedCollapsed(r, none), status).toBe(true);
+      expect(needsAttention(r, none), status).toBe(false);
+      expect(sectionOf(r, none), status).toBe("finished");
+    }
+    // running / idle 本来就不进 NEEDS ATTENTION，但它们也不因 origin 落进 UNCLEAR：
+    // 折叠在 sectionOf 的第一条判断里就了断了。
+    expect(sectionOf(row("h-run", "running", { origin: "headless" }), none)).toBe("finished");
+    // 记号无效：headless 行即使被选中展开过也不换地方（它从来不是"看过就不再弹"那种）。
+    const hl = row("h-seen", "turn_done", { origin: "headless", status_since: 5 });
+    expect(sectionOf(hl, new Set([seenKey(hl)]))).toBe("finished");
+    // 反过来：同样状态的 external / agora 行不因这条改动改掉归属。
+    expect(sectionOf(row("x", "turn_done", { origin: "external", status_since: 5 }), none)).toBe("attention");
+    expect(sectionOf(row("a", "unknown", { origin: "agora" }), none)).toBe("unclear");
+    // 分段拼接：无头行永远排到最后，与分数无关（它的分数比 running 高）。
+    const rows = [row("r", "running"), row("h", "waiting", { origin: "headless" }), row("w", "waiting")];
+    expect(partitionByAttention(sortByAttention(rows), none).map((r) => r.id)).toEqual(["w", "r", "h"]);
+    // header 那一行仍按状态数：无头行照数（它确实在跑 / 确实做完了），折叠只是不画。
+    expect(countByStatus(rows).needsInput).toBe(2);
+  });
+
   it("a seen TURN_DONE row drops to the WORKING segment, never into the Finished folding (agora-5gg.21)", () => {
     const done = row("d", "turn_done", { origin: "agora", status_since: 10 });
     const extDone = row("x", "turn_done", { origin: "external", status_since: 20 });

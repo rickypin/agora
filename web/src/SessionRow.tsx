@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { promptRepeatsLabel, taskLabel, unclearStatus } from "./attention";
+import { isHandleless, isHeadless, promptRepeatsLabel, taskLabel, unclearStatus } from "./attention";
 import { rowProcess, type SessionRow } from "./events";
 import { RowIdentity } from "./RowIdentity";
 
@@ -64,7 +64,8 @@ export function str(v: unknown): string {
  * 「为什么说不清」不在这——那是 reason 的活，`unknown_cause` 封闭枚举归 5gg.6。
  */
 export function unclearExit(row: SessionRow): string {
-  return row.origin === "external" ? "等下一条 hook，或去它自己的窗口看" : "选中它，打开它的终端看一眼";
+  if (isHeadless(row)) return "宿主自己起的一次性会话：只能等它的下一条 hook";
+  return isHandleless(row) ? "等下一条 hook，或去它自己的窗口看" : "选中它，打开它的终端看一眼";
 }
 
 /** 侧栏过滤匹配的字段（docs/spec/ux.md：name / node / agent / preview）：任务标签与两行预览也算。

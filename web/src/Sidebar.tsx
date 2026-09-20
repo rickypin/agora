@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
 import type { AdoptBody, SessionApi, WriteResult } from "./api";
-import { countByStatus, sectionOf, type SeenSet, type Section } from "./attention";
+import { countByStatus, isHandleless, sectionOf, type SeenSet, type Section } from "./attention";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow, UnregisteredRow } from "./events";
 import { Header, type NodeStatus } from "./Header";
@@ -235,7 +235,9 @@ export function Sidebar({
     }
     setClearNote(clearSummary(result));
   }
-  const ownClearable = clearable.filter((r) => r.origin !== "external").length;
+  // 「其中 N 行是 agora 起的会话」说的是删记录会连已退出的运行时会话与输出一起没了的那几行：
+  // 无句柄那两种来源（external / headless）没有运行时会话，不该被算进去（agora-5gg.20）。
+  const ownClearable = clearable.filter((r) => !isHandleless(r)).length;
   // 四段的交界：rows 已经按 attention → unclear → working → finished 拼好（partitionByAttention），这里只在交界处插标题。
   // tree 视图整段列表换成 <SidebarTree>（A48，agora-uvd.3）：组头、折叠与 DFS 序号都在那边；下面 attention
   // 分支一个字不动。

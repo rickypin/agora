@@ -3,12 +3,20 @@
 use serde::Serialize;
 
 /// agora 创建的 / 运行时里采纳的 / 只有 hook 看得见的（MISSION §5.5）。
+///
+/// `Headless` 是 `External` 的一个分档而不是第三种句柄形态：它同样没有运行时会话，只是
+/// 「这一行不是一条人的会话」（裁决 agora-5gg.7 选 B）。判据只看载荷结构，见
+/// [`crate::adapter::AgentHooks::is_headless`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Origin {
     Agora,
     Adopted,
     External,
+    /// 宿主自己起的一次性会话（哪一轮算无头由 Adapter 的 `is_headless` 回答）与宿主内部的子代理。
+    /// 照常登记、参与真值表，
+    /// 但默认折叠、不通知、满 24 h 不论状态即删（agora-5gg.20）。
+    Headless,
 }
 
 impl Origin {
@@ -17,6 +25,7 @@ impl Origin {
             Origin::Agora => "agora",
             Origin::Adopted => "adopted",
             Origin::External => "external",
+            Origin::Headless => "headless",
         }
     }
 
@@ -25,8 +34,16 @@ impl Origin {
             "agora" => Some(Origin::Agora),
             "adopted" => Some(Origin::Adopted),
             "external" => Some(Origin::External),
+            "headless" => Some(Origin::Headless),
             _ => None,
         }
+    }
+
+    /// 没有运行时句柄、只有 hook 看得见的那两种来源。活性探活、supersede、归档重建、清理走的
+    /// 是同一条路，凡原来判 `== Origin::External` 的地方都该问这个函数：漏一处，headless 行就会
+    /// 在那条逻辑上掉出 external 行的语义（终端、挂起、`ended_at` 各一处）。
+    pub fn is_handleless(self) -> bool {
+        matches!(self, Origin::External | Origin::Headless)
     }
 }
 
@@ -34,7 +51,7 @@ impl Origin {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionRecord {
     pub id: String,
-    /// `origin == External` 时为 None。
+    /// [`Origin::is_handleless`] 的两档（external / headless）为 None。
     pub runtime_ref: Option<String>,
     pub display_name: String,
     pub name_locked: bool,
