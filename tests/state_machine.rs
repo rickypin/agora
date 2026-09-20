@@ -930,6 +930,108 @@ fn handleless_external_silence_falls_to_unknown() {
 }
 
 #[test]
+fn handleless_silence_is_measured_from_event_time() {
+    // agora-5gg.2（Mac 0e26ad / 14d791 / eb129d / b939bb：Codex Desktop 行沉默 62 h 仍 turn_done）：
+    // 无句柄行的沉默兜底回答的是「agent 大概率早退了」，该按**事件自己的时刻**算沉默了多久。
+    // 旧写法只认 `last_hook_at`（daemon 收到的时刻），于是停机 3.5 天后重启：被重放的那批 TURN_DONE
+    // 把时钟拨到重放那一刻、要再等 2 h 才 UNKNOWN，而没被重放、从检查点恢复的 4 行当场就 UNKNOWN
+    // ——同一批行两种结果（`docs/analysis/session-status-audit-2026-09-18.md` §4 A4，判 (b)）。
+    // 守卫四段：① apply_at(at = now - 3 h) 后下一个 tick 即 UNKNOWN（不需再等 2 h），但状态起点是
+    // 判定的那一刻（前端拿它算 "unknown 3m"）；② 迟到的旧投递件不把刚出声的行打回 UNKNOWN（取 max）；
+    // ③ 有 pane 的 D1 沉默规则**不变**，同一条三小时前的重放不能让它当场判定 hook 沉默（那条问的是
+    // daemon 的等待），到 600 s 才落 UNKNOWN；④ STARTING 宽限同理按收到时刻（agora-rkl 的 ms=1 投递
+    // 不当场衰减，接 tests/hook_recovery.rs）。
+    // 把兜底的 quiet 时钟改回 `last_hook_at` → 第一段红；去掉 max → 第二段红；把有 pane 的沉默规则
+    // 也改成按事件时刻 → 第三段红；把 STARTING 衰减也改成按事件时刻 → 第四段红。
+    let now = 1_000_000_i64; // daemon 重启后收到重放事件的时刻
+    let at = now - 3 * 3600; // 事件三小时前就写进了投递箱
+    let external = |liveness, tick| Observation {
+        process: Assessment::unknown("external session: no runtime, hook only"),
+        liveness,
+        text: None,
+        runtime: None,
+        epoch: 1,
+        now: tick,
+    };
+
+    // ① 无句柄 + 事件已老：重启后的第一个 tick 就说"看不清"。
+    let mut m = Machine::new(cfg(), true, 1, now);
+    m.apply_at(&AgoraEvent::TurnEnded(Some("done".into())), 1, now, at);
+    assert_eq!(
+        m.current().status,
+        Status::TurnDone,
+        "事件自己说的是 TURN_DONE"
+    );
+    assert_eq!(m.status_since(), at, "TURN_DONE 的起点仍是事件时刻（A42）");
+    let a = m.observe(external(Liveness::Unknown, now + 1));
+    assert_eq!(
+        (a.status, a.source),
+        (Status::Unknown, Source::Hook),
+        "沉默按事件时刻已 3 h ≥ 2 h，不需要再等一个 2 h：{a:?}"
+    );
+    assert_eq!(a.reason.as_deref(), Some("hooks silent; no process handle"));
+    assert_eq!(
+        m.status_since(),
+        now + 1,
+        "UNKNOWN 的起点是 agora 开始说不清的那一刻，不是三小时前"
+    );
+
+    // ② 停机期间落下的旧件晚到（`replay_stale_pending` 补送）：不能把刚出声的行推回「沉默 3 h」。
+    let mut m = Machine::new(cfg(), true, 1, now);
+    m.apply_at(&AgoraEvent::TurnEnded(None), 1, now, now);
+    m.apply_at(
+        &AgoraEvent::Activity("PreToolUse Bash".into()),
+        1,
+        now + 1,
+        at,
+    );
+    let a = m.observe(external(Liveness::Unknown, now + 2));
+    assert_eq!(
+        a.status,
+        Status::Running,
+        "刚听到活动，沉默时钟在现在：{a:?}"
+    );
+
+    // ③ 有 pane 的行：同一条三小时前的重放不改动 D1 的沉默规则（屏幕证据要 daemon 活着才采得到）。
+    let mut m = Machine::new(cfg(), true, 1, now);
+    let r = rt(true, Some(now));
+    m.apply_at(&AgoraEvent::PromptSubmitted("go".into()), 1, now, at);
+    let a = tick(
+        &mut m,
+        now + 1,
+        &r,
+        Some(text(Status::Waiting, "permission prompt")),
+    );
+    assert_eq!(
+        a.status,
+        Status::Running,
+        "按事件时刻算已沉默 3 h，但这条按 daemon 的等待算：{a:?}"
+    );
+    assert_eq!(m.status_since(), at, "状态起点仍按事件时刻（A42）");
+    let a = tick(
+        &mut m,
+        now + 601,
+        &r,
+        Some(text(Status::Waiting, "permission prompt")),
+    );
+    assert_eq!(
+        (a.status, a.source),
+        (Status::Unknown, Source::Text),
+        "收到时刻满 silence_after 才落沉默：{a:?}"
+    );
+
+    // ④ STARTING 宽限也按收到时刻：重放一条三小时前的 SessionStart 不能让它当场衰减（agora-rkl）。
+    let mut m = Machine::new(cfg(), true, 1, now);
+    m.apply_at(&AgoraEvent::SessionStarted, 1, now, at);
+    let a = m.observe(external(Liveness::Alive, now + 1));
+    assert_eq!(
+        a.status,
+        Status::Starting,
+        "衰减问的是 daemon 的等待：{a:?}"
+    );
+}
+
+#[test]
 fn process_gone_does_not_overwrite_the_hook_session_end() {
     // agora-rzh（2026-09-08 现场：6 行 external 探针，5 行宿主发了 SessionEnd，行上却全是
     // `external process gone (no exit status)`）：external 行的进程层 FINISHED 与 hook 的 SessionEnd

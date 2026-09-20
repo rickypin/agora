@@ -91,7 +91,9 @@ const EXTERNAL_STARTING: &[Row] = &[
 fn external_starting_decays_to_turn_done() {
     // 关掉 observe 第 1 步 external 分支里的 decay_starting → 两行 TurnDone 断言红。
     // 关掉同一步里的沉默兜底（agora-tql 那条）→ 最后那行从 Unknown 变 TurnDone 红；
-    // 把衰减移到兜底之后不会红（两者同一个 quiet 时钟，2026-09-19 实测逐行同色）。
+    // 把衰减移到兜底之后不会红：兜底一旦落 UNKNOWN，衰减的门就关上不再开；两条从 agora-5gg.2 起用
+    // 的不是同一个 quiet 时钟（衰减按收到时刻、兜底按事件时刻），但兜底成立必然也在宽限之外，
+    // 所以仍逐行同色（2026-09-19 实测）。
     for row in EXTERNAL_STARTING {
         let mut m = Machine::new(cfg(), true, 1, 0);
         m.apply(&AgoraEvent::SessionStarted, 1, 0);

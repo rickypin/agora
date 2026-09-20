@@ -10,6 +10,8 @@
 //!    `session ended (hook)`），只有 alive 变假——人自己在终端结束的与终端被关 / 崩溃的要分得开（agora-rzh）。
 //! 2. 有 hook 的会话：WAITING / TURN_DONE 只来自 hook；文本层永远抬不上去，活动层不产生 IDLE。
 //!    hook 沉默（`silence_after` 无事件）而屏幕像在等人 → UNKNOWN `hooks silent`，不猜 WAITING。
+//!    这条沉默按 daemon 的收到时刻算（屏幕证据要 daemon 活着才采得到）；唯一用事件自己时刻的
+//!    是无句柄 external 行的 `external_silent_after`（agora-5gg.2，见 [`MachineConfig::external_silent_after`]）。
 //!    hook 层的 STARTING 在 `startup_grace` 内没有后续事件 → TURN_DONE `awaiting first prompt`
 //!    （起好了、等第一条指令；agora-okr）。这条衰减不分 origin：external 行到不了本条（第 1 步就
 //!    返回了），所以在第 1 步的 external 分支里各落一次，两处共用 [`Machine::decay_starting`]
@@ -53,6 +55,12 @@ pub struct MachineConfig {
     /// 没有可信进程号的 external 行（`Liveness::Unknown`）hook 沉默多久后退到 UNKNOWN
     /// （`hooks.external_silent_after`，agora-tql）：没有 pane 沉默规则够不着，没有进程号进程层说不了
     /// 结束，agent 早退了的行会永远钉在 TURN_DONE。
+    ///
+    /// 这条的沉默时钟是**最近一条 hook 事件自己的时刻**（[`Machine::last_event_at`]），不是 daemon
+    /// 收到它的时刻（agora-5gg.2 修订 ADR-002 D1）：这条规则回答的是「agent 大概率早退了」，事件
+    /// 三小时前发生就是三小时前没声音，daemon 停机三天再重放不该把「沉默了多久」清零。上面
+    /// `silence_after`（有 pane 的 D1 沉默规则）不适用同一条理由——那条问的是「daemon 从上次听到
+    /// hook 起还没等到下一条多久」，屏幕证据要 daemon 活着才采得到，仍按收到时刻算。
     pub external_silent_after: Duration,
 }
 
@@ -148,6 +156,13 @@ pub struct AgentProcess {
 
 /// 检查点格式版本。1 = 不带 `agent_process`（2026-09-08 之前）；2 = 带，`seen_at` 是秒；
 /// 3 = `seen_at` 是毫秒（2026-09-09 agora-2nh）。
+///
+/// 版本号只用来**解释已有字段**（v2 的秒要 ×1000）；纯增加一个 `#[serde(default)]` 字段不升号：
+/// 3 → 4 没有升的必要，因为 `last_event_at`（agora-5gg.2）在旧 v3 检查点里缺席就是「没记过」，
+/// 读出来 `None` 落到 [`Machine::handleless_quiet_since`] 的回退链上＝修复前的行为（按收到时刻算），
+/// 而那是那些检查点唯一正确的读法——它们本来就没记事件时刻。不升号也省掉一次跨版本迁移：
+/// 真升到 4 会让旧 daemon 读新检查点时把 `version` 认成未知而丢掉整行观测（`restore_hook` 的
+/// `1..=HOOK_SNAPSHOT_VERSION` 门），降级路径反而变脆（2026-09-19 核对）。
 pub const HOOK_SNAPSHOT_VERSION: u32 = 3;
 /// 从这个版本起检查点带 `agent_process`；更早的是 v1（不带进程号，且可能写于 agora-s3r 之前）。
 const HOOK_SNAPSHOT_WITH_AGENT_PROCESS: u32 = 2;
@@ -166,6 +181,11 @@ pub struct HookSnapshot {
     current: Assessment,
     set_at: i64,
     last_hook_at: i64,
+    /// 最近一条 hook 事件自己的时刻（unix 秒）。agora-5gg.2 起随检查点落盘：无句柄行的沉默兜底
+    /// 以它计，不落盘的话每次重启都把「沉默了多久」清零（`#[serde(default)]`，修复前写的 v3 检查点
+    /// 读成 `None`，见 [`HOOK_SNAPSHOT_VERSION`] 的说明）。
+    #[serde(default)]
+    last_event_at: Option<i64>,
     detail: Option<String>,
     prompt: Option<String>,
     progress: Option<String>,
@@ -182,6 +202,10 @@ pub struct Machine {
     current: Assessment,
     set_at: i64,
     last_hook_at: Option<i64>,
+    /// 最近一条 hook 事件**自己的**时刻（`apply_at` 的 `at` = 投递件落盘那一刻）。只有一条规则读它：
+    /// 无句柄 external 行的 `external_silent_after`（见 [`MachineConfig::external_silent_after`]）；
+    /// 其余沉默判定一律用 `last_hook_at`（daemon 的等待）。
+    last_event_at: Option<i64>,
     /// 本代进程起始时刻：hook 沉默与 IDLE 的起点（没有任何事件 / 输出时）。
     since: i64,
     text_streak: Option<(Status, u32)>,
@@ -226,6 +250,7 @@ impl Machine {
             current: Assessment::unknown("no observation yet"),
             set_at: now,
             last_hook_at: None,
+            last_event_at: None,
             since: now,
             text_streak: None,
             last_text_at: 0,
@@ -283,6 +308,8 @@ impl Machine {
         self.current = snapshot.current.clone();
         self.set_at = snapshot.set_at;
         self.last_hook_at = Some(snapshot.last_hook_at);
+        // 修复前写的检查点没有这个键：读成 None，沉默兜底退回按收到时刻算（旧行为）。
+        self.last_event_at = snapshot.last_event_at;
         self.heard_hooks = true;
         self.detail = snapshot.detail.clone();
         self.prompt = snapshot.prompt.clone();
@@ -388,6 +415,17 @@ impl Machine {
         self.cfg.startup_grace.as_secs() as i64
     }
 
+    /// 无句柄 external 行的沉默起点：最近一条 hook 事件**自己的**时刻（agora-5gg.2 修订 ADR-002 D1）。
+    /// 读不出事件时刻时退回 daemon 的收到时刻（`last_hook_at`，修复前写的检查点就是这一档），
+    /// 两者都没有才落到本代起始 `since`——也就是保持修复前的行为：新读法只可能让规则更早落，
+    /// 不会反过来把还该等的行提前打成 UNKNOWN。
+    /// 有 pane 的 D1 沉默规则（[`Machine::hooks_silent`]、`observe_hooked`）不读它——那条问的是
+    /// "daemon 从上次听到 hook 起还没等到下一条多久"，屏幕证据要 daemon 活着才采得到。
+    fn handleless_quiet_since(&self) -> i64 {
+        self.last_event_at
+            .unwrap_or_else(|| self.last_hook_at.unwrap_or(self.since))
+    }
+
     /// 当前是屏幕给的 UNKNOWN：hook 会话里 `Source::Text` 的 UNKNOWN 只有两个来源——`observe_hooked`
     /// 的"提示消失"规则（`permission prompt gone; hooks silent`，agora-9cd）与 D1 沉默规则
     /// （`hooks silent; screen: …`）。两者都是"hook 没说话、只有屏幕可看"，所以下一条 hook 事件在
@@ -455,6 +493,10 @@ impl Machine {
     /// hook 起还没等到下一条多久了"，是 daemon 的等待，不是事件的年龄——重放一条三分钟前的
     /// SessionStart 不能让它当场衰减成 TURN_DONE（反例：`tests/hook_recovery.rs` 用 ms=1 的投递
     /// 断言 ingest 后仍是 STARTING）。`at` 晚于 `now`（时钟异常）按 `now` 算。
+    ///
+    /// 例外（agora-5gg.2）：`last_event_at` 另记一份 `at`，只喂给无句柄 external 行的
+    /// `external_silent_after`——那条回答的是"agent 大概率早退了"，事件三小时前发生就是三小时前
+    /// 没声音，停机 + 重放不该把沉默时长清零。两个时钟各服务一条规则，别把它们合回一个。
     pub fn apply_at(&mut self, event: &AgoraEvent, epoch: i64, now: i64, at: i64) -> bool {
         if epoch < self.epoch {
             return false;
@@ -465,6 +507,12 @@ impl Machine {
         let at = at.min(now);
         self.heard_hooks = true;
         self.last_hook_at = Some(now);
+        // 事件自己的时刻单独记一条：无句柄行的沉默兜底读它，不读 `last_hook_at`（agora-5gg.2）。
+        // 取 max：同一会话的投递件按文件名（= 落盘时刻）顺序应用，正常单调前进；但那个时刻来自
+        // hook 进程所在机器的时钟，Mac 睡眠唤醒 / NTP 校正回拨后，晚到的件可能带一个更早的 `at`，
+        // 那时"最近一条"该是见过的那条里最新的，不能让沉默时钟倒退一格（更旧的件本身已被
+        // `accepts_delivery` 的同名 / 更旧门挡掉，2026-09-19 核对）。
+        self.last_event_at = Some(self.last_event_at.unwrap_or(at).max(at));
         if matches!(self.current.status, Status::Finished | Status::Failed)
             && self.current.source == Source::Process
         {
@@ -602,6 +650,7 @@ impl Machine {
                 current: self.current.clone(),
                 set_at: self.set_at,
                 last_hook_at: now,
+                last_event_at: self.last_event_at,
                 detail: self.detail.clone(),
                 prompt: self.prompt.clone(),
                 progress: self.progress.clone(),
@@ -630,9 +679,11 @@ impl Machine {
                 // 起的会话一模一样是"给它指令"，按 origin 分叉没有依据（MISSION §4.3「hook 层的
                 // STARTING 最多停 10 s」不区分 origin）。Alive | Unknown 都衰减；Dead 到下面走
                 // 进程事实。
-                // 放在沉默兜底之前只是把阅读顺序写成"先归位、再兜底"：两者用同一个 quiet 时钟，
-                // 谁先谁后结果一样（兜底一旦落 UNKNOWN，下面的 STARTING 门就关上不再开）。
-                // 实测：把衰减移到兜底之后，下面两个守卫逐行同色（2026-09-19）。
+                // 放在沉默兜底之前只是把阅读顺序写成"先归位、再兜底"：谁先谁后结果一样（兜底一旦
+                // 落 UNKNOWN，下面的 STARTING 门就关上不再开；兜底先落时衰减的门根本不再进）。两条
+                // 用的 quiet 时钟从 agora-5gg.2 起不是同一个（衰减按收到时刻、兜底按事件时刻），
+                // 结论仍同色：兜底要成立必须事件已满 2 h，那必然也在宽限（10 s）之外，所以先落哪个
+                // 都以兜底的 UNKNOWN 收尾。实测：把衰减移到兜底之后，下面两个守卫逐行同色（2026-09-19）。
                 if self.current.status == Status::Starting
                     && now - self.last_hook_at.unwrap_or(self.since) >= self.startup_grace_secs()
                 {
@@ -644,9 +695,12 @@ impl Machine {
                 // 进程号，进程层永远说不了"结束"；agent 早退了的行会永远钉在 TURN_DONE、排在 NEEDS
                 // ATTENTION。进程号活着的（Liveness::Alive）不动：人离开几小时再回来是正常的。
                 // reason 不嵌沉默秒数（agora-385）；`set` 只在 (status, source) 变时刷新起点。
+                // 沉默时钟用事件自己的时刻（agora-5gg.2，Mac 现场 0e26ad / 14d791 / eb129d / b939bb：
+                // 停机 3.5 天，重放过的那批 TURN_DONE 把 last_hook_at 记成重放时刻、沉默 62 h 仍
+                // TURN_DONE，没被重放、从检查点恢复的 4 行却当场 UNKNOWN——同一批行两种结果）。
                 if obs.liveness == Liveness::Unknown
                     && !matches!(self.current.status, Status::Finished | Status::Failed)
-                    && now - self.last_hook_at.unwrap_or(self.since)
+                    && now - self.handleless_quiet_since()
                         >= self.cfg.external_silent_after.as_secs() as i64
                 {
                     self.set(

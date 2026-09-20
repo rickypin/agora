@@ -520,6 +520,163 @@ fn handleless_external_starting_decays_through_session_manager_and_after_checkpo
     assert!(!v.alive);
 }
 
+#[test]
+fn handleless_external_silence_is_not_cleared_by_replay_or_restart() {
+    // agora-5gg.2（Mac 0e26ad / 14d791 / eb129d / b939bb：Codex Desktop 行沉默 62 h 仍 turn_done）：
+    // 无句柄 external 行的 `external_silent_after` 以最近一条 hook 事件自己的时刻计（ADR-002 D1 修订），
+    // daemon 停机 + 重放不把「沉默了多久」清零。旧写法拿 `last_hook_at`（daemon 收到的时刻）算：
+    // 停机 3.5 天后重启，重放过的那批 TURN_DONE 要再等 2 h 才 UNKNOWN，没被重放、从检查点恢复的
+    // 4 行却当场 UNKNOWN——同一批行两种结果（`docs/analysis/session-status-audit-2026-09-18.md`
+    // §4 A4，判 (b)）。
+    // 从 SessionManager 入口覆盖（agora-uez 的教训：只喂 Machine 会漏掉接线错误——事件时刻要从
+    // 投递件文件名一路走到 `apply_at` 的 `at`、再随检查点落盘、重启时回填，中间断一环就回到旧行为）。
+    // 三段：① 重放一条三小时前的 TurnEnded，重启后取一次视图就是 UNKNOWN，不再等 2 h；
+    // ② 事件时刻随检查点落盘，所以那一行在任何一次重启后都还是 UNKNOWN（本段刻意在重启之前不取
+    // 视图：不落盘的话重启后会退回 TURN_DONE，只有这一环能抓出来）；③ 修复前写的检查点（没这个键）
+    // 退回按收到时刻算：收到时刻也旧了就照旧 UNKNOWN，刚写过就照旧 TURN_DONE——不因为缺键就提前
+    // 把还在等的行打成“看不清”；④ 下一条 hook 出声即恢复。
+    // 把兜底的 quiet 时钟改回 `last_hook_at`（不读 last_event_at）→ ①②红；不把 last_event_at 写进
+    // 检查点 → ①里的 JSON 断言与②红；把读不出时的回退改成本代起始 / 零 → ③的第一段红。
+    let home = tempfile::tempdir().unwrap();
+    let rt = Arc::new(common::FakeRuntime::default());
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    // 三小时前落盘的投递件（daemon 停机期间写的）；external_silent_after 用生产默认的 2 h。
+    let old_ms = now_ms - 3 * 3600 * 1000;
+    // `external_delivery_with_env` 的 `ms` 是相对“现在”的偏移，摆不到过去；本测试要的正是
+    // “落盘时刻比 daemon 这次启动早三小时”，所以信封里直接给绝对时刻。
+    let old_delivery = |session: &str, ms: u64, payload: serde_json::Value| Delivery {
+        envelope: Envelope {
+            host: "claude".into(),
+            agora_session_id: None,
+            agora_epoch: None,
+            agent_session_id: session.into(),
+            agent_env: BTreeMap::new(), // 不带 CLAUDE_PID：无句柄 → Liveness::Unknown
+            runtime_env: BTreeMap::new(),
+            ppid: 1,
+            received_at: String::new(),
+            received_unix_ms: ms,
+        },
+        payload,
+    };
+    let stop = |session: &str| json!({"hook_event_name":"Stop","session_id":session,"cwd":"/work/codex-desktop","last_assistant_message":"done"});
+
+    let (id1, id2, id3) = {
+        let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+        let s = Arc::new(SessionManager::new(db.clone(), rt.clone()));
+        let r = Receiver::new(home.path(), s.clone());
+        let inbox = Inbox::new(home.path());
+        let id1 = r
+            .ingest(
+                &inbox
+                    .write(&old_delivery("ext-replay", old_ms, stop("ext-replay")))
+                    .unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+            .session_key;
+        let id2 = r
+            .ingest(
+                &inbox
+                    .write(&old_delivery("ext-legacy", old_ms, stop("ext-legacy")))
+                    .unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+            .session_key;
+        let id3 = r
+            .ingest(
+                &inbox
+                    .write(&old_delivery("ext-fresh", now_ms, stop("ext-fresh")))
+                    .unwrap(),
+            )
+            .unwrap()
+            .unwrap()
+            .session_key;
+        // 归档清掉：重启后的结论只能来自检查点，不准从 `done/` 重建（其他用例同写法）。
+        inbox.prune_done(Duration::ZERO);
+        assert!(inbox.pending().unwrap().is_empty());
+        let path1 = checkpoint_path(home.path(), &id1);
+        let cp: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path1).unwrap()).unwrap();
+        assert_eq!(
+            cp["last_event_at"],
+            json!(old_ms / 1000),
+            "事件自己的时刻随检查点落盘：{cp}"
+        );
+        // 第二、三行假装是 agora-5gg.2 之前写的 v3 检查点：同一个版本号，但没有 last_event_at
+        // 这个键（= 没记过），沉默兜底只能退回按收到时刻算。第二行的收到时刻也摆到三小时前
+        // （长时间停机后写下的旧检查点），第三行保持刚刚（快速重启）：两者结论相反，正好把
+        // 回退目标钉在 `last_hook_at` 而不是本代起始。
+        let path2 = checkpoint_path(home.path(), &id2);
+        let mut cp2: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path2).unwrap()).unwrap();
+        cp2.as_object_mut().unwrap().remove("last_event_at");
+        cp2["last_hook_at"] = json!(old_ms / 1000);
+        std::fs::write(&path2, cp2.to_string()).unwrap();
+        let path3 = checkpoint_path(home.path(), &id3);
+        let mut cp3: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path3).unwrap()).unwrap();
+        cp3.as_object_mut().unwrap().remove("last_event_at");
+        std::fs::write(&path3, cp3.to_string()).unwrap();
+        (id1, id2, id3)
+    };
+
+    // 重启。注意：上面那一次启动从没取过视图，所以三行都还是 TURN_DONE——沉默兜底只在 observe
+    // 里落、不写进检查点；第一行重启后就被判 UNKNOWN，只能是因为检查点里带了事件时刻。
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let restarted = Arc::new(SessionManager::new(db, rt));
+    restarted.reconcile().unwrap();
+    let r2 = Receiver::new(home.path(), restarted.clone());
+    assert_eq!(r2.replay().unwrap(), 0, "投递箱已空：恢复只靠检查点");
+    let v = restarted.get(&id1).unwrap();
+    assert_eq!(
+        (v.assessment.status, v.assessment.source),
+        (Status::Unknown, Source::Hook),
+        "重放三小时前的 TurnEnded 后不需再等 2 h：{:?}",
+        v.assessment
+    );
+    assert_eq!(
+        v.assessment.reason.as_deref(),
+        Some("hooks silent; no process handle")
+    );
+    assert!(!v.alive, "无句柄行：不说活着也不说死了");
+
+    // 修复前的旧检查点（没这个键）且收到时刻也已满 2 h：按收到时刻算，结论与修复前一致。
+    let v2 = restarted.get(&id2).unwrap();
+    assert_eq!(
+        (v2.assessment.status, v2.assessment.source),
+        (Status::Unknown, Source::Hook),
+        "旧检查点里收到时刻已满阈值：照旧 UNKNOWN：{:?}",
+        v2.assessment
+    );
+    assert_eq!(
+        v2.assessment.reason.as_deref(),
+        Some("hooks silent; no process handle")
+    );
+
+    // 同样是旧检查点（读不出事件时刻），但刚刚写过（快速重启）：不因为缺键就当场判定“看不清”。
+    let v3 = restarted.get(&id3).unwrap();
+    assert_eq!(
+        (v3.assessment.status, v3.assessment.source),
+        (Status::TurnDone, Source::Hook),
+        "旧检查点 + 刚写过：保持旧行为，不提前打 UNKNOWN：{:?}",
+        v3.assessment
+    );
+
+    // 沉默不是终态：下一条 hook 出声即恢复。
+    restarted.apply_hook(&id1, 1, &[AgoraEvent::Idle]).unwrap();
+    let v = restarted.get(&id1).unwrap();
+    assert_eq!(
+        (v.assessment.status, v.assessment.source),
+        (Status::TurnDone, Source::Hook),
+        "{:?}",
+        v.assessment
+    );
+}
+
 /// 无句柄 external 行的投递件：没有 AGORA_*，身份是 (host, agent_session_id)，进程号在 CLAUDE_PID。
 /// 时刻从"现在"起算（`ms` 只是序号）：进程号要与报来它的 hook 时刻对一下，进程不得晚于 hook。
 fn external_delivery(
