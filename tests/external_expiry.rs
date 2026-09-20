@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use std::collections::BTreeMap;
 
-use agora::clock::now_secs;
+use agora::clock::{self, now_secs};
 use agora::events::{Differ, Event};
 use agora::hook::{Delivery, Envelope, Inbox, Receiver};
 use agora::runtime::{Exit, Runtime, Size};
@@ -36,6 +36,7 @@ fn external(m: &SessionManager, agent_session: &str) -> String {
         agent_session_id: agent_session.into(),
         runtime_ref: None,
         working_directory: Some(PathBuf::from("/work/agora")),
+        created_at: None,
     })
     .unwrap()
 }
@@ -104,6 +105,21 @@ fn expired_external_finished_rows_are_deleted_and_the_rest_stay() {
     assert_eq!(status_of(&m, &turn_done), Status::TurnDone);
     assert_eq!(status_of(&m, &agora_row), Status::Finished);
     assert_eq!(m.get(&agora_row).unwrap().record.origin, Origin::Agora);
+
+    // 三种结束各写各的 `ended_at`（agora-5gg.3：Mac 2026-09-18 实测库里 35 行 FINISHED 的
+    // external 行 ended_at 全空，按结束时间的保留 / 折叠 / 淘汰没有依据）。过期扫描从这里开始
+    // 拿它当时钟，所以这三行不写就等于这三行永不到期（只会每轮回退到 status_since）。
+    for id in [&by_hook, &superseded, &process_gone] {
+        let rec = m.record(id).unwrap();
+        assert!(
+            rec.ended_at.is_some(),
+            "{id} 结束了却没写 ended_at：{rec:?}"
+        );
+    }
+    assert!(
+        m.record(&turn_done).unwrap().ended_at.is_none(),
+        "还在干活的行没有结束时刻"
+    );
 
     let mut differ = Differ::default();
     assert!(
@@ -177,7 +193,7 @@ fn sweep_scans_at_most_once_per_period() {
     let second = external(&m, "conv-2");
     m.apply_hook(&second, 1, &[AgoraEvent::SessionEnded(None)])
         .unwrap();
-    // 30 分钟后：second 早就过了 24 h（status_since 是现在，sweep 的表在 25.5 h 后），但周期未满，不扫。
+    // 30 分钟后：second 早就过了 24 h（ended_at 是现在，sweep 的表在 25.5 h 后），但周期未满，不扫。
     assert!(m.sweep(t0 + 1800).unwrap().is_empty(), "周期未满不扫第二次");
     assert_eq!(m.list().unwrap().len(), 1, "行还在");
     assert_eq!(
@@ -249,8 +265,12 @@ fn hook_finished_external_row_keeps_its_end_time_across_daemon_restart_and_expir
     // agora-ec4（2026-09-08 对抗审查）：SessionEnd 之后 claude 进程立刻退出，几乎所有 external FINISHED
     // 行都是「hook 说结束、进程也没了」。daemon 重启重建时进程层报 (Finished, Process) 若盖掉检查点里的
     // (Finished, Hook)，(status, source) 变了 set_at 就重置成重启时刻——开发机一天重启几次 daemon，这些行
-    // 永远到不了 24h。守卫：重启后 status_since 仍是 SessionEnd 那一刻（检查点里的 set_at），ttl 到期照删。
-    // 关掉 machine.rs observe 里 process_fact_is_no_better 的判断 → status_since 断言红、sweep 不删。
+    // 永远到不了 24h。守卫：重启后 status_since 仍是 SessionEnd 那一刻（检查点里的 set_at）。
+    // 关掉 machine.rs observe 里 process_fact_is_no_better 的判断 → status_since 断言红。
+    // agora-5gg.3 改了这条测试的后半：到期不再拿 status_since 当主时钟，拿库里的 ended_at（同一条
+    // 纪律的落库版，不依赖检查点恢复）。所以拨表要两处一起拨——现实中两者都是 SessionEnd 那一刻，
+    // 只拨检查点就是在测一个现实里到不了的局面。ended_at 单独的红绿见下面
+    // `expiry_counts_from_ended_at_not_from_the_status_clock`。
     let home = tempfile::tempdir().unwrap();
     let rt = Arc::new(FakeRuntime::default());
     let ttl = Duration::from_secs(3600);
@@ -287,15 +307,25 @@ fn hook_finished_external_row_keeps_its_end_time_across_daemon_restart_and_expir
             "{:?}",
             v.assessment
         );
+        // 结束时刻当场就落库（agora-5gg.3：以前这一步是缺的，库里那 35 行就是这么攒出来的）。
+        assert!(
+            v.record.ended_at.is_some(),
+            "SessionEnd 应用完就有 ended_at：{:?}",
+            v.record
+        );
         inbox.prune_done(Duration::ZERO);
         id
     };
-    // 把检查点里的结束时刻拨回两小时前（真实世界里是 daemon 停了两小时），再让进程退出。
+    // 把结束时刻拨回两小时前（真实世界里是 daemon 停了两小时）：检查点里的 set_at 与库里的
+    // ended_at 一起拨，再让进程退出。
     let path = checkpoint_path(home.path(), &id);
     let mut cp: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     let ended = cp["set_at"].as_i64().expect("检查点带 set_at") - 2 * 3600;
     cp["set_at"] = json!(ended);
     std::fs::write(&path, cp.to_string()).unwrap();
+    let probe = Db::open(&home.path().join("agora.db")).unwrap();
+    set_ended_at(&probe, &id, &clock::format_utc_secs(ended));
+    drop(probe);
     child.kill().unwrap();
     child.wait().unwrap();
 
@@ -311,10 +341,77 @@ fn hook_finished_external_row_keeps_its_end_time_across_daemon_restart_and_expir
         v.status_since, ended,
         "重启后 status_since 必须还是 SessionEnd 那一刻，不是重启时刻"
     );
+    // ended_at 是库里的值，本来就不靠检查点：重启不许把它洗成空、也不许被探活的 tick 盖掉
+    //（它是准确的，近似值只能覆盖近似值）。
+    assert_eq!(
+        clock::parse_utc_secs(v.record.ended_at.as_deref().unwrap()),
+        Some(ended),
+        "重启后 ended_at 仍是 SessionEnd 那一刻：{:?}",
+        v.record
+    );
+    assert!(!v.record.ended_at_approximate, "{:?}", v.record);
     assert_eq!(
         s.sweep(now_secs()).unwrap(),
         vec![id.clone()],
-        "两小时前结束、ttl 一小时：第一次 sweep 就删"
+        "两小时前结束、ttl 一小时：第一次 sweep 就删（按 ended_at）"
     );
     assert!(s.get(&id).is_err(), "行已删");
+}
+
+#[test]
+fn expiry_counts_from_ended_at_not_from_the_status_clock() {
+    // agora-5gg.3：external 行的到期以库里的 `ended_at` 为准，`status_since` 退回兜底（本次改动
+    // 之前入库的 FINISHED external 行 ended_at 是空的，只能拿旧时钟算）。
+    // 现实中这两只表在 hook 结束的那一幕是同一个时刻，所以这里用 SQL 把它们拆开，钉的只是
+    // "到期读哪一只"：
+    //   ① ended_at 25 h 前、status_since 现在 → 该删。读 status_since → 不删，红。
+    //      （现实中这一格是只靠探活结束的行：重启把 status_since 刷回重启时刻，ended_at 不动。）
+    //   ② ended_at 现在、status_since 25 h 前 → 该留。读 status_since → 删了没结束多久，红。
+    // 改坏：把 expire_external_finished 里的取值换成 status_since 优先 → 两条断言各红一次。
+    let (m, _rt, db) = mgr(Duration::from_secs(DAY as u64));
+    let now = now_secs();
+
+    // ① 结束于 25 h 前，状态机却是刚刚才知道它结束的。
+    let old_end = external(&m, "conv-old-end");
+    m.apply_hook(&old_end, 1, &[AgoraEvent::SessionEnded(None)])
+        .unwrap();
+    set_ended_at(&db, &old_end, &clock::format_utc_secs(now - 25 * 3600));
+    // ② 那条 SessionEnd 是 25 h 前写下、现在才重放到的：状态起点在 25 h 前，结束时刻改成现在。
+    let fresh_end = external(&m, "conv-fresh-end");
+    m.apply_hook_at(
+        &fresh_end,
+        1,
+        &[AgoraEvent::SessionEnded(None)],
+        Some(now - 25 * 3600),
+    )
+    .unwrap();
+    assert_eq!(
+        m.get(&fresh_end).unwrap().status_since,
+        now - 25 * 3600,
+        "apply_hook_at 给的是事件那一刻"
+    );
+    set_ended_at(&db, &fresh_end, &clock::format_utc_secs(now));
+
+    assert_eq!(status_of(&m, &old_end), Status::Finished);
+    assert_eq!(status_of(&m, &fresh_end), Status::Finished);
+    assert_eq!(
+        m.sweep(now).unwrap(),
+        vec![old_end.clone()],
+        "到期以 ended_at 为准：① 删、② 留"
+    );
+    let left: Vec<String> = m.list().unwrap().into_iter().map(|v| v.record.id).collect();
+    assert!(left.contains(&fresh_end), "{left:?}");
+    assert!(!left.contains(&old_end), "{left:?}");
+}
+
+/// 直接改库里的 ended_at（把两只时钟拆开用）。
+fn set_ended_at(db: &Db, id: &str, value: &str) {
+    let n = db
+        .conn()
+        .execute(
+            "UPDATE sessions SET ended_at = ?2 WHERE id = ?1",
+            [&id.to_owned(), &value.to_owned()],
+        )
+        .unwrap();
+    assert_eq!(n, 1, "改行命中：{id}");
 }

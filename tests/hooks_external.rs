@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use agora::adapter::Decision;
+use agora::clock;
 use agora::hook::{Delivery, Envelope, Inbox, Receiver};
 use agora::local::Response;
 use agora::session::Origin;
@@ -854,5 +855,248 @@ async fn hook_session_end_survives_the_agent_process_going_away() {
     assert_eq!(
         body["reason"], "external process gone (no exit status)",
         "{body}"
+    );
+}
+
+/// 把信封时刻拨到 `secs_ago` 秒以前，并返回换算后的 unix 秒（整秒，`ms % 1000 == 0`，断言
+/// `created_at` / `ended_at` 时可以逐字比）。投递件的文件名跟着信封时刻走（`Inbox::write`），
+/// 所以 `apply_delivered_hook` 取的事件时刻也就是它——重放场景的真实形状。
+fn backdate(mut d: Delivery, secs_ago: i64) -> (Delivery, i64) {
+    let at = clock::now_secs() - secs_ago;
+    d.envelope.received_unix_ms = (at * 1000) as u64;
+    (d, at)
+}
+
+#[tokio::test]
+async fn session_end_stamps_the_external_row_with_the_event_time() {
+    // agora-5gg.3（2026-09-19 Mac 实测：库里 35 行 FINISHED 的 external 行 ended_at 全空）：
+    // ended_at 是「该行结束的时刻」。external 行没有进程退出，但对话有结束——SessionEnd 那一刻，
+    // 而且是**事件**的那一刻，不是 daemon 读到它的时刻（A42 对 status_since 已是这个口径）。
+    // 用无进程号的行（Codex Desktop 那一类）：进程层说不出结束，结束只能由 hook 写。
+    // 改坏一次看红：删掉 `apply_hook_inner` 里 `if rec.runtime_ref.is_none() { … }` 那一段 →
+    // `ended_at` 断言红（None）。
+    let (fx, receiver, home) = with_hooks();
+    let (start, started) = backdate(
+        delivery("by-hook", session_start("by-hook"), &[], &[]),
+        3600,
+    );
+    let (end, ended) = backdate(
+        delivery(
+            "by-hook",
+            session_end("by-hook", "prompt_input_exit"),
+            &[],
+            &[],
+        ),
+        1800,
+    );
+    let id = ingest(&receiver, home.path(), &start).unwrap();
+    ingest(&receiver, home.path(), &end);
+
+    let rec = fx.sessions.record(&id).unwrap();
+    // created_at 同一条规矩：这一行从它的第一条事件起算，不从 daemon 写库那一刻起算。
+    assert_eq!(
+        rec.created_at,
+        clock::format_utc_secs(started),
+        "登记用的信封时刻，不是重放时刻"
+    );
+    assert_eq!(
+        fx.sessions.get(&id).unwrap().assessment.status,
+        Status::Finished
+    );
+    assert_eq!(
+        rec.ended_at.as_deref(),
+        Some(clock::format_utc_secs(ended).as_str()),
+        "SessionEnd 的事件时刻"
+    );
+    assert!(
+        !rec.ended_at_approximate,
+        "hook 报得出的时刻是准的，不标近似"
+    );
+}
+
+#[tokio::test]
+async fn superseded_external_row_ends_at_the_new_conversation_first_event() {
+    // agora-5gg.3：superseded 的旧行没有自己的结束事件，它的结束时刻 = 新对话首条事件的时刻
+    // （同一进程换对话的那一刻）。重放两小时前的投递不能把旧行的 ended_at 写成重放那一刻。
+    // 共用一个进程号要拿一个**比 hook 老**的活进程：pid 1（本机 EPERM 也算存在）。随手用一个
+    // 刚起的进程会被判成号复用（`agent_process_alive`），两行都变 process gone，测的就不是这一格。
+    // 改坏一次看红：把 `supersede_external_rows` 的 `apply_hook_at(..., at)` 换回 `apply_hook` →
+    // `ended_at` 与 `status_since` 两条断言红（会变成 ingest 跑到那一刻）。
+    let (fx, receiver, home) = with_hooks();
+    let pid1 = [("CLAUDE_PID", "1".to_owned())];
+    let (first, _first_at) = backdate(
+        delivery("sup-old", session_start("sup-old"), &pid1, &[]),
+        2 * 3600,
+    );
+    let (second, second_at) = backdate(
+        delivery("sup-new", session_start("sup-new"), &pid1, &[]),
+        3600,
+    );
+    let old = ingest(&receiver, home.path(), &first).unwrap();
+    let new = ingest(&receiver, home.path(), &second).unwrap();
+    assert_ne!(old, new);
+
+    let rec = fx.sessions.record(&old).unwrap();
+    let v = fx.sessions.get(&old).unwrap();
+    assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
+    assert!(
+        v.assessment
+            .reason
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("superseded"),
+        "{:?}",
+        v.assessment
+    );
+    assert_eq!(
+        rec.ended_at.as_deref(),
+        Some(clock::format_utc_secs(second_at).as_str()),
+        "新对话首条事件的时刻"
+    );
+    assert!(!rec.ended_at_approximate, "{rec:?}");
+    assert_eq!(
+        v.status_since, second_at,
+        "状态起点跟着同一时刻，两小时前的旧行到得了 ttl"
+    );
+    // 新行自己还在干活：没有结束时刻。
+    assert_eq!(
+        fx.sessions.record(&new).unwrap().ended_at,
+        None,
+        "被取代的是旧行"
+    );
+}
+
+#[tokio::test]
+async fn process_gone_external_row_gets_an_approximate_ended_at() {
+    // agora-5gg.3 第三档：宿主一个 hook 都不发（Codex 关窗口），行只靠探活结束。谁也报不出
+    // 它几点退的，只能记发现它的那个 tick 并标 `ended_at_approximate`（同 agora-u5p 对
+    // 「运行时会话没了」的处理）。
+    // 改坏一次看红：删掉 `view` 里 `if external_gone { self.note_external_process_gone(..) }` →
+    // `ended_at` 断言红（None）。
+    let (fx, receiver, home) = with_hooks();
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let env = [("CLAUDE_PID", child.id().to_string())];
+    let id = ingest(
+        &receiver,
+        home.path(),
+        &delivery("by-hup", session_start("by-hup"), &env, &[]),
+    )
+    .unwrap();
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "by-hup",
+            json!({ "hook_event_name": "Stop", "session_id": "by-hup", "last_assistant_message": "done" }),
+            &env,
+            &[],
+        ),
+    );
+    assert_eq!(
+        fx.sessions.record(&id).unwrap().ended_at,
+        None,
+        "还在干活就没有结束时刻"
+    );
+
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let tick = clock::now_secs();
+    let v = fx.sessions.get(&id).unwrap();
+    assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
+    let rec = fx.sessions.record(&id).unwrap();
+    let ended = clock::parse_utc_secs(
+        rec.ended_at
+            .as_deref()
+            .expect("探到进程没了就补上结束时刻（库里 35 行空着就是缺这一步）"),
+    )
+    .expect("ended_at 是 SQLite 那种 UTC 文本");
+    assert!(
+        (tick..=tick + 1).contains(&ended),
+        "结束时刻 = 发现它没了的那个 tick：tick={tick} ended={ended}"
+    );
+    assert!(rec.ended_at_approximate, "没人报得出退出时刻，只能近似");
+
+    // 幂等：再读一轮不许把结束时刻一路往前漂（否则按结束时间的淘汰永远等不到 24 h）。
+    let again = fx.sessions.record(&id).unwrap();
+    assert_eq!(again.ended_at, rec.ended_at);
+    assert_eq!(again.ended_at_approximate, rec.ended_at_approximate);
+}
+
+#[tokio::test]
+async fn external_row_that_moves_on_again_loses_its_ended_at() {
+    // ended_at 说的是「这一行结束了」，行又活了就得清掉——与 Restart 清空 ended_at 同一条规则
+    // （`restart_with`）。hook 的 FINISHED 不是终态：Claude 的 /resume、Codex TUI 的 /new 之后
+    // 同一行回 STARTING，留着一个结束时刻的 RUNNING 行，按结束时间的保留 / 折叠 / 淘汰会把它
+    // 当已结束的。改坏：删掉 `apply_hook_inner` 里 ended 分支的 else（`clear_ended_at`）→ 红。
+    let (fx, receiver, home) = with_hooks();
+    let id = ingest(
+        &receiver,
+        home.path(),
+        &delivery("resumed", session_start("resumed"), &[], &[]),
+    )
+    .unwrap();
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery("resumed", session_end("resumed", "resume"), &[], &[]),
+    );
+    assert!(
+        fx.sessions.record(&id).unwrap().ended_at.is_some(),
+        "SessionEnd(resume) 先把它钉成结束的"
+    );
+
+    // 同一进程、同一个自报 id 再来一条 SessionStart：还是那一行，状态回到 STARTING。
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "resumed",
+            json!({ "hook_event_name": "SessionStart", "session_id": "resumed", "cwd": "/work/agora", "source": "resume" }),
+            &[],
+            &[],
+        ),
+    );
+    let rec = fx.sessions.record(&id).unwrap();
+    assert_eq!(
+        fx.sessions.get(&id).unwrap().assessment.status,
+        Status::Starting
+    );
+    assert_eq!(rec.ended_at, None, "行又活了，结束时刻跟着清掉");
+    assert!(!rec.ended_at_approximate);
+}
+
+#[tokio::test]
+async fn replayed_external_row_is_created_at_the_envelope_time() {
+    // agora-5gg.3：Mac 2026-09-18 实测 46 行 external 的 created_at 全落在重启重放的那两分钟里，
+    // 比它们自己的第一条事件晚 62 h——按创建时间的排序与分组（侧栏树 A48）看到的都是重启时刻。
+    // created_at 取登记它的那条信封的 `received_unix_ms`。
+    // 改坏：把 `register_external` 的 `COALESCE(?6, strftime('now'))` 换回
+    // `strftime('%Y-%m-%dT%H:%M:%SZ','now')` → 第一条断言红。
+    let (fx, receiver, home) = with_hooks();
+    let (d, at) = backdate(
+        delivery(
+            "from-the-quiet-days",
+            session_start("from-the-quiet-days"),
+            &[],
+            &[],
+        ),
+        26 * 3600,
+    );
+    let path = Inbox::new(home.path()).write(&d).unwrap();
+    // 没有 hook 进程在 socket 上等它：走启动重放这条路。
+    assert_eq!(receiver.replay().unwrap(), 1, "{path:?}");
+    let rec = fx
+        .sessions
+        .find_by_agent_session("claude", "from-the-quiet-days")
+        .unwrap()
+        .expect("登记了");
+    assert_eq!(rec.created_at, clock::format_utc_secs(at));
+    assert!(
+        clock::age_secs(&rec.created_at).unwrap() >= 26 * 3600,
+        "不是重放那一刻：{:?}",
+        rec.created_at
     );
 }

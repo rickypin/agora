@@ -62,7 +62,7 @@ agents:                       # Adapter 默认命令的覆盖（§5.2）；存�
   pi:     { command: "pi" }
 ```
 
-`sessions.external_finished_ttl` 的扫描挂在 `status.detector_interval` 的轮询上，但节流到每小时一次（ttl 比一小时短就按 ttl，`src/session/throttle.rs`），所以一行在到期后至多再多留一个周期；到期以 `status_since` 算（external 行没有 `ended_at`，进程退出没人报）——hook 结束的行它随检查点过重启，进程随后退出也不重置（同状态的「进程没了」不盖 hook 的 SessionEnd，agora-rzh / agora-ec4），只靠进程消失结束的行 daemon 重启后从头计；节流的时钟回拨（校时把表拨回去）视为到期、下个周期照扫。删除走 `DELETE /api/sessions/:id` 同一条路径（hook 检查点、状态机一起清），事件流经求差器发 `session_removed`，`daemon.log` 每行一条 info。守卫 `tests/external_expiry.rs`、`tests/config.rs::external_finished_ttl_zero_turns_expiry_off_and_garbage_is_rejected`。
+`sessions.external_finished_ttl` 的扫描挂在 `status.detector_interval` 的轮询上，但节流到每小时一次（ttl 比一小时短就按 ttl，`src/session/throttle.rs`），所以一行在到期后至多再多留一个周期；到期以 `ended_at` 算（该行结束的时刻，§4.2；三种结束都会写它——hook `SessionEnd` 的事件时刻、superseded 的新对话首条事件时刻、探活发现进程没了的那个 tick，2026-09-20 agora-5gg.3）——它是库里的值，不随 daemon 重启重置；本次改动之前入库、`ended_at` 为空的行退回 `status_since` 兜底（hook 结束的行它随检查点过重启，进程随后退出也不重置，同状态的「进程没了」不盖 hook 的 SessionEnd，agora-rzh / agora-ec4；只靠进程消失结束的行重启后从头计，这正是它当不了主时钟的原因）；节流的时钟回拨（校时把表拨回去）视为到期、下个周期照扫。删除走 `DELETE /api/sessions/:id` 同一条路径（hook 检查点、状态机一起清），事件流经求差器发 `session_removed`，`daemon.log` 每行一条 info。守卫 `tests/external_expiry.rs`、`tests/config.rs::external_finished_ttl_zero_turns_expiry_off_and_garbage_is_rejected`。
 
 机器 token 由被访问的节点签发（§8），存在对方的 `token_file` 里；本节点只存哈希。浏览器一次只连一个节点，只记住最近打开的地址（不变量 6：可丢弃）。
 
@@ -82,8 +82,8 @@ CREATE TABLE sessions (
     agent_session_id TEXT,                         -- agent 自报的当前对话 id（§5.6），Restart resume 依据
     epoch INTEGER NOT NULL DEFAULT 1,              -- 进程代次：create 为 1，每次 respawn +1；旧代次的 hook 事件丢弃（ADR-002 D1）
     transcript_path TEXT,                          -- agent 自报的 transcript 路径；V1 只存不读（ADR-002 D8）
-    created_at DATETIME NOT NULL,
-    ended_at DATETIME,                             -- 进程退出时刻（§4.2）；等待时长与 attention 用，A42
+    created_at DATETIME NOT NULL,                      -- external 行取登记它的那条 hook 信封的时刻，不是 daemon 写库的当下（§4.2，agora-5gg.3）
+    ended_at DATETIME,                             -- 该行结束的时刻（§4.2）：运行时报的退出时刻 / hook SessionEnd 的事件时刻 / superseded 的新对话首条事件时刻 / 探到进程没了的 tick；等待时长、attention 与 external_finished_ttl 用，A42
     updated_at DATETIME NOT NULL,
     origin TEXT NOT NULL DEFAULT 'agora',          -- agora | adopted | external（§5.5）
     spawned_at DATETIME,                           -- 本代进程（epoch）起始时刻：create / respawn 写；STARTING 窗口只看它（v2）

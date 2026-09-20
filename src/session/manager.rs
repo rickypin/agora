@@ -116,6 +116,11 @@ pub struct ExternalSession {
     pub agent_session_id: String,
     pub runtime_ref: Option<String>,
     pub working_directory: Option<PathBuf>,
+    /// 登记这一行的那条 hook 信封的时刻（`received_unix_ms` 的 unix 秒）。external 行的
+    /// `created_at` 用它，不用 daemon 写库的当下：投递在停机期间攒着，重启重放时写库那一刻全落在
+    /// 那两分钟里，Mac 实测 46 行的 created_at 比它们自己的第一条事件晚 62 h（agora-5gg.3，
+    /// 2026-09-19）。None = 没有信封在手（单测手工登记、API 路径），退回 SQLite 的 'now'。
+    pub created_at: Option<i64>,
 }
 
 /// 活着的挂起请求；request_id 每次重新生成，不复用宿主的工具名。
@@ -316,7 +321,23 @@ impl SessionManager {
         epoch: i64,
         events: &[AgoraEvent],
     ) -> Result<(), SessionError> {
-        self.apply_hook_inner(id, epoch, events, None).map(|_| ())
+        self.apply_hook_inner(id, epoch, events, None, None)
+            .map(|_| ())
+    }
+
+    /// 同 [`SessionManager::apply_hook`]，但状态起点与 external 行的 `ended_at` 用给定的 `at`
+    /// （unix 秒）。superseded 的结束时刻是**新对话首条事件**的时刻（`AgentProcess::seen_at`），
+    /// 不是 daemon 发现两行共用一个进程号的时刻：重启重放时这一条能差几分钟到几小时
+    /// （agora-5gg.3）。
+    pub fn apply_hook_at(
+        &self,
+        id: &str,
+        epoch: i64,
+        events: &[AgoraEvent],
+        at: Option<i64>,
+    ) -> Result<(), SessionError> {
+        self.apply_hook_inner(id, epoch, events, None, at)
+            .map(|_| ())
     }
 
     pub fn apply_delivered_hook(
@@ -326,7 +347,7 @@ impl SessionManager {
         events: &[AgoraEvent],
         name: &str,
     ) -> Result<bool, SessionError> {
-        self.apply_hook_inner(id, epoch, events, Some(name))
+        self.apply_hook_inner(id, epoch, events, Some(name), None)
     }
 
     fn apply_hook_inner(
@@ -335,6 +356,7 @@ impl SessionManager {
         epoch: i64,
         events: &[AgoraEvent],
         delivery: Option<&str>,
+        at_override: Option<i64>,
     ) -> Result<bool, SessionError> {
         let rec = self.record(id)?;
         if epoch < rec.epoch {
@@ -345,8 +367,8 @@ impl SessionManager {
         // 时刻：daemon 停机期间写下的 WAITING 重放后，"waiting 3m"得从三分钟前算起，Dashboard 的
         // 同分排序读的也是它（A42；agora-h1k.4，2026-09-06）。没有文件名的事件（Dashboard 答复
         // 时 daemon 自己合成的 DecisionResolved）就是现在。
-        let at = delivery
-            .and_then(crate::hook::inbox::delivery_time_secs)
+        let at = at_override
+            .or_else(|| delivery.and_then(crate::hook::inbox::delivery_time_secs))
             .unwrap_or(now);
         {
             let mut machines = lock(&self.machines);
@@ -408,6 +430,25 @@ impl SessionManager {
                         }
                     }
                     _ => {}
+                }
+            }
+            // 对话结束了，external 行得有个结束时刻（MISSION §4.2；agora-5gg.3）。external 行
+            // `runtime_ref` 恒 NULL，`exit` / `kill` / `cleanup` / `reconcile` 那些写 ended_at 的路
+            // 一条都够不着它（它们拿的是运行时报的退出时刻），库里因此攒了一堆 ended_at 全空的
+            // FINISHED 行，按结束时间的保留 / 折叠 / 淘汰都没有依据（Mac 2026-09-18 实测 35 行）。
+            // 门槛用句柄而不是 origin：有句柄的行由运行时报退出时刻，那比 hook 的事件时刻准。
+            // 时刻用 `at`（事件自己的），重放一小时前写下的 SessionEnd 不该把结束时刻写成重放那一刻。
+            // 反向同样要做：hook 的 FINISHED 不是终态（Codex TUI 的 /new、Claude 的 /resume 之后同一
+            // 行回 STARTING），行又活了就清掉 ended_at，别让一行 RUNNING 带着结束时刻。
+            if rec.runtime_ref.is_none() {
+                let ended = matches!(m.current().status, Status::Finished | Status::Failed);
+                if ended {
+                    // 近似值让位给准确值（Kill 时补的近似等 reconcile 补正，同 A42 那条规则）。
+                    if rec.ended_at.is_none() || rec.ended_at_approximate {
+                        self.mark_ended_at(id, Some(unix_secs(at)))?;
+                    }
+                } else if rec.ended_at.is_some() {
+                    self.clear_ended_at(id)?;
                 }
             }
             if let Some(name) = delivery {
@@ -830,7 +871,8 @@ impl SessionManager {
         self.db.conn().execute(
             "INSERT INTO sessions (id, runtime_ref, display_name, name_locked, agent_type,
                 working_directory, agent_session_id, epoch, created_at, updated_at, origin)
-             VALUES (?1, NULL, ?2, 0, ?3, ?4, ?5, 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+             VALUES (?1, NULL, ?2, 0, ?3, ?4, ?5, 1,
+                COALESCE(?6, strftime('%Y-%m-%dT%H:%M:%SZ','now')),
                 strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'external')",
             params![
                 id,
@@ -840,6 +882,8 @@ impl SessionManager {
                     .as_ref()
                     .map(|p| p.to_string_lossy().into_owned()),
                 spec.agent_session_id,
+                // external 行的起点是事件的时刻，不是 daemon 把它写进库的那一刻（agora-5gg.3）。
+                spec.created_at.map(clock::format_utc_secs),
             ],
         )?;
         Ok(id)
@@ -869,6 +913,9 @@ impl SessionManager {
     /// （2026-09-08 现场：一个 Grok 进程占了三行 TURN_DONE；agora-tql）。
     /// `seen_at` 是毫秒：/clear 的 SessionEnd 与新对话的 SessionStart 常落在同一秒，秒级的话平局
     /// 由 `external_pids`（HashMap）的迭代顺序定，谁被结束是随机的（agora-2nh）。
+    /// 旧行的结束时刻取赢家（新对话）报来这个进程号的那条信封的时刻，即「新对话首条事件时刻」
+    /// （MISSION §4.2；agora-5gg.3）而不是本函数跑到的时刻：重启重放两小时前的投递，旧行的
+    /// ended_at 与状态起点不能落在重放那几分钟里。
     pub fn supersede_external_rows(&self) -> Result<Vec<String>, SessionError> {
         let pids: Vec<(String, AgentProcess)> = lock(&self.external_pids)
             .iter()
@@ -903,7 +950,9 @@ impl SessionManager {
             if finished {
                 continue;
             }
-            self.apply_hook(&id, rec.epoch, &[AgoraEvent::Superseded])?;
+            // 赢家报来这个进程号的那条 hook（= 新对话的首条事件）就是旧行的终点。`seen_at` 是毫秒。
+            let at = newest.get(&key).map(|(_, seen)| seen / 1000);
+            self.apply_hook_at(&id, rec.epoch, &[AgoraEvent::Superseded], at)?;
             ended.push(id);
         }
         Ok(ended)
@@ -995,6 +1044,19 @@ impl SessionManager {
                 .is_some_and(|r| !live.iter().any(|s| s.r#ref.0 == r));
         if gone {
             self.note_runtime_gone(&mut rec);
+        }
+        // external 行的「进程没了」就是它的进程退出时刻——只是没人报得出几点几分，只能记发现
+        // 它的那个 tick 并标近似（MISSION §4.2；agora-5gg.3）。与上面那条互斥：external 行
+        // `runtime_ref` 恒 NULL，`gone` 要求有句柄。跟 `gone` 一样先算成布尔量：下面的 match
+        // 要拿 `rec` 不可变借用到函数末尾。
+        let external_gone = !gone
+            && rec.origin == Origin::External
+            && lock(&self.external_pids)
+                .get(&rec.id)
+                .cloned()
+                .is_some_and(|p| !agent_process_alive(&p));
+        if external_gone {
+            self.note_external_process_gone(&mut rec);
         }
         let rt = rec
             .runtime_ref
@@ -1404,11 +1466,12 @@ impl SessionManager {
     /// external 且 FINISHED（hook 结束、superseded、进程消失都算）的行，结束距今 ≥ ttl → 删 metadata
     /// （与 `DELETE /api/sessions/:id` 同一条路径：hook 检查点、状态机、挂起一起清），不看节流。
     /// 只碰 external：agora / adopted 的 FINISHED 行有运行时会话与 scrollback，MISSION §4.6「不得在
-    /// 用户看到结果之前清理」对它们仍成立。结束时刻就是 `status_since`：hook 结束的行它随检查点过重启
-    /// （进程之后退了也不重置——同状态、不更有把握的进程事实不盖 hook 的结论，`Machine::observe`，
-    /// agora-rzh / agora-ec4），只靠进程消失结束的行 daemon 重启后从头计。下面的 `ended_at` 分支对
-    /// external 行是死路——它们 `runtime_ref` 恒 NULL、`mark_ended_at` 不会写；留着只为与 agora 行
-    /// 同一条算法，别把注释改回「结束时刻取 ended_at」（2026-09-08 agora-ec4 复核）。
+    /// 用户看到结果之前清理」对它们仍成立。结束时刻取 `ended_at`（MISSION §4.2 修订；agora-5gg.3，
+    /// 2026-09-20）：三种结束（hook SessionEnd / superseded / 探到进程没了）现在都会写它，而且它是
+    /// 库里的值——`status_since` 是状态机的内存时钟，只靠进程消失结束的行 daemon 重启后从头计（旧注释
+    /// 说 ended_at 对 external 行是死路，2026-09-08 的代码里确实是：那条分支只在有句柄的行走到）。
+    /// `status_since` 只当兼容兜底：本次改动之前入库的 FINISHED external 行 ended_at 是空的（Mac
+    /// 实测 35 行），它们只能拿旧时钟算。
     pub fn expire_external_finished(&self, now: i64) -> Result<Vec<String>, SessionError> {
         let ttl = self.external_finished_ttl.as_secs() as i64;
         if ttl == 0 {
@@ -1519,21 +1582,48 @@ impl SessionManager {
     /// 运行时会话没了：第一次观察到时补 `ended_at`（近似——会话连同 pane 一起没了，运行时再也
     /// 报不出退出时刻）。`reconcile` 只在 daemon 启动时跑一次，运行中才没掉的 server / 会话
     /// 等不到下一次重启（agora-u5p notes ②，现场：Mac 重启后 6 行 unknown 35m，库里有
-    /// killed_at / ended_at 而状态说看不清）。幂等：库里已有 ended_at 就不动，与 reconcile 的
-    /// missing 分支同一条规则（准确值优先）。写失败只 warn：读路径不因一次 SQLite 忙而报错，
-    /// 状态结论也不依赖它（行照样 FINISHED，只是没有结束时刻）。
+    /// killed_at / ended_at 而状态说看不清）。补法见 [`SessionManager::note_end_at_tick`]。
     fn note_runtime_gone(&self, rec: &mut SessionRecord) {
+        self.note_end_at_tick(rec, "运行时会话没了");
+    }
+
+    /// external 行的 agent 进程探不到了：那是这一行能拿到的唯一「进程退出」事实，同样只能记
+    /// 发现它的那个 tick（近似）。SessionEnd / superseded 那些有事件时刻的结束走
+    /// `apply_hook_inner` 那条路，拿得到准时刻（agora-5gg.3：Mac 实测 35 行 FINISHED 的
+    /// external 行 ended_at 全空）。
+    fn note_external_process_gone(&self, rec: &mut SessionRecord) {
+        self.note_end_at_tick(rec, "external 行的 agent 进程没了");
+    }
+
+    /// 这一行结束了，但没人报得出它几点结束的：第一次观察到时把当前时刻补进 `ended_at` 并标
+    /// 近似。幂等：库里已有 ended_at 就不动，与 reconcile 的 missing 分支同一条规则（准确值
+    /// 优先，运行时报出 `exited_at` 之后再补正）。写失败只 warn：读路径不因一次 SQLite 忙而
+    /// 报错，状态结论也不依赖它（行照样 FINISHED，只是没有结束时刻）。
+    fn note_end_at_tick(&self, rec: &mut SessionRecord, observed: &str) {
         if rec.ended_at.is_some() {
             return;
         }
         if let Err(e) = self.mark_ended(&rec.id) {
-            tracing::warn!(component = "session", id = %rec.id, %e, "运行时会话没了，补 ended_at 失败");
+            tracing::warn!(component = "session", id = %rec.id, observed, %e, "补 ended_at 失败");
             return;
         }
         // 库里的值由 SQLite 的 strftime('now') 生成，内存里这份取同一个秒的文本：为一次
         // 跨秒的偏差回读一行不划算，下一轮读就是库里的准值。
         rec.ended_at = Some(clock::format_utc_secs(clock::now_secs()));
         rec.ended_at_approximate = true;
+    }
+
+    /// 行又活了（hook 的 FINISHED 不是终态）：清掉结束时刻。与 `restart_with` 清空 ended_at
+    /// 同一条规则（agora-5gg.3）——留着它，按结束时间的保留 / 折叠 / 淘汰会拿一行 RUNNING
+    /// 当已经结束的。
+    fn clear_ended_at(&self, id: &str) -> Result<(), SessionError> {
+        self.db.conn().execute(
+            "UPDATE sessions SET ended_at = NULL, ended_at_approximate = FALSE,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+             WHERE id = ?1",
+            [id],
+        )?;
+        Ok(())
     }
 
     fn set_killed_at(&self, id: &str, set: bool) -> Result<(), SessionError> {
@@ -1636,6 +1726,12 @@ fn fnv(x: u128) -> u64 {
 /// 锁中毒时取回内层值继续用（ADR-001 D8 施工约束 4）。
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// unix 秒 → `SystemTime`（`mark_ended_at` 吃 SystemTime，事件时刻一路都是 unix 秒）。
+/// 负的（1970 之前的手写信封）当 0。
+fn unix_secs(secs: i64) -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(secs.max(0) as u64)
 }
 
 /// `kill(pid, 0)`：进程存在（且我们有权发信号）就是 0；EPERM 也算存在。

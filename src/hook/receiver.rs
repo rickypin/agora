@@ -544,6 +544,9 @@ impl Receiver {
                     agent_session_id: env.agent_session_id.clone(),
                     runtime_ref,
                     working_directory: hooks.working_directory(&delivery.payload),
+                    // 这一行从那条事件起算，不是从 daemon 把它写进库起算：停机期间攒下的投递
+                    // 重放时，写库那一刻全落在重放那两分钟里（agora-5gg.3，2026-09-19 Mac 实测）。
+                    created_at: Some(env.received_unix_ms as i64 / 1000),
                 };
                 match self.sessions.register_external(&spec) {
                     // `session_created` 由事件监视器的下一 tick 差分发出，这里不重复广播。

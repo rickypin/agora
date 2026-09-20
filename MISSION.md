@@ -249,10 +249,12 @@ Session {
     epoch              # 进程代次：创建为 1，每次 Restart +1；旧代次的 hook 事件丢弃（ADR-002 D1）
     transcript_path    # agent 自报的 transcript 路径；V1 只存不读（ADR-002 D8）
     origin             # agora | adopted | external（§5.5）：agora 创建的 / 运行时里采纳的 / 只有 hook 看得见的
-    created_at
-    ended_at           # 进程退出时刻；等待时长与 attention 用
+    created_at         # 这一行的起点；external 行取登记它的那条 hook 信封的时刻，不是 daemon 写库的当下（重启重放会把 46 行都写成重启那一刻）
+    ended_at           # 该行结束的时刻：运行时报的退出时刻 / hook SessionEnd 的事件时刻 / superseded 的新对话首条事件时刻 / 探活发现进程没了的那个 tick（标 ended_at_approximate）；等待时长、attention 与按结束时间的保留 / 折叠 / 淘汰用
 }
 ```
+
+`ended_at` 说的是「这一行结束了」而不是「进程退出了」（2026-09-20 修订，agora-5gg.3）——external 行（§5.5）没有进程退出，但有对话结束，所以结束时刻按可得性取四种事实之一：运行时报的退出时刻（准确）→ hook `SessionEnd` 的事件时刻 → 同一进程换了对话时**新对话首条事件**的时刻 → 探活发现进程没了的那个 tick（谁也报不出几点退的，只能标 `ended_at_approximate`）。行又活了就清掉它——hook 的 FINISHED 不是终态（`/resume`、Codex TUI 的 `/new` 之后同一行回 STARTING），与 Restart 清空它是同一条规则。按结束时间的保留 / 折叠 / 淘汰（`sessions.external_finished_ttl`）拿它当唯一依据：`status_since` 是状态机的内存时钟，说不了“库里的行什么时候结束的”。
 
 `status / exit_code / last_activity_at` 是运行时与 observer 的实时结果，**不落库**（不变量 7）；SQLite 只存上面的 metadata。`project`（仓库根 / 名字 / worktree / 分支 / 是否主 worktree）是按 `working_directory` 派生的实时字段，与 `status` 同一待遇：异步补齐、按 TTL 重查、**不落库**（不变量 7）——库里只有 `working_directory`，字段形状见 `docs/spec/api.md`（A49，2026-09-09，agora-uvd.1）。
 
