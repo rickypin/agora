@@ -15,6 +15,7 @@ use tower::ServiceExt;
 
 use agora::adapter::Decision;
 use agora::clock;
+use agora::events::{Differ, Event};
 use agora::hook::{Delivery, Envelope, Inbox, Receiver};
 use agora::local::Response;
 use agora::session::Origin;
@@ -1038,6 +1039,20 @@ async fn external_row_that_moves_on_again_loses_its_ended_at() {
         &delivery("resumed", session_start("resumed"), &[], &[]),
     )
     .unwrap();
+    // 先收一条 prompt 再结束：agora-29n 之后，无句柄 external 行在第一条 PromptSubmitted 之前就遇到
+    // SessionEnd(resume|clear) 会被当成身份交接删行（`ingest_inner`），本用例要验的是「已结束的行又活了
+    // → ended_at 跟着清」，那得是一行真的结束过的对话，不能是一个空壳 id。2026-09-20 rebase 到 5gg.3
+    // 时实测：不补这一条，下面 `record(&id)` 直接 NotFound。
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "resumed",
+            json!({ "hook_event_name": "UserPromptSubmit", "session_id": "resumed", "prompt": "接着做" }),
+            &[],
+            &[],
+        ),
+    );
     ingest(
         &receiver,
         home.path(),
@@ -1098,5 +1113,279 @@ async fn replayed_external_row_is_created_at_the_envelope_time() {
         clock::age_secs(&rec.created_at).unwrap() >= 26 * 3600,
         "不是重放那一刻：{:?}",
         rec.created_at
+    );
+}
+
+#[tokio::test]
+async fn a_resume_handoff_before_the_first_prompt_leaves_no_row() {
+    // agora-29n（2026-09-18 zuan 现场 e3cd17，盘点 §3.4）：`claude --resume` 先以**新 id** 发
+    // SessionStart(source=startup)，locate_external 查不到就登记出一行；12 s 后 SessionEnd(reason=resume)
+    // 落到这一行上。它没有 prompt、没有输出，旧代码把它钉成一行谁也没起过的 FINISHED——无句柄 external
+    // 行的身份就是 agent id，换 id 之后这个新行注定是空壳（`clear` 早在 s3r 有了出口，`resume` 漏了）。
+    // 守卫：第一条 PromptSubmitted 之前的 SessionEnd(resume|clear) 是身份交接 → 删行（检查点一起删、
+    // 求差器下一 tick 发 session_removed、重启后 done/ 里那两条不再把它建回来）。
+    // 关掉 ingest_inner 的 handoff 分支 → 第一段"行没了"断言红（停在 finished）；
+    // 去掉 `!hook_prompt_seen` 那道判据 → 对照一红，连带 s3r 那条旧守卫（clear 换 id）各自红；
+    // 去掉"无句柄"那一半（对 adopted 行也删）→ 对照三红（有 pane 的行 GET 到 404）。
+    let (fx, receiver, home) = with_hooks();
+    let cookie = fx.cookie();
+    // 与现场一致：CLAUDE_PID 是一个活着的进程，进程层给不出"结束"，行上只剩 hook 的说法。
+    let env = [("CLAUDE_PID", std::process::id().to_string())];
+    let mut differ = Differ::default();
+    assert!(
+        differ
+            .step(common::NODE, &fx.sessions.list().unwrap())
+            .is_empty(),
+        "第一轮只建基线"
+    );
+
+    let ghost = ingest(
+        &receiver,
+        home.path(),
+        &delivery("resume-new-id", session_start("resume-new-id"), &env, &[]),
+    )
+    .unwrap();
+    let gid = format!("{}:{}", common::NODE, ghost);
+    let path = format!("/api/sessions/{gid}");
+    let (status, body) = call(&fx, &cookie, Method::GET, &path, None).await;
+    assert_eq!(status, StatusCode::OK, "GET {path} → {body:?}");
+    assert_eq!(body["status"], "starting", "GET {path} → {body:?}");
+    assert!(fx.sessions.has_hook_checkpoint(&ghost));
+    // 现场隔了 12 s：这一行已经进过一次求差，页面确实见过它，所以删掉要看得见一条 session_removed。
+    let created = differ.step(common::NODE, &fx.sessions.list().unwrap());
+    assert!(
+        created
+            .iter()
+            .any(|e| matches!(e, Event::SessionCreated { id, .. } if id == &gid)),
+        "{created:?}"
+    );
+
+    let end = delivery(
+        "resume-new-id",
+        session_end("resume-new-id", "resume"),
+        &env,
+        &[],
+    );
+    let end_path = Inbox::new(home.path()).write(&end).unwrap();
+    assert_eq!(
+        receiver.ingest(&end_path).unwrap(),
+        None,
+        "身份交接的投递件不算应用出一条会话事件：行都被删了"
+    );
+    assert!(
+        fx.sessions.record(&ghost).is_err(),
+        "身份交接不留行，也不留一行无 prompt 无输出的 FINISHED"
+    );
+    assert_eq!(fx.sessions.list().unwrap().len(), 0);
+    assert!(
+        !fx.sessions.has_hook_checkpoint(&ghost),
+        "检查点随 metadata 一起删，否则重启又把它建回来"
+    );
+    assert!(!end_path.exists(), "投递件照常移出 inbox");
+    assert!(
+        Inbox::new(home.path())
+            .completed()
+            .unwrap()
+            .iter()
+            .any(|p| p.file_name() == end_path.file_name()),
+        "排障归档里还在"
+    );
+    let removed = differ.step(common::NODE, &fx.sessions.list().unwrap());
+    assert!(
+        removed
+            .iter()
+            .any(|e| matches!(e, Event::SessionRemoved { id } if id == &gid)),
+        "已见过这一行的页面收到 session_removed：{removed:?}"
+    );
+
+    // 重启：done/ 里那两条（SessionStart + SessionEnd）不能把这一行重建出来。
+    let restarted = Arc::new(agora::session::SessionManager::new(
+        fx.db.clone(),
+        fx.rt.clone() as Arc<dyn agora::runtime::Runtime>,
+    ));
+    Receiver::new(home.path(), restarted.clone())
+        .replay()
+        .unwrap();
+    assert!(
+        restarted.record(&ghost).is_err(),
+        "库里没有这一行，归档也不该重建它"
+    );
+    assert!(
+        restarted.list().unwrap().is_empty(),
+        "{:?}",
+        restarted.list()
+    );
+
+    // 对照一：有过 prompt 的行仍按普通结束——那是真结束，删掉就抹掉了人做过的一轮
+    // （同一条判据的另一侧：去掉 `!hook_prompt_seen` 这里红）。
+    let mut kept = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let kept_env = [("CLAUDE_PID", kept.id().to_string())];
+    let survivor = ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "resume-old-id",
+            session_start("resume-old-id"),
+            &kept_env,
+            &[],
+        ),
+    )
+    .unwrap();
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "resume-old-id",
+            json!({ "hook_event_name": "UserPromptSubmit", "session_id": "resume-old-id", "prompt": "把测试跑完" }),
+            &kept_env,
+            &[],
+        ),
+    );
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "resume-old-id",
+            session_end("resume-old-id", "resume"),
+            &kept_env,
+            &[],
+        ),
+    );
+    let (_, body) = call(
+        &fx,
+        &cookie,
+        Method::GET,
+        &format!("/api/sessions/{}:{}", common::NODE, survivor),
+        None,
+    )
+    .await;
+    assert_eq!(body["status"], "finished", "有过对话的行仍是结束：{body}");
+    assert_eq!(body["source"], "hook", "{body}");
+    assert_eq!(body["reason"], "session ended (hook)", "{body}");
+    // 那半件事（Q4（agora-5gg.18）：结束即不再谈进程）在这个形状上同样成立：pid 还活着（它正跑别的对话）。
+    assert_eq!(body["process"], "gone", "{body}");
+    assert_eq!(body["alive"], false, "旧布尔是 process 的投影：{body}");
+    assert_eq!(fx.sessions.list().unwrap().len(), 1);
+    kept.kill().unwrap();
+    kept.wait().unwrap();
+
+    // 对照二：`clear` 同一个 reason 家族、同样没 prompt → 也删行（s3r 的改写只服务于有过对话的行）。
+    let mut cleared = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let cleared_env = [("CLAUDE_PID", cleared.id().to_string())];
+    let ghost2 = ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "clear-new-id",
+            json!({ "hook_event_name": "SessionStart", "session_id": "clear-new-id", "cwd": "/work/agora", "source": "clear" }),
+            &cleared_env,
+            &[],
+        ),
+    )
+    .unwrap();
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "clear-new-id",
+            session_end("clear-new-id", "clear"),
+            &cleared_env,
+            &[],
+        ),
+    );
+    assert!(
+        fx.sessions.record(&ghost2).is_err(),
+        "/clear 的空行同样不留"
+    );
+    assert_eq!(
+        fx.sessions
+            .list()
+            .unwrap()
+            .iter()
+            .map(|v| v.record.id.clone())
+            .collect::<Vec<_>>(),
+        vec![survivor.clone()],
+        "只有那条有过对话的还在"
+    );
+    cleared.kill().unwrap();
+    cleared.wait().unwrap();
+
+    // 对照三：有 pane 的行不走这一支。它的身份是 runtime_ref，SessionEnd 之后同一进程再发的
+    // SessionStart 落回同一行（`src/status/machine.rs` 的 `SessionEnded` 注释），那是真会话的 resume；
+    // 删掉等于把人正在用的行抹了，即使它一条 prompt 都还没收到。
+    fx.rt.insert("fake:default:pane", true, None, false);
+    fx.rt
+        .panes
+        .lock()
+        .unwrap()
+        .insert("%9".into(), "fake:default:pane".into());
+    let pane_env = [
+        ("TMUX", "/tmp/tmux-501/default,123,0".to_owned()),
+        ("TMUX_PANE", "%9".to_owned()),
+    ];
+    let adopted = ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "resume-pane-id",
+            session_start("resume-pane-id"),
+            &[],
+            &pane_env,
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        fx.sessions.record(&adopted).unwrap().origin,
+        Origin::Adopted,
+        "信封能在采纳 socket 上定位到 pane → 有终端的一行"
+    );
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "resume-pane-id",
+            session_end("resume-pane-id", "resume"),
+            &[],
+            &pane_env,
+        ),
+    );
+    let (status, body) = call(
+        &fx,
+        &cookie,
+        Method::GET,
+        &format!("/api/sessions/{}:{}", common::NODE, adopted),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["status"], "finished",
+        "有 pane 的行按普通结束，不删：{body}"
+    );
+    assert_eq!(body["origin"], "adopted", "{body}");
+    assert_eq!(
+        {
+            let mut left: Vec<String> = fx
+                .sessions
+                .list()
+                .unwrap()
+                .into_iter()
+                .map(|v| v.record.id)
+                .collect();
+            left.sort();
+            left
+        },
+        {
+            let mut want = vec![survivor.clone(), adopted.clone()];
+            want.sort();
+            want
+        },
+        "留下的还是那两条"
     );
 }

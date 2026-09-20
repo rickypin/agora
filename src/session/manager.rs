@@ -610,6 +610,18 @@ impl SessionManager {
             .and_then(|m| m.detail().map(str::to_owned))
     }
 
+    /// 这一行的状态机见过第一条人话没有（`AgoraEvent::PromptSubmitted`，即 `❯` 行有内容）。
+    /// 宿主注入的 prompt（`prompt.injected`：后台任务通知、system-reminder、斜杠命令回显）不算——
+    /// 它既不写 `prompt` 也不补 `task_ref`（agora-3s5），所以"没见过 prompt"说的正是"这一行里没有
+    /// 人要看的东西"。没有状态机（这行从没吃过事件）也算没见过。
+    /// 只读内存：重启后检查点恢复会把 `prompt` 带回机器（`HookSnapshot.prompt`），不额外查库。
+    /// 调用方是 receiver 判身份交接（agora-29n）。
+    pub fn hook_prompt_seen(&self, id: &str) -> bool {
+        lock(&self.machines)
+            .get(id)
+            .is_some_and(|m| m.prompt().is_some())
+    }
+
     /// `/api/health` 与 daemon 启动流程共用的那一个实时结论。
     pub fn runtime(&self) -> &Arc<dyn Runtime> {
         &self.runtime

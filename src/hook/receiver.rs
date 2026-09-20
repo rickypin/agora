@@ -125,6 +125,19 @@ fn clear_ends_external_row(events: &[AgoraEvent]) -> Vec<AgoraEvent> {
         .collect()
 }
 
+/// 这两个 reason 说的是"进程把身份换成了另一个对话 id"，不是"这一行的对话跑完了"：Claude 的
+/// `/clear`、`/resume` 与 CLI 带 `--resume` 起进程（2.1.x 实测，换对话 / 退法的事件表在
+/// `src/adapter/` 里 Claude 那一支的模块文档）。
+const IDENTITY_HANDOFF_REASONS: [&str; 2] = ["resume", "clear"];
+
+/// 这条投递件里的 SessionEnd 是不是身份交接（reason ∈ `IDENTITY_HANDOFF_REASONS`）。
+fn ends_on_identity_handoff(events: &[AgoraEvent]) -> bool {
+    events.iter().any(|e| {
+        matches!(e, AgoraEvent::SessionEnded(Some(r))
+            if IDENTITY_HANDOFF_REASONS.contains(&r.as_str()))
+    })
+}
+
 fn event_name(payload: &serde_json::Value) -> Option<String> {
     ["hook_event_name", "hookEventName"]
         .iter()
@@ -452,6 +465,36 @@ impl Receiver {
                 self.sessions.record(id).ok()
             };
             let epoch = rec.as_ref().map(|r| r.epoch).unwrap_or(epoch);
+            // 身份交接不是结束（agora-29n，2026-09-18 zuan 现场 e3cd17）：Claude 的 `--resume` 先以**新 id**
+            // 发 SessionStart(source=startup)，`locate_external` 查不到就登记出一行，12 s 后
+            // SessionEnd(reason=resume) 落到这一行上——它没有 prompt、没有输出，从此钉成一行谁也没起过的
+            // FINISHED。无句柄 external 行的身份就是 agent id，resume / clear 换 id 时这个新行注定是空壳；
+            // 删行，让它像从没被登记过（求差器下一 tick 发 `session_removed`，已经见过这一行的页面跟着掉）。
+            // 判据是状态机没见过第一条 PromptSubmitted（`hook_prompt_seen`），不是"刚登记"：现场那一行
+            // 也可能在 SessionStart 与 SessionEnd 之间挂几小时（zuan 的 ef0e50 钉过 180 h STARTING）。
+            // 有过对话的行不走这一支，仍是 `clear_ends_external_row` 改写 reason 后按普通结束
+            // （s3r 那条守卫在 `tests/hooks_external.rs` 的 clear 用例里，它红就说明越界了）。
+            // 只碰无句柄的 external 行：有 pane 的行身份是 runtime_ref，SessionEnd 之后同一进程再发的
+            // SessionStart 落回同一行（`src/status/machine.rs` 的 `SessionEnded` 注释），那是真会话的
+            // resume，删掉就是把人正在用的行抹了。
+            let handoff = rec.as_ref().is_some_and(|r| r.runtime_ref.is_none())
+                && ends_on_identity_handoff(&events)
+                && !self.sessions.hook_prompt_seen(id);
+            if handoff {
+                match self.sessions.delete_metadata(id) {
+                    Ok(()) => {
+                        tracing::info!(component = "hook", session = %id,
+                            host = %delivery.envelope.host,
+                            agent_session = %delivery.envelope.agent_session_id,
+                            "external 行在第一条 prompt 之前遇到 SessionEnd(resume|clear)：身份交接，删行而不是 FINISHED");
+                        self.inbox.done(path)?;
+                        return Ok(None);
+                    }
+                    // 删不动（库出错）就别吞事件：退回原来的路，行停在 FINISHED 比丢掉这条投递件好。
+                    Err(err) => tracing::warn!(component = "hook", session = %id, %err,
+                        "删身份交接的 external 行失败，按普通结束处理"),
+                }
+            }
             let events: Cow<'_, [AgoraEvent]> = match &rec {
                 Some(r) if r.runtime_ref.is_none() => Cow::Owned(clear_ends_external_row(&events)),
                 _ => Cow::Borrowed(&events),
