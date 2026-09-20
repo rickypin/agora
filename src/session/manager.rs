@@ -155,6 +155,10 @@ pub struct SessionView {
     /// major bump（api.md「api_version 兼容规则」：删字段不算 minor）。
     pub alive: bool,
     pub exit: Option<crate::runtime::Exit>,
+    /// 这一行的 agent 进程号：有句柄的行取运行时 pane 的 pid；无句柄的 external 行取 hook 报来、
+    /// 正拿来探活的那个号（agora-5gg.5——以前只读 pane，external 行恒 null，排障时对不上号）。
+    /// 探活失败（号没了或被复用）填 null：那个号在 `ps` 里属于别人。行已经 FINISHED 而号还探得到时
+    /// 号照报（它是"这个对话落在哪个进程上"的线索，`process` 说 gone 是 Q4 的口径，两者不矛盾）。
     pub pid: Option<u32>,
     pub managed: bool,
     #[serde(flatten)]
@@ -1147,23 +1151,33 @@ impl SessionManager {
             .as_deref()
             .and_then(|r| live.iter().find(|s| s.r#ref.0 == r));
         let killed = rec.killed_at.is_some();
-        let (process, liveness) = match (rec.origin, rt) {
+        // 第三个值是 external 行的进程号（agora-5gg.5）：`pid` 以前只取运行时 pane 的号，
+        // 无句柄的 external 行于是恒 null，而探活恰恰拿的是检查点里的这个号——排障时对着
+        // `ps` 对不上号。号就在下面 `(External, None)` 那一支探活正在看的 `AgentProcess` 里取，
+        // 不另开一次 `external_pids` 查询。2026-09-20 rebase 到 agora-5gg.3 之后注意：上面那个
+        // `external_gone` 自己又查了一遍并探了一次活，两个各自一次；并成一次是另一件事。
+        // （别顺手改成拿 `external_gone` 反推探活结论：那一支还要区分“没有可信进程号”与
+        // “有号但号没了”，`external_gone` 把两者压成了一个 bool。）
+        let (process, liveness, external_pid) = match (rec.origin, rt) {
             // 运行时此刻不可信：不知道就报 UNKNOWN，不许拿"读不到"当"已经死了"（ADR-001 D7）。
             _ if degraded.is_some() && rec.runtime_ref.is_some() => (
                 status::runtime_unavailable(degraded.unwrap_or_default()),
                 Liveness::Dead,
+                None,
             ),
             (origin, None) if origin.is_handleless() => {
                 match lock(&self.external_pids).get(&rec.id).cloned() {
                     // 没有退出码可拿：进程没了就只知道"结束了"，不分 FINISHED / FAILED。
                     // 号还在但启动时刻对不上：号被别的进程复用了，原来那个也是没了（agora-tql）。
+                    // 这种号不报（第三个值 None）：它在 `ps` 里属于别人，写进行里就是又一次对不上号。
                     Some(p) if !agent_process_alive(&p) => {
-                        (status::external_process_gone(), Liveness::Dead)
+                        (status::external_process_gone(), Liveness::Dead, None)
                     }
-                    Some(_) => (
+                    Some(p) => (
                         Assessment::unknown("external session: process alive, hook only")
                             .with_unknown(status::UnknownCause::NoObservation),
                         Liveness::Alive,
+                        Some(p.pid),
                     ),
                     // 没有可信进程号（Adapter 的 agent_pid 给 None：Codex Desktop 的共用 app-server、
                     // 没有进程号变量的宿主）：状态机只看 hook，SessionEnd 让它 FINISHED（agora-vfi）。
@@ -1173,6 +1187,7 @@ impl SessionManager {
                         Assessment::unknown("external session: no runtime, hook only")
                             .with_unknown(status::UnknownCause::NoObservation),
                         Liveness::Unknown,
+                        None,
                     ),
                 }
             }
@@ -1197,7 +1212,8 @@ impl SessionManager {
                 } else {
                     Liveness::Dead
                 };
-                (a, live)
+                // 有句柄的行用 pane 的进程号，这里不给（第三值 None）。
+                (a, live, None)
             }
         };
         let now = clock::now_secs();
@@ -1301,7 +1317,8 @@ impl SessionManager {
             // 旧字段：与 process 严格一致，未升级的 peer / 页面只读它（下一版删）。
             alive: process == ProcessState::Alive,
             exit: rt.and_then(|s| s.exit.clone()),
-            pid: rt.and_then(|s| s.pid),
+            // external 行没有 pane 可取，用 hook 报来、正拿来探活的那个 agent 进程号（agora-5gg.5）。
+            pid: rt.and_then(|s| s.pid).or(external_pid),
             managed: rt.is_some_and(|s| s.managed),
             assessment,
             detail,

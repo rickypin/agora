@@ -838,6 +838,9 @@ async fn hook_session_end_survives_the_agent_process_going_away() {
     let (_, body) = call(&fx, &cookie, Method::GET, &path_of(&hand), None).await;
     assert_eq!(body["status"], "finished", "{body}");
     assert_eq!(body["reason"], "session ended (hook)", "{body}");
+    // 进程号照报（agora-5gg.5）：`process: gone` 说的是"对话结束了不再谈进程"，`pid` 说的是
+    // "这个对话落在哪个进程上"——排障时要拿它去 `ps` 对，不能因为行结束了就抹成 null。
+    assert_eq!(body["pid"], by_hand.id(), "号还探得到就照报：{body}");
     // Q4（agora-5gg.18）：这一秒 by_hand 还活着，行上却要说 gone——对话结束就不再谈进程。
     // 旧代码在这里是 finished + alive:true（盘点 B1，Mac 2026-09-18 现场 10 行）。
     assert_eq!(body["process"], "gone", "进程还在也要说结束：{body}");
@@ -868,6 +871,97 @@ async fn hook_session_end_survives_the_agent_process_going_away() {
         body["reason"], "external process gone (no exit status)",
         "{body}"
     );
+    // 探活失败 → pid 回 null（agora-5gg.5）：那个号在 `ps` 里已经属于别人（或空着），
+    // 写进行里就是再一次对不上号。
+    assert_eq!(body["pid"], Value::Null, "号没了不报一个假号：{body}");
+}
+
+#[tokio::test]
+async fn an_external_row_reports_the_agent_process_it_probes_as_its_pid() {
+    // agora-5gg.5（2026-09-18 盘点）：external 行的 `pid` 在 API 里恒 null——`SessionView::pid` 只从
+    // 运行时 pane 取号，而无句柄 external 行的探活恰恰拿的是 hook 检查点里那个 `agent_process.pid`。
+    // 现场排障时 `GET /api/sessions` 上这行"没有进程"，`ps` 里那个 claude 活得好好的，两边对不上号。
+    // 守卫三格：号活着 → `pid` == 信封报来的号（与探活同源）；号没了 → null（不报已被复用的号）；
+    // 没有可信进程号（Codex Desktop）→ null 且 `process: unknown`。
+    // 改坏一次看红：把 manager 的 `pid: rt.and_then(|s| s.pid).or(external_pid)` 退回
+    // `rt.and_then(|s| s.pid)` → 第一格红（`hook_session_end_survives_the_agent_process_going_away` 里
+    // 那条 pid 断言同红）；把探活失败那一支的第三值改成 Some(p.pid) → 第二格红。
+    let (fx, receiver, home) = with_hooks();
+    let cookie = fx.cookie();
+    let mut child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let env = [("CLAUDE_PID", child.id().to_string())];
+    let id = ingest(
+        &receiver,
+        home.path(),
+        &delivery("pid-1", session_start("pid-1"), &env, &[]),
+    )
+    .unwrap();
+    let row_of = |body: &Value| -> Value {
+        body["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["local_id"] == json!(&id))
+            .cloned()
+            .unwrap_or_else(|| panic!("列表里没有 {id}: {body}"))
+    };
+
+    // 第一格：无句柄、探活拿到的就是信封里那个号，行上要说得出号。
+    let (status, body) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = row_of(&body);
+    assert_eq!(row["origin"], "external", "{row}");
+    assert_eq!(row["runtime_ref"], Value::Null, "无句柄：{row}");
+    assert_eq!(
+        row["pid"],
+        child.id(),
+        "pid 要等于信封报来的 agent 进程号：{row}"
+    );
+    assert_eq!(row["process"], "alive", "{row}");
+
+    // 第二格：宿主自己结束了对话（hook 先说），进程随后消失（探活失败）。
+    ingest(
+        &receiver,
+        home.path(),
+        &delivery(
+            "pid-1",
+            session_end("pid-1", "prompt_input_exit"),
+            &env,
+            &[],
+        ),
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let (_, body) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    let row = row_of(&body);
+    assert_eq!(row["status"], "finished", "{row}");
+    assert_eq!(row["process"], "gone", "{row}");
+    assert_eq!(
+        row["pid"],
+        Value::Null,
+        "探活失败填 null，不报一个可能已被复用的号：{row}"
+    );
+
+    // 第三格：没有可信进程号的行（Desktop 的 ppid 是所有线程共用的 app-server）不编一个号出来。
+    let desk = ingest(
+        &receiver,
+        home.path(),
+        &codex_desktop("thread-1", session_start("thread-1")),
+    )
+    .unwrap();
+    let (_, body) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    let row = body["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["local_id"] == json!(&desk))
+        .cloned()
+        .unwrap_or_else(|| panic!("列表里没有 {desk}: {body}"));
+    assert_eq!(row["process"], "unknown", "{row}");
+    assert_eq!(row["pid"], Value::Null, "无可信进程号就是 null：{row}");
 }
 
 /// 把信封时刻拨到 `secs_ago` 秒以前，并返回换算后的 unix 秒（整秒，`ms % 1000 == 0`，断言
