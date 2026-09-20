@@ -1,6 +1,11 @@
-//! agora-j4w.3：external FINISHED 行的自动过期。侧栏 58 行里 39 行是 external 且 FINISHED
-//! （2026-09-08 现场），它们没有运行时会话与输出，只剩 agora 的两行记录；结束超过
-//! `sessions.external_finished_ttl` 就删 metadata（MISSION §4.6）。agora / adopted 行有 scrollback，不动。
+//! external 行的自动过期。侧栏 58 行里 39 行是 external 且 FINISHED（2026-09-08 现场），它们
+//! 没有运行时会话与输出，只剩 agora 的两行记录；结束超过 `sessions.external_finished_ttl` 就删
+//! metadata（MISSION §4.6，agora-j4w.3）。agora / adopted 行有 scrollback，不动。
+//!
+//! agora-e08 补第二条出口：无可信进程号的 external 行沉默 2 h 落 UNKNOWN
+//! `hooks silent; no process handle` 之后，只有下一条 hook 事件能让它离开，而进程多半早不在。
+//! 一行 agora 既观察不到也无法操作、还沉默了一天，对使用者价值为零，所以这一格 UNKNOWN 必须是
+//! 暂态：持续 ≥ `sessions.external_unknown_ttl` 走同一条 DELETE 路径自动删。
 
 mod common;
 
@@ -15,7 +20,7 @@ use agora::events::{Differ, Event};
 use agora::hook::{Delivery, Envelope, Inbox, Receiver};
 use agora::runtime::{Exit, Runtime, Size};
 use agora::session::{Db, ExternalSession, NewSession, Origin, SessionManager};
-use agora::status::{AgoraEvent, Source, Status};
+use agora::status::{AgoraEvent, MachineConfig, Source, Status};
 use common::FakeRuntime;
 use serde_json::json;
 
@@ -414,4 +419,183 @@ fn set_ended_at(db: &Db, id: &str, value: &str) {
         )
         .unwrap();
     assert_eq!(n, 1, "改行命中：{id}");
+}
+// ---------- agora-e08：无句柄 external 行的 UNKNOWN 出口 ----------
+
+/// 沉默阈值调成 0：无句柄 external 行只要被看一眼就落进 UNKNOWN
+/// `hooks silent; no process handle`，测试不必真等默认的 2 h（`hooks.external_silent_after`）。
+fn mgr_silent(unknown_ttl: Duration) -> SessionManager {
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let rt = Arc::new(FakeRuntime::default());
+    SessionManager::new(db, rt as Arc<dyn Runtime>)
+        .with_external_unknown_ttl(unknown_ttl)
+        .with_status_config(MachineConfig {
+            external_silent_after: Duration::ZERO,
+            ..Default::default()
+        })
+}
+
+/// 一行无句柄 external：hook 报过一轮结束（TURN_DONE），之后彻底沉默 → UNKNOWN。
+fn silent_external(m: &SessionManager, agent_session: &str) -> String {
+    let id = external(m, agent_session);
+    m.apply_hook(&id, 1, &[AgoraEvent::TurnEnded(Some("done".into()))])
+        .unwrap();
+    let v = m.get(&id).unwrap();
+    assert_eq!(
+        (v.assessment.status, v.assessment.source),
+        (Status::Unknown, Source::Hook),
+        "external_silent_after = 0，看一眼就该落 UNKNOWN：{:?}",
+        v.assessment
+    );
+    assert_eq!(
+        v.assessment.reason.as_deref(),
+        Some("hooks silent; no process handle")
+    );
+    id
+}
+
+/// 一个还活着的进程号（external 行「进程活着」那一档的 `Liveness::Alive`）。
+fn alive_pid() -> (u32, std::process::Child) {
+    let child = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    (child.id(), child)
+}
+
+#[test]
+fn handleless_unknown_external_rows_expire_and_emit_session_removed() {
+    // 守卫（agora-e08）：删掉 expire_external_finished 里的 `Status::Unknown` 那一 arm（或把
+    // reason 判据写成匹配不上）→ 第二段 sweep 红，行永远留着；把 `unknown_ttl > 0` 门槛删了 →
+    // `unknown_ttl_zero_turns_that_exit_off` 红（0 被当成「立刻到期」）。
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let rt = Arc::new(FakeRuntime::default());
+    let m = SessionManager::new(db, rt as Arc<dyn Runtime>)
+        // 两条出口同时开着：FINISHED 那条不许被这次改动带跑。
+        .with_external_finished_ttl(Duration::from_secs(DAY as u64))
+        .with_external_unknown_ttl(Duration::from_secs(DAY as u64))
+        .with_status_config(MachineConfig {
+            external_silent_after: Duration::ZERO,
+            ..Default::default()
+        });
+    m.enable_hook_checkpoints(home.path());
+
+    let silent = silent_external(&m, "conv-silent");
+    // 同样的行、另一个对话 id：验证扫描逐行走，不是「这批全删」。
+    let also_silent = silent_external(&m, "conv-silent-2");
+
+    // 这一行 UNKNOWN 但不是 `no process handle`：从没收到过 hook 事件（source = none，
+    // `external session: no runtime, hook only`）。它不在本条出口的范围里（真值表里那一格写着
+    // 「持续出现 = 检查点丢了，属 bug」，归 agora-5gg.16），到期也不该被顺手删。
+    let unhooked = external(&m, "conv-unhooked");
+    assert_eq!(m.get(&unhooked).unwrap().assessment.status, Status::Unknown);
+    assert_ne!(
+        m.get(&unhooked)
+            .unwrap()
+            .assessment
+            .reason
+            .as_deref()
+            .unwrap(),
+        "hooks silent; no process handle"
+    );
+
+    // 进程号还活着的 external 行：沉默兜底对 `Liveness::Alive` 不生效，行停在 TURN_DONE
+    // （人离开几小时再回来是正常的），两条 ttl 都不该碰它。
+    let (pid, mut child) = alive_pid();
+    let busy = external(&m, "conv-alive");
+    // `seen_at` 是毫秒（检查点 v3）：拿秒传会被当成「进程比 hook 还新 = 号被复用」，当场判死。
+    m.note_external_pid(&busy, pid, now_secs() * 1000);
+    m.apply_hook(&busy, 1, &[AgoraEvent::TurnEnded(Some("done".into()))])
+        .unwrap();
+    assert_eq!(status_of(&m, &busy), Status::TurnDone);
+
+    // 一条到期的 FINISHED 行：和 UNKNOWN 走同一条路径，但拿自己的时钟（ended_at）。
+    let finished = external(&m, "conv-finished");
+    m.apply_hook(&finished, 1, &[AgoraEvent::SessionEnded(None)])
+        .unwrap();
+
+    let now = now_secs();
+    assert!(m.has_hook_checkpoint(&silent), "hook 应用过就有检查点");
+
+    let mut differ = Differ::default();
+    assert!(
+        differ.step("n", &m.list().unwrap()).is_empty(),
+        "第一轮只建基线"
+    );
+
+    // 一小时后：两条 ttl 都没到（UNKNOWN 只落了一小时）。
+    assert!(m.sweep(now + 3600).unwrap().is_empty(), "未到 ttl 不删");
+    assert_eq!(m.list().unwrap().len(), 5);
+
+    // 25 h 后：两行 UNKNOWN 走 UNKNOWN 那条出口，FINISHED 行走 finished_ttl 那条。
+    let mut removed = m.sweep(now + 25 * 3600).unwrap();
+    removed.sort();
+    let mut expected = vec![silent.clone(), also_silent.clone(), finished.clone()];
+    expected.sort();
+    assert_eq!(removed, expected, "{removed:?} vs {expected:?}");
+
+    let left: Vec<String> = m.list().unwrap().into_iter().map(|v| v.record.id).collect();
+    assert!(
+        left.contains(&unhooked),
+        "reason 不是 no process handle 的 UNKNOWN 不动：{left:?}"
+    );
+    assert!(left.contains(&busy), "进程号还活着的行不动：{left:?}");
+    assert_eq!(left.len(), 2, "{left:?}");
+    assert!(
+        !m.has_hook_checkpoint(&silent),
+        "删走的是 DELETE 同一条路径，检查点一起清"
+    );
+    assert!(m.get(&silent).is_err());
+
+    // 求差器在下一轮发 session_removed——与用户手工 DELETE 之后客户端看到的同一条事件。
+    let events = differ.step("n", &m.list().unwrap());
+    let mut gone: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::SessionRemoved { id } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    gone.sort();
+    let mut expected: Vec<String> = expected.iter().map(|id| format!("n:{id}")).collect();
+    expected.sort();
+    assert_eq!(gone, expected, "{events:?}");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+#[test]
+fn unknown_ttl_zero_turns_that_exit_off() {
+    // `sessions.external_unknown_ttl: "0"` = 关掉这条出口（与 finished 那条同一条语法）。
+    let m = mgr_silent(Duration::ZERO);
+    let id = silent_external(&m, "conv-off");
+    assert!(m.sweep(now_secs() + 400 * DAY).unwrap().is_empty());
+    assert!(m.get(&id).is_ok(), "关了就该留着");
+
+    // 即使 FINISHED 那条开着也不许误删：那个 arm 只认 FINISHED。
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let rt = Arc::new(FakeRuntime::default());
+    let m = SessionManager::new(db, rt as Arc<dyn Runtime>)
+        .with_external_finished_ttl(Duration::from_secs(DAY as u64))
+        .with_status_config(MachineConfig {
+            external_silent_after: Duration::ZERO,
+            ..Default::default()
+        });
+    let id = silent_external(&m, "conv-off-2");
+    assert!(m.sweep(now_secs() + 400 * DAY).unwrap().is_empty());
+    assert!(m.get(&id).is_ok(), "UNKNOWN 行不归 finished_ttl 管：{id}");
+}
+
+#[test]
+fn the_shortest_open_ttl_sets_the_sweep_period() {
+    // 两条出口共用一个节流（agora-j4w.3 的机制）：只开 unknown 那条、调成 1m，周期跟着缩到 1m。
+    // 把 `reset_expiry_throttle` 改回只看 external_finished_ttl → 第三段断言红（行多留一小时）。
+    let m = mgr_silent(Duration::from_secs(60));
+    let id = silent_external(&m, "conv-short");
+    let t0 = now_secs();
+    assert!(m.sweep(t0).unwrap().is_empty(), "刚落 UNKNOWN，一分钟未到");
+    assert!(m.sweep(t0 + 30).unwrap().is_empty(), "周期未满不扫第二次");
+    assert_eq!(m.sweep(t0 + 60).unwrap(), vec![id.clone()]);
+    assert!(m.get(&id).is_err(), "行已删");
 }

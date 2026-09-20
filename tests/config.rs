@@ -22,6 +22,33 @@ fn missing_file_means_defaults() {
         86_400,
         "默认 24h（agora-j4w.3）"
     );
+    assert_eq!(
+        s.external_unknown_ttl.as_secs(),
+        86_400,
+        "默认 24h（agora-e08）"
+    );
+}
+
+#[test]
+fn external_unknown_ttl_zero_turns_that_exit_off_and_garbage_is_rejected() {
+    // sessions.external_unknown_ttl（agora-e08）：语法与 finished 那条一致——裸 0 = 关闭，
+    // 其余按时长卡在启动；错键名点出自己的字段。
+    let s = load(Some("sessions:\n  external_unknown_ttl: \"0\"\n")).unwrap();
+    assert!(s.external_unknown_ttl.is_zero());
+    // 只关一条不影响另一条：两个键各自独立。
+    let s = load(Some(
+        "sessions:\n  external_unknown_ttl: \"0\"\n  external_finished_ttl: \"6h\"\n",
+    ))
+    .unwrap();
+    assert!(s.external_unknown_ttl.is_zero());
+    assert_eq!(s.external_finished_ttl.as_secs(), 6 * 3600);
+    assert!(matches!(
+        load(Some("sessions:\n  external_unknown_ttl: \"2 days\"\n")),
+        Err(ConfigError::Duration {
+            field: "sessions.external_unknown_ttl",
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -67,6 +94,7 @@ status:
   detector_interval: "2s"
 sessions:
   external_finished_ttl: "24h"
+  external_unknown_ttl: "24h"
 hooks:
   silence_after: "10m"
   unheard_after: "90s"

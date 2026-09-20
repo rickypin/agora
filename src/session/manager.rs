@@ -23,7 +23,7 @@ use crate::runtime::{
 };
 use crate::status::{
     self, AgentProcess, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation,
-    ProcessState, Status,
+    ProcessState, Status, EXTERNAL_SILENT_REASON,
 };
 use crate::task::{TaskIndex, TaskInfo};
 
@@ -241,7 +241,11 @@ pub struct SessionManager {
     projects_index: Arc<ProjectIndex>,
     /// external FINISHED 行结束多久后自动删 metadata（`sessions.external_finished_ttl`）；ZERO = 关闭。
     external_finished_ttl: Duration,
-    /// 上面那件事的节流：轮询每 tick 来问一次，真扫描按 [`EXTERNAL_EXPIRY_SWEEP_EVERY`] 与 ttl 取小。
+    /// external 且 UNKNOWN `hooks silent; no process handle` 的行沉默多久后自动删 metadata
+    /// （`sessions.external_unknown_ttl`，agora-e08）；ZERO = 关闭。
+    external_unknown_ttl: Duration,
+    /// 上面两件事共用的节流：轮询每 tick 来问一次，真扫描按 [`EXTERNAL_EXPIRY_SWEEP_EVERY`] 与两个 ttl
+    /// 取小。
     external_expiry: Throttle,
 }
 
@@ -268,6 +272,7 @@ impl SessionManager {
             projects_index: Arc::new(ProjectIndex::default()),
             // 默认关闭：只有 daemon 按配置显式打开。库与 API 层的测试造出来的行不该在自己脚下消失。
             external_finished_ttl: Duration::ZERO,
+            external_unknown_ttl: Duration::ZERO,
             external_expiry: Throttle::new(EXTERNAL_EXPIRY_SWEEP_EVERY),
         }
     }
@@ -275,16 +280,38 @@ impl SessionManager {
     /// external FINISHED 行的自动过期（`sessions.external_finished_ttl`，agora-j4w.3）；ZERO 关闭。
     pub fn with_external_finished_ttl(mut self, ttl: Duration) -> Self {
         self.external_finished_ttl = ttl;
-        self.external_expiry = Throttle::new(if ttl.is_zero() {
-            EXTERNAL_EXPIRY_SWEEP_EVERY
-        } else {
-            ttl.min(EXTERNAL_EXPIRY_SWEEP_EVERY)
-        });
+        self.reset_expiry_throttle();
         self
+    }
+
+    /// 无句柄 external 行落 UNKNOWN `hooks silent; no process handle` 之后的出口
+    /// （`sessions.external_unknown_ttl`，agora-e08）；ZERO 关闭。与 FINISHED 那条走同一条删除路径、
+    /// 共用同一个节流。
+    pub fn with_external_unknown_ttl(mut self, ttl: Duration) -> Self {
+        self.external_unknown_ttl = ttl;
+        self.reset_expiry_throttle();
+        self
+    }
+
+    /// 扫描周期 = 两个 ttl 里打开着的那些与 [`EXTERNAL_EXPIRY_SWEEP_EVERY`] 取小。理由同 agora-j4w.3：
+    /// 一行在到期后至多再多留一个周期；ttl 比一小时短（代检把它调成 1m）就按 ttl 扫，否则「不到两个
+    /// sweep 周期」这句话对短 ttl 不成立。
+    fn reset_expiry_throttle(&mut self) {
+        let mut every = EXTERNAL_EXPIRY_SWEEP_EVERY;
+        for ttl in [self.external_finished_ttl, self.external_unknown_ttl] {
+            if !ttl.is_zero() {
+                every = every.min(ttl);
+            }
+        }
+        self.external_expiry = Throttle::new(every);
     }
 
     pub fn external_finished_ttl(&self) -> Duration {
         self.external_finished_ttl
+    }
+
+    pub fn external_unknown_ttl(&self) -> Duration {
+        self.external_unknown_ttl
     }
 
     /// 任务标签的数据源（测试塞同步的假 bd）。
@@ -1467,16 +1494,21 @@ impl SessionManager {
     // ---------- 周期扫描 ----------
 
     /// 轮询每 tick 调一次（`events::watch`），真扫描按节流走；返回本次删掉的行 id。`now` 是 unix 秒，
-    /// 由调用方给，测试拨表不用真等 24 h。
+    /// 由调用方给，测试拨表不用真等 24 h。两个 ttl 全关着就直接回：不必为一次注定什么都不删的
+    /// `list()`（会起运行时子进程）去问节流。
     pub fn sweep(&self, now: i64) -> Result<Vec<String>, SessionError> {
-        if self.external_finished_ttl.is_zero() || !self.external_expiry.due(now) {
+        if (self.external_finished_ttl.is_zero() && self.external_unknown_ttl.is_zero())
+            || !self.external_expiry.due(now)
+        {
             return Ok(Vec::new());
         }
         self.expire_external_finished(now)
     }
 
-    /// external 且 FINISHED（hook 结束、superseded、进程消失都算）的行，结束距今 ≥ ttl → 删 metadata
-    /// （与 `DELETE /api/sessions/:id` 同一条路径：hook 检查点、状态机、挂起一起清），不看节流。
+    /// external 行的两条自动出口（都不看节流，节流挂在 [`Self::sweep`] 那一层）：FINISHED（hook 结束、
+    /// superseded、进程消失都算）按 `sessions.external_finished_ttl`，UNKNOWN
+    /// `hooks silent; no process handle` 按 `sessions.external_unknown_ttl`。删走的是
+    /// `DELETE /api/sessions/:id` 同一条路径：hook 检查点、状态机、挂起一起清。
     /// 只碰 external：agora / adopted 的 FINISHED 行有运行时会话与 scrollback，MISSION §4.6「不得在
     /// 用户看到结果之前清理」对它们仍成立。结束时刻取 `ended_at`（MISSION §4.2 修订；agora-5gg.3，
     /// 2026-09-20）：三种结束（hook SessionEnd / superseded / 探到进程没了）现在都会写它，而且它是
@@ -1484,25 +1516,50 @@ impl SessionManager {
     /// 说 ended_at 对 external 行是死路，2026-09-08 的代码里确实是：那条分支只在有句柄的行走到）。
     /// `status_since` 只当兼容兜底：本次改动之前入库的 FINISHED external 行 ended_at 是空的（Mac
     /// 实测 35 行），它们只能拿旧时钟算。
+    ///
+    /// 名字里的 finished 只对应第一个 arm（历史名字，agora-j4w.3）：第二个 arm 是 agora-e08 补的出口——
+    /// 无句柄、无终端、Kill / Restart 都做不了的一行，沉默到 ttl 之后与 FINISHED 走同一条 DELETE 路径。
     pub fn expire_external_finished(&self, now: i64) -> Result<Vec<String>, SessionError> {
-        let ttl = self.external_finished_ttl.as_secs() as i64;
-        if ttl == 0 {
+        let finished_ttl = self.external_finished_ttl.as_secs() as i64;
+        let unknown_ttl = self.external_unknown_ttl.as_secs() as i64;
+        if finished_ttl == 0 && unknown_ttl == 0 {
             return Ok(Vec::new());
         }
         let mut removed = Vec::new();
         for v in self.list()? {
-            if v.record.origin != Origin::External
-                || !matches!(v.assessment.status, Status::Finished)
-            {
+            if v.record.origin != Origin::External {
                 continue;
             }
-            let ended = v
-                .record
-                .ended_at
-                .as_deref()
-                .and_then(clock::parse_utc_secs)
-                .unwrap_or(v.status_since);
-            let age = now - ended;
+            // 两条出口各自拿自己的 ttl 与自己的时钟；其余状态没有到期一说（还在跑的行不该背着自己消失）。
+            let (ttl, since) = match v.assessment.status {
+                Status::Finished if finished_ttl > 0 => (
+                    finished_ttl,
+                    v.record
+                        .ended_at
+                        .as_deref()
+                        .and_then(clock::parse_utc_secs)
+                        .unwrap_or(v.status_since),
+                ),
+                // 无句柄 external 行的 UNKNOWN（machine.rs 的 `external_silent_after` 兜底）。
+                // 只认这一句 reason：`Liveness::Unknown` 是必要条件但不是充分条件——进程号活着的行、
+                // 屏幕给的 UNKNOWN、运行时降级的行都另有出口（打开终端 / 下一条 hook / 降级自愈），
+                // 它们不该被同一把删掉（docs/spec/api.md「会话形态」UNKNOWN 的封闭清单）。
+                // 时钟用 `status_since`（落进 UNKNOWN 那一刻，UI 上「unknown 2h」读的就是它），
+                // 因为这一行还没结束：`ended_at` 对它是空的，拿结束时刻算就是拿一个不存在的事实算。
+                // 已知不足（2026-09-20 读码确认，不是猜的）：`status_since` 是状态机的内存时钟，
+                // 而检查点只存最后一条 hook 写出的状态（apply 里那个 snapshot，不含 observe 给的
+                // UNKNOWN），所以重启 + 重放后这一格从零计。拿检查点里的 `last_hook_at`（沉默时钟）
+                // 当主时钟能躲过这一刀，但代价是文案变成「沉默了多久」而不是「这行 UNKNOWN 落了
+                // 多久」，与页面上那个时长不是同一只表；反例先记在这，要改连 agora-5gg.2 一起改。
+                Status::Unknown
+                    if unknown_ttl > 0
+                        && v.assessment.reason.as_deref() == Some(EXTERNAL_SILENT_REASON) =>
+                {
+                    (unknown_ttl, v.status_since)
+                }
+                _ => continue,
+            };
+            let age = now - since;
             if age < ttl {
                 continue;
             }
@@ -1511,9 +1568,10 @@ impl SessionManager {
                 component = "session",
                 id = %v.record.id,
                 agent = %v.record.agent_type,
-                finished_for_secs = age,
+                status = ?v.assessment.status,
+                silent_for_secs = age,
                 reason = v.assessment.reason.as_deref().unwrap_or_default(),
-                "external FINISHED 行超过 sessions.external_finished_ttl，删 metadata"
+                "external 行超过 sessions.external_finished_ttl / external_unknown_ttl，删 metadata"
             );
             removed.push(v.record.id);
         }

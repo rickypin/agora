@@ -174,12 +174,17 @@ pub struct SessionsSection {
     /// external 来源的 FINISHED 行结束多久后自动删 metadata（agora-j4w.3）；`"0"` 关闭。
     /// 只对 external 行：它没有运行时会话与输出，删的只是 agora 的两行记录，不算回收。
     pub external_finished_ttl: String,
+    /// 无可信进程号的 external 行落 UNKNOWN `hooks silent; no process handle` 多久后自动删
+    /// metadata（agora-e08）；`"0"` 关闭。这一格 UNKNOWN 本来就没有终端可打开，只能等下一条
+    /// hook，所以它必须是暂态。
+    pub external_unknown_ttl: String,
 }
 
 impl Default for SessionsSection {
     fn default() -> Self {
         SessionsSection {
             external_finished_ttl: "24h".into(),
+            external_unknown_ttl: "24h".into(),
         }
     }
 }
@@ -329,6 +334,8 @@ pub struct Settings {
     pub hook_prune_interval: Duration,
     /// `Duration::ZERO` = 关闭。
     pub external_finished_ttl: Duration,
+    /// 同上，针对无句柄 external 行的 UNKNOWN（agora-e08）。
+    pub external_unknown_ttl: Duration,
     pub auth: crate::auth::AuthConfig,
     pub raw: Config,
 }
@@ -406,6 +413,10 @@ impl Config {
             "sessions.external_finished_ttl",
             &self.sessions.external_finished_ttl,
         )?;
+        let external_unknown_ttl = parse_ttl(
+            "sessions.external_unknown_ttl",
+            &self.sessions.external_unknown_ttl,
+        )?;
         let hook_inbox_retention =
             parse_duration("hooks.inbox_retention", &self.hooks.inbox_retention)?;
         let hook_prune_interval =
@@ -429,6 +440,7 @@ impl Config {
             hook_inbox_retention,
             hook_prune_interval,
             external_finished_ttl,
+            external_unknown_ttl,
             auth,
             raw: self,
         })

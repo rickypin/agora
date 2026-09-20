@@ -29,6 +29,7 @@ status:
   detector_interval: "2s"
 sessions:                     # §4.6「已退出会话的清理」
   external_finished_ttl: "24h"  # external 来源的 FINISHED 行（hook 结束 / superseded / 进程消失）结束这么久后自动删 metadata；"0" 关闭。只碰 external：它没有运行时会话与输出，删的只是 agora 的两行记录，不算回收；agora / adopted 行仍由人清理（agora-j4w.3）
+  external_unknown_ttl: "24h"   # 无可信进程号的 external 行落 UNKNOWN `hooks silent; no process handle` 持续这么久后自动删 metadata；"0" 关闭。这一格 UNKNOWN 没有终端可打开、Kill / Restart 都做不了，只能等下一条 hook，所以它必须是暂态（agora-e08）
 hooks:                        # ADR-002 D1 / D5 / D3
   silence_after: "10m"        # 有 hook 的 agent 无事件超过此时长且屏幕像在等人 → UNKNOWN（hook 沉默规则）
   unheard_after: "90s"        # 装了 hook 却一条事件没收到过、终端在启动 10 s 宽限后又活动了这么久 → 行上"hook 没接上"提示
@@ -62,7 +63,9 @@ agents:                       # Adapter 默认命令的覆盖（§5.2）；存�
   pi:     { command: "pi" }
 ```
 
-`sessions.external_finished_ttl` 的扫描挂在 `status.detector_interval` 的轮询上，但节流到每小时一次（ttl 比一小时短就按 ttl，`src/session/throttle.rs`），所以一行在到期后至多再多留一个周期；到期以 `ended_at` 算（该行结束的时刻，§4.2；三种结束都会写它——hook `SessionEnd` 的事件时刻、superseded 的新对话首条事件时刻、探活发现进程没了的那个 tick，2026-09-20 agora-5gg.3）——它是库里的值，不随 daemon 重启重置；本次改动之前入库、`ended_at` 为空的行退回 `status_since` 兜底（hook 结束的行它随检查点过重启，进程随后退出也不重置，同状态的「进程没了」不盖 hook 的 SessionEnd，agora-rzh / agora-ec4；只靠进程消失结束的行重启后从头计，这正是它当不了主时钟的原因）；节流的时钟回拨（校时把表拨回去）视为到期、下个周期照扫。删除走 `DELETE /api/sessions/:id` 同一条路径（hook 检查点、状态机一起清），事件流经求差器发 `session_removed`，`daemon.log` 每行一条 info。守卫 `tests/external_expiry.rs`、`tests/config.rs::external_finished_ttl_zero_turns_expiry_off_and_garbage_is_rejected`。
+`sessions.external_finished_ttl` 的扫描挂在 `status.detector_interval` 的轮询上，但节流到每小时一次（两条 ttl 里打开着的、比一小时更短的那个定周期，`src/session/throttle.rs`），所以一行在到期后至多再多留一个周期；到期以 `ended_at` 算（该行结束的时刻，§4.2；三种结束都会写它——hook `SessionEnd` 的事件时刻、superseded 的新对话首条事件时刻、探活发现进程没了的那个 tick，2026-09-20 agora-5gg.3）——它是库里的值，不随 daemon 重启重置；本次改动之前入库、`ended_at` 为空的行退回 `status_since` 兜底（hook 结束的行它随检查点过重启，进程随后退出也不重置，同状态的「进程没了」不盖 hook 的 SessionEnd，agora-rzh / agora-ec4；只靠进程消失结束的行重启后从头计，这正是它当不了主时钟的原因）；节流的时钟回拨（校时把表拨回去）视为到期、下个周期照扫。删除走 `DELETE /api/sessions/:id` 同一条路径（hook 检查点、状态机一起清），事件流经求差器发 `session_removed`，`daemon.log` 每行一条 info。守卫 `tests/external_expiry.rs`、`tests/config.rs::external_finished_ttl_zero_turns_expiry_off_and_garbage_is_rejected`。
+
+`sessions.external_unknown_ttl` 管的是另一格：无可信进程号的 external 行（Codex Desktop 的共用 app-server、旧检查点）hook 沉默超过 `hooks.external_silent_after`（默认 2 h）落 UNKNOWN `hooks silent; no process handle`。这一行 agora 既观察不到（无终端、无 pane 可读）也无法操作（无句柄，Kill / Restart 都做不到），而离开这一格以前只有一条路：下一条 hook 事件——进程多半早不在，等于没有出口，一沉默就是一天以上还顶在列表里（`docs/analysis/session-status-audit-2026-09-18.md` §3.3）。UNKNOWN 必须是暂态，所以这一格持续 ≥ 本键就走与 FINISHED 同一条出口：同一条 `DELETE /api/sessions/:id` 路径、同一个节流、同一条 `session_removed`。时钟用 `status_since`（落进 UNKNOWN 那一刻，也是页面上「unknown 3h」读的那只表），不用 `ended_at`——这一行还没结束，`ended_at` 对它是空的。判据只认那一句 reason：`process = unknown` 是必要条件但不充分——运行时降级、屏幕给的 UNKNOWN、进程号还活着的行都另有出口（自愈 / 打开终端 / 下一条 hook），不该被这一条出口顺手删掉。**一个已知的不足**：`status_since` 是状态机的内存时钟，重启 + 重放会让这一格从零计（检查点存的是最后一条 hook 写出的状态，UNKNOWN 不在里面），所以频繁重启的机器上这类行会比 FINISHED 行留得久——同一条病在沉默时钟上的那一半归 `agora-5gg.2`。守卫 `tests/external_expiry.rs::handleless_unknown_external_rows_expire_and_emit_session_removed`（到期删、发 `session_removed`、reason 不匹配的行不动）、`::unknown_ttl_zero_turns_that_exit_off`、`::the_shortest_open_ttl_sets_the_sweep_period`、`tests/config.rs::external_unknown_ttl_zero_turns_that_exit_off_and_garbage_is_rejected`。
 
 机器 token 由被访问的节点签发（§8），存在对方的 `token_file` 里；本节点只存哈希。浏览器一次只连一个节点，只记住最近打开的地址（不变量 6：可丢弃）。
 
