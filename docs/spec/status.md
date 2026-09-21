@@ -8,6 +8,7 @@
 
 - 表里每一行有一个 id（`a01`… 有句柄、`x01`… 无句柄），**id 同时是对应测试名的前缀**，所以表里的任何一行都能拿 id 在测试名里检索到；`cargo test status_truth_table` 逐行重跑，几毫秒。
 - `::spec_rows_and_code_rows_agree` 拿本文件的表与测试里那张 `ROWS` 逐行对账：新增一行不写守卫、删掉一行不删表、把 ✗ 改成 ✓，都会红。
+- `::every_reachable_cell_is_in_the_table` 反方向查：把能喂的都喂一遍，状态机吐出的每一个落点都要在本档那一节的表里找得到一格。表少写一格（或把口径改了）就红——这一条管的是"表是不是闭合的"，上面那两条管的是"表与守卫是不是同一份"。
 
 ## 1. 四列的取值与判定符号
 
@@ -25,7 +26,7 @@
 
 判定符号：**✓** 合法，写明对使用者的含义与出口；**◐** 合法但只许短暂（≤ 一个 tick、≤ 启动宽限、≤ 下一条 hook 事件），持续出现就是 bug；**✗** 不可能，每一行各有一条反向断言。
 
-`process` 这一列写的是**调用方看到的值**（`GET /api/sessions` 的 `process` 字段），不是状态机内部那个 `Liveness`；两者不一致的行会在"含义"里点明。
+三列写的都是**调用方看到的值**（`GET /api/sessions` 的 `status` / `process` / `source`）：`process` 不是状态机内部那个 `Liveness`（两者不一致的行在"含义"里点明），`source` 也不是"这一格的事实从哪一层来"——运行时整体读不到、还没有任何观测的那几格，进程层说不出结论，`source` 报的是 `none` 而不是 `process`（a17 / a23 / x12）。
 
 ## 2. origin = agora / adopted（有运行时句柄）
 
@@ -47,10 +48,13 @@
 | a14 | FINISHED | gone | hook（SessionEnd 先于进程退出被观测）| ◐ | 下一 tick 进程层带着退出码把 source 换成 process（同状态同分时不抢，agora-rzh）；`process` 在宿主说出结束的那一个 tick 就已经是 gone | `…::a14_a_host_end_seen_before_the_process_exit` |
 | a15 | FAILED | gone | process（exit ≠ 0 / signal）| ✓ | 出错了，看终端 | `…::a15_failed_names_the_exit_that_caused_it` |
 | a16 | FINISHED / FAILED | alive，持续 | 任何 | ✗ | 「进程退出压倒一切」+ Q4：结束了的行不许报出 `alive` | `…::a16_an_ended_row_never_reports_an_alive_process` |
-| a17 | UNKNOWN | unknown | process（`runtime unavailable`）| ✓ | agora 失明（协议不匹配 / 超时），顶部横幅说明；运行时恢复即自愈，绝不写 `ended_at` | `…::a17_an_unreadable_runtime_is_unknown_not_gone` |
+| a17 | UNKNOWN | unknown | none（`runtime unavailable`）| ✓ | agora 失明（协议不匹配 / 超时），顶部横幅说明；运行时恢复即自愈，绝不写 `ended_at` | `…::a17_an_unreadable_runtime_is_unknown_not_gone` |
 | a18 | UNKNOWN | alive | text（`hooks silent; screen: …` / `permission prompt gone`）| ✓ | hook 没声音而屏幕像在等人：打开终端看，或按 `hooks_unheard` 去查 hook | `…::a18_a_screen_only_unknown_still_reports_an_alive_process` |
-| a19 | UNKNOWN | gone | 任何（旧版的 `runtime session missing`）| ✗ | 运行时会话没了是**事实**、不是"看不清"：走 a13（2026-09-19 据 agora-u5p 修订 ADR-001 D4）。本代还在 STARTING 窗口（< 2 s）、运行时这一 tick 还没报到它的行不算"没了"：那一格是 UNKNOWN `no_observation` 而且不写 `ended_at`（守卫 `tests/session_manager.rs::starting_window_exempts_a_row_that_is_still_starting`）| `…::a19_a_missing_runtime_session_is_not_unknown` |
-| a20 | UNKNOWN | 任何 | hook | ✗ | 有句柄的行里 UNKNOWN 只有 a17 / a18 两格；hook 层的词表不含 UNKNOWN | `…::a20_the_hook_layer_never_writes_unknown` |
+| a19 | UNKNOWN | gone | none（旧版 `runtime session missing`：本代已过 STARTING 窗口）| ✗ | 运行时会话没了是**事实**、不是"看不清"：走 a13（2026-09-19 据 agora-u5p 修订 ADR-001 D4）。还在 STARTING 窗口里的那一格另算（a23）| `…::a19_a_missing_runtime_session_is_not_unknown` |
+| a20 | UNKNOWN | 任何 | hook | ✗ | 有句柄的行里 UNKNOWN 只有 a17 / a18 / a22 / a23 四格；hook 层的词表不含 UNKNOWN | `…::a20_the_hook_layer_never_writes_unknown` |
+| a21 | WAITING | alive | text（agent 无 hook）| ✓ | 答它：这一行没有 hook 可回，只能打开终端（`respond_via = terminal`）。与 a07 是同一层在两种行上的两种命运 | `…::a21_text_raises_waiting_only_on_a_row_without_hooks` |
+| a22 | UNKNOWN | gone | process（`process exited, exit status not yet collected`）| ◐ | 只许停一个 tick：退出码到了落 a12 / a15，永远补不上就是会话连同 pane 没了，落 a13。不猜 FINISHED 也不猜 FAILED | `…::a22_a_missing_exit_status_is_unknown_not_a_guess` |
+| a23 | UNKNOWN | gone | none（`runtime session missing`，本代还在 STARTING 窗口 < 2 s）| ◐ | 运行时这一 tick 还没报到它，不等于"没了"：绝不写 `ended_at`（守卫 `tests/session_manager.rs::starting_window_exempts_a_row_that_is_still_starting`），下一 tick 落 a01 | `…::a23_a_row_the_runtime_has_not_reported_yet_is_not_gone` |
 
 ## 3. origin = external / headless（无运行时句柄）
 
@@ -75,7 +79,7 @@
 ## 4. 贯穿两档的三条规则
 
 1. **STARTING 不是筐**：hook 层的 STARTING 最多停 `startup_grace`（默认 10 s），到点归 TURN_DONE `awaiting first prompt`，不分 origin、不分进程号在不在（a03 / x02 共用 `Machine::decay_starting`）。
-2. **UNKNOWN 必须带原因、必须有出口**：`unknown_cause` 是封闭集合（`runtime_unavailable | hooks_silent_screen | prompt_gone | hooks_silent_no_handle | no_observation | exit_status_missing`，形态与各自出口见 `docs/spec/api.md`「会话形态」）；表里只允许 a17 / a18 / x10 / x12 四格出现 UNKNOWN。
+2. **UNKNOWN 必须带原因、必须有出口**：`unknown_cause` 是封闭集合（`runtime_unavailable | hooks_silent_screen | prompt_gone | hooks_silent_no_handle | no_observation | exit_status_missing`，形态与各自出口见 `docs/spec/api.md`「会话形态」）；表里只允许 a17 / a18 / a22 / a23 / x10 / x12 六格出现 UNKNOWN：六个值都有人认领（a18 一格承两档——屏幕沉默与提示消失对使用者是同一件事），而 `no_observation` 在有句柄与无句柄两档各占一格（a23 / x12，出口不一样：前者下一 tick 落 a01，后者等第一条 hook 事件）。守卫是 `::every_reachable_cell_is_in_the_table`：把 13 类 hook 事件 × 屏幕证据 × 进程事实 × 三种进程号状态喂一遍，每一个落点都要在表里找得到同一档（有句柄 / 无句柄）的一格——状态机私自产出一格新形状而表上没有人写过的话，红在这里。
 3. **结束必须说得出原因**：`end_cause` 是封闭集合（`exit_code | signal | killed_by_user | host_session_end | superseded | process_gone | runtime_gone`）；`reason` 只是给人看的一句话，程序按枚举分支（MISSION §2.3 规则 10）。守卫 `::every_finished_and_failed_row_names_its_end_cause`、`::every_unknown_row_names_why_it_is_unknown`、`::cause_wire_vocabulary_is_the_locked_set`。
 
 ## 5. headless 与 external 不同的三件事

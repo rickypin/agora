@@ -164,6 +164,8 @@ hook 投递（`src/main.rs`）：160 bind socket → 252 同步等 `replay()` �
 
 ## 6. 状态真值表（origin × status × process × source）
 
+> 2026-09-21（agora-5gg.16）：这张表的**规范出处已搬到 `docs/spec/status.md`**——逐行给了 id（`a01`… / `x01`…），每一格对应 `tests/status_truth_table.rs` 里一个同名测试。本节保留盘点当时的摊表与原话（分析文档不随代码改），下面这批格子与那份 spec 不同（逐格对出来的，不是重抄一遍）：6.1 第一格拆成 a01 / a02（一格一条断言才谈得上反向）；6.1 的 `FINISHED + alive` ◐ 按代码回写成 gone（a14）；6.1 的 WAITING ✓ 拆成 a06（hook）与 a21（无 hook 的行只能看屏幕）；6.1 的 UNKNOWN × 运行时降级那一格，`source` 按代码是 `none` 而不是 `process`（a17：那一格进程层说不出结论）；6.1 的 `UNKNOWN + gone` ✗ 限定为"已过 STARTING 窗口"（a19），窗口里那一格是合法的暂态（a23）；6.2 的表 headless 也共用（x13，agora-5gg.20 落在盘点之后）。看表请从 spec 那份看。
+
 `process` 是 Q4 提案里的三值（alive / gone / unknown）；现行 `alive` 布尔的对应关系：alive = `process == alive`。「✓」合法且写明对使用者的含义；「◐」合法但只允许短暂（≤ 一个 tick / 宽限）；「✗」必须不可能，各需一条反向守卫（agora-5gg.16）。
 
 ### 6.1 origin = agora / adopted（有运行时句柄）

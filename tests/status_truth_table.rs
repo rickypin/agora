@@ -925,8 +925,8 @@ const ROWS: &[Cell] = &[
     Cell {
         id: "a17",
         verdict: Verdict::Legal,
-        cell: "UNKNOWN | unknown | process（`runtime unavailable`）",
-        why: "agora 失明，横幅说明；恢复即自愈，绝不写 ended_at（ADR-001 D7）",
+        cell: "UNKNOWN | unknown | none（`runtime unavailable`）",
+        why: "agora 失明，横幅说明；恢复即自愈，绝不写 ended_at（ADR-001 D7）；source 是 none：这一格进程层说不出结论",
     },
     Cell {
         id: "a18",
@@ -937,14 +937,32 @@ const ROWS: &[Cell] = &[
     Cell {
         id: "a19",
         verdict: Verdict::Never,
-        cell: "UNKNOWN | gone | 任何（旧版的 `runtime session missing`）",
-        why: "运行时会话没了是事实、不是看不清（a13）",
+        cell: "UNKNOWN | gone | none（旧版 `runtime session missing`：本代已过 STARTING 窗口）",
+        why: "运行时会话没了是事实、不是看不清（a13）；还在窗口里的那格另算（a23）",
     },
     Cell {
         id: "a20",
         verdict: Verdict::Never,
         cell: "UNKNOWN | 任何 | hook",
-        why: "有句柄的行里 UNKNOWN 只有 a17 / a18 两格；hook 的词表不含它",
+        why: "有句柄的行里 UNKNOWN 只有 a17 / a18 / a22 / a23 四格；hook 的词表不含它",
+    },
+    Cell {
+        id: "a21",
+        verdict: Verdict::Legal,
+        cell: "WAITING | alive | text（agent 无 hook）",
+        why: "答它：这一行没有 hook 可回，只能打开终端；与 a07 是同一层在两种行上的两种命运",
+    },
+    Cell {
+        id: "a22",
+        verdict: Verdict::Brief,
+        cell: "UNKNOWN | gone | process（`process exited, exit status not yet collected`）",
+        why: "只许停一个 tick：码到了落 a12 / a15，永远补不上落 a13；不猜 FINISHED 也不猜 FAILED",
+    },
+    Cell {
+        id: "a23",
+        verdict: Verdict::Brief,
+        cell: "UNKNOWN | gone | none（`runtime session missing`，本代还在 STARTING 窗口 < 2 s）",
+        why: "运行时这一 tick 还没报到它，不等于没了：不写 ended_at，下一 tick 落 a01",
     },
     // ── 第 3 节：origin = external / headless（无运行时句柄）──
     Cell {
@@ -1686,31 +1704,7 @@ fn a19_a_missing_runtime_session_is_not_unknown() {
         Some((Status::Finished, Source::Hook, ProcessState::Gone)),
     );
     // ③ 还有一格长得几乎一样却不该算结束：本代刚起、运行时这一 tick 还没报到它（STARTING 窗口内）。
-    //    那一格 `process_layer(None)` 给的是 UNKNOWN `no_observation`，而且**不写 ended_at**；
-    //    把 view() 里那条 `!starting` 的豁免拆掉，每次起会话都会先给自己写一个 ended_at 再报
-    //    FINISHED——红在 `tests/session_manager.rs::starting_window_exempts_a_row_that_is_still_starting`。
-    let mut m = Machine::new(cfg(), true, 1, 0);
-    let a = m.observe(Observation {
-        process: agora::status::process_layer(None, Some(0), false),
-        liveness: Liveness::Dead,
-        text: None,
-        runtime: None,
-        epoch: 1,
-        now: 1,
-    });
-    let fed = Fed::new(a, Liveness::Dead);
-    assert_eq!(
-        (fed.a.status, fed.a.source),
-        (Status::Unknown, Source::None),
-        "STARTING 窗口里的「没看见」不等于「没了」: {:?}",
-        fed.a
-    );
-    assert_eq!(
-        fed.a.unknown_cause,
-        Some(UnknownCause::NoObservation),
-        "{:?}",
-        fed.a
-    );
+    //    那一格不该被本节任何反向断言扫到，因为它是合法的——单独占一行（a23）。
 }
 
 #[test]
@@ -1752,6 +1746,136 @@ fn a20_the_hook_layer_never_writes_unknown() {
             None,
         );
     }
+}
+
+#[test]
+fn a21_text_raises_waiting_only_on_a_row_without_hooks() {
+    // 与 a07 是同一层在两种行上的两种命运：无 hook 的会话只能看屏幕，文本层在那里是唯一能说出
+    // "它在等回答"的来源（ADR-002 D1）——但要连续 `status.text_ticks` 个 tick 都看到同一个提示。
+    // 关掉 `observe_unhooked` 的 text_waiting 分支 → 红（行停在进程层的 RUNNING）。
+    // 另一半（声明了 hook 的行抬不起来）在 a07，现行守卫另有
+    // `tests/state_machine.rs::text_waiting_needs_two_consecutive_ticks`（连续两个 tick、同一秒不重算）。
+    // 这一格只钉"无 hook 的行抬得起来"：表里 a07 ✗ 与 a21 ✓ 是同一层在两种行上的两种命运。
+    let waiting = DetectionResult {
+        status: Status::Waiting,
+        confidence: 0.8,
+        reason: "permission prompt".to_owned(),
+    };
+    let mut m = Machine::new(cfg(), false, 1, 0);
+    let rt = pane(Some(0));
+    // 第一个 tick：streak 才 1，还不够——这一格还停在进程层的 RUNNING，不许一看到提示就抬。
+    let first = tick_rt(&mut m, &rt, Some(3600), false, Some(&waiting), 10);
+    assert_eq!(
+        (first.a.status, first.a.source),
+        (Status::Running, Source::Process),
+        "一个 tick 就把行抬成 WAITING：`status.text_ticks` 那一门没生效: {:?}",
+        first.a
+    );
+    let fed = tick_rt(&mut m, &rt, Some(3600), false, Some(&waiting), 12);
+    lands(
+        "a21",
+        &fed,
+        Status::Waiting,
+        Source::Text,
+        ProcessState::Alive,
+    );
+}
+
+#[test]
+fn a22_a_missing_exit_status_is_unknown_not_a_guess() {
+    // 运行时报"退了"、退出码下一 tick 才补得上（`tests/session_tmux.rs` 里那条设计内的瞬时）。
+    // 这一格不许猜：猜 FINISHED 会把崩溃的会话报成干净退出，猜 FAILED 会反过来弹一条通知（§4.6）。
+    // 关掉 `process_layer` 的 `None =>` 分支（改成 Code(0)）→ 第一条断言红。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 0);
+    let rt = pane(Some(0));
+    tick_rt(&mut m, &rt, Some(3600), false, None, 30);
+    let dead = pane_exit(None);
+    let fed = tick_rt(&mut m, &dead, None, false, None, 40);
+    lands(
+        "a22",
+        &fed,
+        Status::Unknown,
+        Source::Process,
+        ProcessState::Gone,
+    );
+    assert_eq!(
+        fed.a.unknown_cause,
+        Some(UnknownCause::ExitStatusMissing),
+        "◐ 那一格要带自己的原因，不能与另外三档 UNKNOWN 混在一句 reason 里: {:?}",
+        fed.a
+    );
+    // 出口：下一 tick 码补上了，就落 a12（干净）或 a15（非零）。不许停在 UNKNOWN。
+    for (exit, want) in [
+        (Exit::Code(0), Status::Finished),
+        (Exit::Code(3), Status::Failed),
+    ] {
+        let mut m = Machine::new(cfg(), true, 1, 0);
+        m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 0);
+        let rt = pane(Some(0));
+        tick_rt(&mut m, &rt, Some(3600), false, None, 30);
+        tick_rt(&mut m, &pane_exit(None), None, false, None, 40);
+        let fed = tick_rt(
+            &mut m,
+            &pane_exit(Some(exit.clone())),
+            None,
+            false,
+            None,
+            42,
+        );
+        assert_eq!(fed.a.status, want, "{exit:?} 补上之后落点不对: {:?}", fed.a);
+        assert_eq!(
+            fed.a.source,
+            Source::Process,
+            "{exit:?} 补上之后: {:?}",
+            fed.a
+        );
+    }
+}
+
+#[test]
+fn a23_a_row_the_runtime_has_not_reported_yet_is_not_gone() {
+    // 有句柄、运行时应答正常，而这一 tick 的列表里还没报到它（`create_with_prompt` / `restart_with`
+    // 在运行时刚返回那一刻就 `get()`）：那一格是"没看见"，不是"没了"（a19）。
+    // 把 view() 里那条 `!starting` 豁免拆掉，每次起会话都会先给自己写一个 ended_at 再报 FINISHED
+    // ——视图那一侧红在
+    // `tests/session_manager.rs::starting_window_exempts_a_row_that_is_still_starting`；
+    // 这一格红在 `process_layer(None)` 被换成 `runtime_gone` 时（lands 的三列对不上）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    let fed = Fed::new(
+        m.observe(Observation {
+            process: agora::status::process_layer(None, Some(0), false),
+            liveness: Liveness::Dead,
+            text: None,
+            runtime: None,
+            epoch: 1,
+            now: 1,
+        }),
+        Liveness::Dead,
+    );
+    lands(
+        "a23",
+        &fed,
+        Status::Unknown,
+        Source::None,
+        ProcessState::Gone,
+    );
+    assert_eq!(
+        fed.a.unknown_cause,
+        Some(UnknownCause::NoObservation),
+        "「没有观测」与「读不到运行时」不是一件事: {:?}",
+        fed.a
+    );
+    // 下一 tick 运行时报到它了，就落 a01（STARTING）：这一格自己不会把行送到结束那一档。
+    let rt = pane(None);
+    let fed = tick_rt(&mut m, &rt, Some(0), false, None, 2);
+    lands(
+        "a01",
+        &fed,
+        Status::Starting,
+        Source::Process,
+        ProcessState::Alive,
+    );
 }
 
 // ───────────────────── 第 3 节：无运行时句柄的行（external / headless）─────────────────────
@@ -2125,6 +2249,7 @@ fn row_cells(line: &str) -> Vec<String> {
 }
 
 /// 一格里的 `` `file::test_fn` `` 引用：返回 (文件, 测试名)。`…::name` 沿用上一条的行所文件。
+/// 不像路径的那一段（`Machine::decay_starting`、`ProcessState::derive` 那一类）不是引用，跳过。
 fn guard_refs(cell: &str, default_file: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut last_file = default_file.to_owned();
@@ -2132,6 +2257,9 @@ fn guard_refs(cell: &str, default_file: &str) -> Vec<(String, String)> {
         let Some((file, test)) = span.split_once("::") else {
             continue;
         };
+        if !file.contains('/') && !file.starts_with('…') {
+            continue;
+        }
         let file = if file.starts_with('…') {
             last_file.clone()
         } else {
@@ -2193,13 +2321,22 @@ fn spec_rows_and_code_rows_agree() {
             "{id} 的守卫格没有 `tests/*.rs::fn` 引用：{}",
             cells_row[6]
         );
-        for (file, test) in &refs {
+        let check = |file: &str, test: &str| {
             let src = std::fs::read_to_string(repo_file(file))
-                .unwrap_or_else(|e| panic!("{id} 的守卫引用的文件不存在: {file}（{e}）"));
+                .unwrap_or_else(|e| panic!("{id} 引用的文件不存在: {file}（{e}）"));
             assert!(
                 src.contains(&format!("fn {test}(")) || src.contains(&format!("async fn {test}(")),
-                "{id} 的守卫点名的测试不存在: {file}::{test}"
+                "{id} 点名的测试不存在: {file}::{test}"
             );
+        };
+        for (file, test) in &refs {
+            check(file, test);
+        }
+        // "含义"列里点名的也是引用：写错的测试名当场红，而不是留给下一个人去 grep。
+        // （2026-09-21 补齐 a21 的时候手抄过一个根本不存在的测试名；那一处在测试文件的注释里、
+        //   这一句查不着，只能先把表里那一半看住。）
+        for (file, test) in guard_refs(&cells_row[5], "tests/status_truth_table.rs") {
+            check(&file, &test);
         }
         assert!(
             refs[0].1.starts_with(&format!("{id}_")),
@@ -2239,5 +2376,329 @@ fn spec_rows_and_code_rows_agree() {
             verdicts.get(r.id).map(String::as_str).unwrap_or_default(),
             r.verdict.symbol()
         );
+    }
+}
+
+// ═══════════════════ 表的闭合性：喂得出的落点必须在表里 ═══════════════════
+//
+// `spec_rows_and_code_rows_agree` 查的是"表与守卫是不是同一份"，这一节查反方向：状态机真喂得
+// 出来的落点，有没有在表上没人认领的。做法是把喂法摊成一个固定的集合（13 类 hook 事件 × 屏幕证据
+// × 进程事实 × 有无 hook × 进程号三种状态），把每一个 tick 的落点拿去查同一档（有句柄查第 2 节、
+// 无句柄查第 3 节）的表：找不到一格就红。
+//
+// 只查"落点有人认领"，不把 ✗ 行拿来当场判红：✗ 那一格可能与 ✓ 那一格三列一模一样、只差前置条件
+// （a19 与 a23 都是 `UNKNOWN | gone | none`，分别要求"已过"与"还在" STARTING 窗口），三列拆不出
+// 这种差别。✗ 行靠自己的反向断言钉（`forbid`），闭合守卫只保证"喂得出来的东西在表上有一格"。
+//
+// 2026-09-21 头一次把这套喂法摊开看落点时，表上找不到格的是三格：a21（无 hook 的行被文本层抬成
+// WAITING）、a22（退了但退出码还没收到）、a23（运行时这一 tick 还没报到它）。漏的原因不一样：
+// a21 是盘点原表把两种来源写进了同一格（6.1 的 WAITING 那格写着"hook / text（无 hook）"）；
+// a22 / a23 是原表根本没见过——它那 79 行是按现场摄下来的，而这两格都是只停一个 tick 的暂态，
+// 人到跟前看时它们已经走了。这正是"表落在文档里、守卫按表写"补不住的洞：得把输入空间扫一遍。
+
+/// 线长什么样：三列写成调用方看到的字面量（`api.md`「会话形态」那三个字段）。
+fn wire_triple(fed: &Fed) -> [String; 3] {
+    let w = |v: serde_json::Value| v.as_str().unwrap_or_default().to_owned();
+    [
+        w(serde_json::to_value(fed.a.status).unwrap()).to_ascii_uppercase(),
+        w(serde_json::to_value(fed.process()).unwrap()),
+        w(serde_json::to_value(fed.a.source).unwrap()),
+    ]
+}
+
+/// 把 `status | process | source` 那一列拆成三组取值：` 或 ` 与 ` / ` 都算并列，中文括号与逗号之后
+/// 是给人看的说明（不参与匹配），`任何` = 全集。拆不出三列的行（x13「本节每一格」）返回 None，
+/// 意思是"这一行不是一张三列的格"，不参与闭合守卫。
+fn cell_columns(spec: &str) -> Option<[Vec<String>; 3]> {
+    let cols: Vec<Vec<String>> = spec
+        .split(" | ")
+        .map(|col| {
+            let head = col.split('（').next().unwrap_or(col);
+            let head = head.split('，').next().unwrap_or(head);
+            head.replace(" 或 ", " / ")
+                .split(" / ")
+                .map(|v| v.trim().to_owned())
+                .filter(|v| !v.is_empty())
+                .collect()
+        })
+        .collect();
+    if cols.len() != 3 {
+        return None;
+    }
+    Some([cols[0].clone(), cols[1].clone(), cols[2].clone()])
+}
+
+/// 这一格接不接受某个落点。
+fn cell_accepts(r: &Cell, trip: &[String; 3]) -> bool {
+    let Some(cols) = cell_columns(r.cell) else {
+        return false;
+    };
+    let hits = |vals: &[String], got: &str| vals.iter().any(|v| v == "任何" || v == got);
+    hits(&cols[0], &trip[0]) && hits(&cols[1], &trip[1]) && hits(&cols[2], &trip[2])
+}
+
+/// 13 类 hook 事件：每一类都能单独把一行喂到某个落点，闭合守卫逐类过一遍。
+fn hook_events() -> Vec<AgoraEvent> {
+    vec![
+        AgoraEvent::SessionStarted,
+        AgoraEvent::SessionId("s".into()),
+        AgoraEvent::PromptSubmitted("go".into()),
+        AgoraEvent::PromptInjected,
+        AgoraEvent::Activity("Bash".into()),
+        AgoraEvent::InputNeeded {
+            tool_use_id: "t1".into(),
+            question: "which one?".into(),
+        },
+        AgoraEvent::DecisionNeeded {
+            tool_use_id: "t1".into(),
+            summary: "Bash: sleep 20".into(),
+        },
+        AgoraEvent::DecisionResolved(Some("t1".into())),
+        AgoraEvent::TurnEnded(Some("done".into())),
+        AgoraEvent::TurnFailed("api_error".into()),
+        AgoraEvent::Idle,
+        AgoraEvent::SessionEnded(Some("other".into())),
+        AgoraEvent::SessionEnded(Some("clear".into())),
+        AgoraEvent::Superseded,
+    ]
+}
+
+/// 屏幕证据的四种说法（Adapter 的兜底只会给这几种）。
+fn screen_evidence() -> Vec<Option<DetectionResult>> {
+    let det = |status: Status, reason: &str| {
+        Some(DetectionResult {
+            status,
+            confidence: 0.7,
+            reason: reason.to_owned(),
+        })
+    };
+    vec![
+        None,
+        det(Status::Waiting, "permission prompt"),
+        det(Status::TurnDone, "shell prompt"),
+        det(Status::Idle, "idle"),
+        det(Status::Running, "working"),
+    ]
+}
+
+/// 进程层能报出的全部事实。第二个值 = 运行时整体读不到（`view()` 里 `degraded.is_some()` 那一支，
+/// 它只影响导出的 `process`，不影响状态机的结论）。
+fn process_facts() -> Vec<(Assessment, bool)> {
+    let mut v: Vec<(Assessment, bool)> = vec![];
+    for killed in [false, true] {
+        for exit in [
+            None,
+            Some(Exit::Code(0)),
+            Some(Exit::Code(3)),
+            Some(Exit::Signal("hup".into())),
+            Some(Exit::Signal("kill".into())),
+        ] {
+            v.push((rt_exit(exit, killed), false));
+        }
+        for gone in [RuntimeGone::Session, RuntimeGone::Server] {
+            v.push((gone_fact(gone, killed), false));
+        }
+        // 有句柄、这一 tick 运行时还没报到它：STARTING 窗口内（a23）与窗口外（视图里会走上面那条
+        // `runtime_gone`，状态机这一层只认拿到的事实）两种喂法。
+        for age in [Some(0u64), Some(3600), None] {
+            v.push((agora::status::process_layer(None, age, killed), false));
+        }
+    }
+    v.push((
+        agora::status::runtime_unavailable("protocol version mismatch"),
+        true,
+    ));
+    v.push((agora::status::external_process_gone(), false));
+    v
+}
+
+/// 有句柄的行：第 2 节能喂的形状。
+fn probe_handle_rows(v: &mut Vec<Fed>) {
+    for declared in [true, false] {
+        // ① 一条 hook 事件 + 三个 tick（宽限内 / 沉默阈值之后 / 驻留过期之后），屏幕证据四态。
+        for ev in hook_events() {
+            for (spawn, now) in [(Some(0u64), 1i64), (Some(3600), 60i64)] {
+                for text in screen_evidence() {
+                    let mut m = Machine::new(cfg(), declared, 1, 0);
+                    m.apply(&ev, 1, 0);
+                    v.push(tick_rt(
+                        &mut m,
+                        &pane(Some(0)),
+                        spawn,
+                        false,
+                        text.as_ref(),
+                        now,
+                    ));
+                    v.push(tick_rt(
+                        &mut m,
+                        &pane(Some(0)),
+                        spawn,
+                        false,
+                        text.as_ref(),
+                        now + 600,
+                    ));
+                    v.push(tick_rt(
+                        &mut m,
+                        &pane(Some(0)),
+                        spawn,
+                        false,
+                        None,
+                        now + 90,
+                    ));
+                }
+            }
+        }
+        // ② 每一条进程事实：既喂给"hook 还没说话"的行，也喂给"hook 先说了结束"的行。
+        for (fact, unreadable) in process_facts() {
+            for declared2 in [true, false] {
+                v.push(running_then_fact(
+                    declared2,
+                    fact.clone(),
+                    Liveness::Dead,
+                    unreadable,
+                ));
+                let mut m = Machine::new(cfg(), true, 1, 0);
+                m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 0);
+                tick_rt(&mut m, &pane(Some(0)), Some(3600), false, None, 30);
+                m.apply(&AgoraEvent::SessionEnded(Some("other".into())), 1, 40);
+                let a = m.observe(Observation {
+                    process: fact.clone(),
+                    liveness: Liveness::Dead,
+                    text: None,
+                    runtime: None,
+                    epoch: 1,
+                    now: 60,
+                });
+                v.push(Fed {
+                    a,
+                    liveness: Liveness::Dead,
+                    unreadable,
+                });
+            }
+        }
+        // ③ 活动层：有输出 / 没输出走到 IDLE。
+        for text in screen_evidence() {
+            let mut m = Machine::new(cfg(), declared, 1, 0);
+            v.push(tick_rt(
+                &mut m,
+                &pane(None),
+                Some(3600),
+                false,
+                text.as_ref(),
+                1,
+            ));
+            v.push(tick_rt(
+                &mut m,
+                &pane(None),
+                Some(3600),
+                false,
+                text.as_ref(),
+                200,
+            ));
+            v.push(tick_rt(
+                &mut m,
+                &pane(Some(200)),
+                Some(3600),
+                false,
+                text.as_ref(),
+                202,
+            ));
+        }
+        // ④ 挂起的权限：提示在屏幕上、从屏幕上消失、之后被 hook 答掉。
+        for on_screen in [true, false] {
+            let mut m = Machine::new(cfg(), declared, 1, 0);
+            m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 0);
+            m.apply(
+                &AgoraEvent::DecisionNeeded {
+                    tool_use_id: "t1".into(),
+                    summary: "Bash: sleep 20".into(),
+                },
+                1,
+                1,
+            );
+            for (i, now) in [3i64, 5, 7, 9].iter().enumerate() {
+                let prompt = if on_screen || i < 2 {
+                    Some(DetectionResult {
+                        status: Status::Waiting,
+                        confidence: 0.7,
+                        reason: "prompt: Do you want to proceed?".to_owned(),
+                    })
+                } else {
+                    None
+                };
+                v.push(tick_rt(
+                    &mut m,
+                    &pane(Some(0)),
+                    Some(3600),
+                    false,
+                    prompt.as_ref(),
+                    *now,
+                ));
+            }
+            m.apply(&AgoraEvent::DecisionResolved(Some("t1".into())), 1, 11);
+            v.push(tick_rt(&mut m, &pane(Some(0)), Some(3600), false, None, 11));
+        }
+    }
+}
+
+/// 无句柄的行（第 3 节）：进程层恒说"不知道"，只有 hook 与探活能说话。
+fn probe_handleless_rows(v: &mut Vec<Fed>) {
+    for ev in hook_events() {
+        for lv in [Liveness::Alive, Liveness::Unknown, Liveness::Dead] {
+            for at in [1i64, 11, 3600, 7201] {
+                let mut m = Machine::new(cfg(), true, 1, 0);
+                m.apply(&ev, 1, 0);
+                v.push(tick_external(&mut m, lv, at));
+                v.push(tick_external(&mut m, lv, at + 600));
+            }
+        }
+    }
+    for lv in [Liveness::Alive, Liveness::Unknown, Liveness::Dead] {
+        // 一条 hook 事件都没有的行（检查点刚恢复）；与沉默满 2 h 的那一格。
+        let mut m = Machine::new(cfg(), true, 1, 0);
+        v.push(tick_external(&mut m, lv, 1));
+        v.push(tick_external(&mut m, lv, 7201));
+        m.apply(&AgoraEvent::TurnEnded(Some("done".into())), 1, 7202);
+        v.push(tick_external(&mut m, lv, 7202));
+        // 宿主说了结束之后再喂沉默：不许被沉默兜底捞回 UNKNOWN。
+        m.apply(&AgoraEvent::SessionEnded(Some("other".into())), 1, 7203);
+        v.push(tick_external(&mut m, lv, 20000));
+    }
+}
+
+#[test]
+fn every_reachable_cell_is_in_the_table() {
+    let mut handle: Vec<Fed> = Vec::new();
+    let mut handleless: Vec<Fed> = Vec::new();
+    probe_handle_rows(&mut handle);
+    probe_handleless_rows(&mut handleless);
+    assert!(
+        handle.len() > 100,
+        "喂法太少（{}），闭合守卫会退化成空话",
+        handle.len()
+    );
+    assert!(handleless.len() > 50, "喂法太少（{}）", handleless.len());
+
+    for (prefix, section, fed) in [
+        ("a", "第 2 节（有运行时句柄）", &handle),
+        ("x", "第 3 节（无运行时句柄）", &handleless),
+    ] {
+        for f in fed {
+            assert_cause_matches_status(&f.a, "闭合守卫");
+            let trip = wire_triple(f);
+            let claimed = ROWS.iter().any(|r| {
+                r.id.starts_with(prefix) && r.verdict != Verdict::Never && cell_accepts(r, &trip)
+            });
+            assert!(
+                claimed,
+                "状态机在{section}喂出表上没有的一格 {} | {} | {}（reason {:?}、cause {:?}）：\
+                 要么这一格该进 docs/spec/status.md 与 ROWS，要么这个落点是 bug",
+                trip[0],
+                trip[1],
+                trip[2],
+                f.a.reason.as_deref().unwrap_or_default(),
+                f.a.unknown_cause,
+            );
+        }
     }
 }
