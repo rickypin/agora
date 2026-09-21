@@ -5,7 +5,7 @@ import type { SessionRow } from "./events";
 import { describeNode, type NodeStatus } from "./Header";
 import type { NewAgentInitial } from "./NewAgentDialog";
 import { SidebarRow } from "./SessionRow";
-import { buildTree, flattenTree, loadCollapsed, rowGroupKeys, storeCollapsed, type TreeGroup } from "./sidebarTreeModel";
+import { buildTree, flattenTree, historyKey, isHistoryKey, loadCollapsed, rowGroupKeys, storeCollapsed, type TreeGroup } from "./sidebarTreeModel";
 
 /**
  * 「按项目」视图（A48，agora-uvd.3；docs/spec/ux.md「按项目」线框）：节点组 → 仓库组 → worktree 组（⎇ 分支）
@@ -18,6 +18,11 @@ import { buildTree, flattenTree, loadCollapsed, rowGroupKeys, storeCollapsed, ty
  * 带着 Node / Project / Worktree 打开 New Agent 对话框（只剩选 Agent 一步），「shell」连对话框都不开、
  * 直接在这个 worktree 里 POST 一条 shell 会话；节点组头「+」只预填 Node；「其它目录」没有按钮。
  * stale 节点上一律禁用（一跳转发到不了）。
+ *
+ * 一进程一行（agora-5gg.19，决策 agora-5gg.8 选 A）：`end_cause = superseded` 的旧行不占顶层，挂到同一
+ * 进程 / 同目录的当前行下面一枚「历史对话 N」里（折叠规则在 sidebarTreeModel 的 foldSuperseded）。它与
+ * 组折叠有两处不同：默认收起（组默认展开），以及不存 localStorage——行的 id 会随 TTL 与一键清理死掉，
+ * 记住一个已经不存在的对话没有代价也没有收益；而组的折叠是人的浏览习惯，刷新之后还得认得那棵树。
  */
 interface Props {
   /** 已过滤、已按 treeOrder 排好的显示顺序（Workspace 的 visible）。 */
@@ -78,6 +83,10 @@ export function SidebarTree({
   onCreated,
 }: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsed());
+  // 展开着的那些历史折叠（存 `historyKey(当前行 id)`，见 sidebarTreeModel）。默认收起 = 空集；不持久化，
+  // 理由见文件头。只进内存，也不能复用 collapsed 那个集合：它的语义是「收起的组」，两套默认值相反，
+  // 混在一个集合里写就要出错。
+  const [openHistory, setOpenHistory] = useState<Set<string>>(() => new Set());
   // 「shell」失败：组头下一行灰字，5 s 后自己消失（一次只留最后一条——同时点两个组头不是真实用法）。
   const [shellError, setShellError] = useState<{ key: string; message: string } | null>(null);
   // 正在 POST 的那些组（存组 key，不是一个布尔/单值）：只禁用发起的那个组头。同时对两个 worktree
@@ -92,7 +101,7 @@ export function SidebarTree({
     return () => clearTimeout(t);
   }, [shellError]);
   const tree = useMemo(() => buildTree(rows, nodes, localNode), [rows, nodes, localNode]);
-  const flat = useMemo(() => flattenTree(tree, collapsed), [tree, collapsed]);
+  const flat = useMemo(() => flattenTree(tree, collapsed, openHistory), [tree, collapsed, openHistory]);
   // 每个组（含祖先）里需要关注的行数，按过滤前的 all 算；只在折叠时显示。
   const attention = useMemo(() => {
     const count = new Map<string, number>();
@@ -156,21 +165,49 @@ export function SidebarTree({
     });
   }
 
+  /** 历史行 id → 它的当前行 id：顺手从平铺里拿（只有被折起来的行带 `hostId`），不再走一遍树。 */
+  const hostOf = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const e of flat) if (e.kind === "row" && e.hostId !== undefined) m.set(e.row.id, e.hostId);
+    return m;
+  }, [flat]);
+
+  function toggleHistory(key: string) {
+    setOpenHistory((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   // 选中行落进折叠的组时自动展开一次（照 Sidebar.tsx 里 agora-4nk 的写法）：Alt/Option+N、通知点击、命令面板
   // 都能从外面选中折叠组里的行，不展开就是主区有它、侧栏没有。只在 active 变化时把那条路径上的组 key 从
-  // collapsed 里去掉，不派生成「active 在里面就一直开」——那样人点组头收不起来。
+  // collapsed 里去掉，不派生成「active 在里面就一直开」——那样人点组头收不起来。选中一行被折起来的历史时
+  // 同一条规则走另一侧：把宿主行那枚折叠打开（agora-5gg.19）。
   const activePath = useMemo(() => {
     const row = active === null ? undefined : rows.find((r) => r.id === active);
-    return row ? rowGroupKeys(row).join("\n") : "";
-  }, [active, rows]);
+    if (!row) return "";
+    const host = hostOf.get(row.id);
+    return [...rowGroupKeys(row), ...(host === undefined ? [] : [historyKey(host)])].join("\n");
+  }, [active, rows, hostOf]);
   useEffect(() => {
     if (activePath === "") return;
     const keys = activePath.split("\n");
+    const groupKeys = keys.filter((k) => !isHistoryKey(k));
+    // 历史折叠存的是完整 key（`hist:<当前行 id>`），与 toggleHistory 同一侧，不拆成裸 id 再拼回去。
+    const folds = keys.filter(isHistoryKey);
     setCollapsed((prev) => {
-      if (!keys.some((k) => prev.has(k))) return prev;
+      if (!groupKeys.some((k) => prev.has(k))) return prev;
       const next = new Set(prev);
-      for (const k of keys) next.delete(k);
+      for (const k of groupKeys) next.delete(k);
       storeCollapsed(next);
+      return next;
+    });
+    setOpenHistory((prev) => {
+      if (!folds.some((k) => !prev.has(k))) return prev;
+      const next = new Set(prev);
+      for (const k of folds) next.add(k);
       return next;
     });
   }, [active, activePath]);
@@ -264,10 +301,17 @@ export function SidebarTree({
         }
         if (e.hidden) return null;
         const r = e.row;
-        const depth = rowGroupKeys(r).length;
+        // 历史行比宿主行再缩一格：它是挂在当前行下面的，不是同一层的另一条会话（agora-5gg.19）。
+        const depth = rowGroupKeys(r).length + (e.hostId === undefined ? 0 : 1);
+        const histKey = historyKey(r.id);
+        const historyOpen = openHistory.has(histKey);
+        const count = e.historyCount ?? 0;
         // <li class="done"> 由外面这一层包：SidebarRow 自己的 <li> 归 uvd.7，本任务不动它（不许改 SessionRow.tsx）。
         return (
-          <li key={r.id} className={`tree-row depth-${depth}${r.status === "finished" ? " done" : ""}`}>
+          <li
+            key={r.id}
+            className={`tree-row depth-${depth}${r.status === "finished" ? " done" : ""}${e.hostId === undefined ? "" : " history"}`}
+          >
             <ul>
               <SidebarRow
                 row={r}
@@ -280,6 +324,23 @@ export function SidebarTree({
                 // 组头已经说明仓库与分支，行上再画一遍「name ⎇ branch」是噪音（agora-uvd.8 / agora-s7o）。
                 showProject={false}
               />
+              {count > 0 && (
+                <li className="tree-history-item">
+                  <button
+                    type="button"
+                    className="tree-history"
+                    aria-expanded={historyOpen}
+                    data-testid={`row-history-${r.id}`}
+                    title="同一个 agent 进程被换掉的旧对话（superseded）：身份仍是对话，数据一个字没动，只是不再各占一行"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      toggleHistory(histKey);
+                    }}
+                  >
+                    <span className="tree-caret muted">{historyOpen ? "▾" : "▸"}</span> 历史对话 {count}
+                  </button>
+                </li>
+              )}
             </ul>
           </li>
         );

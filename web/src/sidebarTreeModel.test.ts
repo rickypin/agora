@@ -3,7 +3,7 @@ import type { SessionRow } from "./events";
 import { fuzzyFilter } from "./fuzzy";
 import type { NodeStatus } from "./Header";
 import { rowHaystack } from "./SessionRow";
-import { buildTree, COLLAPSED_STORAGE_KEY, flattenTree, loadCollapsed, rowGroupKeys, storeCollapsed, treeOrder, type TreeGroup } from "./sidebarTreeModel";
+import { buildTree, COLLAPSED_STORAGE_KEY, flattenTree, foldSuperseded, historyKey, loadCollapsed, rowGroupKeys, storeCollapsed, treeOrder, type TreeGroup } from "./sidebarTreeModel";
 
 function row(id: string, node: string, created: string, project: SessionRow["project"] = null, extra: Record<string, unknown> = {}): SessionRow {
   return { id, node, status: "running", alive: true, created_at: created, project, display_name: id, ...extra };
@@ -165,6 +165,166 @@ describe("sidebarTree", () => {
     // 过滤只删不换序：留下的行相对顺序与不过滤时一致。
     const some = fuzzyFilter(treeOrder(ROWS, nodes, "mac"), "mac:", rowHaystack).map((r) => r.id);
     expect(some).toEqual(["mac:a", "mac:b", "mac:wt", "mac:sh"]);
+  });
+
+  // superseded 折叠（agora-5gg.19，决策 agora-5gg.8 选 A）：身份仍是对话，呈现层一进程一行。
+  // 判据是 `end_cause` 枚举（5gg.6）而不是 reason 那句人话。
+  const superseded = (id: string, created: string, extra: Record<string, unknown> = {}): SessionRow =>
+    row(id, "mac", created, main, { status: "finished", alive: false, process: "gone", origin: "external", pid: 4242, working_directory: AGORA, end_cause: { kind: "superseded" }, ...extra });
+
+  it("superseded rows of the same process fold under the current row and are not top level (agora-5gg.19)", () => {
+    const now = row("mac:now", "mac", "2026-09-18T12:00:03Z", main, { pid: 4242, working_directory: AGORA, origin: "external" });
+    const other = row("mac:other", "mac", "2026-09-18T12:00:04Z", main, { pid: 9999, working_directory: AGORA });
+    const rows = [superseded("mac:old1", "2026-09-18T12:00:01Z"), superseded("mac:old2", "2026-09-18T12:00:02Z"), now, other];
+    const tree = buildTree(rows, undefined, "mac");
+    const wt = tree[0]!.children[0]!.children[0]!;
+    // 顶层只剩当前行与另一个进程的行；两行旧对话挂在 mac:now 下面，按创建序。
+    expect(wt.rows.map((r) => r.id)).toEqual(["mac:now", "mac:other"]);
+    expect(wt.history.get("mac:now")!.map((r) => r.id)).toEqual(["mac:old1", "mac:old2"]);
+    expect(wt.history.get("mac:other")).toBeUndefined();
+    // 树的骨架里根本不会出现旧行（`outline` 只走 `rows`）。
+    expect(outline(tree)).toEqual(["node:mac", `  repo:mac:${AGORA}`, `    wt:mac:${AGORA}`, "      mac:now", "      mac:other"]);
+    // 计数：宿主行带 2，别人带 0；组件拿它决定画不画「历史对话 N」。
+    const counts = (entries: ReturnType<typeof flattenTree>) => entries.flatMap((e) => (e.kind === "row" ? [[e.row.id, e.ordinal, e.hidden, e.historyCount ?? 0, e.hostId ?? "-"] as const] : []));
+    expect(counts(flattenTree(tree, new Set()))).toEqual([
+      ["mac:now", 1, false, 2, "-"],
+      // 默认收起，但序号照数（与折叠组、与 A46 Finished 区同一条规则：不画不是不数）。
+      ["mac:old1", 2, true, 0, "mac:now"],
+      ["mac:old2", 3, true, 0, "mac:now"],
+      ["mac:other", 4, false, 0, "-"],
+    ]);
+    // 展开那一枚：旧行不再 hidden，别的行的序号一个字不动。
+    expect(counts(flattenTree(tree, new Set(), new Set([historyKey("mac:now")])))).toEqual([
+      ["mac:now", 1, false, 2, "-"],
+      ["mac:old1", 2, false, 0, "mac:now"],
+      ["mac:old2", 3, false, 0, "mac:now"],
+      ["mac:other", 4, false, 0, "-"],
+    ]);
+    // treeOrder 把历史行算在内（它们仍可被 Alt/Option+N 选中，选中会自动展开那枚折叠）。
+    expect(treeOrder(rows, undefined, "mac").map((r) => r.id)).toEqual(["mac:now", "mac:old1", "mac:old2", "mac:other"]);
+  });
+
+  it("superseded rows without a current row stay ordinary finished rows (agora-5gg.19)", () => {
+    // 进程退了而桶里全是 superseded：新对话没登记出来（或被 external_finished_ttl 删了）。这些旧行是
+    // 仅存的记录，折起来就没有了——按普通 FINISHED 画在顶层。
+    const rows = [superseded("mac:old1", "2026-09-18T12:00:01Z"), superseded("mac:old2", "2026-09-18T12:00:02Z")];
+    const tree = buildTree(rows, undefined, "mac");
+    const wt = tree[0]!.children[0]!.children[0]!;
+    expect(wt.rows.map((r) => r.id)).toEqual(["mac:old1", "mac:old2"]);
+    expect([...wt.history.keys()]).toEqual([]);
+    expect(flattenTree(tree, new Set()).flatMap((e) => (e.kind === "row" && !e.hidden ? [e.row.id] : []))).toEqual(["mac:old1", "mac:old2"]);
+    // 过滤同理：旧行单独命中时它回到顶层，不会为了找不着的当前行而消失。
+    const kept = fuzzyFilter(treeOrder([...rows, row("mac:now", "mac", "2026-09-18T12:00:03Z", main, { pid: 4242, working_directory: AGORA })], undefined, "mac"), "old1", (r) => r.id);
+    expect(outline(buildTree(kept, undefined, "mac"))).toEqual(["node:mac", `  repo:mac:${AGORA}`, `    wt:mac:${AGORA}`, "      mac:old1"]);
+  });
+
+  it("the fold bucket is (node, pid) first and (node, working_directory) when there is no pid (agora-5gg.19)", () => {
+    const current = (id: string, extra: Record<string, unknown> = {}): SessionRow => row(id, "mac", "2026-09-18T12:00:09Z", main, { origin: "external", ...extra });
+    // 拿不到进程号（Codex Desktop 那一类：pid null、process unknown）：退到同一目录。
+    const byCwd = foldSuperseded([
+      superseded("mac:old", "2026-09-18T12:00:01Z", { pid: null }),
+      current("mac:now", { pid: null, working_directory: AGORA }),
+    ]);
+    expect(byCwd.rows.map((r) => r.id)).toEqual(["mac:now"]);
+    expect(byCwd.history.get("mac:now")!.map((r) => r.id)).toEqual(["mac:old"]);
+    // pid 优先于目录：同进程的两行是一条工作线，同目录只是同名（决策原文里 notes×8 那种计数）。
+    const older = superseded("mac:old", "2026-09-18T12:00:01Z", { pid: 1 });
+    const samePid = current("mac:pid1", { pid: 1, working_directory: "/tmp/a" });
+    const newerDir = current("mac:pid2", { pid: 2, working_directory: AGORA });
+    expect(foldSuperseded([older, newerDir, samePid]).history.get("mac:pid1")!.map((r) => r.id)).toEqual(["mac:old"]);
+    // 跨节点不折：pid 在两台机器上各自为政，4242 在 mac 与在 zuan 不是同一个进程。
+    const folded = foldSuperseded([superseded("mac:old", "1"), { ...current("zuan:now", { pid: 4242, working_directory: AGORA }), node: "zuan" }]);
+    expect(folded.rows.map((r) => r.id)).toEqual(["mac:old", "zuan:now"]);
+    expect([...folded.history.keys()]).toEqual([]);
+    // pid 与 cwd 都拿不到（老库里的行）：没有人可折。
+    expect(foldSuperseded([superseded("mac:old", "1", { pid: null, working_directory: null })]).rows.map((r) => r.id)).toEqual(["mac:old"]);
+  });
+
+  it("only end_cause superseded folds, and a chain lands flat under the newest row (agora-5gg.19)", () => {
+    // 别的结束原因一律不折：人在终端里自己结束的、探活发现的、运行时会话没了的、按过 Kill 的，
+    // 都不是“被新对话换掉”，它们各自还是一条看得见的会话记录。
+    const causes: Record<string, unknown> = {
+      host_session_end: { kind: "host_session_end", value: "exit" },
+      process_gone: { kind: "process_gone" },
+      runtime_gone: { kind: "runtime_gone", value: "session" },
+      killed_by_user: { kind: "killed_by_user" },
+      // 老节点 / 5gg.6 之前写下的检查点：这一格是空的，空不等于 superseded，也不等于「没结束」。
+      null_cause: null,
+      absent: undefined,
+    };
+    const stayed: Record<string, string[]> = {};
+    for (const [label, cause] of Object.entries(causes)) {
+      const rows = [superseded("mac:x", "2026-09-18T12:00:01Z", { end_cause: cause }), row("mac:now", "mac", "2026-09-18T12:00:02Z", main, { pid: 4242, working_directory: AGORA })];
+      const folded = foldSuperseded(rows);
+      stayed[label] = folded.rows.map((r) => r.id);
+      expect([...folded.history.keys()]).toEqual([]);
+    }
+    // 每一档都留在顶层（同 pid、同目录，本该折得起来——只差 end_cause 不是 superseded）。
+    expect(stayed).toEqual({
+      host_session_end: ["mac:x", "mac:now"],
+      process_gone: ["mac:x", "mac:now"],
+      runtime_gone: ["mac:x", "mac:now"],
+      killed_by_user: ["mac:x", "mac:now"],
+      null_cause: ["mac:x", "mac:now"],
+      absent: ["mac:x", "mac:now"],
+    });
+    // 有运行时句柄的行（origin = agora / adopted）就算带着 superseded 也不折：supersede 只发生在无句柄的
+    // 行上（`src/session/manager.rs` 的 supersede_handleless_rows），真出现这一行说明我们对身份的理解错了；
+    // 把人正在用的那条 pane 藏起来比多画一行严重得多。headless（无句柄的另一档）照折。
+    const handled = foldSuperseded([
+      superseded("mac:x", "2026-09-18T12:00:01Z", { origin: "agora" }),
+      superseded("mac:h", "2026-09-18T12:00:02Z", { origin: "headless" }),
+      row("mac:now", "mac", "2026-09-18T12:00:03Z", main, { pid: 4242, working_directory: AGORA }),
+    ]);
+    expect(handled.rows.map((r) => r.id)).toEqual(["mac:x", "mac:now"]);
+    expect(handled.history.get("mac:h")).toBeUndefined();
+    expect(handled.history.get("mac:now")!.map((r) => r.id)).toEqual(["mac:h"]);
+    // 词表外的 kind（对端比页面新）同样不折：不认识的枚举当「没说」，不能拿它做隐藏行的决定。
+    expect(foldSuperseded([superseded("mac:x", "1", { end_cause: { kind: "replaced_by_desktop" } })]).rows.map((r) => r.id)).toEqual(["mac:x"]);
+    // 一条链 A→B→C：B 自己也被 C 换掉了，两行都并进 C——一进程一行，不套两层折叠。
+    const chain = [
+      superseded("mac:a", "2026-09-18T12:00:01Z"),
+      superseded("mac:b", "2026-09-18T12:00:02Z"),
+      row("mac:c", "mac", "2026-09-18T12:00:03Z", main, { pid: 4242, working_directory: AGORA, origin: "external" }),
+    ];
+    const folded = foldSuperseded(chain);
+    expect(folded.rows.map((r) => r.id)).toEqual(["mac:c"]);
+    expect(folded.history.get("mac:c")!.map((r) => r.id)).toEqual(["mac:a", "mac:b"]);
+    // 当前行不因为折叠换位置：它还在自己 created_at 那一格（行的位置只随创建 / 删除变）。
+    const withNeighbour = [...chain, row("mac:z", "mac", "2026-09-18T12:00:04Z", sglog) as SessionRow];
+    const tree = buildTree(withNeighbour, undefined, "mac");
+    expect(outline(tree)).toEqual([
+      "node:mac",
+      `  repo:mac:${AGORA}`,
+      `    wt:mac:${AGORA}`,
+      "      mac:c",
+      `  repo:mac:/Users/ricky/code/sglog`,
+      `    wt:mac:/Users/ricky/code/sglog`,
+      "      mac:z",
+    ]);
+  });
+
+  it("folds a row shaped exactly like GET /api/sessions output (agora-5gg.19)", () => {
+    // 上面几笔都是对象字面量，拼错一个键只会让断言变松。这一份是服务端原样发回来的形态（`src/events.rs`
+    // 的 to_value(view)：SessionRecord flatten + pid + assessment flatten），键名钉在这里。
+    const snapshot = JSON.parse(
+      `[{"id":"mac:old","node":"mac","runtime_ref":null,"display_name":"notes","agent_type":"grok",
+         "working_directory":"/Users/ricky/notes","origin":"external","created_at":"2026-09-18T12:00:01Z",
+         "status":"finished","source":"hook","confidence":0.9,"reason":"superseded: 新对话 9b2e1c",
+         "end_cause":{"kind":"superseded"},"unknown_cause":null,"process":"gone","alive":false,"pid":31817,
+         "project":{"repo":"/Users/ricky/notes","name":"notes","worktree":"/Users/ricky/notes","branch":null,"main":true}},
+        {"id":"mac:now","node":"mac","runtime_ref":null,"display_name":"notes","agent_type":"grok",
+         "working_directory":"/Users/ricky/notes","origin":"external","created_at":"2026-09-18T12:00:09Z",
+         "status":"running","source":"hook","confidence":0.9,"reason":"prompt submitted",
+         "end_cause":null,"unknown_cause":null,"process":"alive","alive":true,"pid":31817,
+         "project":{"repo":"/Users/ricky/notes","name":"notes","worktree":"/Users/ricky/notes","branch":null,"main":true}}]`,
+    ) as SessionRow[];
+    const tree = buildTree(snapshot, undefined, "mac");
+    const wt = tree[0]!.children[0]!.children[0]!;
+    // 同一个 grok 进程（pid 31817）的两行：顶层只剩当前那一行，旧的那行是它的历史。
+    expect(wt.rows.map((r) => r.id)).toEqual(["mac:now"]);
+    expect(wt.history.get("mac:now")!.map((r) => r.id)).toEqual(["mac:old"]);
+    expect(treeOrder(snapshot, undefined, "mac").map((r) => r.id)).toEqual(["mac:now", "mac:old"]);
   });
 
   it("collapsed set round-trips through storage and survives garbage", () => {

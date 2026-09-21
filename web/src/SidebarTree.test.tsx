@@ -19,6 +19,19 @@ function row(id: string, node: string, created: string, project: SessionRow["pro
   return { id, node, status: "running", alive: true, created_at: created, project, agent_type: "claude", display_name: id, ...extra };
 }
 
+/**
+ * 被同一进程的新对话换掉的旧行（agora-5gg.19）：判据是 `end_cause` 枚举，不是 reason 那句人话（5gg.6）。
+ * 默认落在主 worktree 的 pid 4242 上；要造另一个进程就传别的 pid。
+ */
+function sup(id: string, created: string, pid = 4242, extra: Partial<SessionRow> = {}): SessionRow {
+  return row(id, "mac", created, main, { status: "finished", alive: false, process: "gone", origin: "external", pid, working_directory: AGORA, end_cause: { kind: "superseded" }, ...extra });
+}
+
+/** 当前那一行：同一个进程上没被换掉的那一代对话（running，进程还在）。 */
+function current(id: string, created: string, pid = 4242, project: SessionRow["project"] = main): SessionRow {
+  return row(id, "mac", created, project, { origin: "external", pid, working_directory: project?.worktree ?? AGORA });
+}
+
 const node = (name: string, over: Partial<NodeStatus> = {}): NodeStatus => ({ name, online: true, last_seen: null, retrying: false, last_error: null, ...over });
 const NODES = [node("mac", { local: true }), node("zuan", { online: false, last_seen: "2026-09-09T01:00:00Z" })];
 
@@ -136,6 +149,94 @@ it("tree rows draw no project line: the group header already says repo and branc
   mount();
   expect(document.querySelector("[data-testid^='project-']")).toBeNull();
   expect(screen.getByTestId("row-mac:a")).toBeTruthy();
+});
+
+it("superseded rows fold under the current row behind a 历史对话 button (agora-5gg.19)", () => {
+  // 决策 agora-5gg.8 选 A：一个 agent 进程在侧栏占一行，它换掉的旧对话挂在当前行下面。
+  const ROWS2 = [
+    sup("mac:old1", "2026-09-18T12:00:01Z", 4242, { prompt: "旧对话的第一条" }),
+    sup("mac:old2", "2026-09-18T12:00:02Z"),
+    current("mac:now", "2026-09-18T12:00:03Z"),
+    sup("mac:gone1", "2026-09-18T12:00:04Z", 777),
+    current("mac:two", "2026-09-18T12:00:05Z", 777),
+    row("mac:w", "mac", "2026-09-18T12:00:06Z", wt3, { status: "waiting" }),
+  ];
+  const { onOpen } = mount({}, ROWS2);
+  // 顶层只画当前那一行（+ 另一个进程的行）；旧行不在 DOM 里但序号照数：now=1、old1=2、old2=3、
+  // two=4、gone1=5、w=6——折不折都不抖别人序号。
+  expect(order()).toEqual([
+    "tree-group-node:mac",
+    `tree-group-repo:mac:${AGORA}`,
+    `tree-group-wt:mac:${AGORA}`,
+    "row-mac:now",
+    "row-history-mac:now",
+    "row-mac:two",
+    "row-history-mac:two",
+    `tree-group-wt:mac:${WT3}`,
+    "row-mac:w",
+  ]);
+  expect(screen.queryByTestId("row-mac:old1")).toBeNull();
+  expect(screen.getByTestId("row-mac:now").querySelector(".ord")?.textContent).toBe("1");
+  expect(screen.getByTestId("row-mac:two").querySelector(".ord")?.textContent).toBe("4");
+  expect(screen.getByTestId("row-mac:w").querySelector(".ord")?.textContent).toBe("6");
+  const chip = screen.getByTestId("row-history-mac:now");
+  expect(chip.textContent).toBe("▸ 历史对话 2");
+  expect(chip.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.getByTestId("row-history-mac:two").getAttribute("aria-expanded")).toBe("false");
+
+  // 点开一枚：只展开它自己那一枚，旧行按创建序跟在当前行下面，比宿主行多缩一格（depth-4）。
+  fireEvent.click(chip);
+  expect(screen.getByTestId("row-history-mac:now").getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByTestId("row-history-mac:two").getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByTestId("row-mac:gone1")).toBeNull();
+  expect(order()).toEqual([
+    "tree-group-node:mac",
+    `tree-group-repo:mac:${AGORA}`,
+    `tree-group-wt:mac:${AGORA}`,
+    "row-mac:now",
+    // 按钮排在当前行与它的历史之间：展开时它就是那段旧行的标题，不是尾巴。
+    "row-history-mac:now",
+    "row-mac:old1",
+    "row-mac:old2",
+    "row-mac:two",
+    "row-history-mac:two",
+    `tree-group-wt:mac:${WT3}`,
+    "row-mac:w",
+  ]);
+  const old1 = screen.getByTestId("row-mac:old1");
+  const old2 = screen.getByTestId("row-mac:old2");
+  expect([old1.closest("li.tree-row")?.className, old2.closest("li.tree-row")?.className]).toEqual([
+    "tree-row depth-4 done history",
+    "tree-row depth-4 done history",
+  ]);
+  // 旧行占的序号就是它平铺里那两个号（默认收起时也占着这两个号：不画不是不数）。
+  expect([old1.closest("li[data-ordinal]")?.getAttribute("data-ordinal"), old2.closest("li[data-ordinal]")?.getAttribute("data-ordinal")]).toEqual(["2", "3"]);
+  // 两行摘要就是行本身那两行（❯ prompt / ↳ progress）：历史行复用 SidebarRow，不另做一套。
+  expect(old1.querySelector(".line-prompt")?.textContent).toBe("❯ 旧对话的第一条");
+  // 选中一行历史与选中普通行走同一条路：交给 onOpen（主区画它的两行与终端）。
+  fireEvent.click(old1);
+  expect(onOpen).toHaveBeenCalledWith("mac:old1");
+  // 再点一次收起。
+  fireEvent.click(screen.getByTestId("row-history-mac:now"));
+  expect(screen.queryByTestId("row-mac:old1")).toBeNull();
+  // 这枚折叠不进 localStorage：行的 id 会随 TTL 死掉，记住一个已经不存在的对话没有收益（组才记）。
+  expect(localStorage.getItem(COLLAPSED_STORAGE_KEY)).toBeNull();
+});
+
+it("selecting a folded history row from outside opens its fold (agora-5gg.19)", () => {
+  // Alt/Option+N 按 DFS 序号跳，历史行照数；从外面选中它时主区已经有它而侧栏没有，
+  // 同折叠组那一条规则：自动展开一次，人仍能手收回。
+  const rows = [sup("mac:old1", "2026-09-18T12:00:01Z"), current("mac:now", "2026-09-18T12:00:02Z")];
+  const { rerender, props } = mount({ active: "mac:old1" }, rows);
+  expect(screen.getByTestId("row-history-mac:now").getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByTestId("row-mac:old1")).toBeTruthy();
+  // 不以 active 为理由一直强开：人收起来之后，只要 active 没变就不会被顶回去（与折叠组同一条规则）。
+  fireEvent.click(screen.getByTestId("row-history-mac:now"));
+  expect(screen.queryByTestId("row-mac:old1")).toBeNull();
+  // active 真的换过一次（出去再回来）才再展开一次。
+  rerender(<SidebarTree {...props} active="mac:now" />);
+  rerender(<SidebarTree {...props} active="mac:old1" />);
+  expect(screen.getByTestId("row-mac:old1")).toBeTruthy();
 });
 
 it("clicking a group header toggles it and persists to localStorage", () => {

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EventsClient,
+  isEndCause,
   isProcessState,
+  rowEndCause,
   rowProcess,
   type SessionRow,
   type SocketLike,
@@ -126,6 +128,77 @@ describe("EventsClient", () => {
     r = client.sessions.get("n:a")!;
     expect("process" in r).toBe(false);
     expect(rowProcess(r)).toBe("gone");
+  });
+
+  it("carries end_cause through the event stream so a superseded row folds without a reload (agora-5gg.19)", async () => {
+    sockets[0].serverOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    // 没升级的节点不发这个键：行上就是「没有」，历史折叠读成「没说」= 不折（不是读成「不是 superseded」
+    // 之后去猜别的）。
+    expect("end_cause" in client.sessions.get("n:a")!).toBe(false);
+
+    // 同一进程换到了新对话：旧行 FINISHED + end_cause superseded。呈现层按枚举分支而不摸 reason
+    // 那句人话（MISSION §2.3 规则 10），所以这个字段必须随事件流就地更新——否则旧行要等刷新页面才折起来。
+    sockets[0].serverSend([
+      {
+        type: "status_changed", id: "n:a", status: "finished", source: "hook", reason: "superseded: 9b2e1c",
+        alive: false, process: "gone", end_cause: { kind: "superseded" }, unknown_cause: null,
+      },
+    ]);
+    await vi.advanceTimersByTimeAsync(300);
+    let r = client.sessions.get("n:a")!;
+    expect(rowEndCause(r)).toEqual({ kind: "superseded" });
+    expect(r.unknown_cause).toBeNull();
+
+    // 同格的对象事件每批都送来一个新引用：比值不比引用，否则每一个 tick 都是一次「变了」。
+    const calls = onChange.mock.calls.length;
+    sockets[0].serverSend([
+      {
+        type: "status_changed", id: "n:a", status: "finished", source: "hook", reason: "superseded: 9b2e1c",
+        alive: false, process: "gone", end_cause: { kind: "superseded" }, unknown_cause: null,
+      },
+    ]);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(onChange.mock.calls.length).toBe(calls);
+
+    // 换一档：exit_code 带着退出码，旧的那档不能留在行上。
+    sockets[0].serverSend([
+      {
+        type: "status_changed", id: "n:a", status: "finished", source: "process", reason: "x",
+        alive: false, process: "gone", end_cause: { kind: "exit_code", value: 3 },
+      },
+    ]);
+    await vi.advanceTimersByTimeAsync(300);
+    r = client.sessions.get("n:a")!;
+    expect(rowEndCause(r)).toEqual({ kind: "exit_code", value: 3 });
+
+    // 行又活了（hook 写下的 FINISHED 不是终态）：服务端承诺非结束不带 end_cause，null 得真的清空这一格。
+    sockets[0].serverSend([
+      { type: "status_changed", id: "n:a", status: "running", source: "hook", reason: "prompt submitted", alive: true, process: "alive", end_cause: null, unknown_cause: null },
+    ]);
+    await vi.advanceTimersByTimeAsync(300);
+    r = client.sessions.get("n:a")!;
+    expect(rowEndCause(r)).toBeNull();
+
+    // 词表外的 kind（对端二进制比页面新）：读成「没说」，绝不留着上一眼的值——那会把还在用的行折掉。
+    sockets[0].serverSend([
+      { type: "status_changed", id: "n:a", status: "finished", source: "hook", reason: "replaced", alive: false, process: "gone", end_cause: { kind: "replaced_by_desktop" } },
+    ]);
+    await vi.advanceTimersByTimeAsync(300);
+    r = client.sessions.get("n:a")!;
+    expect(rowEndCause(r)).toBeNull();
+    expect(isEndCause({ kind: "replaced_by_desktop" })).toBe(false);
+    expect(isEndCause("superseded")).toBe(false);
+    expect(isEndCause(null)).toBe(false);
+
+    // 这一条不带这个键（对端降级 / 老节点）：行上的键一起删掉，不拿陈旧的枚举去折历史。
+    sockets[0].serverSend([
+      { type: "status_changed", id: "n:a", status: "unknown", source: "hook", reason: "hooks silent", alive: false, process: "unknown" },
+    ]);
+    await vi.advanceTimersByTimeAsync(300);
+    r = client.sessions.get("n:a")!;
+    expect("end_cause" in r).toBe(false);
+    expect(rowEndCause(r)).toBeNull();
   });
 
   it("re-pulls the snapshot after a reconnect and on resync, never polling", async () => {

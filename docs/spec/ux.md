@@ -35,7 +35,7 @@
 |---|---|
 | Cmd/Ctrl + K、Alt/Option + K | Command Palette |
 | Cmd/Ctrl + F、Alt/Option + F | Filter sidebar（name / node / agent / preview；Enter 打开第一条） |
-| Alt/Option + 1…9 | 跳到侧栏第 N 条（按当前视图过滤后的显示顺序：「需要我」是 attention 顺序、「按项目」是树的 DFS 顺序；折叠的行照数） |
+| Alt/Option + 1…9 | 跳到侧栏第 N 条（按当前视图过滤后的显示顺序：「需要我」是 attention 顺序、「按项目」是树的 DFS 顺序；折叠的行照数，被折进「历史对话」里的 superseded 旧行也照数，跳到它们时自动展开那一枚） |
 | Alt/Option + ] / [ | Next / Previous Agent |
 | Alt/Option + N | New Agent |
 | Alt/Option + G | 切换侧栏视图 |
@@ -81,6 +81,7 @@ mac ●
   ▾ agora ⎇ main 主
     ◆ agora-03k 侧栏展开区可读性差     Claude    turn done 2m
     ● 重构 sglog parser                 Codex     working
+      ▸ 历史对话 2
   ▸ agora-uvd.3 ⎇ agora-uvd.3                        1 需要关注
 ▾ 其它目录
     ○ /tmp                              shell     idle 5m
@@ -90,7 +91,13 @@ zuan ●
 ```
 
 规则（唯一的硬规则是第一条，用户 2026-09-08 的第一条反馈「行随状态自己换位置，人跟不上」）：
-- **行的位置只随创建 / 删除变，不随状态变**：`treeOrder` 从头到尾不读 `status` / `status_since`（守卫 `web/src/sidebarTreeModel.test.ts`「order never changes when status or status_since changes」逐元素断言）。让一行进 WAITING，它的状态符号变 ⚠、位置不动；切到「需要我」它才在 NEEDS ATTENTION 顶部。
+- **行的位置只随创建 / 删除变，不随状态变**：`treeOrder` 不拿 `status` / `status_since` 排序（守卫 `web/src/sidebarTreeModel.test.ts`「order never changes when status or status_since changes」逐元素断言）。让一行进 WAITING，它的状态符号变 ⚠、位置不动；切到「需要我」它才在 NEEDS ATTENTION 顶部。只有一条例外（下一条）：被新对话换掉的旧行从顶层拿掉。**没有任何一条规则按“紧急程度”搬行**。
+- **一进程一行：superseded 旧行折进当前行的历史**（决策 agora-5gg.8 选 A，实施 agora-5gg.19，2026-09-21）：同一个 agent 进程反复换对话会留下一堆同名行（2026-09-18 现场：notes×8、dbs-operator×9），哪一行是「当前那个」只能猜。数据模型一个字不动——身份仍是 `(host, agent_session_id)`（ADR-002 D7，Restart 要 resume 具体对话）——只改呈现：`end_cause = superseded` 的旧行（判据是 5gg.6 那个封闭枚举，不是 `reason` 那句人话，MISSION §2.3 规则 10）从顶层拿掉，挂到它下面的历史里，主列表只画当前那一行。
+  - 认「当前那一行」：同一个桶里**最新的那条不是 superseded 的行**。桶 = 同节点 + 同 `pid`（agora-5gg.5 之后 external 行也报进程号），`pid` 探不到时退到同 `working_directory`（Codex Desktop 那一类：`process = unknown`、`pid` 为 null）。三条边界：桶里**没有当前行就不折**（进程退了、新对话没登记出来或已被 `sessions.external_finished_ttl` 删了）——那些旧行是仅存的记录，按普通 FINISHED 留在顶层；**pid 优先于目录**（同进程才是一条工作线，同目录只是同名）；**不跨组搬行**（同进程换了 worktree 的旧行按普通行画，否则会出现空掉的 worktree 组与一个说不出位置依据的行）。一条链 A→B→C 平铺进 C，不套两层折叠。只有无句柄的行（`origin = external / headless`，`isHandleless`）会被折：supersede 只发在那两种来源上（`src/session/manager.rs` 的 `supersede_handleless_rows`），有 `runtime_ref` 的行身份是 pane、同一进程再发 SessionStart 落回同一行，那是 resume 不是换对话——把它藏起来是唯一不可接受的错（当前行那一侧不问来源）。
+  - 画法：当前行下面一枚「▸ 历史对话 N」（`data-testid="row-history-<id>"`，`aria-expanded`，默认收起），展开后是几行普通的淡显行——多缩一格（`li.tree-row.history.depth-4`）、复用 `<SidebarRow>`，所见的就是那两行摘要（❯ prompt / ↳ progress）；点它与点普通行走同一条 `onOpen`。计数 N 是这行名下的旧行数，不是折叠组那种「N 需要关注」。
+  - 序号：历史行**照数**（与折叠组、与 A46 Finished 区同一条规则：不画不是不数，MISSION §6.5）。于是一条行被折进来时总行数不变，别人的号一个不抖（反例设计：把它们从 `treeOrder` 里删掉，Alt/Option+N 会在你眼皮底下换号）。从外面选中一行历史（Alt/Option+N、命令面板、通知点击）自动展开那一枚，人仍能手收回（与折叠组那条 agora-4nk 同一条规则）。
+  - 这枚折叠只进内存、不进 localStorage：组的折叠是人的浏览习惯（刷新还得认得那棵树），而行 id 会随 TTL 与一键清理死掉，记住一个已经不存在的对话没有收益。**只改「按项目」视图**：「需要我」视图里 external 的 FINISHED 本来就直接进 A46 那个默认折叠区，不需要第二种折叠。
+  - `end_cause` 读不到的行（老节点 minor < 1.8、5gg.6 之前写下的 hook 检查点）一律不折：「没有原因」不等于「是 superseded」，也不等于「不是 superseded」——宁可多画一行，不能把还在用的行藏掉。事件流里这个字段随 `status_changed` 就地 patch（`web/src/events.ts`），否则旧行要等刷新页面才折得起来。
 - 分组键三层 + 其它目录，固定不自适应：节点组 `node:<node>`（本机第一，其余按 Header 那一排 `nodes` 的顺序，不在里面的按名字；组头是 Header 同源的点 + 名字）→ 仓库组 `repo:<node>:<project.repo>`（组内按 `project.name` 字母序；组头显示 name，title 是仓库路径）→ worktree 组 `wt:<node>:<project.worktree>`（主 worktree 第一并带「主」标记，其余按目录最后一段字母序；组头 `<目录最后一段> ⎇ <branch>`，detached 显示 `⎇ detached`）→ 行按 `created_at` 升序、同值按 id。`project == null` 的行归该节点的 **其它目录** 组 `other:<node>`，排在该节点所有仓库组之后、组内平铺不再按目录分。`project` 字段来自 `docs/spec/api.md`「每条会话的形态」（agora-uvd.1）。
 - 组头是按钮（`data-testid="tree-group-<key>"`，`aria-expanded`）；折叠按组 key 记 localStorage `agora.sidebar-tree-collapsed`（不按节点整体记）。**折叠只是不画不是不数**：Alt/Option+N 的序号是树的 DFS 顺序里会话行的次序，折叠组里的行序号照数（与 A46 Finished 区同一条规则，MISSION §6.5）；选中行落进折叠组时那条路径上的组自动展开一次、人仍能手动收回（agora-4nk 同一写法）。折叠时组头右侧显示这组里 `needsAttention` 的行数「N 需要关注」（`data-testid="tree-group-attention-<key>"`，按过滤前的全部行算，0 不显示）。
 - 树视图的行不画「仓库 ⎇ 分支」那一行（`RowIdentity` 的 `showProject=false`，agora-uvd.8）：组头已经说了，行上重复是噪音；「需要我」视图照画。
@@ -100,7 +107,7 @@ zuan ●
 - 点组头按钮不折叠这一组：动作按钮是组头按钮的兄弟节点（按钮不能套按钮）并显式 `stopPropagation`。「shell」失败时按 `WriteResult` 的错误类型 + message 在组头下一行显示 5 s（`data-testid="tree-shell-error-<key>"`），不弹窗；POST 期间**只有发起的那个组头**禁用（在途状态按组 key 存，不是一个全局标志——同时对两个 worktree 起 shell 是正当用法，不该互相挡，更不该在途期间把别的组的点击静默吞掉；agora-x1k 修）。这层禁用只覆盖一次 POST 往返，别指望它挡连点：本机实测 22–42 ms（隔离 daemon 上连打五次 `POST /api/sessions`：22 / 22 / 23 / 28 / 42 ms，2026-09-09），比真人 100–300 ms 的双击间隔短一个量级。本机真正让人不重复点的是反馈快——`announce_created` 在 handler 返回前同步 publish（`src/api/sessions.rs`），新行几乎与 201 同时到、`pendingOpen` 立刻选中它；in-flight 禁用真正用得上的是慢链路（peer 一跳转发、手机远程），那里窗口才够长到看得见。守卫 `web/src/SidebarTree.test.tsx`（+ 预填且不折叠 / shell 只发一条并就地报错 / in-flight 期间自己禁用且第二次点击不再发 POST / in-flight 期间别的 worktree 的 shell 按钮不受影响 / stale 节点禁用）、`web/src/NewAgentDialog.test.tsx`（预填只生效一次 / initial.node 预选 peer）。
 - 过滤只删不换序：过滤后只剩有行的组（组是从行推出来的，空组不存在）。
 - Header 计数行的「Finished N」一键清理与视图无关：清理对象仍是 attention 折叠区的定义（`sectionOf(r, seen) === "finished"`），两种视图下按钮 title 的行数相同（守卫 `web/src/Sidebar.test.tsx`「the Finished clear count is the same in both modes」）。
-- 守卫：`web/src/sidebarTreeModel.test.ts`（分组与创建序、其它目录、本机第一、状态不改序、折叠照数、过滤删空组）、`web/src/SidebarTree.test.tsx`（组头分支 / 主标记 / 折叠计数、FINISHED 原位 done、折叠记忆、active 自动展开）、`web/src/Sidebar.test.tsx`「tree mode renders SidebarTree and no section headings」、`web/src/keyboard.test.tsx`「Alt/Option+N in tree mode follows DFS order across groups」。
+- 守卫：`web/src/sidebarTreeModel.test.ts`（分组与创建序、其它目录、本机第一、状态不改序、折叠照数、过滤删空组、superseded 折在当前行下且不占顶层 / 无当前行时按普通行留在顶层 / 桶的认法 pid 优先于目录）、`web/src/SidebarTree.test.tsx`（组头分支 / 主标记 / 折叠计数、FINISHED 原位 done、折叠记忆、active 自动展开、「历史对话 N」默认收起、只展开自己那一枚、选中被折起来的历史自动展开）、`web/src/events.test.ts`（`end_cause` 随事件流就地更新、词表外读成「没说」）、`web/src/Sidebar.test.tsx`「tree mode renders SidebarTree and no section headings」、`web/src/keyboard.test.tsx`「Alt/Option+N in tree mode follows DFS order across groups」。
 
 ```
 mac ● zuan ●          Agents: 12

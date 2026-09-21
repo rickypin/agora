@@ -37,6 +37,81 @@ export function rowProcess(row: SessionRow): ProcessState {
   return isProcessState(row.process) ? row.process : row.alive ? "alive" : "gone";
 }
 
+/**
+ * 一行**结束**的原因（封闭枚举，agora-5gg.6；`docs/spec/api.md`「会话形态」）。
+ * `reason` 是给人看的一句话，措辞随版本改；程序按 `kind` 分支，不做字符串匹配（MISSION §2.3 规则 10）。
+ * `value` 只有四档带（`exit_code` / `signal` / `host_session_end` / `runtime_gone`），其余是裸 `{ kind }`。
+ */
+export type EndCauseKind =
+  | "exit_code"
+  | "signal"
+  | "killed_by_user"
+  | "host_session_end"
+  | "superseded"
+  | "process_gone"
+  | "runtime_gone";
+
+export interface EndCause {
+  kind: EndCauseKind;
+  value?: number | string | null;
+}
+
+/** 一行说不清的原因（与 [`EndCause`] 对称，agora-5gg.6）。 */
+export type UnknownCause =
+  | "runtime_unavailable"
+  | "hooks_silent_screen"
+  | "prompt_gone"
+  | "hooks_silent_no_handle"
+  | "no_observation"
+  | "exit_status_missing";
+
+const END_CAUSE_KINDS: readonly string[] = [
+  "exit_code",
+  "signal",
+  "killed_by_user",
+  "host_session_end",
+  "superseded",
+  "process_gone",
+  "runtime_gone",
+];
+
+const UNKNOWN_CAUSES: readonly string[] = [
+  "runtime_unavailable",
+  "hooks_silent_screen",
+  "prompt_gone",
+  "hooks_silent_no_handle",
+  "no_observation",
+  "exit_status_missing",
+];
+
+/** 运行时守卫：行与事件都可能是别的节点的二进制写下的，不在词表里的 kind 当「没说」。 */
+export function isEndCause(v: unknown): v is EndCause {
+  const kind = (v as { kind?: unknown } | null | undefined)?.kind;
+  return typeof kind === "string" && END_CAUSE_KINDS.includes(kind);
+}
+
+export function isUnknownCause(v: unknown): v is UnknownCause {
+  return typeof v === "string" && UNKNOWN_CAUSES.includes(v);
+}
+
+/**
+ * 读一行的结束原因。老节点（api_version minor < 1.8）不发这个键，5gg.6 之前写下的 hook 检查点恢复
+ * 出来的结束行也只有 `reason` —— 两种都是 null。**null 不等于「没结束」**（api.md 对调用方的原话）：
+ * 判结束用 `status`，这一格只回答「为什么」。所以拿 null 分支的呈现层（历史折叠，agora-5gg.19）
+ * 只能少折一行，不能把行藏掉。
+ */
+export function rowEndCause(row: SessionRow): EndCause | null {
+  return isEndCause(row.end_cause) ? row.end_cause : null;
+}
+
+/** 同一格的两副面孔是否同一句话：`end_cause` 是对象，事件每批都送来一个新引用，只能比值。 */
+function sameEndCause(a: unknown, b: unknown): boolean {
+  const x = isEndCause(a) ? a : null;
+  const y = isEndCause(b) ? b : null;
+  if (x === null || y === null) return x === y;
+  return x.kind === y.kind && (x.value ?? null) === (y.value ?? null);
+}
+
 export interface SessionRow {
   id: string;
   node: string;
@@ -52,6 +127,13 @@ export interface SessionRow {
    * [`rowProcess`]，不要直接 `row.process === "gone"`。
    */
   process?: ProcessState;
+  /**
+   * 结束的原因（封闭枚举，agora-5gg.6）：`status ∈ {finished, failed}` 时非 null 是新节点的承诺，
+   * 老节点没有这个承诺。读它走 [`rowEndCause`]。
+   */
+  end_cause?: EndCause | null;
+  /** 说不清的原因（agora-5gg.6）：`status = unknown` 时非 null（新节点）。 */
+  unknown_cause?: UnknownCause | null;
   /** 只有并入的 peer 行带它：该 peer 掉线后保留的最后一眼（MISSION §3.5；不变量 8）；本机行没有。 */
   stale?: boolean;
   /**
@@ -113,6 +195,9 @@ export type AgoraEvent =
       alive: boolean;
       /** 进程三态（agora-5gg.18）：与 `alive` 同时带；没升级的节点不发。 */
       process?: ProcessState;
+      /** 结束 / 说不清的封闭枚举（agora-5gg.6）：与 `reason` 同一条结论的两副面孔；老节点不发。 */
+      end_cause?: EndCause | null;
+      unknown_cause?: UnknownCause | null;
       detail?: string | null;
       prompt?: string | null;
       progress?: string | null;
@@ -310,6 +395,13 @@ export class EventsClient {
         // "alive"` 这种自己打自己的行，而 rowProcess 会拿那个陈旧值说话。带了却不认识：保留上一眼。
         if (isProcessState(e.process)) next.process = e.process;
         else if (e.process === undefined) delete next.process;
+        // `end_cause` / `unknown_cause` 同一条纪律（agora-5gg.6）：不带 = 对端还没升级，把行上那个键
+        // 删掉，别拿陈旧的枚举去折历史；带了但 kind 不在词表里 = 对端比本页新，读成「没说」（null），
+        // 同样不能留着上一眼的值——那是把上一次结束的原因安到这一次的结束上。
+        if (e.end_cause === undefined) delete next.end_cause;
+        else next.end_cause = isEndCause(e.end_cause) ? e.end_cause : null;
+        if (e.unknown_cause === undefined) delete next.unknown_cause;
+        else next.unknown_cause = isUnknownCause(e.unknown_cause) ? e.unknown_cause : null;
         // 预览与起点字段：事件没带（undefined）就沿用旧值，带了 null 就是清空。
         for (const k of ["detail", "prompt", "progress", "preview", "status_since", "hooks_unheard"] as const) {
           if (e[k] !== undefined) next[k] = e[k];
@@ -317,7 +409,9 @@ export class EventsClient {
         if (
           (["status", "source", "reason", "alive", "process", "detail", "prompt", "progress", "preview", "status_since", "hooks_unheard"] as const).every(
             (k) => row[k] === next[k],
-          )
+          ) &&
+          sameEndCause(row.end_cause, next.end_cause) &&
+          row.unknown_cause === next.unknown_cause
         )
           return false;
         this.sessions.set(e.id, next);

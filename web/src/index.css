@@ -266,6 +266,11 @@ li.moved > .row { animation: row-moved 1.2s ease-out; }
 .tree .tree-row > ul { padding: 0; }
 .tree .tree-row.depth-2 > ul { padding-left: 14px; }
 .tree .tree-row.depth-3 > ul { padding-left: 26px; }
+/* 一进程一行（agora-5gg.19）：宿主行下面一枚「历史对话 N」，展开后是几行 superseded 旧行。
+   depth-4 只出现在历史行身上（组的深度最多 3），多缩一格表示“挂在上一行下面”。 */
+.tree .tree-row.depth-4 > ul { padding-left: 38px; }
+.tree .tree-history { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; font-size: 11px; padding: 1px 6px 3px 28px; text-align: left; border-radius: 4px; }
+.tree .tree-history:hover, .tree .tree-history:focus-visible { background: var(--panel-2); color: var(--fg); }
 li.done > .row, li.done > ul > li > .row { opacity: 0.55; }
 li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, li.done > ul > li > .row.selected { opacity: 0.8; }
 
