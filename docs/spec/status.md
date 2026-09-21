@@ -79,7 +79,7 @@
 ## 4. 贯穿两档的三条规则
 
 1. **STARTING 不是筐**：hook 层的 STARTING 最多停 `startup_grace`（默认 10 s），到点归 TURN_DONE `awaiting first prompt`，不分 origin、不分进程号在不在（a03 / x02 共用 `Machine::decay_starting`）。
-2. **UNKNOWN 必须带原因、必须有出口**：`unknown_cause` 是封闭集合（`runtime_unavailable | hooks_silent_screen | prompt_gone | hooks_silent_no_handle | no_observation | exit_status_missing`，形态与各自出口见 `docs/spec/api.md`「会话形态」）；表里只允许 a17 / a18 / a22 / a23 / x10 / x12 六格出现 UNKNOWN：六个值都有人认领（a18 一格承两档——屏幕沉默与提示消失对使用者是同一件事），而 `no_observation` 在有句柄与无句柄两档各占一格（a23 / x12，出口不一样：前者下一 tick 落 a01，后者等第一条 hook 事件）。守卫是 `::every_reachable_cell_is_in_the_table`：把 13 类 hook 事件 × 屏幕证据 × 进程事实 × 三种进程号状态喂一遍，每一个落点都要在表里找得到同一档（有句柄 / 无句柄）的一格——状态机私自产出一格新形状而表上没有人写过的话，红在这里。
+2. **UNKNOWN 必须带原因、必须有出口**：`unknown_cause` 是封闭集合（`runtime_unavailable | hooks_silent_screen | prompt_gone | hooks_silent_no_handle | no_observation | exit_status_missing`，形态见 `docs/spec/api.md`「会话形态」，每一种原因的出口逐条列在 MISSION §4.3「UNKNOWN 的允许原因」——那一节是口径，本表是它与代码对账的结果）；表里只允许 a17 / a18 / a22 / a23 / x10 / x12 六格出现 UNKNOWN：六个值都有人认领（a18 一格承两档——屏幕沉默与提示消失对使用者是同一件事），而 `no_observation` 在有句柄与无句柄两档各占一格（a23 / x12，出口不一样：前者下一 tick 落 a01，后者等第一条 hook 事件）。守卫是 `::every_reachable_cell_is_in_the_table`：把 13 类 hook 事件 × 屏幕证据 × 进程事实 × 三种进程号状态喂一遍，每一个落点都要在表里找得到同一档（有句柄 / 无句柄）的一格——状态机私自产出一格新形状而表上没有人写过的话，红在这里。
 3. **结束必须说得出原因**：`end_cause` 是封闭集合（`exit_code | signal | killed_by_user | host_session_end | superseded | process_gone | runtime_gone`）；`reason` 只是给人看的一句话，程序按枚举分支（MISSION §2.3 规则 10）。守卫 `::every_finished_and_failed_row_names_its_end_cause`、`::every_unknown_row_names_why_it_is_unknown`、`::cause_wire_vocabulary_is_the_locked_set`。
 
 ## 5. headless 与 external 不同的三件事

@@ -248,7 +248,7 @@ Session {
     agent_session_id   # agent 自报的当前对话 id（§5.6）；Restart 的 resume 依据
     epoch              # 进程代次：创建为 1，每次 Restart +1；旧代次的 hook 事件丢弃（ADR-002 D1）
     transcript_path    # agent 自报的 transcript 路径；V1 只存不读（ADR-002 D8）
-    origin             # agora | adopted | external（§5.5）：agora 创建的 / 运行时里采纳的 / 只有 hook 看得见的
+    origin             # agora | adopted | external | headless（§5.5）：agora 创建的 / 运行时里采纳的 / 只有 hook 看得见的 / 宿主自己起的无头一次性会话（headless 由裁决 agora-5gg.7 选 B，2026-09-20 agora-5gg.20 落地）
     created_at         # 这一行的起点；external 行取登记它的那条 hook 信封的时刻，不是 daemon 写库的当下（重启重放会把 46 行都写成重启那一刻）
     ended_at           # 该行结束的时刻：运行时报的退出时刻 / hook SessionEnd 的事件时刻 / superseded 的新对话首条事件时刻 / 探活发现进程没了的那个 tick（标 ended_at_approximate）；等待时长、attention 与按结束时间的保留 / 折叠 / 淘汰用
 }
@@ -260,20 +260,35 @@ Session {
 
 进程一栏同样是实时字段，而且是**三值**：`process: alive | gone | unknown`（裁决 agora-5gg.4 选 A，2026-09-19 agora-5gg.18）。取值规则：有运行时句柄的行按 pane 活性给 `alive | gone`；external 行按检查点里的 agent 进程号探活给 `alive | gone`，没有可信进程号（宿主不报、或报来的是所有对话共用的服务进程）给 `unknown`——**「不知道」是一个取值，不是一个 false**，布尔表达不了它（`docs/analysis/session-status-audit-2026-09-18.md` B1 / B2）；`status` 为 FINISHED / FAILED 时一律 `gone`：对话结束即不再谈进程，哪怕那个 pid 还在跑别的对话。旧的 `alive` 布尔是它的投影（恒等于 `process == alive`），只给未升级的 peer 与页面保留一版，下一版删；形态与兼容规则见 `docs/spec/api.md`「会话形态」「api_version 兼容规则」。
 
+「为什么」同样是实时字段，而且是**两个封闭枚举**，不是句子：`end_cause`（`exit_code | signal | killed_by_user | host_session_end{clear|resume|logout|exit|other} | superseded | process_gone | runtime_gone{session|server}`）说这一行为什么结束了，`unknown_cause`（§4.3 末的封闭清单）说这一行为什么说不清；`reason` 降成只给人看的那一句话，措辞可以随版本改，**程序不得据它判断**（§2.3 规则 10；2026-09-21 修订，agora-5gg.17，落地在 2026-09-20 agora-5gg.6）。动因是词表没封起来之前，通知静音与「这一格该给什么出口」都只能对 `reason` 做前缀匹配，规则 10 在 `src/events.rs` 那里破了一个洞；宿主 `SessionEnd` 自带的 reason 词表随各家版本变，所以**原话不进枚举**（认不出的一律 `other`）、只留在 `reason` 里。守卫 `tests/status_truth_table.rs::cause_wire_vocabulary_is_the_locked_set`、`::every_finished_and_failed_row_names_its_end_cause`、`::every_unknown_row_names_why_it_is_unknown`；裁决与动因见 ADR-002 D1，形态见 `docs/spec/api.md`「会话形态」（随 `api_version` 1.8 只增字段）。
+
 节点身份不进本机模型：每个节点只存自己的 session。对外（浏览器与 peer）会话以 `<node>:<id>` 标识，`node` 是节点 id（§9.1）；peer 的会话并入视图时保留来源节点，绝不改写。
 
 ### 4.3 状态定义
 
 | 状态 | UI | 含义 |
 |---|---|---|
-| STARTING | | process created，尚无有效活动。hook 层的 STARTING 最多停 10 s：SessionStart 之后宽限内没有后续事件即归 TURN_DONE（见该行），不许永远钉在这里 |
+| STARTING | | process created，尚无有效活动。hook 层的 STARTING 最多停 10 s（`startup_grace`）：SessionStart 之后宽限内没有后续事件即归 TURN_DONE（见该行），不许永远钉在这里。**这条衰减不分 origin、也不分有没有可信进程号**（2026-09-19 修订，agora-rkl）：无句柄的 external / headless 行同样衰减——「这行要我给它指令」这件事与谁起的无关，规则原先只写在有 pane 的行能走到的分支里，现场 zuan 的 `ef0e50` 因此钉在 `… starting` 180 h（`docs/analysis/session-status-audit-2026-09-18.md` §3.1 / A1）。真值表 a03 与 x02 两格共用同一条衰减（`Machine::decay_starting`，`docs/spec/status.md`）|
 | RUNNING | ● | 持续产生 output |
 | WAITING | ⚠ | agent 在**一轮之中**停下来等人：提问、权限确认（hook：权限请求与提问类工具的事件，各 agent 的映射见 ADR-002 D2；兜底：文本匹配） |
-| TURN_DONE | ◆ | agent **一轮做完**、等下一条指令（hook：Stop；进程仍在）。人的动作是看结果 / 给下一步，与 WAITING 的"回答问题"不同。也包括**起好了、还没收到第一条指令**的会话（SessionStart 之后 10 s 内没有后续 hook 事件、进程仍在；reason `awaiting first prompt`；2026-09-05 agora-okr）：人的动作一样是给它指令，startup / resume / clear 三种 SessionStart 都落到提示符等人；compact 发生在一轮中间、紧接着就有 PreToolUse 在宽限内自纠，所以是"宽限后衰减"而不是"SessionStart 直接映射 TURN_DONE" |
+| TURN_DONE | ◆ | agent **一轮做完**、等下一条指令（hook：Stop；**进程仍在，或 agora 说不上它在不在**——`process = unknown`，2026-09-21 修订，agora-5gg.17：无可信进程号的行——Codex Desktop 那些线程的 ppid 是所有对话共用的 app-server、无头会话——与「进程真没了」不能长同一张脸，原来那个布尔把三值压成二值，`alive: false` 既说「死了」又说「不知道」，现场 7 行 `turn_done` + `alive: false` 就是这么来的，见 `docs/analysis/session-status-audit-2026-09-18.md` B2；三值本身见 §4.2 与裁决 agora-5gg.4）。人的动作是看结果 / 给下一步，与 WAITING 的"回答问题"不同。也包括**起好了、还没收到第一条指令**的会话（SessionStart 之后 10 s 内没有后续 hook 事件、进程仍在；reason `awaiting first prompt`；2026-09-05 agora-okr）：人的动作一样是给它指令，startup / resume / clear 三种 SessionStart 都落到提示符等人；compact 发生在一轮中间、紧接着就有 PreToolUse 在宽限内自纠，所以是"宽限后衰减"而不是"SessionStart 直接映射 TURN_DONE" |
 | IDLE | ○ | 长时间无 output 但 process 仍存在，且没有 hook 信息说明原因——只出现在兜底路径（状态从"人要做什么"定义，不从"观察者看见什么"定义） |
-| FINISHED | ✓ | process exit 且 exit code = 0 |
-| FAILED | ✕ | process exit 且 exit code ≠ 0 |
-| UNKNOWN | ? | 无 hook 且无运行时的外部 session / hook 沉默（ADR-002 D1）/ detector failure / 不支持的 agent / 进程信息不一致 |
+| FINISHED | ✓ | process exit 且 exit code = 0。**结束一行不一定有退出码可拿**（2026-09-21 按代码回写，agora-5gg.17）：无句柄行只有宿主 `SessionEnd`（含换对话的 superseded）与探活发现进程号没了这两种结束，都报 FINISHED 而**永远报不出 FAILED**（没有退出码可分，真值表 x09）；有句柄的行还会因为运行时会话已经不在而报 FINISHED（`end_cause = runtime_gone`，a13，出处 ADR-001 D4） |
+| FAILED | ✕ | process exit 且 exit code ≠ 0（含信号退出；agora 自己 Kill 的算 FINISHED，§4.6 / ADR-002 D1）|
+| UNKNOWN | ? | 看不清，而且必须说清**为什么**看不清、以及人能做什么。允许的原因是一张**封闭清单**（下表，六种），每一种各带一个出口；这一行不再是一串拿「/」连起来的措辞——原先列在这里的 detector failure / 不支持的 agent / 进程信息不一致 在代码里都不对应任何一种 `unknown_cause`，是筐不是原因（2026-09-21 修订，agora-5gg.17）|
+
+**UNKNOWN 的允许原因（封闭清单）**：UNKNOWN 是唯一一个「说不清」的状态，所以它自带的信息不能只是「说不清」。每一种原因都写清楚它出现在真值表（`docs/spec/status.md`）的哪一格、以及它怎么离开——**离开的方式要么是不用你动手（agora 自己会弄清），要么是一个你按得下去的出口**；两样都没有的原因不许进这张表（`docs/analysis/session-status-audit-2026-09-18.md` §0 第三问：如果 agora 说不清，为什么说不清、我该做什么）。程序读 `unknown_cause`（封闭枚举，形态见 `docs/spec/api.md`「会话形态」），人读 `reason` 那一句。
+
+| `unknown_cause` | 什么时候出现（真值表的格）| 出口 |
+|---|---|---|
+| `runtime_unavailable` | 运行时整体读不到：协议不匹配、版本过低、调用超时（a17）| 顶部横幅说明原因；运行时恢复应答即自愈，不用人做什么。「读不到」**永远不等于**「已经死了」：这一格绝不写 `ended_at`、绝不把 `process` 报成 `gone`（ADR-001 D7）|
+| `hooks_silent_screen` | 声明了 hook 的行沉默满 `hooks.silence_after`（缺省 10 min）而屏幕像在等人（a18）| 打开终端自己看一眼；按行上的 `hooks_unheard` 那句去装 / 信任 hook（ADR-002 D1）。下一条 hook 事件即改写这一格 |
+| `prompt_gone` | 挂着的权限 / 提问从屏幕上消失了，而宿主一个事件都没发（Esc 中断，a18）| 同上：下一条 hook（同工具的 PostToolUse 抬回 RUNNING、`idle_prompt` 落 TURN_DONE）或在终端里继续输入（agora-9cd）|
+| `hooks_silent_no_handle` | 无句柄行没有可信进程号，且距**最近一条 hook 事件自己的时刻**满 `hooks.external_silent_after`（缺省 2 h）（x10）| 下一条 hook 事件；否则满 `sessions.external_unknown_ttl`（缺省 24 h）自动删记录。这一格没有终端可打开、Kill / Restart 都做不了，所以它必须是暂态而不能是终态（agora-e08）；沉默时长按事件时刻算，重启 + 重放不清零（agora-5gg.2）|
+| `no_observation` | 还没有任何可观测事实：有句柄的行只在 STARTING 窗口（< 2 s）里（a23），无句柄的行在等它的**第一条** hook 事件（x12）| 只许短暂：前者下一 tick 落 STARTING / RUNNING，后者第一条事件一到就走。**持续出现 = hook 检查点丢了，属 bug**，不是「这个 agent 不支持」|
+| `exit_status_missing` | 运行时报了进程退了、退出码还没收集到（tmux 3.6 以前的 libutempter 那个坑，ADR-001 D7）（a22）| 下一 tick 补上即落 FINISHED / FAILED；补不上就是会话连同 pane 一起没了，落 a13 的 FINISHED `runtime_gone`。宁可在这里停一下，也不拿「没拿到状态」猜成 FAILED |
+
+清单之外不许新增原因，也不许把已经不算 UNKNOWN 的事实塞回来：**运行时会话不在不是 UNKNOWN**，是 FINISHED `runtime_gone`（a19 ✗ → a13，2026-09-19 据 agora-u5p 修订 ADR-001 D4——pane 随会话一起收 SIGHUP，agent 确定不在，那是事实不是看不清）；**探到进程号没了不是 UNKNOWN**，无句柄行落 FINISHED `process_gone`（x05 ✗ → x07）；**宿主说了结束不是 UNKNOWN**（x08）。守卫：`tests/status_truth_table.rs::every_reachable_cell_is_in_the_table` 把能喂的输入喂一遍，状态机吐出的每一格都要在真值表里找得到，私自多产出一格 UNKNOWN 红在这里；`::cause_wire_vocabulary_is_the_locked_set` 钉住词表本身。
 
 ### 4.4 状态机
 
@@ -336,7 +351,7 @@ Display name 可任意修改，运行时身份不变。一行显示的名字有�
 | **Delete Metadata** | 移除 agora metadata，但不杀运行时会话 |
 | **Restart** | kill 现有进程 + 在**同一个运行时会话**内重建，并 resume 原对话——依据是 agent 自报的当前对话 id（§5.6），**绝不用 `--continue` / `--last`**（那会静默恢复成另一段对话）。只在真的会杀掉正在运行的 agent 时才必须显式确认（§8） |
 
-**已退出会话的清理**：FINISHED / FAILED / 被 Kill 的运行时会话在用户看过之后清理（Dashboard 里确认或 Delete Metadata 时一并清掉保留的输出）。这不是 kill——进程已经不在——所以不需要确认，但不得在用户看到结果之前发生；V1 不做定时回收。external 行没有运行时会话与输出，只有 agora 的两行记录；FINISHED 超过 `sessions.external_finished_ttl` 自动删记录，不算回收。策略细节见 ADR-001 D4。
+**已退出会话的清理**：FINISHED / FAILED / 被 Kill 的运行时会话在用户看过之后清理（Dashboard 里确认或 Delete Metadata 时一并清掉保留的输出）。这不是 kill——进程已经不在——所以不需要确认，但不得在用户看到结果之前发生；V1 不做定时回收。external 行没有运行时会话与输出，只有 agora 的两行记录；FINISHED 超过 `sessions.external_finished_ttl` 自动删记录，不算回收。无句柄那一档（external / headless）的出口是两条，不再有无出口的行（2026-09-21 修订，agora-5gg.17）：FINISHED 满 `sessions.external_finished_ttl`（缺省 24 h）删，无可信进程号的行落进 `hooks_silent_no_handle` 那一格 UNKNOWN 后满 `sessions.external_unknown_ttl`（缺省 24 h）走 DELETE 同一条路径删（§4.3 的 UNKNOWN 清单；agora-e08）——那一格既没有终端可打开也做不了 Kill / Restart，不删就是永远挂在那儿的一行 `?`（Mac 2026-09-18：4 行 UNKNOWN 沉默 55–63 h 无出口）。`headless` 只有一条且**不论状态**：它常常连 SessionEnd 都没有，拿状态当门槛就永远清不掉（agora-5gg.20）。策略细节见 ADR-001 D4。
 
 **「看过」的三条证据**（A46；上一段的"用户看过"与 §6.3 的 Finished 折叠区都按这里判。2026-09-19 起这套判据管两种状态：FINISHED 看过之后进折叠区，TURN_DONE 看过一次降到中段——见 §6.3，agora-5gg.21）：① 该行在 Dashboard 里被选中过一次（展开区已并入主区面板，A50：选中一行就是把它的回答 / 结果面板画在主区，判定不变）——这是浏览器的视图状态（选中集合与主区选中行是同一个，只在内存；「看过」集合另存 localStorage，刷新不丢），不是服务端字段，换个浏览器就从头算。**TURN_DONE 也走这条**（决策 agora-5gg.10 选 B 为主）：它看过之后降进中段而**不是** Finished 折叠区——折叠区的行是 Header「Finished N」一键清理的删除对象，而 TURN_DONE 那一行 pane 里的进程还活着、下一条指令随时要发；② 人在终端里自己结束了会话——`external` 行的 SessionEnd（bd memories `external-exit-hooks-ctrlc-vs-hup` 的实测表：Claude 两次 Ctrl+C 与关窗口、Grok 两种、Codex 两次 Ctrl+C 都发；Codex 关窗口不发、只能靠进程探活变 process gone），这类会话的工作面从来不在 agora 里，结束即视为看过，不按 reason 分（这条只把 **FINISHED** 的 external 行直接收起：external 行的 TURN_DONE 进程还在，谈不上"人在终端里自己结束了会话"，照证据 ① 判）；③ TURN_DONE 之后又来了新 prompt——人已经读过上一轮的结果才会接着说，已隐含在 TURN_DONE → RUNNING 的转换里，不另记；同一条转换顺带让证据 ① 的记号作废（记号是 `<id>@<status_since>`，跟着"这一次完成"走），所以下一次 TURN_DONE 又算没看过、重新回到 NEEDS ATTENTION（agora-5gg.21）。
 
@@ -366,7 +381,7 @@ Agent State Source（高 → 低）
 - 无 hook 的 agent（generic shell、采纳的未知会话）：文本启发式 → WAITING（模式清单见 ADR-002 D6）；有 hook 的 agent 长时间无事件而屏幕像在等人 → UNKNOWN，不猜 WAITING（ADR-002 D1）；持续 output → RUNNING；长时间无 output 但进程在 → IDLE。
 - 所有 agent：process exit 且 exit code = 0 / ≠ 0 → FINISHED / FAILED。
 - 状态机带驻留时间，避免 hook 与轮询交错造成抖动。
-- 每个状态值带 `source`（hook / process / text / heuristic）与 `confidence`（§5.3）。
+- 每个状态值带 `source` 与 `confidence`（§5.3）。`source` 的取值是 `hook | process | text | activity | none`（2026-09-21 按代码回写，agora-5gg.17：上面那张表的第四层叫 Activity Heuristic，代码里的 `Source` 就取它的名而**不是** `heuristic`；第五个值 `none` 说的是「这一层此刻说不出结论」——运行时整体读不到、还一条观测没有的那几格，它只能与 UNKNOWN 同现，见真值表 a17 / a23 / x12）；`confidence` 与 `reason`、两个封闭枚举的形态见 `docs/spec/api.md`「会话形态」，哪些格说得通见 `docs/spec/status.md`。
 
 hook 还带来第二个能力：它看得见**这台机器上该 agent 的所有会话**，不管是不是在 agora 的运行时里起的——这是 §5.5 采纳手动会话的唯一途径。因此 hook 装在**用户自己的** agent 配置里，经用户一次确认安装（幂等、可卸载、装前显示 diff）；agora 起的会话不再重复注入，避免同一事件送两次。
 
@@ -396,7 +411,9 @@ UI MVP 不一定显示 confidence，但必须保留该字段便于 debug。Detec
 
 agora 不应只能管理自己创建的 session。启动后扫描运行时中现存 session；未注册的显示为 Unknown Agent，允许 **Adopt**：配置 Display Name / Project / Agent Type。
 
-有 hook 的 agent 在**任何地方**起的会话（Terminal.app、IDE 终端、别的 tmux）都会经 session.started 事件出现在列表里。会话来源只有三种（`origin`，§4.2）：`agora`——agora 创建的；`adopted`——在可采纳的运行时里、由用户采纳的，有终端与全部 respond；`external`——不在任何运行时里、只有 hook 看得见的，没有终端与文本输入，但状态、两行、通知照常，经挂起 hook 的 allow / deny 也照常（挂起不依赖终端，ADR-002 D3）。这是手动起的 agent 被管起来的唯一途径。
+有 hook 的 agent 在**任何地方**起的会话（Terminal.app、IDE 终端、别的 tmux）都会经 session.started 事件出现在列表里。会话来源只有四种（`origin`，§4.2）：`agora`——agora 创建的；`adopted`——在可采纳的运行时里、由用户采纳的，有终端与全部 respond；`external`——不在任何运行时里、只有 hook 看得见的，没有终端与文本输入，但状态、两行、通知照常，经挂起 hook 的 allow / deny 也照常（挂起不依赖终端，ADR-002 D3）。这是手动起的 agent 被管起来的唯一途径。
+
+`headless`——**external 这一档里的分档，不是第四种句柄形态**（裁决 agora-5gg.7 选 B；2026-09-20 agora-5gg.20）：宿主自己起的一次性会话——`claude -p` 的工人、宿主内部的子代理（安全审查、标题生成）。它们确实在跑、偶尔还会挂权限，但不是一条等人回看的会话，一次 handoff 就能在 NEEDS ATTENTION 里堆七行把人的会话冲掉（`docs/analysis/session-status-audit-2026-09-18.md` 的 C1 / C2）。判据**只用载荷结构**：登记它那一条投递件的 `SessionStart` 缺交互模式才带的键（`model` / `scratchpad_dir` / `permission_mode` / `effort` 四个都不在）才算无头——不看环境变量、不看进程树、不猜 prompt 文本（§2.3 规则 10）；录不出结构差异的宿主不猜，照常按 `external` 登记。与 external 的差别只有三处：不发通知、侧栏一律进折叠区（不看状态，因为「等你回看」在它身上不成立）、满 `sessions.external_finished_ttl` **不论状态**即删（它常常连 SessionEnd 都没有，拿状态当门槛就永远清不掉）。无句柄的语义（探活、supersede、`ended_at`、归档重建）两档共用，代码里一律问 `Origin::is_handleless()`；口径与守卫见 `docs/spec/api.md`「external 与 headless」与 `docs/spec/status.md` §5。
 
 ### 5.6 Hook 事件的最小集合
 
@@ -441,7 +458,7 @@ MVP 依赖运行时 scrollback，不自行构建 terminal transcript database。
 FAILED 100   WAITING 90   TURN_DONE 85   FINISHED 80   UNKNOWN 40   IDLE 30   STARTING 20   RUNNING 10
 ```
 
-原则：**凡是卡在人身上的（FAILED / WAITING / TURN_DONE / FINISHED）都高于不需要人的（RUNNING / STARTING）**——跑着的 agent 什么都不需要，做完的 agent 正在等你；UNKNOWN 排中间（看不清，值得瞟一眼）。FINISHED 再分来源（A46）：`external` 来源的（§5.4，工作面在别的窗口、人在终端里自己结束的）不算"等你"，直接进侧栏末尾默认折叠的 Finished 区；`agora` / `adopted` 来源的在用户**看过**（§4.6 的三条证据）之后才进去；折叠与否不改变 Alt/Option+N 的序号（§6.5）。**TURN_DONE 看过即降**（决策 agora-5gg.10 选 B 为主，agora-5gg.21）：选中看过一次的那一行降到 WORKING 段（现在的 RUNNING 段，四段改造归 agora-5gg.11），新一次 TURN_DONE 靠新的 `status_since` 回到这里——它**不进** Finished 折叠区，因为折叠区是 Header「Finished N」一键清理逐行发 DELETE 的对象，而这一行的进程还活着。同分先按任务优先级（bd 的 P0–P4；无 bd 视为 P2），再按等待时长、状态变化与未读通知微调；等待时长的方向分状态（决策 agora-5gg.10 的可选项目 A，agora-5gg.21）：WAITING / FAILED 升序（等得久的在前），TURN_DONE **倒序**（新完成在前——"等得久的在前"套到"这一轮做完了等你回看"上语义是反的，zuan 的 capmaster 三行 208–255 h 的旧完成会永远压在刚做完的行上面）。用户打开页面最先看到**需要自己处理的 agent**，而不是最近创建的。
+原则：**凡是卡在人身上的（FAILED / WAITING / TURN_DONE / FINISHED）都高于不需要人的（RUNNING / STARTING）**——跑着的 agent 什么都不需要，做完的 agent 正在等你；UNKNOWN 排中间（看不清，值得瞟一眼）。FINISHED 再分来源（A46）：`external` 来源的（§5.5，工作面在别的窗口、人在终端里自己结束的）不算"等你"，直接进侧栏末尾默认折叠的 Finished 区；`agora` / `adopted` 来源的在用户**看过**（§4.6 的三条证据）之后才进去；折叠与否不改变 Alt/Option+N 的序号（§6.5）。`headless` 走同一个折叠判据但**不看状态**——停在 TURN_DONE / UNKNOWN 也收起，因为「等你回看」在它身上一条证据都不成立（§5.5，agora-5gg.20）。侧栏一共四段：NEEDS ATTENTION → UNCLEAR（说不清的行，带原因与出口）→ WORKING → FINISHED 折叠区（agora-5gg.11，2026-09-19 已落地；分数表不动），段名要说清这一行的状态而不是给筐起别名（`docs/spec/ux.md`）。**TURN_DONE 看过即降**（决策 agora-5gg.10 选 B 为主，agora-5gg.21）：选中看过一次的那一行降到 WORKING 段（四段名见上一段，agora-5gg.11），新一次 TURN_DONE 靠新的 `status_since` 回到这里——它**不进** Finished 折叠区，因为折叠区是 Header「Finished N」一键清理逐行发 DELETE 的对象，而这一行的进程还活着。同分先按任务优先级（bd 的 P0–P4；无 bd 视为 P2），再按等待时长、状态变化与未读通知微调；等待时长的方向分状态（决策 agora-5gg.10 的可选项目 A，agora-5gg.21）：WAITING / FAILED 升序（等得久的在前），TURN_DONE **倒序**（新完成在前——"等得久的在前"套到"这一轮做完了等你回看"上语义是反的，zuan 的 capmaster 三行 208–255 h 的旧完成会永远压在刚做完的行上面）。用户打开页面最先看到**需要自己处理的 agent**，而不是最近创建的。
 
 每一行的第一列是**任务**而不是进程名：issue id + 标题 > 首条 prompt 摘要 > display name。行下面再带两行，回答"它现在到哪了"：`❯` 是用户最后输入的那一条；`↳` 是 agent 正在做什么或它最后说了什么，两者互为兜底。这两行读自 **agent 的 hook 事件**（`prompt.submitted`、`turn.ended` 的最后一条回复、`activity` 的当前工具，ADR-002 D8），不读 pane，也不解析 transcript（V1 只存路径）；没有 hook 的会话保持一行 pane preview。所有客户端形态用同一条规则渲染同样的两行。
 

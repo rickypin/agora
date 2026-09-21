@@ -225,6 +225,27 @@ hook 投递（`src/main.rs`）：160 bind socket → 252 同步等 `replay()` �
 
 ## 7. MISSION / ADR 修订草案（属 (b) 的条目；随 agora-5gg.17 落地，裁决项定了再改）
 
+> 2026-09-21（agora-5gg.17）：这份草案**已按代码落地**，逐条去向（日期以提交为准）。本文件是历史报告，不随代码改；要拿规范口径请从下表右列读。
+>
+> | 草案条目 | 落地在哪 | 谁做的 |
+> |---|---|---|
+> | §4.2 `ended_at` / `created_at` 对 external 行的定义 | MISSION §4.2 + `docs/spec/api.md`「会话形态」 | 2026-09-20 agora-5gg.3 |
+> | §4.2 `process: alive \| gone \| unknown` | MISSION §4.2（裁决 agora-5gg.4 选 A）| 2026-09-19 agora-5gg.18 |
+> | §4.2 `end_cause` / `unknown_cause` 两个枚举 | MISSION §4.2（本次补的登记段）+ ADR-002 D1 + `docs/spec/api.md`，随 `api_version` 1.8 | 2026-09-20 agora-5gg.6；MISSION 段 2026-09-21 agora-5gg.17 |
+> | §4.3 STARTING 衰减不分 origin | MISSION §4.3 STARTING 行 + ADR-002 D1 的补充段 + `docs/spec/architecture.md` | 2026-09-19 agora-rkl |
+> | §4.3 无句柄沉默按事件时刻 | ADR-002 D1「两条沉默规则从哪个时刻算」段 | agora-5gg.2（该段写的日期是 2026-09-19，代码提交是 2026-09-20）|
+> | §4.3 TURN_DONE「进程仍在」 | MISSION §4.3 TURN_DONE 行（本次按三值改写）| 2026-09-21 agora-5gg.17 |
+> | §4.3 UNKNOWN 改封闭清单 + 每一种带出口 | MISSION §4.3「UNKNOWN 的允许原因（封闭清单）」表 + `docs/spec/status.md` | 2026-09-21 agora-5gg.17（词表本体 agora-5gg.6；出口 agora-e08）|
+> | runtime gone = FINISHED | **ADR-001 D4**（「daemon 重启」行与「运行中 server 没了」行）——规范出处在这里，不在 ADR-002 D1（2026-09-18 审查的结论）；D1 只多一段登记 + 指针 | 2026-09-19 agora-u5p；D7 的「server 不在 ≠ 读失败」分界段 2026-09-21 agora-5gg.17 |
+> | §6.3 等待时长方向分状态 / TURN_DONE 看过即降 | MISSION §6.3 | 2026-09-19 agora-5gg.21（裁决 agora-5gg.10）|
+> | ADR-002 D3 再扫 + 周期兜底扫 inbox | ADR-002 D3「重放不是一次性的」段；形状早已有在 `docs/spec/api.md`「hook 投递」 | 2026-09-19 agora-5gg.1；ADR 段 2026-09-21 agora-5gg.17 |
+> | ADR-002 D7 身份交接不留行 | ADR-002 D7 修订段 + `docs/spec/architecture.md`「身份交接删行」 | 2026-09-20 agora-29n |
+> | ADR-002 D7 的 `origin = headless` | ADR-002 D7 修订段 + MISSION §4.2 / §4.6 / §5.5 / §6.3 + `docs/spec/api.md`「external 与 headless」 | 2026-09-20 agora-5gg.20（裁决 agora-5gg.7 选 B）|
+> | ADR-004 补一句（peer 行等待时长是下界）| ADR-004 附录 | 2026-09-19 agora-5gg.12 |
+> | §6 真值表搬进 docs/spec | `docs/spec/status.md` + `tests/status_truth_table.rs`（每一格一个 id、一个同名测试）| 2026-09-21 agora-5gg.16 |
+>
+> 草案与代码不一致的地方，**以代码为准**：`end_cause` 词表比草案多一档 `runtime_gone{session\|server}`，`host_session_end` 的取值把宿主原话归一化（认不出的一律 `other`，原话只留在 `reason` 里）；`unknown_cause` 比草案多一档 `exit_status_missing`（tmux 3.6 以前收不到退出码那一格，草案写作时还没算进 UNKNOWN）。封闭词表的规范出处是 `src/status/mod.rs` 与 `docs/spec/api.md`「会话形态」。
+
 **MISSION §4.2 数据模型**
 
 - `ended_at`：改为「**该行结束的时刻**」——运行时报的退出时刻（准）；hook SessionEnd 的事件时刻；superseded 时新对话首条事件的时刻；探活发现进程没了的那个 tick（`ended_at_approximate`）。external 行必须写。
