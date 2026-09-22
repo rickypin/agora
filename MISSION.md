@@ -281,7 +281,7 @@ Session {
 
 | `unknown_cause` | 什么时候出现（真值表的格）| 出口 |
 |---|---|---|
-| `runtime_unavailable` | 运行时整体读不到：协议不匹配、版本过低、调用超时（a17）| 顶部横幅说明原因；运行时恢复应答即自愈，不用人做什么。「读不到」**永远不等于**「已经死了」：这一格绝不写 `ended_at`、绝不把 `process` 报成 `gone`（ADR-001 D7）|
+| `runtime_unavailable` | 运行时对这一行读不到：整体降级（协议不匹配、版本过低、调用超时），**或只坏了它所在的那一个采纳 socket**（agora-dkv3）（a17）| 顶部横幅说明原因（整体降级那种；只坏一个采纳 socket 时横幅不响，`reason` 点名是哪个 socket）；运行时恢复应答即自愈，不用人做什么。「读不到」**永远不等于**「已经死了」：这一格绝不写 `ended_at`、绝不把 `process` 报成 `gone`（ADR-001 D7）|
 | `hooks_silent_screen` | 声明了 hook 的行沉默满 `hooks.silence_after`（缺省 10 min）而屏幕像在等人（a18）| 打开终端自己看一眼；按行上的 `hooks_unheard` 那句去装 / 信任 hook（ADR-002 D1）。下一条 hook 事件即改写这一格 |
 | `prompt_gone` | 挂着的权限 / 提问从屏幕上消失了，而宿主一个事件都没发（Esc 中断，a18）| 同上：下一条 hook（同工具的 PostToolUse 抬回 RUNNING、`idle_prompt` 落 TURN_DONE）或在终端里继续输入（agora-9cd）|
 | `hooks_silent_no_handle` | 无句柄行没有可信进程号，且距**最近一条 hook 事件自己的时刻**满 `hooks.external_silent_after`（缺省 2 h）（x10）| 下一条 hook 事件；否则满 `sessions.external_unknown_ttl`（缺省 24 h）自动删记录。这一格没有终端可打开、Kill / Restart 都做不了，所以它必须是暂态而不能是终态（agora-e08）；沉默时长按事件时刻算，重启 + 重放不清零（agora-5gg.2）|

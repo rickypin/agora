@@ -18,8 +18,8 @@ use super::model::{Origin, SessionRecord};
 use super::throttle::Throttle;
 use crate::project::{ProjectIndex, ProjectInfo};
 use crate::runtime::{
-    proctree, AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession,
-    RuntimeStatus, Size, TerminateSignal,
+    proctree, AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeScan,
+    RuntimeSession, RuntimeStatus, Size, TerminateSignal,
 };
 use crate::status::{
     self, AgentProcess, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation,
@@ -201,7 +201,7 @@ impl SessionView {
     }
 }
 
-/// daemon 重启时 `list()` ⨝ SQLite 的六种情况（ADR-001 D4）。
+/// daemon 重启时 `list()` ⨝ SQLite 的六种情况（ADR-001 D4），外加一格"这次没扫成"（agora-dkv3）。
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
 pub struct ReconcileReport {
     /// 已知 ref 活着 → 重建视图。
@@ -210,6 +210,10 @@ pub struct ReconcileReport {
     pub known_dead: Vec<String>,
     /// 已知 ref 不在 → ended_at 补 reconcile 时刻并标 `ended_at_approximate`、UNKNOWN。
     pub known_missing: Vec<String>,
+    /// 已知 ref 不在，但它所在的 socket 这一次根本没扫成 → 不下任何结论：不写 ended_at，
+    /// 状态层落 UNKNOWN（`Runtime::list()` 交出 per-socket 的扫描结果，agora-dkv3）。
+    /// 与 `known_missing` 分开是故意的：那一格是"运行时说了没有"，这一格是"运行时没说"。
+    pub known_unreadable: Vec<String>,
     /// 未知 ref 在 agora socket → 未注册（多半是库丢了）。
     pub unregistered_managed: Vec<RuntimeRef>,
     /// 未知 ref 在采纳 socket → 可采纳的未注册会话。
@@ -865,6 +869,7 @@ impl SessionManager {
         let sessions: Vec<RuntimeSession> = self
             .live_all()?
             .0
+            .sessions
             .into_iter()
             .filter(|s| !known.contains(&s.r#ref.0))
             .collect();
@@ -1050,22 +1055,23 @@ impl SessionManager {
 
     pub fn list(&self) -> Result<Vec<SessionView>, SessionError> {
         let records = self.all_records()?;
-        let (live, degraded) = self.live_all()?;
+        let (scan, degraded) = self.live_all()?;
         Ok(records
             .into_iter()
-            .map(|rec| self.view(rec, &live, degraded.as_deref()))
+            .map(|rec| self.view(rec, &scan, degraded.as_deref()))
             .collect())
     }
 
     /// 全部运行时会话 + 本次是否降级。运行时整体不可用时**不报错也不当成"会话都没了"**：
     /// 读路径退化成"没有活性信息"，由 [`SessionManager::view`] 把它报成 UNKNOWN（ADR-001 D7）。
     /// 写路径与 [`SessionManager::reconcile`] 仍然照常报错——那两条路上"读不到"绝不能当"已经死了"。
-    fn live_all(&self) -> Result<(Vec<RuntimeSession>, Option<String>), SessionError> {
+    /// 只坏了一个采纳 socket 时 `list()` 不报错，失败在那个 socket 自己的账上（`RuntimeScan::unreadable`）。
+    fn live_all(&self) -> Result<(RuntimeScan, Option<String>), SessionError> {
         let r = self.runtime.list();
         self.runtime_status.observe(&r);
         match r {
             Ok(v) => Ok((v, None)),
-            Err(e) if e.degrades_runtime() => Ok((Vec::new(), Some(e.to_string()))),
+            Err(e) if e.degrades_runtime() => Ok((RuntimeScan::default(), Some(e.to_string()))),
             Err(e) => Err(e.into()),
         }
     }
@@ -1090,7 +1096,7 @@ impl SessionManager {
             }
             None => Vec::new(),
         };
-        Ok(self.view(rec, &live, degraded.as_deref()))
+        Ok(self.view(rec, &RuntimeScan::complete(live), degraded.as_deref()))
     }
 
     /// Terminal Gateway 要的 attach 规格（ADR-001 D5）。external 会话没有运行时句柄。
@@ -1107,15 +1113,32 @@ impl SessionManager {
     fn view(
         &self,
         mut rec: SessionRecord,
-        live: &[RuntimeSession],
+        scan: &RuntimeScan,
         degraded: Option<&str>,
     ) -> SessionView {
+        let live = scan.sessions.as_slice();
         // STARTING 只看本代进程的起始时刻。updated_at 不行：rename / kill / cleanup 都刷新它，
         // 改名后两秒内会把跑了一天的会话报成 STARTING（agora-xqa.15，2026-09-03）。
         let spawn_age = rec.spawned_at.as_deref().and_then(age_secs);
+        // 这一行的运行时"读不到"有两种来路，结论却是同一件事（agora-dkv3）：
+        // - 整体降级：协议不匹配、超时、agora 自己的 server 应答不了（ADR-001 D7）；
+        // - 只坏了一个采纳 socket：`list()` 对它只 warn（不能拖垮整张列表），那个 socket 上的
+        //   行"不在列表里"只是没扫到，不是会话没了。
+        // 两者并成一个 `unreadable`：缺一条就落回 a17（UNKNOWN），绝不进 `gone`。
+        // STARTING 窗口那条另算（下面 `starting`，agora-u5p）。
+        let unreadable: Option<String> = match degraded {
+            Some(why) => Some(why.to_owned()),
+            // 没有任何 socket 失败是常见路径：不为此多造一个 RuntimeRef。
+            None if scan.unreadable.is_empty() => None,
+            None => rec.runtime_ref.as_deref().and_then(|r| {
+                scan.failure_for(&RuntimeRef(r.to_owned()))
+                    .map(|f| format!("socket {}: {}", f.socket, f.reason))
+            }),
+        };
         // 有句柄、运行时应答正常，而这一次的列表里没有它 —— 运行时会话没了（agora-u5p）。
-        // 三个条件缺一不可：
+        // 四个条件缺一不可：
         // - 降级不算（协议不匹配、超时、server 应答不了都是"读不到"，ADR-001 D7）；
+        // - 所在的 socket 这次没扫成也不算（同一个道理，只是范围窄到一个 socket，agora-dkv3）；
         // - 本代进程还在 STARTING 窗口里也不算：`create_with_prompt` 与 `restart_with` 在运行时
         //   刚返回的那一刻就 `get()`，列表还没来得及报到它（`list_socket` 对解析不了的 pane 行
         //   也是跳过、不报错），"这一 tick 没看见"不等于"没了"。少了这条，每次起会话都会先给自己
@@ -1125,7 +1148,7 @@ impl SessionManager {
         // 之后才改 rec 的 ended_at（`rt` 要借 rec 借到函数末尾）。
         let starting = spawn_age.is_some_and(|a| a < status::STARTING_WINDOW_SECS);
         let gone = !starting
-            && degraded.is_none()
+            && unreadable.is_none()
             && rec
                 .runtime_ref
                 .as_deref()
@@ -1159,9 +1182,10 @@ impl SessionManager {
         // （别顺手改成拿 `external_gone` 反推探活结论：那一支还要区分“没有可信进程号”与
         // “有号但号没了”，`external_gone` 把两者压成了一个 bool。）
         let (process, liveness, external_pid) = match (rec.origin, rt) {
-            // 运行时此刻不可信：不知道就报 UNKNOWN，不许拿"读不到"当"已经死了"（ADR-001 D7）。
-            _ if degraded.is_some() && rec.runtime_ref.is_some() => (
-                status::runtime_unavailable(degraded.unwrap_or_default()),
+            // 运行时此刻不可信（整体降级，或它所在的采纳 socket 这次没扫成）：不知道就报 UNKNOWN，
+            // 不许拿"读不到"当"已经死了"（ADR-001 D7；agora-dkv3）。
+            _ if unreadable.is_some() && rec.runtime_ref.is_some() => (
+                status::runtime_unavailable(unreadable.as_deref().unwrap_or_default()),
                 Liveness::Dead,
                 None,
             ),
@@ -1299,12 +1323,12 @@ impl SessionManager {
         let respond_within_secs = hook_host.map(|h| h.hold_timeout().as_secs());
         // 进程三态（Q4 裁决 agora-5gg.4，agora-5gg.18）：上半段的 `liveness` 是给状态机看的，
         // `process` 是给调用方看的——两者不同处只在"对话已结束就不再谈进程"与"运行时读不到"
-        // 这两处。第三个参数照抄上半段那个分支的条件（`degraded` + 有句柄）：上半段在这种情况
+        // 这两处。第三个参数照抄上半段那个分支的条件（`unreadable` + 有句柄）：上半段在这种情况
         // 给出 Liveness::Dead 是内部编码，derive 里要还原成 unknown（ADR-001 D7）。
         let process = ProcessState::derive(
             assessment.status,
             liveness,
-            degraded.is_some() && rec.runtime_ref.is_some(),
+            unreadable.is_some() && rec.runtime_ref.is_some(),
         );
         let name = match rt {
             Some(s) if !rec.name_locked && !s.title.trim().is_empty() => s.title.clone(),
@@ -1663,7 +1687,8 @@ impl SessionManager {
     /// `list()` ⨝ SQLite：六种情况按 ADR-001 D4 表处理。
     pub fn reconcile(&self) -> Result<ReconcileReport, SessionError> {
         let records = self.all_records()?;
-        let live = self.runtime.list()?;
+        let scan = self.runtime.list()?;
+        let live = &scan.sessions;
         let mut report = ReconcileReport::default();
         let mut known: HashSet<&str> = HashSet::new();
 
@@ -1685,6 +1710,21 @@ impl SessionManager {
                     report.known_dead.push(rec.id.clone());
                 }
                 None => {
+                    // 它所在的那个 socket 这一次根本没扫成：不能拿"没扫到"当"会话消失"。
+                    // 不写 ended_at、不进 known_missing，状态层由 view() 落 UNKNOWN（agora-dkv3；
+                    // 与上面的 `runtime_status.observe` 同一条口径：读不到 ≠ 已死）。
+                    let r#ref = RuntimeRef(r.to_owned());
+                    if !scan.scanned(&r#ref) {
+                        tracing::warn!(
+                            component = "session",
+                            id = %rec.id,
+                            socket = %scan.failure_for(&r#ref).map(|f| f.socket.as_str()).unwrap_or_default(),
+                            reason = scan.failure_for(&r#ref).map(|f| f.reason.as_str()).unwrap_or_default(),
+                            "reconcile 跳过：采纳 socket 本次未扫成，不下会话消失的结论"
+                        );
+                        report.known_unreadable.push(rec.id.clone());
+                        continue;
+                    }
                     // 运行时会话已经不在，谁也不知道它什么时候死的：记 reconcile 时刻并标近似。
                     if rec.ended_at.is_none() {
                         self.mark_ended(&rec.id)?;
@@ -1693,7 +1733,7 @@ impl SessionManager {
                 }
             }
         }
-        for s in &live {
+        for s in live {
             if known.contains(s.r#ref.0.as_str()) {
                 continue;
             }
@@ -1708,6 +1748,7 @@ impl SessionManager {
             alive = report.known_alive.len(),
             dead = report.known_dead.len(),
             missing = report.known_missing.len(),
+            unreadable = report.known_unreadable.len(),
             unregistered = report.unregistered_managed.len(),
             adoptable = report.unregistered_adoptable.len(),
             external = report.external.len(),

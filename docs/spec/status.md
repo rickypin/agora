@@ -48,7 +48,7 @@
 | a14 | FINISHED | gone | hook（SessionEnd 先于进程退出被观测）| ◐ | 下一 tick 进程层带着退出码把 source 换成 process（同状态同分时不抢，agora-rzh）；`process` 在宿主说出结束的那一个 tick 就已经是 gone | `…::a14_a_host_end_seen_before_the_process_exit` |
 | a15 | FAILED | gone | process（exit ≠ 0 / signal）| ✓ | 出错了，看终端 | `…::a15_failed_names_the_exit_that_caused_it` |
 | a16 | FINISHED / FAILED | alive，持续 | 任何 | ✗ | 「进程退出压倒一切」+ Q4：结束了的行不许报出 `alive` | `…::a16_an_ended_row_never_reports_an_alive_process` |
-| a17 | UNKNOWN | unknown | none（`runtime unavailable`）| ✓ | agora 失明（协议不匹配 / 超时），顶部横幅说明；运行时恢复即自愈，绝不写 `ended_at` | `…::a17_an_unreadable_runtime_is_unknown_not_gone` |
+| a17 | UNKNOWN | unknown | none（`runtime unavailable`）| ✓ | agora 失明（协议不匹配 / 超时；**或它所在的那个采纳 socket 这一次没扫成**——同一个出口：下次扫到即自愈，agora-dkv3），顶部横幅说明整体降级那种情形；绝不写 `ended_at` | `…::a17_an_unreadable_runtime_is_unknown_not_gone`、`tests/runtime_degraded.rs::unscanned_adopt_socket_keeps_adopted_rows_unknown` |
 | a18 | UNKNOWN | alive | text（`hooks silent; screen: …` / `permission prompt gone`）| ✓ | hook 没声音而屏幕像在等人：打开终端看，或按 `hooks_unheard` 去查 hook | `…::a18_a_screen_only_unknown_still_reports_an_alive_process` |
 | a19 | UNKNOWN | gone | none（旧版 `runtime session missing`：本代已过 STARTING 窗口）| ✗ | 运行时会话没了是**事实**、不是"看不清"：走 a13（2026-09-19 据 agora-u5p 修订 ADR-001 D4）。还在 STARTING 窗口里的那一格另算（a23）| `…::a19_a_missing_runtime_session_is_not_unknown` |
 | a20 | UNKNOWN | 任何 | hook | ✗ | 有句柄的行里 UNKNOWN 只有 a17 / a18 / a22 / a23 四格；hook 层的词表不含 UNKNOWN | `…::a20_the_hook_layer_never_writes_unknown` |

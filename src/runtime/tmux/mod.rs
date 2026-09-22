@@ -12,8 +12,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::exec::{exec, ExecOptions, Output};
 use super::{
-    AttachSpec, Exit, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, Size,
-    TAIL_BUFFER_MAX,
+    AttachSpec, Exit, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeScan, RuntimeSession,
+    Size, SocketScanFailure, TAIL_BUFFER_MAX,
 };
 
 const KIND: &str = "tmux";
@@ -493,21 +493,34 @@ impl Runtime for TmuxRuntime {
         Ok(self.make_ref(&self.cfg.socket, &spec.name))
     }
 
-    fn list(&self) -> Result<Vec<RuntimeSession>, RuntimeError> {
-        let mut all = self.list_socket(&self.cfg.socket)?;
+    fn list(&self) -> Result<RuntimeScan, RuntimeError> {
+        let mut sessions = self.list_socket(&self.cfg.socket)?;
+        let mut unreadable = Vec::new();
         for s in &self.cfg.adopt_sockets {
             if s == &self.cfg.socket {
                 continue;
             }
             match self.list_socket(s) {
-                Ok(v) => all.extend(v),
-                // 用户 socket 出问题不该拖垮 agora 自己的会话列表。
+                Ok(v) => sessions.extend(v),
+                // 用户 socket 出问题不该拖垮 agora 自己的会话列表（ADR-001 D7：warn 一句继续走）。
+                // 但不能把它当成"扫过了、里面没有会话"：那个 socket 上的 adopted 行会被 reconcile
+                // 与 view 的 missing 分支读成"会话没了"并写 ended_at（agora-dkv3）。把失败随
+                // RuntimeScan 交出去，读路径据此把那一格退回 UNKNOWN。
+                // 注意 `list_socket` 对"连不上 socket"返回的是 Ok(空)（ADR-001 D4：没有会话不是
+                // 故障），那才是真的 server 没了；走到这里的是"应答了、但拒绝 / 超时 / 报错"。
                 Err(err) => {
-                    tracing::warn!(component = "runtime", socket = %s, %err, "扫描采纳 socket 失败")
+                    tracing::warn!(component = "runtime", socket = %s, %err, "扫描采纳 socket 失败");
+                    unreadable.push(SocketScanFailure {
+                        socket: s.clone(),
+                        reason: err.to_string(),
+                    });
                 }
             }
         }
-        Ok(all)
+        Ok(RuntimeScan {
+            sessions,
+            unreadable,
+        })
     }
 
     /// `TMUX=<socket 路径>,<server pid>,<session idx>`、`TMUX_PANE=%N`。socket 名取路径末段；

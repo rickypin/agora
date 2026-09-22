@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use agora::project::Projects;
 use agora::runtime::{
-    AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, Size,
+    AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeScan, RuntimeSession, Size,
     TerminateSignal,
 };
 use agora::session::SessionManager;
@@ -238,7 +238,7 @@ impl Runtime for RecordingRuntime {
         self.launches.lock().unwrap().push(spec.command.clone());
         self.inner.create(spec)
     }
-    fn list(&self) -> Result<Vec<RuntimeSession>, RuntimeError> {
+    fn list(&self) -> Result<RuntimeScan, RuntimeError> {
         self.inner.list()
     }
     fn inspect(&self, r: &RuntimeRef) -> Result<RuntimeSession, RuntimeError> {

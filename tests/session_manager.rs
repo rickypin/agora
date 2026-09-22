@@ -137,7 +137,10 @@ fn db_failure_rolls_back_runtime_session() {
         .unwrap();
     let err = m.create(&new_session("x")).unwrap_err();
     assert!(matches!(err, SessionError::Db(_)), "{err}");
-    assert!(rt.list().unwrap().is_empty(), "运行时会话必须被回滚掉");
+    assert!(
+        rt.list().unwrap().sessions.is_empty(),
+        "运行时会话必须被回滚掉"
+    );
     assert_eq!(rt.removed.lock().unwrap().len(), 1);
 }
 
@@ -168,7 +171,11 @@ fn kill_keeps_dead_pane_and_counts_as_finished_by_user() {
         .unwrap()
         .contains("killed by user"));
     assert!(killed.record.ended_at.is_some());
-    assert_eq!(rt.list().unwrap().len(), 1, "Kill 不销毁运行时会话");
+    assert_eq!(
+        rt.list().unwrap().sessions.len(),
+        1,
+        "Kill 不销毁运行时会话"
+    );
 }
 
 #[test]
@@ -247,7 +254,7 @@ fn cleanup_refuses_alive_and_removes_dead() {
     ));
     rt.set_dead(v.record.runtime_ref.as_deref().unwrap(), Exit::Code(0));
     m.cleanup(&v.record.id).unwrap();
-    assert_eq!(rt.list().unwrap().len(), 0);
+    assert_eq!(rt.list().unwrap().sessions.len(), 0);
     let after = m.get(&v.record.id).unwrap();
     assert!(after.record.ended_at.is_some());
     assert_eq!(

@@ -274,6 +274,7 @@ fn foreign_socket_is_read_only() {
     f.foreign_session("mywork");
     let list = f.rt.list().unwrap();
     let s = list
+        .sessions
         .iter()
         .find(|s| s.name == "mywork")
         .expect("adopted session visible");
@@ -331,7 +332,7 @@ fn one_list_call_per_socket_per_tick() {
     f.foreign_session("fw");
     f.rt.take_recorded();
     let sessions = f.rt.list().unwrap();
-    assert!(sessions.len() >= 4);
+    assert!(sessions.sessions.len() >= 4);
     let recorded = f.rt.take_recorded();
     let list_calls = recorded
         .iter()
@@ -349,7 +350,7 @@ fn one_list_call_per_socket_per_tick() {
 fn absent_server_lists_empty_without_error() {
     let f = Fixture::new();
     assert!(!socket_path(&f.socket).exists());
-    assert!(f.rt.list().unwrap().is_empty());
+    assert!(f.rt.list().unwrap().sessions.is_empty());
     assert!(f.rt.take_recorded().is_empty(), "no server → no subprocess");
 }
 

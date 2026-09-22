@@ -31,6 +31,68 @@ impl std::fmt::Display for RuntimeRef {
     }
 }
 
+impl RuntimeRef {
+    /// 形态里的第二段（socket）。这是上面注释定的公共形态，不是某个运行时的私有知识；
+    /// 段数不对（存进来一个不认识的东西）返回 None——调用方对"说不了 socket 的 ref"
+    /// 一律按"扫过了"处理，见 [`RuntimeScan::scanned`]。
+    pub fn socket(&self) -> Option<&str> {
+        let mut parts = self.0.splitn(3, ':');
+        parts.next()?;
+        parts.next()
+    }
+}
+
+/// 一次 [`Runtime::list`] 的产出：扫到的会话 **+ 哪几个 socket 这一次没扫成**。
+///
+/// 为什么第二半必须交出来（agora-dkv3）：`list()` 对采纳来的用户 socket 的失败是吞掉的
+/// ——用户自己的 tmux 坏了不该拖垮 agora 的会话列表（ADR-001 D7）——吞掉之后"这个 ref 不在
+/// 列表里"就有两种读法：①运行时答话说没有这个会话（FINISHED `runtime_gone`，agora-u5p）、
+/// ②那一次根本没看那个 socket（什么都不知道）。只交出 `Vec<RuntimeSession>` 就只剩①这一种
+/// 读法，于是②被读成①：adopted 行报成 FINISHED `runtime session gone (session gone)` 并写
+/// `ended_at`（用户在 Dashboard 上看到的是一句"会话没了"，实际只是没扫到）。带 per-socket 的
+/// 结论之后，两条 missing 分支（`view` 每 tick、`reconcile` 启动时）都能把②挡在 `ended_at` 之前。
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeScan {
+    /// 扫到的会话，含非 agora 创建的；没扫成的 socket 上那些会话不在里面（不是"没有"）。
+    pub sessions: Vec<RuntimeSession>,
+    /// 这一次扫描失败的 socket，按运行时给的名字（与 ref 的第二段同一个东西）。空 = 全都扫成了。
+    pub unreadable: Vec<SocketScanFailure>,
+}
+
+/// 一个 socket 这一次的扫描失败。`reason` 是给调用方拼进 `reason` 那句话的人话。
+#[derive(Debug, Clone)]
+pub struct SocketScanFailure {
+    pub socket: String,
+    pub reason: String,
+}
+
+impl RuntimeScan {
+    /// 全部 socket 都扫成了：只交出会话。
+    pub fn complete(sessions: Vec<RuntimeSession>) -> Self {
+        RuntimeScan {
+            sessions,
+            unreadable: Vec::new(),
+        }
+    }
+
+    /// 这个 ref 所在的 socket 这一次**有没有被真扫过**。
+    ///
+    /// 没扫过（`true` 为假）意味着"列表里没有它"说不出任何事：既不能说还在，也不能说没了
+    /// （agora-dkv3）。ref 解析不出 socket 时按"扫过"答——解析不了就不是本运行时的 socket，
+    /// 说不了它这次扫没扫，不能拿这个去把已有的结束结论改成钉死在 UNKNOWN（与
+    /// [`Runtime::server_present`] 对解析不了的 ref 按"在"答是同一条保守方向）。
+    pub fn scanned(&self, r#ref: &RuntimeRef) -> bool {
+        self.failure_for(r#ref).is_none()
+    }
+
+    /// 这个 ref 所在的 socket 这一次为什么没扫成；扫成了就 None。
+    pub fn failure_for(&self, r#ref: &RuntimeRef) -> Option<&SocketScanFailure> {
+        // 解析不出 socket 的 ref 不属于本运行时的任何一个 socket，按"扫过"答（见 [`Self::scanned`]）。
+        let socket = r#ref.socket()?;
+        self.unreadable.iter().find(|f| f.socket == socket)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Size {
     pub cols: u16,
@@ -185,7 +247,11 @@ pub trait Runtime: Send + Sync {
     /// 一次调用完成创建 + 会话级选项。
     fn create(&self, spec: &LaunchSpec) -> Result<RuntimeRef, RuntimeError>;
     /// 全部 socket 的全部会话，含非 agora 创建的。每 tick 每 socket一次子进程（D6）。
-    fn list(&self) -> Result<Vec<RuntimeSession>, RuntimeError>;
+    ///
+    /// 交出的是 [`RuntimeScan`] 而不是一个 Vec：对采纳 socket 的失败只 warn、不拖垮整张列表
+    /// （ADR-001 D7），但那个 socket 上要留一个"这次没扫过"的记录，否则它上面的行会被误判成
+    /// "会话没了"（agora-dkv3）。整体扫不成（agora 自己的 socket 坏了）仍然返回 Err。
+    fn list(&self) -> Result<RuntimeScan, RuntimeError>;
     fn inspect(&self, r#ref: &RuntimeRef) -> Result<RuntimeSession, RuntimeError>;
     /// `list()` 说"列表里没有这个 ref"之后追问一句：它所在的那个 server 还在不在。
     ///

@@ -14,8 +14,8 @@ use agora::adapter::{Version, VersionProbe};
 use agora::api::AppState;
 use agora::auth::{Auth, AuthConfig, PairedVia};
 use agora::runtime::{
-    AttachSpec, Exit, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeSession, Size,
-    TerminateSignal,
+    AttachSpec, Exit, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeScan, RuntimeSession,
+    Size, TerminateSignal,
 };
 use agora::session::{Db, SessionManager};
 
@@ -110,11 +110,13 @@ impl Runtime for FakeRuntime {
         self.insert(&r, true, None, true);
         Ok(RuntimeRef(r))
     }
-    fn list(&self) -> Result<Vec<RuntimeSession>, RuntimeError> {
+    fn list(&self) -> Result<RuntimeScan, RuntimeError> {
         if let Some(reason) = self.list_error.lock().unwrap().clone() {
             return Err(RuntimeError::ServerUnavailable { reason });
         }
-        Ok(self.sessions.lock().unwrap().values().cloned().collect())
+        Ok(RuntimeScan::complete(
+            self.sessions.lock().unwrap().values().cloned().collect(),
+        ))
     }
     fn server_present(&self, r: &RuntimeRef) -> bool {
         !self
