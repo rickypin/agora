@@ -130,6 +130,28 @@ describe("attention", () => {
     expect(shown.filter((r) => sectionOf(r, seen) === "finished").map((r) => r.id)).toEqual(["fin"]);
   });
 
+  it("brings a row back to NEEDS ATTENTION on a second TURN_DONE with nothing in between (agora-8x6)", () => {
+    // 连着两轮 turn.ended、中间没有 prompt 也没有任何别的状态变化：行还是 turn_done，只有 status_since
+    // 往前走（服务端的 `set_new_turn`，`src/status/machine.rs`）。第二轮的结果必须回到 NEEDS ATTENTION——
+    // 那正是人打开页面要找的东西。
+    const first = row("d", "turn_done", { origin: "agora", status_since: 10 });
+    const none = new Set<string>();
+    expect(sectionOf(first, none)).toBe("attention");
+    // 人选中看了一眼 → 记这一次完成的记号 → 降到 WORKING 段。
+    const seen = new Set([seenKey(first)]);
+    expect(sectionOf(first, seen)).toBe("working");
+    // 第二轮做完：同一行、同一个状态，起点换了 → 旧记号作废，回到 NEEDS ATTENTION。
+    const second = row("d", "turn_done", { origin: "agora", status_since: 40 });
+    expect(seenKey(second)).not.toBe(seenKey(first));
+    expect(needsAttention(second, seen)).toBe(true);
+    expect(sectionOf(second, seen)).toBe("attention");
+    expect(partitionByAttention([row("run", "running"), second], seen).map((r) => r.id)).toEqual(["d", "run"]);
+    // 这条测的是前端跟着起点走，不是前端自己认回合：起点原地不动（修复前的服务端）时它仍然算看过，
+    // 所以服务端那半边（`tests/state_machine.rs::a_second_turn_ended_moves_status_since_so_the_seen_mark_expires`）
+    // 不能省——两边合起来才是这条不变量。
+    expect(sectionOf(row("d", "turn_done", { origin: "agora", status_since: 10 }), seen)).toBe("working");
+  });
+
   // agora-5gg.11：段名不副实（2026-09-18 Mac 截图上叫 RUNNING 的那一段 9 行没有一行在跑——UNKNOWN /
   // STARTING / IDLE 全塞在里面）。四段 NEEDS ATTENTION / UNCLEAR / WORKING / FINISHED，**分数表一个字没动**，
   // 只改 sectionOf 的分段：unknown 单独成段，running / starting / idle 与看过的 TURN_DONE 共用 WORKING 段。

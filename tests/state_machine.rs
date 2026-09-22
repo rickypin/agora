@@ -743,6 +743,65 @@ fn idle_status_since_survives_many_ticks() {
 }
 
 #[test]
+fn a_second_turn_ended_moves_status_since_so_the_seen_mark_expires() {
+    // 守卫（agora-8x6）：前端的「看过」记号是 `<id>@<status_since>`（MISSION §4.6 证据 ①）。同一行
+    // 连着两条 turn.ended、中间一条别的事件都没有时，两次的结论都是 TURN_DONE(hook) 一字不差——
+    // 起点不跟着走的话记号不作废，第二轮做完的结果回不到 NEEDS ATTENTION。
+    // 关掉：apply_at 里的轮次边界分支改回一律走 set() → 第二、第三个断言红（起点还停在 10）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::PromptSubmitted("do x".into()), 1, 5);
+    m.apply(&AgoraEvent::TurnEnded(Some("first".into())), 1, 10);
+    assert_eq!(
+        (m.current().status, m.current().source, m.status_since()),
+        (Status::TurnDone, Source::Hook, 10)
+    );
+    m.apply(&AgoraEvent::TurnEnded(Some("second".into())), 1, 40);
+    assert_eq!(
+        (m.current().status, m.current().source, m.status_since()),
+        (Status::TurnDone, Source::Hook, 40),
+        "第二条 turn.ended 是新的一轮做完了，起点跟着它走"
+    );
+    // turn.failed 同属轮次边界（同是 TURN_DONE，只是 reason / confidence 不同）：一轮被打断也是
+    // 一个新的结果，人同样要回去看一眼。
+    m.apply(&AgoraEvent::TurnFailed("interrupt".into()), 1, 70);
+    assert_eq!(
+        (m.current().status, m.status_since()),
+        (Status::TurnDone, 70),
+        "turn.failed 也是轮次边界"
+    );
+    // 起点记的是事件自己的时刻而不是收到的时刻（A42 不因这条改动走样）。
+    m.apply_at(&AgoraEvent::TurnEnded(None), 1, 200, 150);
+    assert_eq!(m.status_since(), 150);
+}
+
+#[test]
+fn eventless_ticks_never_move_status_since() {
+    // 反向守卫（agora-8x6，与上一条同批）：上面放宽的只是"轮次边界的事件"，不是"每次写入"。把 set()
+    // 改成无条件刷新 set_at（不再比 (status, source)）这条就红——无 hook 的行每 tick 都走 set()，起点
+    // 会跟着 tick 漂：侧栏永远 "idle 0s"、排序拿不到等待时长、事件流每 tick 一条 status_changed
+    // （agora-385 的原始反例，`src/status/machine.rs` 的 set() 注释点名了这个代价）。
+    let mut m = Machine::new(cfg(), false, 1, 0);
+    let r = rt(true, Some(0));
+    assert_eq!(tick(&mut m, 0, &r, None).status, Status::Running);
+    for now in [2, 4, 6, 8] {
+        tick(&mut m, now, &r, None);
+        assert_eq!(m.status_since(), 0, "t={now}: 没有事件的 tick 不动起点");
+    }
+    // 有 hook 的行停在 TURN_DONE 上同理：tick 不是新的一轮，只有下一条 turn.ended 才是。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::PromptSubmitted("do x".into()), 1, 1);
+    m.apply(&AgoraEvent::TurnEnded(None), 1, 10);
+    for now in [12, 14, 16] {
+        tick(&mut m, now, &rt(true, Some(now)), None);
+        assert_eq!(
+            (m.current().status, m.status_since()),
+            (Status::TurnDone, 10),
+            "t={now}: 起点是 turn.ended 那一刻"
+        );
+    }
+}
+
+#[test]
 fn reason_only_changes_do_not_move_status_since() {
     // 守卫（agora-385）：status_since 的定义是"当前状态的起点"（docs/spec/api.md）。同状态同来源而 reason 变
     // （RUNNING 的 `prompt submitted` → `activity` → 换了个工具）不是换状态，起点不动；换了状态才刷新。

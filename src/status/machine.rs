@@ -489,11 +489,32 @@ impl Machine {
     /// 提示，人等的还是同一件事。不能改回 `a != self.current`（Assessment 派生的 PartialEq 连 reason
     /// 一起比）：2026-09-06 agora-385 反例——IDLE 的 reason 曾是 `no output for {n}s`，每 tick 都不等，
     /// set_at 每 tick 刷新，侧栏永远 "idle 0s"、排序拿不到等待时长，事件流每 tick 一条 status_changed。
+    /// 唯一的例外是自带轮次边界的事件，走 [`Machine::set_new_turn`]；tick 一律走这里（agora-8x6）。
     fn set(&mut self, a: Assessment, now: i64) {
         if (a.status, a.source) != (self.current.status, self.current.source) {
             self.set_at = now;
         }
         self.current = a;
+    }
+
+    /// 写入一条**自带轮次边界**的结论（`turn.ended` / `turn.failed`）：起点无条件记事件时刻，哪怕
+    /// `(status, source)` 与当前一字不差。
+    ///
+    /// 为什么（agora-8x6）：同一行连着两条 turn.ended、中间一条别的事件都没有时，两次的结论都是
+    /// TURN_DONE(hook)，[`Machine::set`] 认为没换状态、起点不动——而前端的「看过」记号是
+    /// `<id>@<status_since>`（MISSION §4.6 证据 ①，`web/src/attention.ts` 的 `seenKey`），起点不动
+    /// 记号就不作废，第二轮做完的结果回不到 NEEDS ATTENTION，而那正是人打开页面要找的东西。
+    /// 第二条 turn.ended 是新的一轮做完了，不是同一次完成的重复上报，起点该跟着它走。正常链路
+    /// （下一轮 prompt → RUNNING → turn.ended）靠中间那一下换状态自己刷新，本来就没这个病；这里管的
+    /// 是没有那一下的路径。
+    ///
+    /// 不能把它放宽成"每次写入都刷新"：那就是 [`Machine::set`] 里点名的 agora-385 退化（守卫
+    /// `tests/state_machine.rs::eventless_ticks_never_move_status_since`）——只有事件能调这里，tick
+    /// 走不到。`Idle` 也不走这里：它只在 RUNNING / 说不清的 UNKNOWN 上才产状态（见 `apply_at`），
+    /// 落到这里的一定是换状态，而它自报的语义是上一轮结束的确认 / 补漏，不是新的一轮。
+    fn set_new_turn(&mut self, a: Assessment, now: i64) {
+        self.set(a, now);
+        self.set_at = now;
     }
 
     /// hook 事件立即生效。旧 epoch 的丢弃（返回 false）；进程已退出的只当 metadata。
@@ -667,7 +688,12 @@ impl Machine {
             // hook 写出了新状态："提示消失"的 UNKNOWN 到此为止；没写状态的事件（SessionId、WAITING 里的
             // Idle）不算——它们没说会话在干什么，UNKNOWN 继续钉着，不让进程层猜成 RUNNING。
             self.screen_released = false;
-            self.set(a, at);
+            // 轮次边界的两个事件自带一个新的完成时刻，连着来两条也要推起点（agora-8x6）。
+            if matches!(event, AgoraEvent::TurnEnded(_) | AgoraEvent::TurnFailed(_)) {
+                self.set_new_turn(a, at);
+            } else {
+                self.set(a, at);
+            }
         }
         if self.current.source == Source::Hook {
             self.snapshot = Some(HookSnapshot {

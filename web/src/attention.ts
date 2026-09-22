@@ -46,10 +46,11 @@ export function attentionScore(status: string): number {
  * 得跟着"这一次完成"走。Restart 之后 running → finished 若被同一批事件（EventsClient 300 ms 合并窗）或
  * 断线重连的 resync 跳过中间态，裸 id 的记号没机会作废，新结果直接落进收起的 Finished 区而没人看过。
  * 新一次 FINISHED 的 status_since 必然不同（set_at 随 (status, source) 变刷新），键带上它就能认出是新结果。
- * TURN_DONE 同理但多一层前提：下一轮要先有人的 prompt → RUNNING（`UserPromptSubmit`，三家都挂了这个 hook）
- * 才再有一次 turn.ended，中间那一下刷新了 set_at。连续两条 TURN_DONE、中间什么状态都没变时 set_at 不动（
- * `src/status/machine.rs set()` 只比 (status, source)），记号也就不会作废——那在状态机看来就是同一次完成的
- * 重复上报，不拿它当新回合。
+ * TURN_DONE 同理，且不依赖中间那一下：正常链路是下一轮的 prompt → RUNNING（`UserPromptSubmit`，三家都挂了
+ * 这个 hook）→ 再一次 turn.ended，换状态时 set_at 自己就刷新了；而连着两条 turn.ended、中间什么状态都没变的
+ * 路径由服务端补上——`turn.ended` / `turn.failed` 自带轮次边界，起点无条件记事件时刻（`src/status/machine.rs`
+ * 的 `set_new_turn`，agora-8x6）。这条以前是反的（起点不动、记号不作废、第二轮结果回不到 NEEDS ATTENTION），
+ * 所以前端这半边一个字都没改：键的形状本来就对，缺的是服务端把起点推过去。
  */
 export type SeenSet = ReadonlySet<string>;
 
