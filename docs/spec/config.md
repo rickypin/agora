@@ -91,7 +91,8 @@ CREATE TABLE sessions (
     origin TEXT NOT NULL DEFAULT 'agora',          -- agora | adopted | external | headless（§5.5；headless = 宿主自己起的无头会话，agora-5gg.20）
     spawned_at DATETIME,                           -- 本代进程（epoch）起始时刻：create / respawn 写；STARTING 窗口只看它（v2）
     killed_at DATETIME,                            -- 用户执行过 Kill 的时刻，Restart 清空；事件不是活性，重启后仍报 killed by user（v2，ADR-001 D4）
-    ended_at_approximate BOOLEAN NOT NULL DEFAULT FALSE  -- ended_at 是 daemon 时钟补的近似值（运行时会话已不在 / 运行时还没报退出时刻），不是运行时报的退出时刻；准确值到了就覆盖近似值，Restart 清空（v5，A42，agora-h1k.4）
+    ended_at_approximate BOOLEAN NOT NULL DEFAULT FALSE,  -- ended_at 是 daemon 时钟补的近似值（运行时会话已不在 / 运行时还没报退出时刻），不是运行时报的退出时刻；准确值到了就覆盖近似值，Restart 清空（v5，A42，agora-h1k.4）
+    ended_at_from_missing BOOLEAN NOT NULL DEFAULT FALSE  -- 这个 ended_at 是"运行时列表里没有它"猜出来的，可被下一轮推翻：会话又在列表里且 pane 活着 → view() 清空 ended_at 与两个标记（v6，agora-psj0）；近似值里只有这一档会整个错掉（socket 文件被 tmpfiles 扫掉而 server 还活着，ADR-001 D4）
 );
 CREATE TABLE projects (path TEXT PRIMARY KEY, name TEXT NOT NULL, last_used_at DATETIME);  -- 扫描发现 + 最近使用
 CREATE TABLE devices (                             -- ADR-003 D2：已配对设备，人的 session；只存哈希

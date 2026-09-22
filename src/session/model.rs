@@ -73,6 +73,12 @@ pub struct SessionRecord {
     /// `ended_at` 是 daemon 的时钟补的近似值（运行时会话已经不在、或运行时还没报退出时刻），
     /// 不是运行时报的退出时刻；`ended_at` 为 None 时无意义（agora-h1k.4）。
     pub ended_at_approximate: bool,
+    /// 这个 `ended_at` 是"运行时列表里没有它"猜出来的，因而**可以被下一轮的事实推翻**
+    /// （agora-psj0）。近似值里只有这一档会错到底：socket 文件被 tmpfiles 之类扫掉而 server 还
+    /// 活着时，那几轮的列表是空的，行会被判成结束（ADR-001 D4 的已知假阳性）；socket 回来、会话
+    /// 还活着时 `view()` 就把 `ended_at` 连同这个记号一起清掉。Kill 之后运行时还没报退出时刻的
+    /// 近似值不带它——那一行确定已经结束，不该被任何后来的观测撤回。
+    pub ended_at_from_missing: bool,
     /// 用户执行过 Kill 的时刻；Restart 清空。事件而非活性（不变量 7 允许）。
     pub killed_at: Option<String>,
     pub updated_at: String,

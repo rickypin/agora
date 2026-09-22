@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agora::runtime::{Exit, Runtime, RuntimeRef, Size};
 use agora::session::{Db, NewSession, Origin, SessionError, SessionManager};
-use agora::status::Status;
+use agora::status::{EndCause, RuntimeGone, Status};
 use common::FakeRuntime;
 
 fn mgr() -> (SessionManager, Arc<FakeRuntime>, Arc<Db>) {
@@ -401,6 +401,137 @@ fn missing_runtime_session_finishes_the_row_and_writes_ended_at_once() {
     let again = m.get(&v.record.id).unwrap();
     assert_eq!(again.record.ended_at, after.record.ended_at);
     assert_eq!(again.assessment.reason, after.assessment.reason);
+}
+
+/// 一次 tick 的全部行，按 id 取。
+fn by_id(m: &SessionManager) -> HashMap<String, agora::session::SessionView> {
+    m.list()
+        .unwrap()
+        .into_iter()
+        .map(|v| (v.record.id.clone(), v))
+        .collect()
+}
+
+#[test]
+fn a_row_wrongly_judged_gone_takes_its_ended_at_back_when_the_session_shows_up_again() {
+    // agora-psj0（承 agora-u5p 的结论、agora-dkv3 的另一半）：「运行时列表里没有它」写下的结束
+    // 时刻是**可以错的**——socket 文件被 systemd-tmpfiles / tmpreap 之类扫掉而 tmux server 还
+    // 活着时（tmux 靠 SIGUSR1 重建 socket），`list_socket` 连不上 socket 就返回空列表（ADR-001
+    // D4：没有会话不是故障，所以它既不报错、也进不了 dkv3 的 `RuntimeScan::unreadable`），那几轮
+    // 里这个 socket 上的每一行都被判 FINISHED 并盖上近似 ended_at。socket 回来之后会话原样还在，
+    // 而在这条修复之前，那个结束时刻只有 Restart 清得掉——要人动手，还白换一代进程。
+    let (m, rt, db) = mgr();
+    let back = m.create(&new_session("back")).unwrap(); // 只是看不见，会回来
+    let exited = m.create(&new_session("exited")).unwrap(); // 会回来，但 agent 真在失明期间退了
+    let gone = m.create(&new_session("gone")).unwrap(); // 真被 kill-session 了，不会回来
+    for id in [&back.record.id, &exited.record.id, &gone.record.id] {
+        backdate_spawn(&db, id);
+    }
+    rt.kill_session(gone.record.runtime_ref.as_deref().unwrap());
+
+    // 第一轮：socket 文件没了。三行在列表上长得一模一样——这正是问题所在。
+    rt.blind_socket("agora");
+    let first = by_id(&m);
+    for id in [&back.record.id, &exited.record.id, &gone.record.id] {
+        let v = &first[id];
+        assert_eq!(
+            v.assessment.status,
+            Status::Finished,
+            "{id}: {:?}",
+            v.assessment
+        );
+        assert!(v.record.ended_at.is_some(), "{id}: 首次观察到就补结束时刻");
+        assert!(v.record.ended_at_approximate, "{id}: 没人报得出退出时刻");
+        assert!(
+            v.record.ended_at_from_missing,
+            "{id}: 这一档是「没在列表里」猜出来的，必须带可撤回的记号，否则下一轮分不出该不该收回"
+        );
+    }
+
+    // 第二轮：socket 回来了，会话一个没少。"pane 随会话收 SIGHUP、agent 确定不在"这句话
+    // 对 back 不成立 —— 结束时刻得自己收回去，不等 Restart、不用人动手。
+    rt.set_dead(exited.record.runtime_ref.as_deref().unwrap(), Exit::Code(0));
+    rt.socket_back("agora");
+    let second = by_id(&m);
+    let b = &second[&back.record.id];
+    assert!(
+        matches!(b.assessment.status, Status::Running | Status::Idle),
+        "状态回到实际值: {:?}",
+        b.assessment
+    );
+    assert!(b.alive);
+    assert!(
+        b.record.ended_at.is_none(),
+        "会话还在，它没结束过: {:?}",
+        b.record
+    );
+    assert!(!b.record.ended_at_approximate);
+    assert!(!b.record.ended_at_from_missing);
+    assert!(
+        b.assessment.end_cause.is_none(),
+        "没结束就不带 end_cause: {:?}",
+        b.assessment
+    );
+
+    // 对照一：会话回到了列表里，pane 却是死的——失明期间 agent 真的退了。行确实结束了，
+    // 那个猜出来的时刻是它仅有的结束时刻（运行时报不出 pane_dead_time），不许撤回。
+    let e = &second[&exited.record.id];
+    assert_eq!(e.assessment.status, Status::Finished);
+    assert_eq!(e.assessment.end_cause, Some(EndCause::ExitCode(0)));
+    assert_eq!(
+        e.record.ended_at, first[&exited.record.id].record.ended_at,
+        "回写只认活着的会话：pane 在而进程没了，结束是事实"
+    );
+
+    // 对照二：真的没了的那一行一个字都不许动。区别只有一个——它没回到列表里。
+    let g = &second[&gone.record.id];
+    assert_eq!(g.assessment.status, Status::Finished);
+    assert_eq!(
+        g.record.ended_at, first[&gone.record.id].record.ended_at,
+        "真结束的行不得被这条回写碰到"
+    );
+    assert!(
+        g.record.ended_at_from_missing,
+        "它的结束时刻同样是猜的：哪天真扫到它还活着，一样要能撤回"
+    );
+    assert_eq!(
+        g.assessment.end_cause,
+        Some(EndCause::RuntimeGone(RuntimeGone::Session)),
+        "server 回来了，没了的只有这一个会话"
+    );
+
+    // 清的是库不是内存里那份副本：换一个 manager（= daemon 重启）再看一眼。
+    let m2 = SessionManager::new(db, rt.clone() as Arc<dyn Runtime>);
+    let report = m2.reconcile().unwrap();
+    assert_eq!(report.known_alive, vec![back.record.id.clone()]);
+    assert!(m2.get(&back.record.id).unwrap().record.ended_at.is_none());
+    assert!(m2.get(&gone.record.id).unwrap().record.ended_at.is_some());
+}
+
+#[test]
+fn an_approximate_ended_at_that_was_not_guessed_survives_a_live_pane() {
+    // 上一条回写只认 `ended_at_from_missing` 这一个记号，不认 `ended_at_approximate`
+    // （agora-psj0 验收 ③）：近似只说"时刻是 daemon 的表补的"，Kill / cleanup / reconcile 的
+    // dead pane 都会写出近似值，而那些行是确定结束了的，绝不能因为运行时那边还看得见一个活着的
+    // pane 就把结束时刻抹掉。今天没有哪条路会写出"近似 + pane 活着"，所以这一行直接用 SQL 造：
+    // 守的是规则本身——日后谁再添一条写近似 ended_at 的路，也不会被这条回写顺手清掉。
+    let (m, _rt, db) = mgr();
+    let v = m.create(&new_session("approx")).unwrap();
+    backdate_spawn(&db, &v.record.id);
+    db.conn()
+        .execute(
+            "UPDATE sessions SET ended_at = '2026-09-21T00:00:00Z', ended_at_approximate = TRUE,
+                ended_at_from_missing = FALSE WHERE id = ?1",
+            [&v.record.id],
+        )
+        .unwrap();
+    let after = m.get(&v.record.id).unwrap();
+    assert_eq!(
+        after.record.ended_at.as_deref(),
+        Some("2026-09-21T00:00:00Z"),
+        "不是猜出来的结束时刻，pane 活着也不撤回"
+    );
+    assert!(after.record.ended_at_approximate);
 }
 
 #[test]

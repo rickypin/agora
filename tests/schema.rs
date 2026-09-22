@@ -33,6 +33,9 @@ fn no_liveness_columns() {
         "transcript_path",
         "spawned_at",
         "killed_at",
+        // v5 / v6：ended_at 是不是 daemon 猜的、猜的那一档能不能被下一轮推翻（agora-psj0）。
+        "ended_at_approximate",
+        "ended_at_from_missing",
     ] {
         assert!(cols.contains(&required.to_string()), "缺列 {required}");
     }

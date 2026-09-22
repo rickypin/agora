@@ -39,6 +39,9 @@ pub struct FakeRuntime {
     /// connect 不上的 socket（agora-u5p）：`server_present` 对它答 false，即整个 server 没了。
     /// 用 [`FakeRuntime::kill_server`] 置它，不要直接写这个集合。
     pub dead_servers: Mutex<std::collections::HashSet<String>>,
+    /// 这一轮看不见、但会话一个都没少的 socket（agora-psj0）：用 [`FakeRuntime::blind_socket`]
+    /// 置、[`FakeRuntime::socket_back`] 解，不要直接写这个集合。
+    pub blind_sockets: Mutex<std::collections::HashSet<String>>,
     /// 置了就让 `list()` 报 [`RuntimeError::ServerUnavailable`]，模拟 ADR-001 D7 的运行时失明
     /// （server 在、但应答不了：协议不匹配）。真 tmux 那条路见 `tests/runtime_degraded.rs`。
     pub list_error: Mutex<Option<String>>,
@@ -99,6 +102,23 @@ impl FakeRuntime {
             .unwrap()
             .retain(|r, _| Self::socket_of(r) != socket);
     }
+
+    /// 模拟 socket 文件被 systemd-tmpfiles / tmpreap 之类扫掉、而 tmux server 还活着
+    /// （ADR-001 D4 记下的已知假阳性）：connect 连不上、`list` 也就一个会话都报不出来，而会话
+    /// **一个都没少**——[`Self::socket_back`]（tmux 收 SIGUSR1 重建 socket）之后它们原样回来。
+    /// 与 [`Self::kill_server`] 的区别正是 agora-psj0 要分开的两件事：那条是真没了（会话从表里
+    /// 删掉，怎么等都不回来），这条只是这几轮看不见。
+    pub fn blind_socket(&self, socket: &str) {
+        self.blind_sockets.lock().unwrap().insert(socket.to_owned());
+    }
+
+    pub fn socket_back(&self, socket: &str) {
+        self.blind_sockets.lock().unwrap().remove(socket);
+    }
+
+    fn blind(&self, socket: &str) -> bool {
+        self.blind_sockets.lock().unwrap().contains(socket)
+    }
 }
 
 impl Runtime for FakeRuntime {
@@ -114,18 +134,29 @@ impl Runtime for FakeRuntime {
         if let Some(reason) = self.list_error.lock().unwrap().clone() {
             return Err(RuntimeError::ServerUnavailable { reason });
         }
+        // 看不见的 socket 报空而不是报错——真 tmux 的 `list_socket` 连不上 socket 就返回 Ok(空)
+        // （ADR-001 D4：没有会话不是故障），这一格正是 agora-psj0 的误判来路，不是 dkv3 的
+        // `RuntimeScan::unreadable`。
         Ok(RuntimeScan::complete(
-            self.sessions.lock().unwrap().values().cloned().collect(),
+            self.sessions
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|s| !self.blind(Self::socket_of(&s.r#ref.0)))
+                .cloned()
+                .collect(),
         ))
     }
     fn server_present(&self, r: &RuntimeRef) -> bool {
-        !self
-            .dead_servers
-            .lock()
-            .unwrap()
-            .contains(Self::socket_of(&r.0))
+        let socket = Self::socket_of(&r.0);
+        !self.dead_servers.lock().unwrap().contains(socket) && !self.blind(socket)
     }
     fn inspect(&self, r: &RuntimeRef) -> Result<RuntimeSession, RuntimeError> {
+        // 同 list：看不见的 socket 上的会话在真 tmux 那里也是 NotFound（inspect 走的就是
+        // `list_socket` 的结果）。
+        if self.blind(Self::socket_of(&r.0)) {
+            return Err(RuntimeError::NotFound(r.clone()));
+        }
         self.sessions
             .lock()
             .unwrap()

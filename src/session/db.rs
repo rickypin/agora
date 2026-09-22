@@ -83,6 +83,13 @@ const MIGRATIONS: &[&str] = &[
     // reconcile 时 known_missing、Kill 后运行时还没收集到退出时刻都属此类。近似值可被运行时后来报的
     // 准确值覆盖，反之不行。旧行留 FALSE：不知道就不标。
     "ALTER TABLE sessions ADD COLUMN ended_at_approximate BOOLEAN NOT NULL DEFAULT FALSE;",
+    // v6：这个 ended_at 是"运行时列表里没有它"猜出来的（agora-psj0，2026-09-22）。与
+    // ended_at_approximate 分开，是因为那一列只说"时刻是 daemon 的表补的"——Kill 之后运行时还没
+    // 收集到退出时刻的那种也是近似，但那一行确定已经结束；只有"没在列表里"这一档可能整个是误判
+    // （socket 文件被 tmpfiles 之类扫掉、而运行时 server 其实还活着并会自己把 socket 建回来；
+    // ADR-001 D4 记下的已知假阳性），下一轮真扫到、会话还活着就要把结束时刻收回。没有这个记号就
+    // 分不出该不该撤回，误判从此只有 Restart 一条出口。旧行留 FALSE：不知道来路的结束时刻不推翻。
+    "ALTER TABLE sessions ADD COLUMN ended_at_from_missing BOOLEAN NOT NULL DEFAULT FALSE;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

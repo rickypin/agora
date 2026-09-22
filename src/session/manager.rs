@@ -484,7 +484,7 @@ impl SessionManager {
                 if ended {
                     // 近似值让位给准确值（Kill 时补的近似等 reconcile 补正，同 A42 那条规则）。
                     if rec.ended_at.is_none() || rec.ended_at_approximate {
-                        self.mark_ended_at(id, Some(unix_secs(at)))?;
+                        self.mark_ended_at(id, Some(unix_secs(at)), false)?;
                     }
                 } else if rec.ended_at.is_some() {
                     self.clear_ended_at(id)?;
@@ -1169,6 +1169,28 @@ impl SessionManager {
         if external_gone {
             self.note_external_process_gone(&mut rec);
         }
+        // 反过来的一半（agora-psj0）：上一轮判的"没了"是可以被这一轮推翻的。判据只有一个——
+        // 那个 `ended_at` 是"列表里没有它"猜出来的（`ended_at_from_missing`），而这一轮它又在
+        // 列表里、而且活着。会话在、pane 的进程在，当初"pane 随会话收 SIGHUP、agent 确定不在"
+        // 的那句话就不成立，结束时刻得收回去。
+        // 误判从哪来（ADR-001 D4 的已知假阳性，notes ③）：socket 文件被 systemd-tmpfiles /
+        // tmpreap 之类扫掉、而运行时 server 其实还活着（它会自己把 socket 建回来）——运行时对
+        // "连不上 socket"返回的是**空列表**而不是错误（没有会话不是故障，D4），于是那几轮里
+        // 这个 socket 上的每一行都落进上面的 `gone`。
+        // 它与 agora-dkv3 管的那一半不是同一格：那一半是采纳 socket 应答了却报错（进
+        // `RuntimeScan::unreadable`，读路径早就退回 UNKNOWN、根本不写 ended_at），这一半连
+        // "扫失败"都说不出口，只能事后由事实推翻。
+        // 只认这一个记号，不认 `ended_at_approximate`：Kill 之后运行时还没收集到退出时刻的那种
+        // 也是近似值，可那一行确定已经结束，绝不能因为 pane 还在宽限里活着就把结束时刻抹掉。
+        // 与 `gone` / `external_gone` 一样先算成布尔量再动 rec：下面的 `rt` 要借 rec 借到函数末尾。
+        let refuted = rec.ended_at_from_missing
+            && rec
+                .runtime_ref
+                .as_deref()
+                .is_some_and(|r| live.iter().any(|s| s.r#ref.0 == r && s.alive));
+        if refuted {
+            self.clear_refuted_ended_at(&mut rec);
+        }
         let rt = rec
             .runtime_ref
             .as_deref()
@@ -1393,7 +1415,7 @@ impl SessionManager {
         // terminate 对 !alive 直接 Ok，所以只能在这里先看。退出时刻取运行时报的，不是点 Kill 的现在。
         let before = self.runtime.inspect(&r#ref)?;
         if !before.alive {
-            self.mark_ended_at(id, before.exited_at)?;
+            self.mark_ended_at(id, before.exited_at, false)?;
             return self.get(id);
         }
         // 先记事实再动手：进程一死 get 就按 killed_at 把信号退出算成 FINISHED，若先杀后写，
@@ -1437,7 +1459,7 @@ impl SessionManager {
         // 刚死运行时多半还没收集到退出时刻（要等它收到 SIGCHLD），这时先记近似的现在，
         // 下次 reconcile 有了准确值再补正。
         let exited_at = self.runtime.inspect(&r#ref).ok().and_then(|s| s.exited_at);
-        self.mark_ended_at(id, exited_at)?;
+        self.mark_ended_at(id, exited_at, false)?;
         self.get(id)
     }
 
@@ -1501,7 +1523,7 @@ impl SessionManager {
         }
         self.db.conn().execute(
             "UPDATE sessions SET epoch = ?2, ended_at = NULL, ended_at_approximate = FALSE,
-                killed_at = NULL,
+                ended_at_from_missing = FALSE, killed_at = NULL,
                 spawned_at = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
                 updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?1",
             params![id, epoch],
@@ -1570,7 +1592,7 @@ impl SessionManager {
             Err(RuntimeError::NotFound(_)) => {}
             Err(e) => return Err(e.into()),
         }
-        self.mark_ended_at(id, exited_at)?;
+        self.mark_ended_at(id, exited_at, false)?;
         Ok(())
     }
 
@@ -1705,7 +1727,7 @@ impl SessionManager {
                     // ended_at 是一小时前，不是 daemon 起来的现在。Kill 时留下的近似值也在这里被
                     // 准确值补正（A42；agora-h1k.4）。
                     if rec.ended_at.is_none() || rec.ended_at_approximate {
-                        self.mark_ended_at(&rec.id, s.exited_at)?;
+                        self.mark_ended_at(&rec.id, s.exited_at, false)?;
                     }
                     report.known_dead.push(rec.id.clone());
                 }
@@ -1726,8 +1748,10 @@ impl SessionManager {
                         continue;
                     }
                     // 运行时会话已经不在，谁也不知道它什么时候死的：记 reconcile 时刻并标近似。
+                    // 标成"猜的"（agora-psj0）：启动这一刻同样分不出"真没了"与"socket 文件被扫掉、
+                    // server 其实还活着"，猜错了由 view() 在会话回到列表里的那一轮撤回。
                     if rec.ended_at.is_none() {
-                        self.mark_ended(&rec.id)?;
+                        self.mark_ended_from_missing(&rec.id)?;
                     }
                     report.known_missing.push(rec.id.clone());
                 }
@@ -1767,7 +1791,14 @@ impl SessionManager {
     }
 
     fn mark_ended(&self, id: &str) -> Result<(), SessionError> {
-        self.mark_ended_at(id, None)
+        self.mark_ended_at(id, None, false)
+    }
+
+    /// 同上，但这个结束时刻是"运行时列表里没有它"猜出来的：标上可撤回的记号（agora-psj0）。
+    /// 只有两条路走这里——`view()` 每 tick 的 missing 分支与 `reconcile` 启动时的 missing 一格，
+    /// 也正是那两条会把一次读不到读成"会话没了"的路。
+    fn mark_ended_from_missing(&self, id: &str) -> Result<(), SessionError> {
+        self.mark_ended_at(id, None, true)
     }
 
     /// 运行时会话没了：第一次观察到时补 `ended_at`（近似——会话连同 pane 一起没了，运行时再也
@@ -1775,7 +1806,8 @@ impl SessionManager {
     /// 等不到下一次重启（agora-u5p notes ②，现场：Mac 重启后 6 行 unknown 35m，库里有
     /// killed_at / ended_at 而状态说看不清）。补法见 [`SessionManager::note_end_at_tick`]。
     fn note_runtime_gone(&self, rec: &mut SessionRecord) {
-        self.note_end_at_tick(rec, "运行时会话没了");
+        // 可撤回：这一格是"列表里没有它"推出来的，而那次读有可能整个是误判（agora-psj0）。
+        self.note_end_at_tick(rec, "运行时会话没了", true);
     }
 
     /// external 行的 agent 进程探不到了：那是这一行能拿到的唯一「进程退出」事实，同样只能记
@@ -1783,18 +1815,28 @@ impl SessionManager {
     /// `apply_hook_inner` 那条路，拿得到准时刻（agora-5gg.3：Mac 实测 35 行 FINISHED 的
     /// external 行 ended_at 全空）。
     fn note_external_process_gone(&self, rec: &mut SessionRecord) {
-        self.note_end_at_tick(rec, "external 行的 agent 进程没了");
+        // 不可撤回：探活是对这一行**自己的**进程号问的，答"没了"就是没了（号被复用也算没了）。
+        // 这一行要是又活过来，清 ended_at 的是 hook 那条路（`apply_hook_inner`，agora-5gg.3）。
+        self.note_end_at_tick(rec, "external 行的 agent 进程没了", false);
     }
 
     /// 这一行结束了，但没人报得出它几点结束的：第一次观察到时把当前时刻补进 `ended_at` 并标
     /// 近似。幂等：库里已有 ended_at 就不动，与 reconcile 的 missing 分支同一条规则（准确值
     /// 优先，运行时报出 `exited_at` 之后再补正）。写失败只 warn：读路径不因一次 SQLite 忙而
     /// 报错，状态结论也不依赖它（行照样 FINISHED，只是没有结束时刻）。
-    fn note_end_at_tick(&self, rec: &mut SessionRecord, observed: &str) {
+    ///
+    /// `from_missing` 把两个调用方分开：结束时刻是"运行时列表里没有它"猜的那一档可以被下一轮
+    /// 真扫到推翻（agora-psj0，见 [`SessionRecord::ended_at_from_missing`]）。
+    fn note_end_at_tick(&self, rec: &mut SessionRecord, observed: &str, from_missing: bool) {
         if rec.ended_at.is_some() {
             return;
         }
-        if let Err(e) = self.mark_ended(&rec.id) {
+        let written = if from_missing {
+            self.mark_ended_from_missing(&rec.id)
+        } else {
+            self.mark_ended(&rec.id)
+        };
+        if let Err(e) = written {
             tracing::warn!(component = "session", id = %rec.id, observed, %e, "补 ended_at 失败");
             return;
         }
@@ -1802,6 +1844,31 @@ impl SessionManager {
         // 跨秒的偏差回读一行不划算，下一轮读就是库里的准值。
         rec.ended_at = Some(clock::format_utc_secs(clock::now_secs()));
         rec.ended_at_approximate = true;
+        rec.ended_at_from_missing = from_missing;
+    }
+
+    /// 上一轮"没在列表里"猜出来的结束时刻被这一轮的事实推翻了：会话原样还在，而且活着
+    /// （agora-psj0）。清掉 `ended_at` 与两个记号，状态由状态机在同一 tick 里按活着的进程事实
+    /// 自己走回 RUNNING —— 不需要 Restart，也不需要人动手。
+    ///
+    /// 与 `clear_ended_at`（"行又活了"，external 行的 hook 路径）走同一条 SQL，但多记一条 info：
+    /// 那条说的是"这一行开始了新的一轮"，这条说的是"上一轮的结束结论本身是错的"，排障时要分得开。
+    /// 写失败只 warn，同 [`SessionManager::note_end_at_tick`]：读路径不因一次 SQLite 忙而报错，
+    /// 下一 tick 还会再来一次。
+    fn clear_refuted_ended_at(&self, rec: &mut SessionRecord) {
+        if let Err(e) = self.clear_ended_at(&rec.id) {
+            tracing::warn!(component = "session", id = %rec.id, %e, "撤回误判的 ended_at 失败");
+            return;
+        }
+        tracing::info!(
+            component = "session",
+            id = %rec.id,
+            ended_at = rec.ended_at.as_deref().unwrap_or_default(),
+            "运行时会话又扫到了、还活着：撤回上一轮「没在列表里」写下的 ended_at"
+        );
+        rec.ended_at = None;
+        rec.ended_at_approximate = false;
+        rec.ended_at_from_missing = false;
     }
 
     /// 行又活了（hook 的 FINISHED 不是终态）：清掉结束时刻。与 `restart_with` 清空 ended_at
@@ -1810,6 +1877,7 @@ impl SessionManager {
     fn clear_ended_at(&self, id: &str) -> Result<(), SessionError> {
         self.db.conn().execute(
             "UPDATE sessions SET ended_at = NULL, ended_at_approximate = FALSE,
+                ended_at_from_missing = FALSE,
                 updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
              WHERE id = ?1",
             [id],
@@ -1832,7 +1900,17 @@ impl SessionManager {
     /// 只能记 daemon 的当下并标近似。已有的准确值不动；已有的近似值被后来的准确值覆盖——Kill 时
     /// 运行时往往还没收集到退出时刻，下次 reconcile 拿到 `exited_at` 再补正（A42；agora-h1k.4）。
     /// SQL 里 SET 的各表达式都按更新前的行求值，所以 ended_at_approximate 那行看到的是旧 ended_at。
-    fn mark_ended_at(&self, id: &str, at: Option<SystemTime>) -> Result<(), SessionError> {
+    ///
+    /// `from_missing` 只有 [`SessionManager::mark_ended_from_missing`] 给真：这个时刻是"运行时
+    /// 列表里没有它"猜的，可被下一轮真扫到推翻（agora-psj0）。记号与 `ended_at_approximate` 同一道
+    /// 门（"还能改写吗"），所以别的调用方一律把它清成 FALSE——它们手里都有一次"这一行确实结束了"
+    /// 的新观测（dead pane、Kill、cleanup），哪怕沿用的还是当初猜的那个时刻，那个时刻也不该再被撤回。
+    fn mark_ended_at(
+        &self,
+        id: &str,
+        at: Option<SystemTime>,
+        from_missing: bool,
+    ) -> Result<(), SessionError> {
         let secs = at
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64);
@@ -1841,6 +1919,9 @@ impl SessionManager {
                 ended_at_approximate = CASE
                     WHEN ended_at IS NULL OR ended_at_approximate THEN (?2 IS NULL)
                     ELSE ended_at_approximate END,
+                ended_at_from_missing = CASE
+                    WHEN ended_at IS NULL OR ended_at_approximate THEN ?3
+                    ELSE ended_at_from_missing END,
                 ended_at = CASE
                     WHEN ended_at IS NOT NULL AND NOT (ended_at_approximate AND ?2 IS NOT NULL)
                         THEN ended_at
@@ -1848,7 +1929,7 @@ impl SessionManager {
                     ELSE strftime('%Y-%m-%dT%H:%M:%SZ', ?2, 'unixepoch') END,
                 updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
              WHERE id = ?1",
-            params![id, secs],
+            params![id, secs, from_missing],
         )?;
         Ok(())
     }
@@ -1873,7 +1954,8 @@ impl SessionManager {
 const SELECT: &str =
     "SELECT id, runtime_ref, display_name, name_locked, agent_type, working_directory,
     worktree, task_ref, command, agent_session_id, epoch, transcript_path, created_at, ended_at,
-    updated_at, origin, spawned_at, killed_at, ended_at_approximate FROM sessions";
+    updated_at, origin, spawned_at, killed_at, ended_at_approximate, ended_at_from_missing
+    FROM sessions";
 
 fn row_to_record(row: &Row<'_>) -> rusqlite::Result<SessionRecord> {
     let origin: String = row.get(15)?;
@@ -1897,6 +1979,7 @@ fn row_to_record(row: &Row<'_>) -> rusqlite::Result<SessionRecord> {
         spawned_at: row.get(16)?,
         killed_at: row.get(17)?,
         ended_at_approximate: row.get(18)?,
+        ended_at_from_missing: row.get(19)?,
     })
 }
 

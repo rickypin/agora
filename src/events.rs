@@ -717,6 +717,7 @@ mod tests {
                 spawned_at: None,
                 ended_at: None,
                 ended_at_approximate: false,
+                ended_at_from_missing: false,
                 killed_at: None,
                 updated_at: String::new(),
                 origin: crate::session::Origin::Agora,

@@ -254,7 +254,7 @@ Session {
 }
 ```
 
-`ended_at` 说的是「这一行结束了」而不是「进程退出了」（2026-09-20 修订，agora-5gg.3）——external 行（§5.5）没有进程退出，但有对话结束，所以结束时刻按可得性取四种事实之一：运行时报的退出时刻（准确）→ hook `SessionEnd` 的事件时刻 → 同一进程换了对话时**新对话首条事件**的时刻 → 探活发现进程没了的那个 tick（谁也报不出几点退的，只能标 `ended_at_approximate`）。行又活了就清掉它——hook 的 FINISHED 不是终态（`/resume`、Codex TUI 的 `/new` 之后同一行回 STARTING），与 Restart 清空它是同一条规则。按结束时间的保留 / 折叠 / 淘汰（`sessions.external_finished_ttl`）拿它当唯一依据：`status_since` 是状态机的内存时钟，说不了“库里的行什么时候结束的”。
+`ended_at` 说的是「这一行结束了」而不是「进程退出了」（2026-09-20 修订，agora-5gg.3）——external 行（§5.5）没有进程退出，但有对话结束，所以结束时刻按可得性取四种事实之一：运行时报的退出时刻（准确）→ hook `SessionEnd` 的事件时刻 → 同一进程换了对话时**新对话首条事件**的时刻 → 探活发现进程没了的那个 tick（谁也报不出几点退的，只能标 `ended_at_approximate`）。行又活了就清掉它——hook 的 FINISHED 不是终态（`/resume`、Codex TUI 的 `/new` 之后同一行回 STARTING），与 Restart 清空它是同一条规则。**猜错了同样清掉**（2026-09-22，agora-psj0）：四种事实里只有最后一种是猜的，而"运行时列表里没有它"有一个排不掉的假阳性（socket 文件被清理进程扫掉而 server 还活着，【ADR-001】D4），所以这一档的 `ended_at` 带 `ended_at_from_missing` 记号，下一轮这个会话又在列表里、pane 还活着就当场收回——不必 Restart、不用人动手。按结束时间的保留 / 折叠 / 淘汰（`sessions.external_finished_ttl`）拿它当唯一依据：`status_since` 是状态机的内存时钟，说不了“库里的行什么时候结束的”。
 
 `status / exit_code / last_activity_at` 是运行时与 observer 的实时结果，**不落库**（不变量 7）；SQLite 只存上面的 metadata。`project`（仓库根 / 名字 / worktree / 分支 / 是否主 worktree）是按 `working_directory` 派生的实时字段，与 `status` 同一待遇：异步补齐、按 TTL 重查、**不落库**（不变量 7）——库里只有 `working_directory`，字段形状见 `docs/spec/api.md`（A49，2026-09-09，agora-uvd.1）。
 
