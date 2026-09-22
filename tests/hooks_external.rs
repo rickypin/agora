@@ -1591,3 +1591,266 @@ async fn a_headless_session_registers_as_headless_and_expires_whatever_its_statu
         "客户端看到的还是那一条 session_removed：{events:?}"
     );
 }
+
+// ==================== sweep 的「进程已退出」判据（agora-qmi）====================
+//
+// receiver 每 5 s 的 sweep 里有一条兜底：agent 进程退了，不会有事件替它发 SessionEnd，
+// 把还在 socket 上等答复的 hook 以 none 放掉（`decision_resolved via=exit`）。这条判据原先
+// 写的是 `!view.alive`。三态之后 `alive` 恒等于 `process == alive`（agora-5gg.18 的 Q4），
+// `false` 就混装了三种事实——真没了、无可信进程号（unknown）、对话结束但 pid 还在跑别的对话，
+// 只有第一种还是「进程退了」。下面三条各钉一格；把判据改回 `!view.alive`，② ③ 各红一次
+// （② 是 unknown 被当成退出；③ 是行刚钉成 FINISHED 就把还在等的 hook 放掉，旧口径交给超时）。
+
+/// 起一个还在 socket 上等答复的 PermissionRequest：`wake` 登记挂起之后就一直等。
+/// 登记在 blocking 线程里跑，轮询到它出现在挂起表为止（同
+/// `external_session_answers_permission_via_the_hook_and_refuses_text` 的做法）。
+async fn hold_permission(
+    receiver: &Arc<Receiver>,
+    home: &std::path::Path,
+    agent_session: &str,
+    session: &str,
+    env: &[(&str, String)],
+) -> tokio::task::JoinHandle<Response> {
+    let path = Inbox::new(home)
+        .write(&delivery(
+            agent_session,
+            json!({ "hook_event_name": "PermissionRequest", "session_id": agent_session,
+                    "tool_name": "Bash", "tool_input": { "command": "ls" } }),
+            env,
+            &[],
+        ))
+        .unwrap();
+    let r = receiver.clone();
+    let task = tokio::spawn(async move { r.wake(&path).await });
+    for _ in 0..200 {
+        if !receiver.pending(session).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        receiver.pending(session),
+        vec!["Bash".to_owned()],
+        "挂起登记上了才有得测"
+    );
+    task
+}
+
+/// 验收 ①：进程真的退掉了 → sweep 立刻以 `exit` 解除挂起。两种「进程退了」各钉一行：
+/// 有句柄的行由运行时报来退出码（remain-on-exit 保住 dead pane，`pid` 照报，所以任何拿
+/// `view.pid.is_none()` 划「退干净了」的写法都会在这一格漏掉），external 行由探活探不到号。
+/// 改坏法：判据换成 `view.process == Gone && view.pid.is_none()` → 前一段红（dead pane 的号还在，
+/// 挂起不解除）；整条判据拿掉（永不按退出解除）→ 两段各红一次（交给 30 s 的超时）。
+#[tokio::test]
+async fn the_sweep_releases_a_held_hook_when_the_agent_process_is_really_gone() {
+    let (fx, receiver, home) = with_hooks();
+    let cookie = fx.cookie();
+
+    // 有句柄的行：agent 自己退出，运行时报来退出码 0。
+    let (status, created) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        "/api/sessions",
+        Some(
+            json!({ "display_name": "pane", "agent_type": "claude", "working_directory": "/tmp" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let pane = created["local_id"].as_str().unwrap().to_owned();
+    let pane_ref = created["runtime_ref"].as_str().unwrap().to_owned();
+    let mut pane_delivery = delivery_for(
+        "claude",
+        "pane-agent",
+        json!({ "hook_event_name": "PermissionRequest", "session_id": "pane-agent",
+                "tool_name": "Bash", "tool_input": { "command": "ls" } }),
+        &[],
+        &[],
+    );
+    pane_delivery.envelope.agora_session_id = Some(pane.clone());
+    pane_delivery.envelope.agora_epoch = Some(1);
+    let pane_path = Inbox::new(home.path()).write(&pane_delivery).unwrap();
+    let r = receiver.clone();
+    let pane_task = tokio::spawn(async move { r.wake(&pane_path).await });
+    for _ in 0..200 {
+        if !receiver.pending(&pane).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(receiver.pending(&pane), vec!["Bash".to_owned()]);
+
+    // external 的行：hook 报来的进程号还在。
+    let mut agent = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let env = [("CLAUDE_PID", agent.id().to_string())];
+    let ext = ingest(
+        &receiver,
+        home.path(),
+        &delivery("exit-ext", session_start("exit-ext"), &env, &[]),
+    )
+    .unwrap();
+    let ext_task = hold_permission(&receiver, home.path(), "exit-ext", &ext, &env).await;
+    let mut events = fx.state.events.subscribe();
+
+    // 对照：两行的进程都还在 → sweep 没有理由动它们的挂起。
+    receiver.sweep();
+    assert_eq!(
+        receiver.pending(&pane),
+        vec!["Bash".to_owned()],
+        "pane 还活着"
+    );
+    assert_eq!(
+        receiver.pending(&ext),
+        vec!["Bash".to_owned()],
+        "external 的号还活着"
+    );
+
+    // 运行时报来退出码（dead pane 的 pid 照报）；探活探不到号了。
+    fx.rt.set_dead(&pane_ref, agora::runtime::Exit::Code(0));
+    agent.kill().unwrap();
+    agent.wait().unwrap();
+    let v = fx.sessions.get(&ext).unwrap();
+    assert_eq!(v.process, ProcessState::Gone, "{:?}", v.assessment);
+
+    receiver.sweep();
+    assert!(
+        receiver.pending(&pane).is_empty(),
+        "运行时报来退出码 → 立刻解除，不等 55 min"
+    );
+    assert!(
+        receiver.pending(&ext).is_empty(),
+        "探活探不到号 → 立刻解除：{:?}",
+        v.assessment
+    );
+    for task in [pane_task, ext_task] {
+        assert!(
+            matches!(
+                task.await.unwrap(),
+                Response::Hook {
+                    decision: Decision::None
+                }
+            ),
+            "sweep 放掉的是 fail-open（hook 侧没有决定）"
+        );
+    }
+    // 两条解除不分先后（sweep 按会话 id 排序，id 是随机的），逐条收到齐为止。
+    let mut via_by: BTreeMap<String, &'static str> = BTreeMap::new();
+    let want: Vec<String> = [pane.as_str(), ext.as_str()]
+        .iter()
+        .map(|id| format!("{}:{}", common::NODE, id))
+        .collect();
+    let until = tokio::time::Instant::now() + Duration::from_secs(3);
+    while via_by.len() < want.len() && tokio::time::Instant::now() < until {
+        if let Ok(Ok(Event::DecisionResolved { id, via, .. })) =
+            tokio::time::timeout(Duration::from_millis(200), events.recv()).await
+        {
+            via_by.insert(id, via);
+        }
+    }
+    for id in want {
+        assert_eq!(
+            via_by.get(&id).copied(),
+            Some("exit"),
+            "{id} 的解除理由要是 exit（进程退了），实际：{via_by:?}"
+        );
+    }
+}
+
+/// 验收 ②：无可信进程号的 external 行（`process=unknown`，Codex Desktop 的共用 app-server、
+/// 宿主不给进程号变量那一类）不是「进程退了」。改坏法：判据换回 `!view.alive`（unknown 投影
+/// 出的旧布尔是 false）→ 这条红，sweep 一跑挂起就没了、答它报 no_pending_decision。
+#[tokio::test]
+async fn the_sweep_leaves_a_held_hook_alone_when_agora_cannot_name_the_process() {
+    let (fx, receiver, home) = with_hooks();
+    // 明写不带 CLAUDE_PID：Adapter 的 agent_pid 给 None，这一行的进程在不在 agora 说不上。
+    let id = ingest(
+        &receiver,
+        home.path(),
+        &delivery("no-pid", session_start("no-pid"), &[], &[]),
+    )
+    .unwrap();
+    let task = hold_permission(&receiver, home.path(), "no-pid", &id, &[]).await;
+    let v = fx.sessions.get(&id).unwrap();
+    assert_eq!(v.process, ProcessState::Unknown, "{:?}", v.assessment);
+    assert!(
+        !v.alive,
+        "旧布尔把「不知道」压成「没了」——这正是换三值时要分开的那一格"
+    );
+
+    receiver.sweep();
+    assert_eq!(
+        receiver.pending(&id),
+        vec!["Bash".to_owned()],
+        "「说不上在不在」不等于「退了」：挂起交给超时，不由 sweep 放掉"
+    );
+    // 挂起还是活的、还答得动（sweep 没把它以 none 放掉）。
+    receiver.respond(&id, None, Decision::Allow).unwrap();
+    assert!(
+        matches!(
+            task.await.unwrap(),
+            Response::Hook {
+                decision: Decision::Allow
+            }
+        ),
+        "答得动才说明它没被 sweep 放掉"
+    );
+}
+
+/// 验收 ③：行已经是 FINISHED 而那个 pid 还在跑别的对话 → 这一轮 sweep 不以 exit 解除。这一格
+/// 是 Q4 的裁决压过进程事实的地方：`process` 一律 `gone`，进程却没退。改坏法：判据换回
+/// `!view.alive`（FINISHED 行的旧布尔恒为 false），或只看 `view.process == ProcessState::Gone`
+/// → 两条各红一次。
+#[tokio::test]
+async fn the_sweep_leaves_a_held_hook_alone_when_only_the_conversation_ended() {
+    let (fx, receiver, home) = with_hooks();
+    // 用自己的进程号当那个「还活着、只是换了对话」的 agent 进程（同 supersede 那条守卫）。
+    let env = [("CLAUDE_PID", std::process::id().to_string())];
+    let old = ingest(
+        &receiver,
+        home.path(),
+        &delivery("conv-old", session_start("conv-old"), &env, &[]),
+    )
+    .unwrap();
+    let task = hold_permission(&receiver, home.path(), "conv-old", &old, &env).await;
+
+    // 同一个进程报来第二个对话：旧行到此为止（Grok / Codex 换对话不发 SessionEnd）。
+    let new = ingest(
+        &receiver,
+        home.path(),
+        &delivery("conv-new", session_start("conv-new"), &env, &[]),
+    )
+    .unwrap();
+    assert_ne!(old, new);
+    let v = fx.sessions.get(&old).unwrap();
+    assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
+    assert_eq!(v.process, ProcessState::Gone, "Q4：{:?}", v.assessment);
+    assert_eq!(
+        v.pid,
+        Some(std::process::id()),
+        "号还探得到就照报——它就是「进程没退」的证据"
+    );
+
+    // 这一段要在挂起登记后 2 s 内跑完：再晚，sweep 的另一条兜底（agora-9cd：状态机里已经
+    // 没这个键、hold 又跨过 HOLD_SETTLE → via=terminal）会替它放掉，测的就不是这条判据了；
+    // supersede 会把旧行的挂起清掉，所以那个 hook 事实上是走 via=terminal 而非 55 min 超时。
+    receiver.sweep();
+    assert_eq!(
+        receiver.pending(&old),
+        vec!["Bash".to_owned()],
+        "对话结束不等于进程退出：这一轮 sweep 不能以 exit 放掉它"
+    );
+    receiver.respond(&old, None, Decision::Allow).unwrap();
+    assert!(
+        matches!(
+            task.await.unwrap(),
+            Response::Hook {
+                decision: Decision::Allow
+            }
+        ),
+        "答得动才说明它没被 sweep 放掉"
+    );
+}

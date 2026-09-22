@@ -16,8 +16,8 @@ use tokio::sync::oneshot;
 use crate::adapter::{self, AgentHooks, Decision, Release};
 use crate::events::{global_id, Event, EventBus};
 use crate::local::Response;
-use crate::session::{ExternalSession, Origin, PendingDecision, SessionManager};
-use crate::status::{AgoraEvent, HOST_END_CLEAR};
+use crate::session::{ExternalSession, Origin, PendingDecision, SessionManager, SessionView};
+use crate::status::{AgoraEvent, EndCause, ProcessState, HOST_END_CLEAR};
 
 use super::inbox::{delivery_time_secs, now_unix_ms, Delivery, Inbox, DONE_RETENTION};
 use super::HookError;
@@ -961,7 +961,7 @@ impl Receiver {
         for s in sessions {
             // 外部会话（key 带宿主前缀）不在库里，get 报 NotFound：不当作退出。
             if let Ok(view) = self.sessions.get(&s) {
-                if !view.alive {
+                if process_exited(&view) {
                     self.resolve_session(&s, "exit");
                 }
             }
@@ -1048,4 +1048,31 @@ impl Receiver {
             .filter(|r| r.session_key == session)
             .collect()
     }
+}
+
+/// sweep 的「这一行的进程已退出」判据（agora-qmi，2026-09-22）。
+///
+/// 旧代码写的是 `!view.alive`。三态之后 `alive` 恒等于 `process == alive`（agora-5gg.18），
+/// 于是 `false` 混装了三种事实，只有一种是「进程退了」：
+/// - `unknown`：无可信进程号（Codex Desktop 的共用 app-server、hook 环境里没有进程号变量的
+///   宿主）或运行时整体读不到。ADR-001 D7「不许拿读不到当已经死了」——拿它当退出就是把
+///   「不知道」写成了「退了」，还在 socket 上等的那个 hook 会被 fail-open 放掉。
+/// - Q4 的裁决那一格：`status` 是 FINISHED / FAILED 时 `process` 一律 `gone`，哪怕那个 pid
+///   还在跑别的对话。这一格里 agent 进程活着，旧布尔在改三态之前是真的 `true`（探活探得到），
+///   所以旧代码不会放；照 `!alive` 下去就是「行刚钉成 FINISHED 就把这个会话还在等的挂起全放掉」。
+///
+/// 所以**单用 `view.process == ProcessState::Gone` 也不够**（issue 描述里那句「正确判据大概是
+/// …」）：`gone` 这个值本身就包含上面第二格——Q4 的投影恰恰是在这里盖掉了进程事实。
+/// 划开两者的只有 `end_cause`（MISSION §2.3 规则 10：程序按封闭枚举分支，不按给人看的
+/// `reason`）：`host_session_end` / `superseded` 说的是「对话结束了」而不是「进程退了」，
+/// 而 sweep 这条要兜的是「没有事件会替死掉的 agent 发 SessionEnd」那一格——进程自己退了、
+/// 或运行时说它退了（`exit_code` / `signal` / `killed_by_user` / `process_gone` / `runtime_gone`）。
+/// `end_cause` 为 `None` 的结束行是这条枚举落地之前写下的 hook 检查点（`#[serde(default)]`，
+/// 见 `status::HOOK_SNAPSHOT_VERSION`）：那一格没有类型可问，按改判以前的口径当退出处理。
+fn process_exited(view: &SessionView) -> bool {
+    view.process == ProcessState::Gone
+        && !matches!(
+            view.assessment.end_cause,
+            Some(EndCause::HostSessionEnd(_)) | Some(EndCause::Superseded)
+        )
 }
