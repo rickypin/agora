@@ -211,6 +211,13 @@ scripts/install.sh --binary <path> [--home <dir>] [--node-id <id>] [--listen <ad
 3. 重指 `<AGORA_HOME>/bin/agora`：与 `agora hooks install` 同一个 `hook::install::ensure_bin_link`，exe 传 canonicalize 后的真路径。hook 条目里的命令是这条稳定路径，条目内容不变，升级后**不必**重新 `hooks install` / 重新在宿主里信任。
 4. 重启 daemon（`--no-restart` 跳过，"daemon 下次启动即新版本"），按顺序探测、命中即用：
    1. `systemctl --user is-active agora.service` 答 `active` **且** `systemctl --user show -p ExecStart agora.service` 里的 `path=` 就是本 `<AGORA_HOME>/bin/agora` → `systemctl --user restart agora.service`（单元必须是 `KillMode=process`，否则这一步就是杀光会话，见「安装」节；agora-x1z）。只看 active 不看它属于哪个 home，装了真 daemon 的开发机上隔离 `AGORA_HOME` 的升级（`tests/upgrade.rs`）就会去重启人的 daemon（agora-wyk，2026-09-19 修）；ExecStart 读不出来时仍按 active 算，别把真装了单元的机器错判到 pid 文件那一支；
+      **测试注入口**：探测要调用的 `systemctl` 的位置可由环境变量 **`AGORA_UPGRADE_SYSTEMCTL`** 指定
+      （launchd 那一支是 `AGORA_UPGRADE_LAUNCHCTL`），不设它就是 PATH 上的那一个——生产不设、探测顺序
+      与单元名都不变。设它的是 `tests/upgrade.rs`：单元名不随 `AGORA_HOME` 走，装了真 `agora.service` 的
+      开发机上那条路径只靠上面的路径比对不去重启人的 daemon，而被测代码一退化（只看 is-active、
+      `systemctl show` 跑不起来、格式认不出）屏障就没了，测试于是既假红又每跑一次门禁重启一次真 daemon
+      （agora-t90q：2026-09-19 上一批 5 个 worktree 各重启一次）。测试把这两个变量指到自己造的只记 argv
+      的替身上，替身扮成"单元装着、也 active，但跑的是别人的 home"，于是隔离不再寄托在被测代码的判断上；
    2. macOS 上 `launchctl print gui/<uid>/dev.agora.daemon` 成功 **且** 输出里 `program = ` 是本 `<AGORA_HOME>/bin/agora` → `launchctl kickstart -k gui/<uid>/dev.agora.daemon`（同一个理由；`program` 行认不出时按装载算。kickstart 不重读 plist，在这里恰好是对的：单元没变，变的只是 `bin/agora` 链接的目标；要拿新的单元定义得 bootout + bootstrap，见「安装」节的 macOS 一段）；
    3. 都不是 → 读 `agora.pid`：进程活着（`kill(pid, 0)`）就 SIGTERM、等它退出（≤ 10 s；超时报错**不 SIGKILL**，它可能正在收尾），再经 `sh` 以 `<AGORA_HOME>/bin/agora serve` 起新的——stdin `/dev/null`、stdout+stderr 追加到 `<AGORA_HOME>/daemon.log`、`AGORA_HOME` 显式传入；有 `setsid`（Linux 的 util-linux）就开新会话彻底脱离终端，没有（macOS 默认没有）就只放后台——macOS 的正常路径是 launchd，这一支是开发机与测试的兜底。pid 文件不在或进程不在 → 只重指链接，"daemon 未在运行，下次启动即新版本"。
 5. 轮询 `GET http://<server.listen>/api/health`（公开子集）到 200 `{"status":"ok"}` **且** pid 文件里换成了新 pid（≤ 15 s；systemd / launchd 重启时旧进程可能还在答最后几个请求，只看 200 会把旧的当新的），最后打印 `<旧目标> → <新目标>，daemon pid <新>`。
@@ -232,4 +239,4 @@ scripts/install.sh --binary <path> [--home <dir>] [--node-id <id>] [--listen <ad
 
 已知盲点（2026-09-06）：pid 文件那一支用 `kill(pid, 0)` 判活，僵尸也算活着——旧 daemon 的父进程不收尸时会等满 10 s 再报错；launchd / systemd / 交互 shell / sshd 都立刻收尸，`tests/upgrade.rs` 起的 daemon 由测试自己另起线程 wait。
 
-守卫：`tests/upgrade.rs::daemon_restart_keeps_agents_sessions_and_metadata`（十个 fake-agent 会话，换二进制路径 + 重启：链接真路径 == `versions/<sha12>/agora`、新 pid ≠ 旧 pid、同样十行 id / name / status 仍 running、pane pid 一个没变）、`::bin_link_repointed_and_hooks_still_deliver`（升级后经链接跑 `hook`，SessionStart 让 external 行出现在 `GET /api/sessions`）、`::migration_versioned_and_older_daemon_refuses`（库的 `user_version` == 程序自报的 `schema_version`；一个只认识 schema 1 的假"新版本"被拒：退出 2、链接与 daemon 不动、`versions/` 里不留它）。
+守卫：`tests/upgrade.rs::daemon_restart_keeps_agents_sessions_and_metadata`（十个 fake-agent 会话，换二进制路径 + 重启：链接真路径 == `versions/<sha12>/agora`、新 pid ≠ 旧 pid、同样十行 id / name / status 仍 running、pane pid 一个没变）、`::bin_link_repointed_and_hooks_still_deliver`（升级后经链接跑 `hook`，SessionStart 让 external 行出现在 `GET /api/sessions`）、`::migration_versioned_and_older_daemon_refuses`（库的 `user_version` == 程序自报的 `schema_version`；一个只认识 schema 1 的假"新版本"被拒：退出 2、链接与 daemon 不动、`versions/` 里不留它）。前两条还各自钉住**单元隔离**（`assert_restart_went_through_the_pid_file`，agora-t90q）：stderr 含「已停掉 pid」而不含「已 systemctl --user restart」/「已 launchctl kickstart」、替身被问过 `is-active` 也被问过 `show -p ExecStart`（只看了 active 就红）、argv 里没有 restart / kickstart，而宿主单元的状态指纹（`MainPID` + `ActiveEnterTimestamp`）前后逐字不变。

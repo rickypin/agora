@@ -1,13 +1,27 @@
 //! A39（agora-7ku.8）：一条命令升级节点——换二进制路径、重指 `<AGORA_HOME>/bin/agora`、重启 daemon，
 //! agent 不死、会话与 metadata 完整；probe 守卫拒绝不认识现有库的"新版本"（MISSION §2.3 规则 10）。
 //!
-//! 真二进制 + 隔离 AGORA_HOME（短路径：macOS unix socket 路径上限 104 字节）+ 隔离 tmux socket。
-//! 样板抄自 tests/single_instance.rs（本批 tests/common 归别的任务，不改）。`upgrade` 在测试里走的是
-//! pid 文件那一支：SIGTERM 旧 daemon、经链接起新的——**不是**因为机器上没有 systemd / launchd（开发机
-//! zuan 就装着真的 `agora.service`），而是 upgrade 会核对单元的 ExecStart / program 是不是本 home 的
-//! `bin/agora`，别人的单元不算（agora-wyk：2026-09-14 到 09-19 这里 2/3 用例假红且每跑一次就重启一次
-//! 生产 daemon，修法见 src/cli/upgrade.rs `systemd_unit_serves`）。这两条用例本身就是那条修法的守卫：
-//! 在装着真单元的机器上红回去，说明又只看 is-active 了。
+//! 真二进制 + 隔离 AGORA_HOME（短路径：macOS unix socket 路径上限 104 字节）+ 隔离 tmux socket
+//! + 隔离自启单元。样板抄自 tests/single_instance.rs（本批 tests/common 归别的任务，不改）。
+//!
+//! ## 单元隔离（agora-t90q）
+//!
+//! `upgrade` 的重启探测要问 systemd / launchd，问的是宿主当前用户的**真**单元（`agora.service` /
+//! `dev.agora.daemon`）：单元名不随 `AGORA_HOME` 走。装了真 daemon 的开发机上，这两条重启用例与
+//! 开发者真在跑的单元之间原本没有屏障——现在不重启它，只是因为被测代码比对了单元的 ExecStart /
+//! program 路径（agora-wyk）；那个判断一退化（只看 is-active、`systemctl show` 跑不起来、输出格式
+//! 认不出——三种都落在 `None => true` 那一支）就又去 restart 真 daemon，测试自己跟着假红（2026-09-19
+//! 上一批：5 个 worktree 各跑一次门禁，宿主 MainPID 连续被换）。测试的隔离不该寄托在被测代码的判断上。
+//!
+//! 屏障在这里造：`StandIns::new` 做两个只记 argv 的替身（假 systemctl、假 launchctl），经 src/cli/upgrade.rs
+//! 的测试注入口 `AGORA_UPGRADE_SYSTEMCTL` / `AGORA_UPGRADE_LAUNCHCTL` 递给子进程。替身扮成「这台机器装了
+//! 单元、单元也 active，但单元跑的是另一个人的 home」（开发机的形状），两条重启用例共用的
+//! `assert_restart_went_through_the_pid_file` 据此钉三件事：① 走的是 pid 文件那一支（stderr 含「已停掉
+//! pid」、不含「已 systemctl --user restart」）；② 探测真的发生了（替身被问过 is-active，也被问过
+//! show -p ExecStart——只看 active 就不会问 show）；③ 谁都没被叫去 restart / kickstart。宿主那个真单元
+//! 全程不在场，两条用例还各自断言一次宿主单元的状态指纹前后逐字不变（读的是测试进程自己 PATH 上的
+//! 真 systemctl，不经替身）。`FOREIGN_UNIT_PROGRAM` 是守卫的开关：换成 `Home::bin_link()` 之后单元就
+//! "属于本 home"了，两条用例必须红——那一次改坏正是 agora-wyk 修掉的东西。
 
 #[path = "common/isolate.rs"]
 mod isolate;
@@ -20,17 +34,146 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use agora::api::version::API_VERSION;
-use agora::cli::upgrade::{read_pid, Probe, VERSIONS_DIR};
+use agora::cli::upgrade::{read_pid, Probe, LAUNCHCTL_ENV, SYSTEMCTL_ENV, VERSIONS_DIR};
 use agora::local::{self, Request, Response, SOCKET_FILE};
 use agora::session::db::SCHEMA_VERSION;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const AGORA_BIN: &str = env!("CARGO_BIN_EXE_agora");
+
+/// 替身扮的"这台机器上的单元"到底在跑谁的 agora：一个与本 fixture 无关的主人。
+/// 路径不存在也是有意的：`same_binary_path` 只把两边的**父目录**各自 canonicalize 再比，本 home 之外
+/// 的写法比不出同一个位置，就判成"不归这里"。改坏守卫就是把它换成 `Home::bin_link()`（同一处路径、
+/// 且父目录解析得到）——那一次单元真就"属于本 home"了（agora-wyk 修的是同一个判据）。
+const FOREIGN_UNIT_PROGRAM: &str = "/home/host-owner/.agora/bin/agora";
+
+/// 重启探测的替身：假 `systemctl` + 假 `launchctl`，各自把收到的 argv 记一行到自己的日志。
+/// 只钉"upgrade 怎么叫它们"，不模拟 service manager 的行为（同一写法先例：tests/install_script.rs
+/// 的假 launchctl，agora-5gg.15）。
+struct StandIns {
+    systemctl: PathBuf,
+    launchctl: PathBuf,
+    systemctl_log: PathBuf,
+    launchctl_log: PathBuf,
+}
+
+impl StandIns {
+    /// 在 `<home>/standins/` 里造两个替身；`unit_program` 是替身嘴里"单元真正在跑的那份二进制"。
+    fn new(home: &Path, unit_program: &Path) -> Self {
+        let dir = home.join("standins");
+        std::fs::create_dir_all(&dir).unwrap();
+        let stand_in = |name: &str, script: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        // 日志路径写进脚本、不是经环境变量递给替身：替身可能被任意一层子进程拉起来
+        // （upgrade 还会经 `sh` 起 daemon），要它一定记得到同一个地方就别依赖环境往下传。
+        let systemctl_log = dir.join("systemctl.log");
+        let launchctl_log = dir.join("launchctl.log");
+        let program = unit_program.display().to_string();
+        let systemctl = stand_in(
+            "systemctl",
+            &r#"#!/bin/sh
+# 假 systemctl（tests/upgrade.rs，agora-t90q）：只记 argv，不碰任何真进程。
+# 扮的是"装了真 daemon 的开发机"：单元 active，但单元跑的是另一个人的 home。
+printf '%s\n' "$*" >> '__LOG__'
+for a in "$@"; do
+  case "$a" in
+    is-active) printf 'active\n'; exit 0 ;;
+    show) printf 'ExecStart={ path=__PROG__ ; argv[]=__PROG__ serve ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n'; exit 0 ;;
+    restart) printf '假 systemctl：记下了一次 restart，不碰任何真进程\n'; exit 0 ;;
+  esac
+done
+exit 0
+"#
+            .replace("__LOG__", &systemctl_log.display().to_string())
+            .replace("__PROG__", &program),
+        );
+        let launchctl = stand_in(
+            "launchctl",
+            &r#"#!/bin/sh
+# 假 launchctl（同上）：print 答"单元装载了，program 是别人的 home"，kickstart 只记账。
+printf '%s\n' "$*" >> '__LOG__'
+for a in "$@"; do
+  case "$a" in
+    print) printf 'gui/501/dev.agora.daemon = {\n\tactive count = 1\n\tstate = running\n\tprogram = __PROG__\n}\n'; exit 0 ;;
+    kickstart) printf '假 launchctl：记下了一次 kickstart，不碰任何真进程\n'; exit 0 ;;
+  esac
+done
+exit 0
+"#
+            .replace("__LOG__", &launchctl_log.display().to_string())
+            .replace("__PROG__", &program),
+        );
+        StandIns {
+            systemctl,
+            launchctl,
+            systemctl_log,
+            launchctl_log,
+        }
+    }
+
+    /// 要递给 `agora` 子进程的两个注入口（变量名取自被测代码，不在这份文件里重复字面值）。
+    fn env(&self) -> Vec<(&'static str, PathBuf)> {
+        vec![
+            (SYSTEMCTL_ENV, self.systemctl.clone()),
+            (LAUNCHCTL_ENV, self.launchctl.clone()),
+        ]
+    }
+
+    fn calls(&self, log: &Path) -> Vec<String> {
+        match std::fs::read_to_string(log) {
+            Ok(text) => text.lines().map(str::to_owned).collect(),
+            // 一次都没被叫到：空列表（"探测到底发生了没有"由下面的断言自己钉）。
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn systemd_calls(&self) -> Vec<String> {
+        self.calls(&self.systemctl_log)
+    }
+
+    fn launchd_calls(&self) -> Vec<String> {
+        self.calls(&self.launchctl_log)
+    }
+}
+
+/// 宿主上真实自启单元的状态指纹（`systemctl --user show agora.service -p MainPID -p
+/// ActiveEnterTimestamp` 的原文）。读不到 → None：没有 systemctl（macOS）、没有用户 systemd、没装
+/// 单元，还有验收时把 systemctl 换成替身的那一轮——都是"没有东西可以被重启"。
+/// 这里走测试进程自己 PATH 上的 systemctl，不经替身：注入口换掉的只是被测子进程要调用的那一个。
+fn host_unit_state() -> Option<String> {
+    let out = Command::new("systemctl")
+        .args([
+            "--user",
+            "show",
+            "agora.service",
+            "-p",
+            "MainPID",
+            "-p",
+            "ActiveEnterTimestamp",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    // 单元没装时 systemctl 照样退 0，只是 MainPID=0、ActiveEnterTimestamp 为空——同样没东西可重启。
+    if !text.contains("MainPID=") || text.contains("MainPID=0") {
+        return None;
+    }
+    Some(text)
+}
+
 struct Home {
     path: PathBuf,
     tmux_socket: String,
     port: u16,
+    stand_ins: StandIns,
 }
 
 impl Home {
@@ -54,9 +197,11 @@ impl Home {
         )
         .unwrap();
         Home {
-            path,
+            path: path.clone(),
             tmux_socket,
             port,
+            // 替身装在 <home>/standins/ 里，随 Drop 一起删；单元路径见 FOREIGN_UNIT_PROGRAM。
+            stand_ins: StandIns::new(&path, Path::new(FOREIGN_UNIT_PROGRAM)),
         }
     }
 
@@ -85,14 +230,17 @@ impl Home {
         ))
     }
 
+    /// 一律带上单元替身（不只 upgrade）：`agora` 子进程里任何一个去探测重启方式，都撞不到宿主的真单元。
     fn agora(&self, args: &[&str]) -> Output {
-        Command::new(AGORA_BIN)
-            .args(args)
+        let mut cmd = Command::new(AGORA_BIN);
+        cmd.args(args)
             .env("AGORA_HOME", &self.path)
             .env("AGORA_LOG", "info")
-            .env_remove("AGORA_LOG_FORMAT")
-            .output()
-            .unwrap()
+            .env_remove("AGORA_LOG_FORMAT");
+        for (k, v) in self.stand_ins.env() {
+            cmd.env(k, v);
+        }
+        cmd.output().unwrap()
     }
 
     fn upgrade(&self, from: &Path, extra: &[&str]) -> Output {
@@ -389,6 +537,58 @@ fn stderr_of(out: &Output) -> String {
     )
 }
 
+/// 两条重启用例共用的隔离断言（agora-t90q，缘由见文件头「单元隔离」一段）：
+/// 走的必须是 pid 文件那一支，systemctl / launchctl 只被问过、没被叫去重启任何东西。
+///
+/// 放在 `assert!(out.status.success())` 前面：守卫被改坏时先红的那句得是"隔离没了"，
+/// 而不是退化成 15 s 后等不到 `/api/health`——那种红认不出根因（替身里的 restart 是空的，
+/// 测试自己那个 daemon 没被重起，只会卡到健康超时）。
+fn assert_restart_went_through_the_pid_file(home: &Home, out: &Output, old_pid: u32) {
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let systemd = home.stand_ins.systemd_calls();
+    let launchd = home.stand_ins.launchd_calls();
+    let context = format!(
+        "\nstderr：{stderr}\n假 systemctl 收到的 argv：{systemd:?}\n假 launchctl 收到的 argv：{launchd:?}"
+    );
+
+    assert!(
+        stderr.contains(&format!("已停掉 pid {old_pid}")),
+        "upgrade 没走 pid 文件那一支（没停掉测试自己起的 pid {old_pid}）——它去碰 service manager 了？{context}"
+    );
+    assert!(
+        !stderr.contains("已 systemctl --user restart"),
+        "upgrade 去 systemctl --user restart 了：{context}"
+    );
+    assert!(
+        !stderr.contains("已 launchctl kickstart"),
+        "upgrade 去 launchctl kickstart 了：{context}"
+    );
+
+    // 探测得真的发生过：替身被问过 is-active，也被问过 show -p ExecStart（退化成只看 active 就不会问 show）。
+    assert!(
+        systemd.iter().any(|c| c.contains("is-active")),
+        "重启探测一次都没调用 systemctl（注入口没生效，或探测顺序被改了）：{context}"
+    );
+    assert!(
+        systemd.iter().any(|c| c.contains("show")),
+        "探测只看了 is-active，没核对单元属于哪个 home（agora-wyk 回潮）：{context}"
+    );
+    assert!(
+        !systemd.iter().any(|c| c.contains("restart")),
+        "假 systemctl 被叫去了 restart（宿主的真单元就是这么被测试重启的）：{context}"
+    );
+    if cfg!(target_os = "macos") {
+        assert!(
+            launchd.iter().any(|c| c.contains("print")),
+            "macOS 上重启探测没查过 launchd（注入口没生效？）：{context}"
+        );
+    }
+    assert!(
+        !launchd.iter().any(|c| c.contains("kickstart")),
+        "假 launchctl 被叫去了 kickstart：{context}"
+    );
+}
+
 #[tokio::test]
 async fn daemon_restart_keeps_agents_sessions_and_metadata() {
     let home = Home::new();
@@ -425,11 +625,18 @@ async fn daemon_restart_keeps_agents_sessions_and_metadata() {
     let panes_before = home.pane_pids();
     assert_eq!(panes_before.len(), 10, "{panes_before:?}");
 
-    // "新版本"= 同一份二进制换个路径；此时没有 systemd / launchd，走 pid 文件那一支。
+    // "新版本"= 同一份二进制换个路径；单元探测撞上的是替身（见文件头），走 pid 文件那一支。
     let new_bin = home.new_binary("agora-new");
     let _old = old.reap_in_background();
+    let host_before = host_unit_state();
     let out = home.upgrade(&new_bin, &[]);
+    assert_restart_went_through_the_pid_file(&home, &out, old_pid);
     assert!(out.status.success(), "{}", stderr_of(&out));
+    assert_eq!(
+        host_unit_state(),
+        host_before,
+        "宿主的 agora.service 被动过：测试又去重启真 daemon 了"
+    );
 
     // 链接指向 versions/<sha12>/agora（真路径比）。
     let link = home.bin_link();
@@ -471,9 +678,17 @@ async fn bin_link_repointed_and_hooks_still_deliver() {
     let cookie = pair(&home);
 
     let new_bin = home.new_binary("agora-new");
+    let old_pid = old.pid();
     let _old = old.reap_in_background();
+    let host_before = host_unit_state();
     let out = home.upgrade(&new_bin, &[]);
+    assert_restart_went_through_the_pid_file(&home, &out, old_pid);
     assert!(out.status.success(), "{}", stderr_of(&out));
+    assert_eq!(
+        host_unit_state(),
+        host_before,
+        "宿主的 agora.service 被动过：测试又去重启真 daemon 了"
+    );
     wait_pong(&home.socket()).await;
 
     // 升级后经 <AGORA_HOME>/bin/agora 这条**链接**跑 hook（安装进 agent 配置的命令就是这个路径），

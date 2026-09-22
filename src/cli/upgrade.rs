@@ -17,6 +17,10 @@
 //!    都不是 → 读 `<AGORA_HOME>/agora.pid`，进程活着就 SIGTERM、等它退出（≤ 10 s，超时报错不 SIGKILL），
 //!    再以 `<AGORA_HOME>/bin/agora serve` 脱离终端起新的（stdout+stderr 追加到 `<AGORA_HOME>/daemon.log`）；
 //!    pid 文件不在或进程不在 → 只重指链接，"daemon 未在运行，下次启动即新版本"。
+//!    探测要调用的 `systemctl` / `launchctl` 有**只对测试开放**的注入口（[`SYSTEMCTL_ENV`] /
+//!    [`LAUNCHCTL_ENV`]，agora-t90q）：装了真单元的开发机上 `tests/upgrade.rs` 把两者指到自己造的替身，
+//!    于是宿主的真单元不会被一个隔离 home 的升级碰到——测试的屏障不寄托在上面那次路径比对上
+//!    （那次判断一退化就又会 restart 人的 daemon）。
 //! ⑤ 轮询 `GET http://<server.listen>/api/health`（公开子集）到 200 `{"status":"ok"}` 且 pid 文件里
 //!    换了新 pid（≤ 15 s）。
 //!
@@ -48,6 +52,20 @@ pub const DAEMON_LOG: &str = "daemon.log";
 /// 安装脚本写的 systemd 用户单元与 launchd label（agora-7ku.1；两边的约定见 config.md「升级」）。
 pub const SYSTEMD_UNIT: &str = "agora.service";
 pub const LAUNCHD_LABEL: &str = "dev.agora.daemon";
+
+/// 重启探测调用的 `systemctl` 程序位置（[`LAUNCHCTL_ENV`] 是 launchd 那一支的同一件事）。
+///
+/// **只对测试开放的注入口**：不设它就是 PATH 上的 `systemctl`，生产的探测顺序、单元名、比对口径
+/// 一个字都不变。要它的原因是 `tests/upgrade.rs` 的隔离：那两条用例的 `agora upgrade` 跑在隔离
+/// `AGORA_HOME` 里，可它问的 `agora.service` 是**宿主当前用户**的真单元，装着真 daemon 的开发机上
+/// 两者之间原本没有任何屏障——不重启它只是因为 [`systemd_unit_serves`] 比对了 ExecStart 路径，
+/// 而被测代码一退化（只看 is-active、`systemctl show` 跑不起来、输出格式认不出，都落在
+/// `None => true` 那一支）就又去 restart 真 daemon，测试自己跟着假红（2026-09-19 上一批：5 个
+/// worktree 各跑一次门禁，宿主 MainPID 连续被换）。测试的隔离不该寄托在被测代码的判断上
+/// （agora-t90q）。变量不设时（生产、人手工跑）行为逐字不变。
+pub const SYSTEMCTL_ENV: &str = "AGORA_UPGRADE_SYSTEMCTL";
+/// 见 [`SYSTEMCTL_ENV`]：launchd 那一支的注入口（macOS 开发机装了 `dev.agora.daemon` 时同理）。
+pub const LAUNCHCTL_ENV: &str = "AGORA_UPGRADE_LAUNCHCTL";
 
 /// 旧 daemon 收到 SIGTERM 后最多等这么久；超时报错、不 SIGKILL——它可能正在收尾。
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -432,9 +450,15 @@ fn restart_daemon(
     old_pid: Option<u32>,
     out: &mut dyn Write,
 ) -> Result<RestartOutcome, UpgradeError> {
-    if systemd_unit_serves(link) {
+    let systemctl = systemctl_program();
+    if systemd_unit_serves(&systemctl, link) {
         run_checked(
-            &["systemctl", "--user", "restart", SYSTEMD_UNIT],
+            &[
+                systemctl.as_os_str(),
+                OsStr::new("--user"),
+                OsStr::new("restart"),
+                OsStr::new(SYSTEMD_UNIT),
+            ],
             "systemctl --user restart",
         )?;
         say(out, format!("已 systemctl --user restart {SYSTEMD_UNIT}"))?;
@@ -442,9 +466,15 @@ fn restart_daemon(
     }
     if cfg!(target_os = "macos") {
         let target = launchd_target();
-        if launchd_serves(&target, link) {
+        let launchctl = launchctl_program();
+        if launchd_serves(&launchctl, &target, link) {
             run_checked(
-                &["launchctl", "kickstart", "-k", &target],
+                &[
+                    launchctl.as_os_str(),
+                    OsStr::new("kickstart"),
+                    OsStr::new("-k"),
+                    OsStr::new(&target),
+                ],
                 "launchctl kickstart -k",
             )?;
             say(out, format!("已 launchctl kickstart -k {target}"))?;
@@ -470,6 +500,24 @@ fn restart_daemon(
     Ok(RestartOutcome::Spawned { old_pid: pid })
 }
 
+/// 按 `AGORA_UPGRADE_SYSTEMCTL` 决定的位置调用 systemctl（只影响"调用谁"，不影响探测顺序与判据；
+/// 生产不设该变量 → PATH 上的 systemctl）。launchd 那一支的对应物见 [`launchctl_program`]。
+fn systemctl_program() -> PathBuf {
+    service_manager_program(std::env::var_os(SYSTEMCTL_ENV).as_deref(), "systemctl")
+}
+
+fn launchctl_program() -> PathBuf {
+    service_manager_program(std::env::var_os(LAUNCHCTL_ENV).as_deref(), "launchctl")
+}
+
+/// 纯函数部分，好单独测：空值按"没设"处理——`AGORA_UPGRADE_SYSTEMCTL=` 不该让探测去 exec 一个空名字。
+fn service_manager_program(injected: Option<&OsStr>, default: &str) -> PathBuf {
+    match injected {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => PathBuf::from(default),
+    }
+}
+
 /// systemd 用户单元 `agora.service` 活着**且它跑的就是本 home 的 `bin/agora`** 才算命中：
 /// `systemctl --user is-active` 答 `active`，再 `show -p ExecStart` 读单元真正执行的路径，与 `link`
 /// （`<AGORA_HOME>/bin/agora`）比对。systemctl 不存在（macOS）、没有用户 systemd、单元没装都算不是。
@@ -482,9 +530,14 @@ fn restart_daemon(
 /// 所以它指向哪个 home 一比就知道。**只有读到了路径且明确不同才排除**：`show` 跑不起来或格式认不出时
 /// 按旧口径（active 即命中），别把一台真装了单元的机器错判成 pid 文件那一支——那一支会 SIGTERM 掉
 /// systemd 管着的 daemon 再另起一个，systemd 的 `Restart=on-failure` 又拉一个，两边打架。
-fn systemd_unit_serves(link: &Path) -> bool {
+fn systemd_unit_serves(systemctl: &Path, link: &Path) -> bool {
     let active = exec(
-        &["systemctl", "--user", "is-active", SYSTEMD_UNIT],
+        &[
+            systemctl.as_os_str(),
+            OsStr::new("--user"),
+            OsStr::new("is-active"),
+            OsStr::new(SYSTEMD_UNIT),
+        ],
         &ExecOptions::default(),
     )
     .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "active")
@@ -494,12 +547,12 @@ fn systemd_unit_serves(link: &Path) -> bool {
     }
     let shown = exec(
         &[
-            "systemctl",
-            "--user",
-            "show",
-            "-p",
-            "ExecStart",
-            SYSTEMD_UNIT,
+            systemctl.as_os_str(),
+            OsStr::new("--user"),
+            OsStr::new("show"),
+            OsStr::new("-p"),
+            OsStr::new("ExecStart"),
+            OsStr::new(SYSTEMD_UNIT),
         ],
         &ExecOptions::default(),
     )
@@ -533,11 +586,18 @@ fn launchd_target() -> String {
 /// 装了真单元的 Mac 上跑 `tests/upgrade.rs` 不该去 kickstart 人的 daemon。输出里认不出 `program =`
 /// 一行时按旧口径（装载即命中）。launchd 这一支 2026-09-19 只按 `launchctl print` 的公开输出格式写，
 /// 未在真 Mac 上跑过（改这台机器的人请补一次实测）。
-fn launchd_serves(target: &str, link: &Path) -> bool {
-    let printed = exec(&["launchctl", "print", target], &ExecOptions::default())
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+fn launchd_serves(launchctl: &Path, target: &str, link: &Path) -> bool {
+    let printed = exec(
+        &[
+            launchctl.as_os_str(),
+            OsStr::new("print"),
+            OsStr::new(target),
+        ],
+        &ExecOptions::default(),
+    )
+    .ok()
+    .filter(|o| o.status.success())
+    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
     let Some(printed) = printed else {
         return false;
     };
@@ -573,7 +633,7 @@ fn same_binary_path(unit_program: &Path, link: &Path) -> bool {
     }
 }
 
-fn run_checked(argv: &[&str], what: &str) -> Result<(), UpgradeError> {
+fn run_checked(argv: &[&OsStr], what: &str) -> Result<(), UpgradeError> {
     let out = exec(argv, &ExecOptions::default())?;
     if out.status.success() {
         Ok(())
@@ -818,6 +878,24 @@ mod tests {
             }
             .exit_code(),
             1
+        );
+    }
+
+    /// 注入口只改"调用谁"，不改判据：不设变量就是 PATH 上的 systemctl / launchctl（生产口径），
+    /// 设了就用那个位置；空值按没设处理（别让探测去 exec 一个空名字）。
+    #[test]
+    fn the_probe_hook_picks_the_injected_binary_and_treats_empty_as_unset() {
+        assert_eq!(
+            service_manager_program(None, "systemctl"),
+            PathBuf::from("systemctl")
+        );
+        assert_eq!(
+            service_manager_program(Some(OsStr::new("")), "launchctl"),
+            PathBuf::from("launchctl")
+        );
+        assert_eq!(
+            service_manager_program(Some(OsStr::new("/tmp/probes/systemctl")), "systemctl"),
+            PathBuf::from("/tmp/probes/systemctl")
         );
     }
 
