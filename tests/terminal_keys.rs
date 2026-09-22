@@ -19,6 +19,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use agora::runtime::Size;
 use agora::session::NewSession;
+use common::isolate;
 use common::node::TmuxNode;
 
 type Ws =
@@ -86,16 +87,12 @@ async fn output_until_any(ws: &mut Ws, needles: &[&str]) -> String {
 /// 起一个"把收到的每个控制字符念出来"的会话。
 fn create_raw_cat(node: &TmuxNode) -> String {
     let script = node.home.join("rawcat.sh");
-    std::fs::write(
+    // 要 exec 的脚本走 isolate::exec_script（ETXTBSY 守卫，agora-pmm2）；探空的 argv 会被
+    // helper 注入的守卫在 `stty` 之前挡掉，不会把 pane 的 tty 改坏。
+    isolate::exec_script(
         &script,
         "#!/bin/sh\nstty raw -echo\nprintf 'RAWCAT-READY\\r\\n'\nexec cat -v\n",
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    );
     node.sessions
         .create(&NewSession {
             display_name: "rawcat".into(),

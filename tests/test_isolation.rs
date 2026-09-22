@@ -163,6 +163,29 @@ fn tmux_configs_in_tests_never_adopt_a_foreign_socket() {
 }
 
 #[test]
+fn fixtures_never_chmod_by_hand() {
+    // 造一个要被子进程 exec 的 fixture 不能裸 `fs::write` + `chmod 0755`：刚写完那份文件时，
+    // 同一个测试二进制里别的线程正在 fork+exec，子进程会继承一份还开着的写句柄、攥到自己
+    // exec 为止；在那之前 inode 的写计数 > 0，我们自己的 `execve` 就返回 ETXTBSY（os error 26）。
+    // 实测（zuan，112 核）：`cargo test --test tmux_dead_window --test task_beads` 带负载连跑
+    // 100 轮红 36 轮，红的形状是 tmux 那侧「无法启动 /tmp/.tmpXXXX/tmux: Text file busy」与
+    // task_beads 那侧 `get` 得 None（exec 失败被 `TaskIndex::fetch` 当成"没这个 issue"，
+    // 就是 agora-9zz 那条同二进制并行间歇假红）。显式 flush + drop 治不好（问题不在我们这边
+    // 关得晚），要 exec 一次等到写计数归零；isolate::exec_script / isolate::mark_executable
+    // 把这件事做了，理由与实测数字写在 tests/common/isolate.rs。
+    // 扫 `from_mode(0o755)` 这个字面而不是"fs::write 附近有 chmod"：它是造可执行文件的唯一
+    // 写法，而 0o700（tmux sockets 目录）/ 0o600（token、TLS 私钥）这类正当权限设置不会被误伤；
+    // 助手自己与本文件按定义不扫（见 test_sources）。
+    let bad = offenders("from_mode(0o755)");
+    assert!(
+        bad.is_empty(),
+        "{bad:?} 自己 chmod 0755 造要 exec 的 fixture（裸 fs::write + chmod 会让下一次 exec 撞 \
+         ETXTBSY）；改用 isolate::exec_script（脚本）或 isolate::mark_executable（复制来的二进制），\n\
+         理由见 tests/common/isolate.rs"
+    );
+}
+
+#[test]
 fn isolate_is_included_once_per_test_binary() {
     // isolate::tag() 的唯一性来自模块里的 OnceLock：同一个二进制里把 isolate 包含两次
     // （`mod common;` 一份 + `#[path]` 一份）会得到两个模块、两个 OnceLock、两个不同的标签，

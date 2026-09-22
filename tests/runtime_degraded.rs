@@ -119,8 +119,10 @@ esac
         af = adopt_fail.display(),
         t = tail,
     );
-    std::fs::write(&script, body).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // 要 exec 的假 tmux 走 isolate::exec_script（裸 fs::write + chmod 造出来的脚本会让下一次
+    // exec 按概率撞 ETXTBSY，agora-pmm2）；下面 bind_fake_server 给 sockets 目录补的 0700
+    // 不是要 exec 的 fixture，不经 helper。
+    isolate::exec_script(&script, &body);
 
     // `server_running` 靠能不能 connect 上 socket 判断：自己 bind 一个，好让"server 在、
     // 但它拒绝应答"这个状态成立——这正是协议不匹配时的样子。

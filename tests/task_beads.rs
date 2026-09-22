@@ -14,6 +14,7 @@ use agora::runtime::Runtime;
 use agora::session::{Db, NewSession, SessionManager};
 use agora::status::AgoraEvent;
 use agora::task::{TaskIndex, READ_ONLY};
+use common::isolate;
 use common::FakeRuntime;
 
 /// 一个假 `bd`：把 argv 追加到 `<dir>/calls.log`，`show <id> --json` 按 id 回答，
@@ -32,13 +33,10 @@ esac
 "#,
         log = log.display()
     );
-    std::fs::write(&bin, script).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    bin
+    // 要 exec 的 fixture 一律走 isolate::exec_script：裸 fs::write + chmod 在这台 Linux 开发机上
+    // 按概率让下一次 exec 撞 ETXTBSY（os error 26），满载时本文件与 `tests/tmux_dead_window.rs`
+    // 一起随机吃掉整轮 serial 门禁（agora-pmm2；修法与实测见 tests/common/isolate.rs）。
+    isolate::exec_script(&bin, &script)
 }
 
 /// 用假 `bd` 的 `TaskIndex` 一律给这个子进程超时。假 `bd` 是 `#!/bin/sh` 脚本，`TaskIndex` 的

@@ -11,6 +11,9 @@
 //! 假 launchctl 只钉住脚本**怎么叫** launchctl（print → bootstrap / bootout 的顺序与参数），
 //! 不假装验证 launchd 本身的语义。
 
+#[path = "common/isolate.rs"]
+mod isolate;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -67,7 +70,10 @@ fn fake_launchctl(tmp: &Path) -> (String, PathBuf, PathBuf) {
     let fake_bin = tmp.join("fakebin");
     fs::create_dir_all(&fake_bin).unwrap();
     let script = fake_bin.join("launchctl");
-    fs::write(
+    // 要 exec 的假 launchctl 走 isolate::exec_script：裸 fs::write + chmod 造出来的脚本会让
+    // 下一次 exec 按概率撞 ETXTBSY（os error 26，agora-pmm2）；helper 的探空 exec 被注入的
+    // 守卫在 printf 之前挡掉，不会往 $LAUNCHCTL_LOG 里多记一行。
+    isolate::exec_script(
         &script,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$LAUNCHCTL_LOG"
@@ -81,9 +87,7 @@ case "$1" in
   *) : ;;
 esac
 "#,
-    )
-    .unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     (
         format!(
             "{}:{}",
@@ -285,8 +289,8 @@ fn refuses_tmux_below_minimum() {
     let fake_bin = tmp.path().join("fakebin");
     fs::create_dir(&fake_bin).unwrap();
     let fake_tmux = fake_bin.join("tmux");
-    fs::write(&fake_tmux, "#!/bin/sh\necho \"tmux 3.1\"\n").unwrap();
-    fs::set_permissions(&fake_tmux, fs::Permissions::from_mode(0o755)).unwrap();
+    // 要 exec 的假 tmux 走 isolate::exec_script（ETXTBSY 守卫，agora-pmm2）。
+    isolate::exec_script(&fake_tmux, "#!/bin/sh\necho \"tmux 3.1\"\n");
     let path = format!(
         "{}:{}",
         fake_bin.display(),

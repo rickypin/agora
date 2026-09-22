@@ -18,6 +18,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 
 use agora::runtime::{LaunchSpec, Runtime, Size};
+use common::isolate;
 use common::node::TmuxNode;
 
 // 轮询 tmux 不能太密：每次 inspect/capture 都要新起一个 tmux client 进程，密集轮询会和
@@ -347,12 +348,9 @@ async fn invariant_5_one_hung_agent_does_not_affect_another() {
     let hung = std::env::temp_dir().join(format!("agt-hung-{}.sh", std::process::id()));
     // `exec`：让脚本本身变成 sleep，别留下一个持着 stdout 的孙子进程——看门狗 kill 的是
     // 直接子进程，孙子还攥着管道的话主线程等不到 EOF（这是脚本的毛病，不是守卫的）。
-    std::fs::write(&hung, "#!/bin/sh\nexec sleep 600\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&hung, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    // 要 exec 的假运行时走 isolate::exec_script（ETXTBSY 守卫，agora-pmm2）：helper 的探空
+    // exec 会被注入的守卫在 `exec sleep 600` 之前挡掉，不会留下一个睡 600 s 的探针子进程。
+    isolate::exec_script(&hung, "#!/bin/sh\nexec sleep 600\n");
     let bad = TmuxNode::with_runtime(hung.to_str().unwrap(), Duration::from_secs(1));
 
     // 坏节点上开一个会话：`create` 一定会真的去 exec 运行时（`list` 见到 socket 不存在会

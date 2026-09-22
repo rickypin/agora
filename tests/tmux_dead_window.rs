@@ -8,6 +8,7 @@ mod isolate;
 
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use agora::runtime::tmux::{socket_path, TmuxConfig, TmuxRuntime};
@@ -80,13 +81,15 @@ fn fake_needs_nudge(tag: &str, version: &str) -> Fake {
 
 fn write_fake(
     dir: tempfile::TempDir,
-    script: std::path::PathBuf,
+    script: PathBuf,
     body: String,
     grace: Duration,
     tag: &str,
 ) -> Fake {
-    std::fs::write(&script, body).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // 要 exec 的假 tmux 走 isolate::exec_script（写完显式关句柄、chmod 后再探针 exec）；
+    // 裸 fs::write + chmod 在本机按概率让下一次 exec 报 "Text file busy (os error 26)"
+    // （agora-pmm2，实测见 tests/common/isolate.rs 的注释）。
+    isolate::exec_script(&script, &body);
 
     // `server_running` 靠能不能 connect 上 socket 判断：这里自己 bind 一个。
     let socket = isolate::socket_name(&format!("dw-{tag}"), isolate::nth());

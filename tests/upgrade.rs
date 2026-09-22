@@ -28,7 +28,6 @@ mod isolate;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -65,9 +64,9 @@ impl StandIns {
         std::fs::create_dir_all(&dir).unwrap();
         let stand_in = |name: &str, script: &str| {
             let path = dir.join(name);
-            std::fs::write(&path, script).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            path
+            // 要 exec 的替身走 isolate::exec_script（ETXTBSY 守卫，agora-pmm2）；探空 argv 被
+            // 注入的守卫在 printf 之前挡掉，不会往替身自己的日志里多记一行。
+            isolate::exec_script(&path, script)
         };
         // 日志路径写进脚本、不是经环境变量递给替身：替身可能被任意一层子进程拉起来
         // （upgrade 还会经 `sh` 起 daemon），要它一定记得到同一个地方就别依赖环境往下传。
@@ -254,7 +253,10 @@ impl Home {
     fn new_binary(&self, name: &str) -> PathBuf {
         let dst = self.path.join(name);
         std::fs::copy(AGORA_BIN, &dst).unwrap();
-        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // 复制完的产物也要 exec 得起：写句柄被别的线程 fork 走就是 ETXTBSY（agora-pmm2）。
+        // 探针 argv 用 `upgrade --probe`：被测代码自己就会这么叫它，而 --probe 不读配置、不碰
+        // AGORA_HOME（src/main.rs），探一次不留痕迹。
+        isolate::mark_executable(&dst, &["upgrade", "--probe"]);
         dst
     }
 
@@ -776,12 +778,11 @@ async fn migration_versioned_and_older_daemon_refuses() {
 
     // 一个 sh 脚本当"新二进制"：对 `--probe` 说自己只认识 schema 1（低于现有库），其余退出 0。
     let script = home.path.join("fake-new.sh");
-    std::fs::write(
+    // 要 exec 的假新二进制走 isolate::exec_script（ETXTBSY 守卫，agora-pmm2）。
+    isolate::exec_script(
         &script,
         "#!/bin/sh\nif [ \"$1\" = upgrade ] && [ \"$2\" = --probe ]; then\n  printf '{\"schema_version\": 1, \"api_version\": \"1.4\"}\\n'\nfi\nexit 0\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let out = home.upgrade(&script, &[]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr_of(&out));
     assert_eq!(

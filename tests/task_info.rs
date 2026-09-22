@@ -11,6 +11,7 @@ use std::sync::Arc;
 use agora::runtime::{Runtime, Size};
 use agora::session::{Db, NewSession, SessionManager};
 use agora::task::TaskIndex;
+use common::isolate;
 use common::FakeRuntime;
 
 const ACCEPTANCE: &str =
@@ -29,13 +30,9 @@ case "$2" in
 esac
 "#
     );
-    std::fs::write(&bin, script).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    bin
+    // 要 exec 的假 bd 走 isolate::exec_script（ETXTBSY 守卫，agora-pmm2；理由见
+    // tests/common/isolate.rs）。
+    isolate::exec_script(&bin, &script)
 }
 
 fn session(cwd: &Path, task_ref: &str) -> NewSession {

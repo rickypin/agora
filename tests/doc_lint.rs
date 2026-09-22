@@ -5,7 +5,11 @@
 //! 例外的例外钉死，同时钉住两条不能退化的边：devcenter 自己的路径仍放过（哪怕离名字很远、
 //! 隔着"；"），没提别的项目的行里缺失路径仍报。
 //!
-//! 仓库以前没有 doc-lint 的测试，CI 只是对真仓库跑一遍脚本；本文件不依赖 tests/common。
+//! 仓库以前没有 doc-lint 的测试，CI 只是对真仓库跑一遍脚本；本文件不依赖 `tests/common` 的
+//! 假运行时，只从 `tests/common/isolate.rs` 借造可执行 fixture 的那个 helper（agora-pmm2）。
+
+#[path = "common/isolate.rs"]
+mod isolate;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -91,12 +95,8 @@ fn repo_with_src(spec: &str, src: &str) -> Repo {
     // 假 bd 前置到 PATH；不整个换掉 PATH，python3 / git 还要找得到。
     let bin = dir.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(bin.join("bd"), FAKE_BD).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(bin.join("bd"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    // 要 exec 的假 bd 走 isolate::exec_script（ETXTBSY 守卫，agora-pmm2）。
+    isolate::exec_script(&bin.join("bd"), FAKE_BD);
     git(root, &["init", "-q", "-b", "main"]);
     git(root, &["add", "-A"]);
     git(

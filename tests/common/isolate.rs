@@ -15,16 +15,98 @@
 //! kill-server、不删文件（agora-n15）。死文件本身不致命，但它把"名字撞了"从"tmux 说 no
 //! server"变成"tmux 认领一个陌生 socket"，正是要防的那一类。所以 [`kill_tmux`] 两件事一起做，
 //! 每个 fixture 的 Drop 都走它。
+//!
+//! 还有一样容易看漏的共享资源是**内核的"文件正被写"判定**：任何要被子进程 exec 的 fixture（假
+//! tmux、假 bd、假 launchctl……）都不能裸 `fs::write` + `chmod 0755` 自己造，要走 [`exec_script`]
+//! / [`mark_executable`]，否则满载并行时下一次 exec 按概率报 ETXTBSY（os error 26）；守卫是
+//! `tests/test_isolation.rs::fixtures_never_chmod_by_hand`，成因与实测数字写在 [`mark_executable`]。
 
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use agora::runtime::tmux::socket_path;
+
+/// 造一个要 exec 的 fixture 时用的空转 argv（[`exec_script`] 注入的守卫认它）。
+pub const PROBE_ARG: &str = "--agora-isolate-exec-probe";
+
+/// 写一个**要被子进程 exec 的脚本** fixture：落盘 → 显式关句柄 → chmod 0755 → 空转 exec 一次。
+///
+/// 这是仓里造可执行 fixture 的唯一入口，配套的守卫是
+/// `tests/test_isolation.rs::fixtures_never_chmod_by_hand`（任一测试文件里出现裸
+/// `from_mode(0o755)` 就红）。
+///
+/// `body` 必须以 `#!` 开头；helper 会在 shebang 之后插一行守卫，收到 [`PROBE_ARG`] 就
+/// `exit 0`，于是探针 exec 一定不进正文、不产生副作用（假 `bd` 会先把 argv 追加进
+/// `calls.log`，正文里那行记账不能被探针踩到）。
+pub fn exec_script(path: &Path, body: &str) -> PathBuf {
+    let (shebang, rest) = body.split_once('\n').unwrap_or((body, ""));
+    assert!(
+        shebang.starts_with("#!"),
+        "exec_script 要的是带 shebang 的脚本，{path:?} 给的是：{shebang}"
+    );
+    let guarded = format!("{shebang}\nif [ \"$1\" = \"{PROBE_ARG}\" ]; then exit 0; fi\n{rest}");
+    // 显式写、显式关：句柄还活着的时候 exec 就是 ETXTBSY（os error 26）。
+    let mut f = std::fs::File::create(path).unwrap_or_else(|e| panic!("写 fixture {path:?}: {e}"));
+    f.write_all(guarded.as_bytes())
+        .unwrap_or_else(|e| panic!("写 fixture {path:?}: {e}"));
+    f.flush()
+        .unwrap_or_else(|e| panic!("flush fixture {path:?}: {e}"));
+    drop(f);
+    mark_executable(path, &[PROBE_ARG]);
+    path.to_path_buf()
+}
+
+/// chmod 0755，然后**真的 exec 一次**确认内核已经肯让这份文件被 exec。
+///
+/// 为什么非要 exec 一次：`std::fs::write` / `fs::copy` 写完就关句柄，可这台机器上跑并行
+/// 测试时，同一测试二进制里**别的线程**正在 fork+exec，fork 那一刻如果我们的写句柄还开着，
+/// 子进程会继承一份它、一直攥到自己 exec 为止；在那之前 inode 的写计数 > 0，我们的
+/// `execve` 就返回 ETXTBSY。实测（zuan，112 核，8 线程反复「写 `#!/bin/sh` 脚本 + chmod +
+/// exec」）：3200 份 fixture 里 130 次红在第一次 exec 上（约 4%，与 issue 记的 7% 同形），
+/// 而 `File::create` + 显式 flush/drop **一次都治不好**（148/3200，同概率）——因为问题不在
+/// 我们这边关得晚，在别人的子进程攥得久。
+///
+/// 所以 helper 自己先 exec 一次：ETXTBSY 就退避重试，以 [`PROC`] 为上限。探针成功的那一刻，
+/// inode 的写计数一定已经归零，且 fixture 之后再也没人写它，于是被测代码那一次 exec 不可能
+/// 再撞 ETXTBSY——同一负载下 3200 份 fixture，探针最多重试 2 次就过，被测 exec 0 红。
+///
+/// 重试次数一律 `println!` 进测试输出（0 次也打），跑统计时 grep `exec 探针` 就能数出
+/// 这一轮里 ETXTBSY 真发生过几次。
+///
+/// `probe` 是调用方保证不产生副作用的一次 argv；脚本 fixture 由 [`exec_script`] 传
+/// [`PROBE_ARG`]，复制来的真二进制由调用方自己给一个空转子命令。
+pub fn mark_executable(path: &Path, probe: &[&str]) {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+        .unwrap_or_else(|e| panic!("chmod {path:?}: {e}"));
+    let deadline = Instant::now() + PROC;
+    let mut retries = 0u32;
+    loop {
+        let mut cmd = Command::new(path);
+        cmd.args(probe)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        match cmd.output() {
+            Ok(_) => break,
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && Instant::now() < deadline => {
+                retries += 1;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(e) => panic!("fixture {path:?} 写完 exec 不了（探针重试 {retries} 次）: {e}"),
+        }
+    }
+    println!(
+        "[isolate] fixture {} exec 探针重试 {retries} 次",
+        path.display()
+    );
+}
 
 /// 等一个**外部进程**把事做完的预算：起 tmux、起 `agora` / `sh` 子进程、hook 把文件落盘。
 ///

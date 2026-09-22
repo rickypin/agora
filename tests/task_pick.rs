@@ -48,25 +48,14 @@ esac
 "#,
         log = log.display()
     );
-    std::fs::write(&bin, script).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    bin
+    // 要 exec 的假 bd 走 isolate::exec_script（ETXTBSY 守卫，agora-pmm2）。
+    isolate::exec_script(&bin, &script)
 }
 
 /// 一个只会失败的假 `bd`：`exit 1` 模拟"目录没有 beads"；退出 0 但吐非 JSON 模拟坏输出。
 fn failing_bd(dir: &Path, name: &str, body: &str) -> PathBuf {
     let bin = dir.join(name);
-    std::fs::write(&bin, format!("#!/bin/sh\n{body}\n")).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    bin
+    isolate::exec_script(&bin, &format!("#!/bin/sh\n{body}\n"))
 }
 
 fn calls(dir: &Path) -> Vec<Vec<String>> {
