@@ -108,3 +108,32 @@ pub fn prune_orphans(dir: &Path, ids: impl IntoIterator<Item = String>) -> Vec<S
     removed.sort();
     removed
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::status::machine::HOOK_SNAPSHOT_VERSION;
+
+    #[test]
+    fn a_checkpoint_from_before_the_input_channel_reads_as_no_channel() {
+        // agora-t5kf.1：`input_channel` 是搭检查点落盘的可选字段，**不推进版本号**——修复前写的
+        // 检查点读成 0（无通道），老二进制读新文件也只是忽略这个未知字段（版本门不会拒）。
+        let old = serde_json::json!({
+            "version": HOOK_SNAPSHOT_VERSION,
+            "epoch": 1,
+            "current": { "status": "turn_done", "source": "hook", "confidence": 0.9, "reason": "turn ended" },
+            "set_at": 10,
+            "last_hook_at": 10,
+            "pending": []
+        });
+        let snap: HookSnapshot = serde_json::from_value(old).unwrap();
+        assert_eq!(snap.input_channel, 0);
+        assert_eq!(snap.version, HOOK_SNAPSHOT_VERSION);
+        // 反向：新值读得回来。
+        let mut v = serde_json::to_value(&snap).unwrap();
+        v["input_channel"] = serde_json::json!(1);
+        let back: HookSnapshot = serde_json::from_value(v).unwrap();
+        assert_eq!(back.input_channel, 1);
+        assert_eq!(back.version, HOOK_SNAPSHOT_VERSION);
+    }
+}

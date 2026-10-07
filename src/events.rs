@@ -734,6 +734,7 @@ mod tests {
             pending_decision: None,
             respond_via: "terminal",
             respond_within_secs: None,
+            text_via: "runtime",
             prompt: None,
             progress: None,
             preview: None,

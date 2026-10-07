@@ -29,6 +29,17 @@ export function isProcessState(v: unknown): v is ProcessState {
 }
 
 /**
+ * 文本（下一条指令）走哪条路（agora-t5kf.1）：新节点直接说三态；老节点 / 老 peer 不发
+ * `text_via`，按行上有没有运行时句柄退（`runtime_ref` 在 = PTY，否则旧行为：只能到终端）。
+ * composer 与「到桌面」说明按它分档（MISSION §5.5）。
+ */
+export function textVia(row: SessionRow): "runtime" | "host" | "none" {
+  const v = row.text_via;
+  if (v === "runtime" || v === "host" || v === "none") return v;
+  return typeof row.runtime_ref === "string" && row.runtime_ref !== "" ? "runtime" : "none";
+}
+
+/**
  * 读一行当前的进程三态。没升级的 peer（api_version minor < 1.7）不发 `process`，
  * 从旧布尔退回两值：`false` 在旧形态里既可能是真没了也可能是「不知道」，这里读成 `gone`——
  * 猜错的方向是少说一次未知，不影响按钮与排序（新节点升级后走全量重拉，自然拿到三值）。
@@ -150,6 +161,12 @@ export interface SessionRow {
    */
   peer_status_since?: number;
   pending_decision?: { request_id: string; summary: string; epoch: number; host?: string } | null;
+  /**
+   * 文本（下一条指令）走哪条路（agora-t5kf.1）：`runtime` = 有可写的运行时（PTY 写入）；
+   * `host` = 无句柄但宿主自报输入通道（pi 的扩展收 `input/` 队列自己执行）；`none` = 只能到终端。
+   * 老节点 / 老 peer 不发这个键 —— 读它走 `textVia(row)`，别直接比字面量。
+   */
+  text_via?: "runtime" | "host" | "none";
   /**
    * 用户按过 Kill 的时刻（Restart 清空）。`killed_at && rowProcess(row) === "alive"` = 进程还在吃
    * TERM、节点的宽限在后台走着：设置面板据此显示"正在结束"，直到行推成 FINISHED（agora-284；

@@ -96,6 +96,25 @@ fn delivery(session: &str, payload: Value) -> Delivery {
     }
 }
 
+/// 无句柄的 external 行（`host:agent_session_id` 为身份；agora-t5kf.1 的输入通道就长在它们上）。
+fn external_delivery(host: &str, agent_session: &str, payload: Value) -> Delivery {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    Delivery {
+        envelope: Envelope {
+            host: host.into(),
+            agora_session_id: None,
+            agora_epoch: None,
+            agent_session_id: agent_session.into(),
+            agent_env: BTreeMap::new(),
+            runtime_env: BTreeMap::new(),
+            ppid: 1,
+            received_at: String::new(),
+            received_unix_ms: SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        },
+        payload,
+    }
+}
+
 /// 一套带挂起表的 Fx：Receiver 接上 AppState 与事件总线。
 fn with_hooks(hold_timeout: Duration) -> (Fx, Arc<Receiver>, tempfile::TempDir) {
     let mut fx = Fx::new();
@@ -286,6 +305,7 @@ async fn text_goes_to_the_pty_and_decisions_need_a_hold() {
     )
     .await;
     assert_eq!(view["respond_via"], "terminal");
+    assert_eq!(view["text_via"], "runtime", "有句柄的行：text 走 PTY");
     let (status, _) = call(
         &fx,
         &cookie,
@@ -604,4 +624,155 @@ async fn an_interrupted_permission_is_released_via_terminal_when_the_prompt_disa
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"], "no_pending_decision");
+}
+
+// ── 宿主文本通道（agora-t5kf.1；`src/hook/input.rs`）──────────────────────────────────────
+
+/// 登记一条 external 的 pi 行：载荷里带 `input_channel: 1`（扩展的自报，ADR-002 D11）。
+fn register_pi_with_channel(receiver: &Arc<Receiver>, home: &Path, agent: &str) -> String {
+    let path = Inbox::new(home)
+        .write(&external_delivery(
+            "pi",
+            agent,
+            json!({
+                "hook_event_name": "session_start",
+                "session_id": agent,
+                "cwd": "/work/agora",
+                "mode": "tui",
+                "reason": "startup",
+                "idle": true,
+                "input_channel": 1
+            }),
+        ))
+        .unwrap();
+    receiver.ingest(&path).unwrap();
+    agent.to_owned()
+}
+
+#[tokio::test]
+async fn host_text_channel_queues_the_prompt_and_waits_for_the_extension_ack() {
+    // 无句柄的 pi 行自报输入通道 → text 走 input/ 队列；扩展（测试里是消费者）把
+    // `<id>.json` 改名 `<id>.done` 就是 ack，API 到那时才回 200。
+    let (mut fx, receiver, home) = with_hooks(Duration::from_secs(30));
+    fx.state.input_ack_wait = Duration::from_secs(3);
+    let cookie = fx.cookie();
+    register_pi_with_channel(&receiver, home.path(), "pi-1");
+    let row = fx
+        .sessions
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.record.agent_type == "pi")
+        .unwrap();
+    let id = row.record.id.clone();
+    assert_eq!(
+        row.text_via, "host",
+        "扩展自报 input_channel → text_via = host"
+    );
+    assert_eq!(row.respond_via, "terminal", "决策那一栏不受文本通道影响");
+
+    // 扩展的替身：轮询自己那个队列目录，见到 `.json` 就改名 `.done`，把文本带回来。
+    let dir = fx.sessions.input_dir().unwrap();
+    let sid = id.clone();
+    let consumer = tokio::spawn(async move {
+        let session_dir = agora::hook::input::session_dir(&dir, &sid);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if let Ok(entries) = std::fs::read_dir(&session_dir) {
+                for e in entries.flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.ends_with(".json") {
+                        let text = std::fs::read_to_string(e.path()).unwrap();
+                        std::fs::rename(e.path(), e.path().with_extension("done")).unwrap();
+                        return text;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("队列里没等到 .json");
+    });
+
+    let (status, body) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        &format!("/api/sessions/{id}/input"),
+        Some(json!({ "kind": "text", "data": "只回一个字：好" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        consumer.await.unwrap(),
+        "只回一个字：好",
+        "队列文件里就是手机发的那句"
+    );
+}
+
+#[tokio::test]
+async fn host_text_channel_times_out_when_the_extension_does_not_take_it() {
+    let (mut fx, receiver, home) = with_hooks(Duration::from_secs(30));
+    fx.state.input_ack_wait = Duration::from_millis(80);
+    let cookie = fx.cookie();
+    register_pi_with_channel(&receiver, home.path(), "pi-2");
+    let id = fx
+        .sessions
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.record.agent_type == "pi")
+        .unwrap()
+        .record
+        .id
+        .clone();
+    let dir = agora::hook::input::session_dir(&fx.sessions.input_dir().unwrap(), &id);
+
+    let (status, body) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        &format!("/api/sessions/{id}/input"),
+        Some(json!({ "kind": "text", "data": "go" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{body}");
+    assert_eq!(body["error"], "host_timeout");
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        0,
+        "没人取走的那件要清掉：用户重试不该跑两遍"
+    );
+}
+
+#[tokio::test]
+async fn a_handleless_row_without_an_input_channel_still_says_no_runtime() {
+    // Claude / Codex / Grok 没有宿主注入能力（旧扩展也一样）：维持 MISSION §5.5 的只读口径。
+    let (fx, receiver, home) = with_hooks(Duration::from_secs(30));
+    let cookie = fx.cookie();
+    let path = Inbox::new(home.path())
+        .write(&external_delivery(
+            "claude",
+            "claude-1",
+            json!({ "hook_event_name": "SessionStart", "session_id": "claude-1" }),
+        ))
+        .unwrap();
+    receiver.ingest(&path).unwrap();
+    let row = fx
+        .sessions
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|r| r.record.agent_type == "claude")
+        .unwrap();
+    assert_eq!(row.text_via, "none");
+    let (status, body) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        &format!("/api/sessions/{}/input", row.record.id),
+        Some(json!({ "kind": "text", "data": "go" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "no_runtime");
 }

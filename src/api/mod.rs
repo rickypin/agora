@@ -120,6 +120,9 @@ pub struct AppState {
     /// 长连接（events / terminal / diff WS 与转发桥）多久复查一次凭据（agora-0jt；
     /// `auth::until_revoked`）。缺省 [`REVOKE_CHECK_INTERVAL`]；测试调短。
     pub revoke_check: Duration,
+    /// `POST /input {kind:text}` 交给宿主扩展后等它 ack 的上限（agora-t5kf.1）：宿主取件是本地
+    /// 文件轮询（1 s 一轮），10 s 够两轮；测试压到毫秒级。见 `crate::hook::input`。
+    pub input_ack_wait: Duration,
     /// Web Push 订阅（agora-thc.6）：`/api/push/subscriptions` 写，PushSender 发时读。
     pub push_store: crate::push::PushStore,
     /// `GET /api/health` 的 `push` 段：PushSender 在投递时写，这里只读（与 runtime 同一形状：
@@ -160,6 +163,7 @@ impl AppState {
             registry: Arc::new(crate::peer::registry::PeerRegistry::new(node)),
             peer_views: crate::peer::view::PeerViews::new(),
             revoke_check: REVOKE_CHECK_INTERVAL,
+            input_ack_wait: Duration::from_secs(10),
             push_store: crate::push::PushStore::new(sessions.db_handle()),
             push_health: crate::push::PushHealth::new(),
             vapid: None,

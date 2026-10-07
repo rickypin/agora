@@ -186,6 +186,10 @@ pub struct SessionView {
     /// `respond_via = hook` 时 Dashboard 有多少秒可答（宿主的挂起上限，ADR-002 D5）；超过就
     /// fail-open 交回终端。Claude 55 min，Codex 秒级——UI 据此提示。
     pub respond_within_secs: Option<u64>,
+    /// 文本（下一条指令）走哪条路（agora-t5kf）：`runtime` = 有可写的运行时（PTY）；`host` = 无句柄
+    /// 但宿主自报输入通道（pi 的扩展收 `input/` 队列、`pi.sendUserMessage` 自己执行）；`none` = 只能
+    /// 到终端。手机/桌面的 composer 与说明按它分档（MISSION §5.5）。
+    pub text_via: &'static str,
     /// 两行预览（MISSION §6.3；ADR-002 D8）：`❯` 用户最后输入 / `↳` agent 正在做或最后说的。
     /// 都来自 hook 事件；没有 hook 的会话两者皆 None。
     pub prompt: Option<String>,
@@ -251,6 +255,8 @@ pub struct SessionManager {
     /// 每个会话一台状态机（ADR-002 D1）；内存态，不落库（不变量 7）。
     machines: Mutex<HashMap<String, Machine>>,
     hook_state_dir: Mutex<Option<PathBuf>>,
+    /// 宿主文本通道的队列根（`<AGORA_HOME>/input`，agora-t5kf.1）；与 `hook_state_dir` 同一处装配。
+    input_dir: Mutex<Option<PathBuf>>,
     /// 「hook 没接上」的提示要分档，得知道去哪儿看 agent 的配置文件：(AGORA_HOME, 用户 HOME)。
     /// 带 30 s 缓存，免得每 tick 每个 unheard 会话都去 stat + 解析一遍 JSON（agora-rip）。
     hook_install_homes: Mutex<Option<(PathBuf, PathBuf)>>,
@@ -289,6 +295,7 @@ impl SessionManager {
             runtime_status: Arc::new(RuntimeStatus::default()),
             machines: Mutex::new(HashMap::new()),
             hook_state_dir: Mutex::new(None),
+            input_dir: Mutex::new(None),
             hook_install_homes: Mutex::new(None),
             hook_installed_cache: Mutex::new(HashMap::new()),
             decisions: Mutex::new(HashMap::new()),
@@ -374,7 +381,7 @@ impl SessionManager {
         epoch: i64,
         events: &[AgoraEvent],
     ) -> Result<(), SessionError> {
-        self.apply_hook_inner(id, epoch, events, None, None)
+        self.apply_hook_inner(id, epoch, events, None, None, 0)
             .map(|_| ())
     }
 
@@ -389,7 +396,7 @@ impl SessionManager {
         events: &[AgoraEvent],
         at: Option<i64>,
     ) -> Result<(), SessionError> {
-        self.apply_hook_inner(id, epoch, events, None, at)
+        self.apply_hook_inner(id, epoch, events, None, at, 0)
             .map(|_| ())
     }
 
@@ -399,8 +406,9 @@ impl SessionManager {
         epoch: i64,
         events: &[AgoraEvent],
         name: &str,
+        input_channel: u32,
     ) -> Result<bool, SessionError> {
-        self.apply_hook_inner(id, epoch, events, Some(name), None)
+        self.apply_hook_inner(id, epoch, events, Some(name), None, input_channel)
     }
 
     fn apply_hook_inner(
@@ -410,6 +418,7 @@ impl SessionManager {
         events: &[AgoraEvent],
         delivery: Option<&str>,
         at_override: Option<i64>,
+        input_channel: u32,
     ) -> Result<bool, SessionError> {
         let rec = self.record(id)?;
         if epoch < rec.epoch {
@@ -442,6 +451,8 @@ impl SessionManager {
             if let Some(p) = lock(&self.external_pids).get(id).cloned() {
                 m.note_agent_process(p);
             }
+            // 宿主自报的输入通道（载荷字段，agora-t5kf.1）：随下一条事件一起进检查点。
+            m.note_input_channel(input_channel);
             for e in events {
                 if !m.apply_at(e, epoch, now, at) {
                     tracing::debug!(
@@ -519,6 +530,7 @@ impl SessionManager {
 
     pub fn enable_hook_checkpoints(&self, home: &std::path::Path) {
         *lock(&self.hook_state_dir) = Some(home.join("hooks/state"));
+        *lock(&self.input_dir) = Some(home.join("input"));
         if let Some(user_home) = std::env::var_os("HOME") {
             *lock(&self.hook_install_homes) = Some((home.to_owned(), PathBuf::from(user_home)));
         }
@@ -630,6 +642,11 @@ impl SessionManager {
         lock(&self.hook_state_dir)
             .as_ref()
             .is_some_and(|dir| super::hook_state::exists(dir, id))
+    }
+
+    /// 宿主文本通道的队列根（agora-t5kf.1）；没装配（测试、非 daemon）就是 None。
+    pub fn input_dir(&self) -> Option<PathBuf> {
+        lock(&self.input_dir).clone()
     }
 
     /// 清掉 `hooks/state/` 里没有对应行的检查点文件，返回删掉的文件名（id 的 hex，
@@ -1312,7 +1329,7 @@ impl SessionManager {
         let text = screen
             .as_deref()
             .and_then(|scr| adapter::detect_screen(&rec.agent_type, scr));
-        let (assessment, detail, prompt, progress, status_since, hooked, unheard) = {
+        let (assessment, detail, prompt, progress, status_since, hooked, unheard, input_channel) = {
             let mut machines = lock(&self.machines);
             let m = machines
                 .entry(rec.id.clone())
@@ -1334,7 +1351,18 @@ impl SessionManager {
                 // 状态机听到 hook 事件会自己升级（custom agent 也可能装了 hook）：升级后预览归零。
                 m.has_hooks(),
                 m.hooks_unheard(now),
+                // 宿主自报的输入通道（agora-t5kf.1）：下面算 `text_via`。
+                m.input_channel(),
             )
+        };
+        // 文本走哪条路（MISSION §5.5）：有句柄就有 PTY 可写（= 声明什么类型无关）；无句柄只有宿主
+        // 自报过输入通道的（pi 的扩展）能收；其余只能到终端（`none`）。
+        let text_via = if rec.runtime_ref.is_some() {
+            "runtime"
+        } else if input_channel > 0 {
+            "host"
+        } else {
+            "none"
         };
         // 句子里不写沉默了多少秒（agora-385，2026-09-06）：hooks_unheard 在求差器的 Seen 里，嵌了秒数
         // 每 tick 都变、每 tick 一条 status_changed；已经沉默了多久对"去修 hook"这个动作也没有帮助。
@@ -1395,6 +1423,7 @@ impl SessionManager {
             detail,
             respond_via,
             respond_within_secs,
+            text_via,
             prompt,
             progress,
             preview,

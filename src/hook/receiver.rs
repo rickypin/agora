@@ -98,6 +98,8 @@ pub struct Receiver {
     /// 兜底重放已经 warn 过的读不动 / 应用不上的投递件：同一个坏文件每 5 s 撞一次，
     /// 不该刷 5 s 一条日志。只在内存里，文件消失就忘掉。
     pending_bad: Mutex<BTreeSet<PathBuf>>,
+    /// 宿主文本通道的队列根（`<AGORA_HOME>/input`，agora-t5kf.1）：节流清理扫它。
+    input_dir: PathBuf,
     /// 投递箱权限是否已经 warn 过：第一轮 warn，之后降到 debug，直到它被修好。
     inbox_perm_warned: AtomicBool,
 }
@@ -169,6 +171,7 @@ impl Receiver {
             last_prune: Mutex::new(None),
             pending_sweep_age: PENDING_REPLAY_AGE,
             pending_bad: Mutex::new(BTreeSet::new()),
+            input_dir: crate::hook::input::home_dir(home),
             inbox_perm_warned: AtomicBool::new(false),
         }
     }
@@ -413,10 +416,13 @@ impl Receiver {
                 Cow::Borrowed(&events)
             };
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if let Err(err) = self
-                .sessions
-                .apply_delivered_hook(&rec.id, rec.epoch, &events, &name)
-            {
+            if let Err(err) = self.sessions.apply_delivered_hook(
+                &rec.id,
+                rec.epoch,
+                &events,
+                &name,
+                hooks.input_channel(&delivery.payload),
+            ) {
                 tracing::warn!(component = "hook", %err, "归档恢复失败");
             }
         }
@@ -500,9 +506,13 @@ impl Receiver {
                 _ => Cow::Borrowed(&events),
             };
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            let applied = self
-                .sessions
-                .apply_delivered_hook(id, epoch, &events, &name);
+            let applied = self.sessions.apply_delivered_hook(
+                id,
+                epoch,
+                &events,
+                &name,
+                hooks.input_channel(&delivery.payload),
+            );
             if matches!(applied, Ok(false)) {
                 self.inbox.done(path)?;
                 return Ok(None);
@@ -1008,6 +1018,9 @@ impl Receiver {
             *last = Some(Instant::now());
         }
         self.inbox.prune_done(self.done_retention);
+        // 宿主文本通道的队列：结算过的（done / failed / claimed）与残留的 .part 收回；
+        // 还在等取件的 .json 不碰（那属于某个正在等的请求）。
+        crate::hook::input::sweep(&self.input_dir, self.done_retention);
         // 无行的 hook 检查点：没有行就没人会加载它们（`restore_hook_checkpoints` 按行迭代），删了
         // 不丢东西——它们已经不可恢复。只在内存里判不出来源，所以这一行要能把文件名交给排障的人。
         // 失败只 warn：下一轮 sweep 还走这条路，不值得报事故。

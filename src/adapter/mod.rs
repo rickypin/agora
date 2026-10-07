@@ -153,6 +153,13 @@ pub trait AgentHooks: Send + Sync {
     /// hook 能不能替用户批准（D2 "没有的能力就写没有"）。
     fn decision_via_hook(&self) -> bool;
 
+    /// 宿主自报的文本输入通道版本（0 = 没有；agora-t5kf.1）："这个宿主能不能接住
+    /// `POST /input {kind:text}` 并自己执行"。pi 的扩展在载荷里带 `input_channel: 1`
+    /// （收 `input/` 队列 → `pi.sendUserMessage`），别的宿主没有这条能力就维持 0（默认实现）。
+    fn input_channel(&self, _payload: &serde_json::Value) -> u32 {
+        0
+    }
+
     /// 宿主自认（D4）：`has_grok_session` 是环境里有没有 `GROK_SESSION_ID`。
     fn host_matches_env(&self, has_grok_session: bool) -> bool {
         !has_grok_session

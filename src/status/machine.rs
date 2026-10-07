@@ -195,6 +195,11 @@ pub struct HookSnapshot {
     /// 读成 `None`，见 [`HOOK_SNAPSHOT_VERSION`] 的说明）。
     #[serde(default)]
     last_event_at: Option<i64>,
+    /// 宿主自报的输入通道版本（0 = 没有；agora-t5kf.1）。**不是状态事实**，搭检查点一起落盘
+    /// 只是不为它单开文件/表：老读者 serde 忽略未知字段、老文件读成 0（默认无通道），所以不必
+    /// 推进 [`HOOK_SNAPSHOT_VERSION`]（版本门的代价是整个检查点被丢）。
+    #[serde(default)]
+    pub input_channel: u32,
     detail: Option<String>,
     prompt: Option<String>,
     progress: Option<String>,
@@ -221,6 +226,8 @@ pub struct Machine {
     last_text_at: i64,
     /// 最近一次真正的活动（IDLE 的起点）。
     last_output_at: Option<i64>,
+    /// 宿主自报的输入通道版本（pi 的扩展时报 1）：`text_via = host` 的依据，见 `crate::hook::input`。
+    input_channel: u32,
     /// 最近看到的输出时刻，含重绘：只用来判断"前进了没有"。
     seen_output_at: Option<i64>,
     /// 启动宽限之后第一次真实输出的时刻："hook 没接上"提示的起点（dvh.15）。
@@ -265,6 +272,7 @@ impl Machine {
             text_streak: None,
             last_text_at: 0,
             last_output_at: None,
+            input_channel: 0,
             seen_output_at: None,
             first_activity_at: None,
             last_size: None,
@@ -288,6 +296,19 @@ impl Machine {
                 .as_ref()
                 .and_then(|s| s.last_delivery.as_deref())
                 .is_none_or(|last| name > last)
+    }
+
+    /// 宿主自报的输入通道版本（0 = 没有）。view 用它算 `text_via`，见 `crate::hook::input`。
+    pub fn input_channel(&self) -> u32 {
+        self.input_channel
+    }
+
+    /// 记下宿主自报的输入通道：只升不降（能力不会因一次旧载荷的缺失而倒退）。它随下一条事件
+    /// 一起进检查点（`apply_at` 尾部重建快照的地方）。
+    pub fn note_input_channel(&mut self, channel: u32) {
+        if channel > self.input_channel {
+            self.input_channel = channel;
+        }
     }
 
     pub fn note_delivery(&mut self, name: &str) {
@@ -320,6 +341,7 @@ impl Machine {
         self.last_hook_at = Some(snapshot.last_hook_at);
         // 修复前写的检查点没有这个键：读成 None，沉默兜底退回按收到时刻算（旧行为）。
         self.last_event_at = snapshot.last_event_at;
+        self.input_channel = snapshot.input_channel;
         self.heard_hooks = true;
         self.detail = snapshot.detail.clone();
         self.prompt = snapshot.prompt.clone();
@@ -710,6 +732,7 @@ impl Machine {
                 set_at: self.set_at,
                 last_hook_at: now,
                 last_event_at: self.last_event_at,
+                input_channel: self.input_channel,
                 detail: self.detail.clone(),
                 prompt: self.prompt.clone(),
                 progress: self.progress.clone(),

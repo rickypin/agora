@@ -181,6 +181,16 @@ impl AgentHooks for Pi {
         false
     }
 
+    /// 扩展的载荷里带 `input_channel: 1`（agora-t5kf）：它会把 `input/` 队列里的文本
+    /// `pi.sendUserMessage` 出去。为什么能、语义如何见 ADR-002 附录 A pi 第 12 行。
+    fn input_channel(&self, payload: &Value) -> u32 {
+        payload
+            .get("input_channel")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .min(u32::MAX as u64) as u32
+    }
+
     /// pi 的 hook 只由本仓的扩展发起（`--host pi` 是它写死的），不靠环境猜宿主——不像 Grok 会
     /// 重放 Claude 的条目。返回 true 让继承来的 `GROK_SESSION_ID`（在 Grok 里起 pi 时会传下来）
     /// 不至于把事件丢掉。
@@ -277,6 +287,18 @@ mod tests {
             "cwd": "/home/u/code/agora",
             "mode": "tui",
         })
+    }
+
+    #[test]
+    fn the_extension_advertises_its_input_channel() {
+        // agora-t5kf.1：扩展在每条载荷里带 `input_channel: 1`（它收 `input/` 队列）；
+        // 缺字段 / 别的宿主一律 0（view 的 text_via 跟着落 none）。
+        assert_eq!(PI.input_channel(&payload("session_start")), 0);
+        let mut p = payload("session_start");
+        p["input_channel"] = json!(1);
+        assert_eq!(PI.input_channel(&p), 1);
+        p["input_channel"] = json!(2);
+        assert_eq!(PI.input_channel(&p), 2, "版本号照收，将来 v2 协议不改字段");
     }
 
     #[test]

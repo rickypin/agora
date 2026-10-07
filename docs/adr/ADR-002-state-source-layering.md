@@ -103,7 +103,7 @@ daemon 侧：启动时先恢复 `hooks/state/` 的每会话 hook 观测检查点
 - **超时**：默认 55 min（安装的 hook timeout 3600 s 减余量；Claude 文档没写超时后是 allow 还是 block，所以 agora 永远在 agent 超时前自己退出）。宿主可更短（`AgentHooks::hold_timeout`）：Codex 0.152.1 实测挂起期间 TUI 不显示审批提示（附录 A），挂起是独占而非并存，上限 20 s，超时 fail-open 把提示交回终端；API 的 `respond_within_secs` 把它告诉 UI。
 - **Dashboard 上的三个动作**：allow、deny（可带一句 message，走 `decision.message`）、"在终端回答"（解除挂起并打开终端）。`updatedInput`、`permission_suggestions`（如"本会话改为 acceptEdits"）V1 不暴露。
 - **WAITING(question)**：`AskUserQuestion` 类工具的选项渲染在 TUI 里，从 Dashboard 选项等于注入键击 → V1 只显示问题文本（来自 `tool_input`）与"打开终端"；自由问答与下一条指令走 `POST /api/sessions/:id/input` 的 text（PTY）。
-- **respond 路由**：decision 只对有挂起的会话有效，其余返回错误类型 `NoPendingDecision`；text 对任何有终端的会话有效。
+- **respond 路由**：decision 只对有挂起的会话有效，其余返回错误类型 `NoPendingDecision`；text 对有终端的会话与自报 `input_channel` 的无句柄会话有效（D11），其余的返回 `NoRuntime`。
 
 ### D6 文本兜底与活动启发式（只服务 generic shell 与采纳的未知会话）
 
@@ -157,6 +157,17 @@ AgentFallback {                      # 所有 agent 都有默认实现
 - `testdata/<agent>/<version>/pane/*.txt`：屏幕文本 fixture，只给文本层与预览。
 - fake-agent（ADR-001：agora 二进制的子命令）**走真实 `agora hook` 路径**发事件，集成测试里跑在真实 tmux 上，覆盖投递箱落盘、daemon 重启重放、挂起 / 答复 / 超时。
 - 版本漂移守卫：CI 里对本机安装的真实 agent 只跑一个冒烟（SessionStart + Stop 的键集合与 fixture 一致），不一致 → 测试红，提示录新 fixture。
+
+### D11 文本也能经宿主：队列 + ack（agora-t5kf）
+
+D5 的 respond 只解决"答挂起"：文本（下一条指令）一直只有一条路——写运行时 PTY，无句柄的行只能到终端（MISSION §5.5）。pi 的扩展把第二条路打开了：扩展常驻 agent 进程，`pi.sendUserMessage(text)` 文档写「Always triggers a turn」（2026-10-07 隔离 TUI 实测：空闲时注入 → `before_agent_start` 带该 prompt → `agent_settled`）。所以**宿主自己会执行文本时，agora 不必有 PTY**。
+
+- **能力自报**：宿主在载荷里带 `input_channel: 1`（`AgentHooks::input_channel`）；它随检查点落盘（**不推进 `HOOK_SNAPSHOT_VERSION`**：老读者忽略未知字段、老文件读成 0，两边都退回旧口径），`GET /api/sessions` 上行 `text_via = runtime | host | none`。没自报的宿主（Claude / Codex / Grok）永远是 `none`——D2「没有的能力就写没有」。
+- **队列**：`<AGORA_HOME>/input/<session hex>/<id>.json`（0700 目录 / 0600 文件，`.part` + rename——与投递箱同一套权限理由：同一台机器上的人能塞 prompt 就能指挥别人的 agent）。扩展取件 `rename` 成 `.claimed` 再注入，成功 `.done`、抛错 `.failed`（内容是给人看的一句话）。四态都是一次 rename，扩展不需要反向 rpc。
+- **ack 就是 `.done`**：`POST /input {kind:text}` 等到它（上限 10 s，`AppState::input_ack_wait`）才回 200；没人取 → 504 `host_timeout` 并把还没被取走的 `.json` 删掉（重试不跑两遍），宿主拒绝 → 502 `host_rejected`。"收下就跑"没有诚实可言：宿主进程可能早就不在了。
+- **不新增状态事件**：注入的 prompt 走已有的 `before_agent_start` → RUNNING、`agent_settled` → TURN_DONE，两行预览、通知、手机乐观气泡（行 prompt 首行相等即让位）全照旧——D1 的"只有宿主说得出一轮"不变。
+- **边界**：只有认证过的 API 调用会写队列（队列文件对同用户可读，同用户本来就能敲那个终端）；纯文本 v1 不展开斜杠命令（防手机误触 `/quit`）；单机本地（扩展与 daemon 同 `AGORA_HOME`；peer 行没有这条路）。宿主侧的能力在扩展里，扩展版本决定能不能收——老扩展没有这一步，行上的 `text_via` 就是 `none`。
+- 守卫：`tests/api_input.rs::{host_text_channel_queues_the_prompt_and_waits_for_the_extension_ack,host_text_channel_times_out_when_the_extension_does_not_take_it,a_handleless_row_without_an_input_channel_still_says_no_runtime}`、`src/hook/input.rs` 单测、`src/session/hook_state.rs::a_checkpoint_from_before_the_input_channel_reads_as_no_channel`、`src/adapter/pi.rs::the_extension_advertises_its_input_channel`。
 
 ## Non-Goals
 

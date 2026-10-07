@@ -18,6 +18,7 @@
 
 pub mod cmd;
 pub mod inbox;
+pub mod input;
 pub mod install;
 mod receiver;
 pub mod record;

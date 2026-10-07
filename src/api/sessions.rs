@@ -625,8 +625,77 @@ pub async fn input(
             Ok(Json(serde_json::json!({ "tool_use_id": key })).into_response())
         }
         InputBody::Text { data } => {
+            let sessions = state.sessions.clone();
             let sid = id.clone();
-            blocking(&state.sessions, move |s| s.send_input(&sid, &data)).await?;
+            let direct_data = data.clone();
+            let direct =
+                tokio::task::spawn_blocking(move || sessions.send_input(&sid, &direct_data))
+                    .await
+                    .map_err(join_error)?;
+            match direct {
+                Ok(()) => {}
+                // 无句柄的行：宿主自报过输入通道的（`text_via = host`，agora-t5kf.1）把文本交给它
+                // 自己执行；没有通道的（Claude / Codex / Grok、旧扩展）维持 no_runtime。
+                Err(SessionError::NoRuntime(_)) => {
+                    let sessions = state.sessions.clone();
+                    let sid = id.clone();
+                    let via =
+                        tokio::task::spawn_blocking(move || sessions.get(&sid).map(|v| v.text_via))
+                            .await
+                            .map_err(join_error)?
+                            .map_err(ApiError::from)?;
+                    if via != "host" {
+                        return Err(SessionError::NoRuntime(id).into());
+                    }
+                    let Some(dir) = state.sessions.input_dir() else {
+                        return Err(ApiError {
+                            status: StatusCode::INTERNAL_SERVER_ERROR,
+                            kind: "internal",
+                            message:
+                                "这个进程没有装配宿主输入队列（daemon 没 enable_hook_checkpoints）"
+                                    .to_owned(),
+                        });
+                    };
+                    let sid = id.clone();
+                    let queued_data = data.clone();
+                    let dir_q = dir.clone();
+                    let qid = tokio::task::spawn_blocking(move || {
+                        crate::hook::input::enqueue(&dir_q, &sid, &queued_data)
+                    })
+                    .await
+                    .map_err(join_error)?
+                    .map_err(|source| ApiError {
+                        status: StatusCode::INTERNAL_SERVER_ERROR,
+                        kind: "internal",
+                        message: format!("写宿主输入队列失败: {source}"),
+                    })?;
+                    match crate::hook::input::wait_acked(&dir, &id, &qid, state.input_ack_wait)
+                        .await
+                    {
+                        crate::hook::input::Outcome::Acked => {
+                            tracing::info!(component = "api", principal = %principal.log_id(),
+                                session_id = %id, queued = %qid, "text via host");
+                        }
+                        crate::hook::input::Outcome::Rejected(reason) => {
+                            return Err(ApiError {
+                                status: StatusCode::BAD_GATEWAY,
+                                kind: "host_rejected",
+                                message: reason,
+                            });
+                        }
+                        crate::hook::input::Outcome::TimedOut => {
+                            return Err(ApiError {
+                                status: StatusCode::GATEWAY_TIMEOUT,
+                                kind: "host_timeout",
+                                message: format!(
+                                    "{id} 的宿主没来取这条输入（扩展没装 / 旧版 / 没停在提示符上）；去它的终端里看看"
+                                ),
+                            });
+                        }
+                    }
+                }
+                Err(err) => return Err(err.into()),
+            }
             tracing::info!(component = "api", principal = %principal.log_id(), session_id = %id, "text");
             Ok(Json(serde_json::json!({})).into_response())
         }
@@ -638,6 +707,15 @@ fn bad_request(message: &str) -> ApiError {
         status: StatusCode::BAD_REQUEST,
         kind: "bad_request",
         message: message.to_owned(),
+    }
+}
+
+/// `spawn_blocking` 的任务本身上吊（不应该发生）：与 [`blocking`] 同一句话。
+fn join_error(err: tokio::task::JoinError) -> ApiError {
+    ApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        kind: "internal",
+        message: format!("blocking 任务异常: {err}"),
     }
 }
 
