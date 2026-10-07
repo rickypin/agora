@@ -1081,8 +1081,14 @@ impl SessionManager {
         let mut degraded = None;
         let live = match &rec.runtime_ref {
             Some(r) => {
-                let r = self.runtime.inspect(&RuntimeRef(r.clone()));
-                self.runtime_status.observe(&r);
+                let r#ref = RuntimeRef(r.clone());
+                let r = self.runtime.inspect(&r#ref);
+                // 采纳 socket 是用户的运行时：它坏了只该让这一行落 UNKNOWN，不能把 agora 自己的
+                // 运行时健康说成 degraded（agora-14ys；`list()` / reconcile 在 dkv3 已按同一口径
+                // 分账——采纳 socket 的失败只进 `RuntimeScan::unreadable`）。
+                if self.runtime.is_managed(&r#ref) {
+                    self.runtime_status.observe(&r);
+                }
                 match r {
                     Ok(s) => vec![s],
                     Err(RuntimeError::NotFound(_)) => Vec::new(),

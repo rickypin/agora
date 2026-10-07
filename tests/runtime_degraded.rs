@@ -513,6 +513,74 @@ async fn a_removed_socket_file_does_not_read_adopted_rows_as_finished() {
     assert!(back.record.ended_at.is_none());
 }
 
+#[tokio::test]
+async fn a_broken_adopt_socket_does_not_degrade_health_via_get() {
+    // agora-14ys：`get()` 的单行路径把采纳 socket 的 `ServerUnavailable` 喂给 runtime_status，
+    // 只坏用户的 tmux 也会让 /api/health 的 runtime 报 degraded。修法与 list / reconcile 同口径
+    // （dkv3）：只有 agora 自己 socket 上的失败才算全局降级，采纳 socket 的失败只让那一行
+    // UNKNOWN `runtime_unavailable`。
+    let adopt = isolate::socket_name("deg-get", isolate::nth());
+    let f = fake_with("get", "ok", Some(&adopt));
+    let foreign_ref = f
+        .sessions
+        .unregistered()
+        .unwrap()
+        .into_iter()
+        .find(|u| u.session.name == "mywork")
+        .expect("采纳 socket 上的会话应当可见")
+        .session
+        .r#ref;
+    let adopted = f
+        .sessions
+        .adopt(&AdoptSession {
+            runtime_ref: foreign_ref.0.clone(),
+            display_name: None,
+            agent_type: None,
+            working_directory: None,
+        })
+        .unwrap();
+    assert!(adopted.alive, "起点：adopted 行是活的");
+
+    // 用户自己的 tmux 坏了（升级后 client / server 协议不匹配是现实里最常见的一种）：
+    // 假 tmux 对采纳 socket 的 list-panes 退出非 0，而 server 仍在应答。
+    std::fs::write(&f.adopt_fail, "1").unwrap();
+
+    // list 路径（dkv3 已保证）：行落 UNKNOWN，health 不降级。
+    let views = f.sessions.list().unwrap();
+    assert_eq!(
+        view_of(&views, &adopted.record.id).assessment.status,
+        Status::Unknown
+    );
+    let h = f.health().await;
+    assert_eq!(
+        h["runtime"]["status"], "ok",
+        "list 路径不得把采纳 socket 的失败算成全局降级: {:?}",
+        h["runtime"]
+    );
+
+    // get() 单行路径：这一条以前会把 ServerUnavailable 喂进 runtime_status。
+    let one = f.sessions.get(&adopted.record.id).unwrap();
+    assert_eq!(one.assessment.status, Status::Unknown);
+    assert_eq!(
+        one.assessment.unknown_cause,
+        Some(UnknownCause::RuntimeUnavailable)
+    );
+    assert!(one.record.ended_at.is_none(), "不写结束");
+    let h = f.health().await;
+    assert_eq!(
+        h["runtime"]["status"], "ok",
+        "采纳 socket 坏了不得把 agora 自己的运行时健康说成 degraded: {:?}",
+        h["runtime"]
+    );
+
+    // 恢复：这一行回到原来那一格，health 仍 ok。
+    std::fs::remove_file(&f.adopt_fail).unwrap();
+    let back = f.sessions.get(&adopted.record.id).unwrap();
+    assert!(back.alive);
+    let h = f.health().await;
+    assert_eq!(h["runtime"]["status"], "ok");
+}
+
 #[test]
 fn reconcile_skips_rows_on_an_unscanned_adopt_socket() {
     // reconcile 的 missing 分支同一形状（daemon 重启时把"没扫到"当"会话消失"，早就在写近似

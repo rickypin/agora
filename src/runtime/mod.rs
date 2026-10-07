@@ -253,6 +253,18 @@ pub trait Runtime: Send + Sync {
     /// "会话没了"（agora-dkv3）。整体扫不成（agora 自己的 socket 坏了）仍然返回 Err。
     fn list(&self) -> Result<RuntimeScan, RuntimeError>;
     fn inspect(&self, r#ref: &RuntimeRef) -> Result<RuntimeSession, RuntimeError>;
+    /// 这个 ref 是不是落在 **agora 自己管理的 socket** 上。
+    ///
+    /// 读路径用它决定一次失败算不算到全局运行时健康头上（agora-14ys）：采纳 socket 是用户的
+    /// tmux，坏了只该让那几行落 UNKNOWN `runtime_unavailable`，不该把 `/api/health` 说成
+    /// degraded——ADR-001 D7 的口径是「agora 自己的运行时」，dkv3 已让 `list()` 路径这样分账
+    /// （采纳 socket 的失败只进 `RuntimeScan::unreadable`），`get()` 的单行路径照同一口径。
+    /// 解析不出 socket、或运行时没有"采纳 socket"这个概念时保守答 `true`：把说不清的算进
+    /// 全局，不掩盖自己的问题。
+    fn is_managed(&self, r#ref: &RuntimeRef) -> bool {
+        let _ = r#ref;
+        true
+    }
     /// `list()` 说"列表里没有这个 ref"之后追问一句：它所在的那个 server 还在不在。
     ///
     /// 为什么要单独问：`list()` 对"server 没了"返回的是**空列表而不是错误**（ADR-001 D4：

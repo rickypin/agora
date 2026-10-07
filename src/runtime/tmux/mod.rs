@@ -250,7 +250,8 @@ impl TmuxRuntime {
         Ok(ParsedRef { socket, session })
     }
 
-    fn is_managed(&self, socket: &str) -> bool {
+    /// 私有形态（按 socket 名字问）；对外是 [`Runtime::is_managed`]（按 ref 问）。
+    fn socket_is_managed(&self, socket: &str) -> bool {
         socket == self.cfg.socket
     }
 
@@ -355,7 +356,7 @@ impl TmuxRuntime {
                 reason: String::from_utf8_lossy(&out.stderr_tail).trim().to_owned(),
             });
         }
-        let managed = self.is_managed(socket);
+        let managed = self.socket_is_managed(socket);
         let text = String::from_utf8_lossy(&out.stdout);
         let mut sessions: Vec<RuntimeSession> = Vec::new();
         let mut detail = None;
@@ -449,7 +450,7 @@ impl TmuxRuntime {
 
     fn require_managed(&self, r: &RuntimeRef) -> Result<String, RuntimeError> {
         let p = self.parse_ref(r)?;
-        if !self.is_managed(p.socket) {
+        if !self.socket_is_managed(p.socket) {
             return Err(RuntimeError::ReadOnly(r.clone()));
         }
         Ok(p.session.to_owned())
@@ -558,7 +559,7 @@ impl Runtime for TmuxRuntime {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         if socket.is_empty()
-            || !(self.is_managed(&socket) || self.cfg.adopt_sockets.contains(&socket))
+            || !(self.socket_is_managed(&socket) || self.cfg.adopt_sockets.contains(&socket))
             || !self.server_running(&socket)
         {
             return Ok(None);
@@ -581,6 +582,14 @@ impl Runtime for TmuxRuntime {
             .into_iter()
             .find(|s| s.name == p.session)
             .ok_or_else(|| RuntimeError::NotFound(r.clone()))
+    }
+
+    fn is_managed(&self, r: &RuntimeRef) -> bool {
+        match self.parse_ref(r) {
+            Ok(p) => self.socket_is_managed(p.socket),
+            // 不是本运行时的 ref：说不了它是谁的，按"自己的"答（见 trait 注释）。
+            Err(_) => true,
+        }
     }
 
     /// 与 `list_socket` 同一条结构事实：能不能 connect 上那个 socket（不看文件在不在、不匹配
