@@ -14,7 +14,7 @@ pub const DEFAULT_HOLD_TIMEOUT: std::time::Duration = std::time::Duration::from_
 
 /// 环境里哪些变量名前缀属于 agent 自己、值得进信封（`CLAUDE_PID`、`GROK_*`、`CODEX_*`）。
 pub fn agent_env_prefixes() -> &'static [&'static str] {
-    &["CLAUDE_", "GROK_", "CODEX_"]
+    &["CLAUDE_", "GROK_", "CODEX_", "PI_"]
 }
 
 /// Dashboard 的决定（`decision.behavior`），经挂起的 hook 同步返回给 agent。

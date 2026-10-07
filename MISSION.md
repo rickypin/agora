@@ -27,7 +27,7 @@
 | 节点类型 | 三类主机：**macOS**、**Ubuntu Linux**、**Windows**（用于只支持 Windows 的项目） | macOS + Linux；Windows 延期（§11），但运行时抽象**不得排除它**【ADR-001】 |
 | 节点数量 | 任意；新增节点不改变架构（节点互为 peer，§3.5） | 2 |
 | 客户端类型 | 三类设备：**macOS 笔记本**、**iPhone**、**Android 设备**；都是同一个 Web 客户端，**能力同源**（同一套节点 API、无客户端后门），**界面按设备形态分级**：桌面是全功能工作台，手机是交互收件箱（无终端、无创建、无详情，§6.9，不变量 9） | macOS 笔记本；**iPhone** 为 V2 首批（§11）；Android 延期（承接 agora-w9ki） |
-| agent 类型 | 任何 CLI coding agent，经 Adapter 接入（§5.2）；有 hook 的走 hook，没有的走文本兜底（§5.1） | 一等：Claude Code、Codex、Grok Build；pi 备选一等 |
+| agent 类型 | 任何 CLI coding agent，经 Adapter 接入（§5.2）；有 hook 的走 hook，没有的走文本兜底（§5.1） | 一等：Claude Code、Codex、Grok Build、pi（2026-10-07 接入：扩展投递，实测见 ADR-002 附录 A，agora-c3i） |
 | 人 | 单人；多用户是 Non-Goal，认证按 principal 留口（ADR-003）。同一主机可有多个用户各跑各的实例，互为陌生人（`node.id` 只需在自己的 peer 网内唯一） | 单人 |
 | 网络 | 无关：只要求客户端能到达节点，认证与 TLS 由 agora 自己保证（§8）；**网络可达 ≠ 授权** | 当前用 tailnet，只是部署选择 |
 | 任务来源 | 可选：有 beads 的仓库用 issue id，没有的用首条 prompt 摘要 | 本仓库有 bd，多数仓库没有 |
@@ -391,7 +391,7 @@ hook 还带来第二个能力：它看得见**这台机器上该 agent 的所有
 
 agent-specific logic 不允许写死在核心层（规则 5）。每个 Adapter 回答五个问题：装哪些 hook、hook 事件怎么映射到状态（§5.6）、没有 hook 时怎么从进程与文本兜底、怎么在进程树里认出自己、默认命令是什么（接口签名见 ADR-002）。
 
-实现：Claude Code、Codex、Grok、Generic Shell；pi 为备选一等；未来允许 Cursor 与自定义 agent。核心 Session Manager 不应知道任何 agent 的具体输出格式。
+实现：Claude Code、Codex、Grok、pi、Generic Shell；未来允许 Cursor 与自定义 agent。核心 Session Manager 不应知道任何 agent 的具体输出格式。
 
 ### 5.3 Detection Confidence
 

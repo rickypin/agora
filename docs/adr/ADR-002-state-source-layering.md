@@ -255,6 +255,26 @@ AgentFallback {                      # 所有 agent 都有默认实现
 | ⑥ TURN_DONE | 没有 Notification / idle_prompt / StopFailure；每轮以 Stop(`last_assistant_message`) 收尾，Esc 中断以 Interrupt(`turn_id`) 收尾且没有 PostToolUse；被中断的命令转成后台终端继续跑 | Stop + Interrupt 够用；API 错误未触发到，靠沉默规则 |
 | 其他 | SessionStart **在第一条 prompt 提交时**才 fire（与 UserPromptSubmit 相隔几十毫秒；TUI 启动、`/clear`、resume 之后都要等用户先提问），所以自报 id 在首问之前缺席、Restart 只能退化；`/clear` 只发新 id 的 SessionStart(`source=clear`)，旧会话当时不发 SessionEnd，退出时两个 session 各发一次 SessionEnd(`reason=other`)；SessionEnd / Interrupt 的 hook timeout 上限 3 s（超过自动 clamp 并 stderr 警告）；插件 `codex@openai-codex` 1.0.6 自带 hooks.json 也走同一信任表；沙箱直接拦网络（`curl` 无输出、不问）| SessionEnd 里不能干慢活；testdata/codex/0.152.1/hooks 七场景中五个真录、`api_error` / `parallel_tools` 按键集合合成 |
 
+### pi 1.0.4（2026-10-07 本机实测；接入 agora-c3i；Linux zuan，`pi -p` + tmux 内 TUI 真跑）
+
+pi 没有"往 JSON 里拼 hook 条目"的配置：挂点是**扩展**（`~/.pi/agent/extensions/*.ts` 启动时装载，
+`pi --extension <file>` 可临时加载）。agora 的扩展（`src/adapter/pi/agora.ts`）由 `agora hooks install pi`
+写到那个目录，把生命周期事件按自己的信封投给 `agora hook --host pi`；语义映射在 Rust 侧
+（`src/adapter/pi.rs`）。实测：
+
+| # | 实测 | 结果 |
+|---|---|---|
+| 1 | 事件序（`pi -p` 一轮） | `session_start` → `before_agent_start` → `agent_start` → `turn_start` →（工具轮 `tool_execution_start/end`）→ `turn_end` → …→ `agent_end` → `agent_before_settle` → `agent_settled` → `session_shutdown(reason=quit)` |
+| 2 | 轮次边界 | `turn_end` **每个模型轮都发**（一轮里多次）；`agent_settled` 才是"pi 不会再自动继续"（重试 / 压缩 / 排队都结束）——TURN_DONE 用它，不用 `turn_end` / `agent_end` |
+| 3 | 会话身份 | 扩展从 `ctx.sessionManager.getSessionId()` 取，UUID 形态；`--session-id <uuid>` 钉住（实测起的会话 id 逐字相同），`--session <id>` 续已有会话（部分 uuid 也认）→ 版本表 `resume` / `pin` 都为真；交互会话首条 prompt 是位置参数（`pi '<prompt>'`） |
+| 4 | 模式 | `ctx.mode` ∈ `tui | rpc | json | print`；`print` / `json` 判 `headless`（收进折叠区、不通知、满 24 h 删），`tui` / `rpc` 按 `external`——判据只看载荷，缺 `mode` 不判无头 |
+| 5 | 进程号 | 扩展 spawn hook 时带 `PI_PID=process.pid`，信封按 `PI_` 前缀收进 `agent_env`（`PI_SESSION_ID` / `PI_SESSION_FILE` 同传）。pi 自己的 `PI_*` 只注入 shell 工具，不注入扩展，所以不能等环境；也不拿 `ppid` 兜底（手工敲的 hook 的父进程是 shell） |
+| 6 | 退出 | 提示符退出发 `session_shutdown(reason=quit)`；tmux `kill-session` 的 SIGHUP 也让 pi 走到它（实测行以 `session ended (hook)` 收尾，不是探活）。**`reload` / `new` / `resume` / `fork` 也 fire 同一事件**：只有 `quit` 算结束，换会话交给 supersede / 进程探活——否则 `/reload` 会把行顺手做掉 |
+| 7 | 权限代答 | **没有**：pi 的工具调用默认不问人；`tool_call` 事件能 block，但"先问 agora 再放行"要先有一套 pi 侧政策层。`decision_via_hook = false`（D2「没有的能力就写没有」）——这些行在手机上标"需要到桌面" |
+| 8 | 实链路（隔离 daemon + 真 TUI） | 行 `pi / external / turn_done`（`detail` = 最后回复、`pid` = `PI_PID`）；同一 daemon 上 `pi -p` 行 `headless / finished`（`session ended (hook)`）；`kill-session` 后 TUI 行也 `finished`。守卫 `tests/hooks_pi.rs`（四条：external 全链路、print/rpc 分档、reload/换会话不结束、线上形态） |
+| 9 | 未做 | 七个交互场景 fixture + 冒烟（agora-c3i.3；`headless_args` 在那之前故意不实现）。`permission_terminal` / `permission_dashboard` 两个场景在 pi 上**不存在**（无审批），补录时按"无 hold 的工具轮"如实记 |
+| 10 | 安装形态 | 不是 JSON 条目：`agora hooks install pi` 走文件式安装（`Loader` 的 `FileInstall` 路径），只删带标记的文件、拒绝覆盖用户的同名文件；`installed_state` 按标记认（`hooks_unheard` 的分档照常） |
+
 ## 附录 B：事故记录
 
 1. **2026-09-05，agora-3s5：外部会话的行标题变成 `<task-notification>`。** Claude Code 2.1.261 把后台任务完成通知、`<system-reminder>`、斜杠命令回显等系统注入内容也当 `UserPromptSubmit` 发出（真录 `testdata/claude/2.1.261/hooks/task_notification.jsonl`）；D8 按"首条 `prompt.submitted` 的首行"取 task_ref 摘要，daemon 中途登记的外部会话"第一条"恰好是它。处置：Adapter 把以已知注入标签开头的 prompt 映射成 `prompt.injected`（`src/adapter/hooks.rs` 的 `INJECTED_PROMPT_TAGS`，三家共用）——状态机照常回 RUNNING、挂起过期，但 `❯` / `↳` / detail 不动、task_ref 不补；task_ref 已经是系统消息的库存行，下一条真人 prompt 允许覆盖一次。脱敏器对 `prompt` 键保留开头的标签，fixture 才证明得了"这条不是人敲的"。

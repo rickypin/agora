@@ -13,6 +13,7 @@ pub mod claude;
 pub mod codex;
 pub mod grok;
 pub mod hooks;
+pub mod pi;
 pub mod replay;
 pub mod resume;
 pub mod scrub;
@@ -125,12 +126,29 @@ pub struct HookInstall {
     pub timeout: Duration,
 }
 
+/// 非 JSON 条目式宿主的安装形态（pi，agora-c3i；ADR-002 D4）：往宿主认的目录里放一份扩展 /
+/// 脚本，而不是往 JSON 表里拼条目。`content` 里已经带好安装时的绝对路径。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileInstall {
+    /// 相对用户 HOME 的文件路径。
+    pub file: PathBuf,
+    /// 文件里属于 agora 的标记；卸载只删带这个标记的文件。
+    pub marker: String,
+    pub content: String,
+}
+
 /// 有 hook 的 agent（ADR-002 D9 的 `AgentHooks`）。
 pub trait AgentHooks: Send + Sync {
     /// `--host` 的取值，也是投递箱的第一层目录。
     fn host(&self) -> &str;
 
     fn install_spec(&self) -> Vec<HookInstall>;
+
+    /// 宿主不吃"往 JSON 里拼条目"时的安装形态（pi 吃的是扩展文件）：给 `Some` 时 `agora hooks
+    /// install` 走文件式那条路，[`Self::install_spec`] 交空表即可。
+    fn file_install(&self, _agora_home: &Path) -> Option<FileInstall> {
+        None
+    }
 
     /// hook 能不能替用户批准（D2 "没有的能力就写没有"）。
     fn decision_via_hook(&self) -> bool;
@@ -227,7 +245,13 @@ pub trait Adapter: AgentIdentity + AgentFallback {
 }
 
 /// 内置 agent。名字同时是 `agents.<name>.command` 的配置键（docs/spec/config.md）。
-pub const ADAPTERS: &[&dyn Adapter] = &[&claude::CLAUDE, &codex::CODEX, &grok::GROK, &shell::SHELL];
+pub const ADAPTERS: &[&dyn Adapter] = &[
+    &claude::CLAUDE,
+    &codex::CODEX,
+    &grok::GROK,
+    &pi::PI,
+    &shell::SHELL,
+];
 
 /// 前端 Agent 下拉里的"自己填命令"那一项：没有 Adapter，命令必须由用户给。
 pub const CUSTOM: &str = "custom";
@@ -351,8 +375,10 @@ mod tests {
         }
         assert_eq!(find("claude").unwrap().default_command(), "claude");
         assert!(find("nope").is_none());
-        assert_eq!(hosts(), vec!["claude", "codex", "grok"]);
-        assert!(has_hooks("claude") && !has_hooks("shell") && !has_hooks("fake"));
+        assert_eq!(hosts(), vec!["claude", "codex", "grok", "pi"]);
+        assert!(
+            has_hooks("claude") && has_hooks("pi") && !has_hooks("shell") && !has_hooks("fake")
+        );
     }
 
     #[test]

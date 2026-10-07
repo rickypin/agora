@@ -340,10 +340,27 @@ fn grok() {
     smoke("grok");
 }
 
+/// 有 hook 但冒烟还没落地的 adapter（例外必须点名 + 有 issue，不许默默放行）：pi 的七个交互场景
+/// fixture 还没录（agora-c3i.3），而 `tests/fixtures_replay.rs` 的目录规则不允许只录冒烟——
+/// 在那一批落地前，pi 的 `headless_args` 也故意不给（见 src/adapter/pi.rs），所以它没有冒烟可跑。
+const SMOKE_PENDING: &[&str] = &["pi"];
+
 /// 新 adapter 有 hook 就得有自己的冒烟函数与凭据借用规则；这一条不 ignore，CI 每次跑。
 #[test]
 fn every_hooked_agent_has_a_smoke() {
-    assert_eq!(adapter::hosts(), vec!["claude", "codex", "grok"]);
+    assert_eq!(adapter::hosts(), vec!["claude", "codex", "grok", "pi"]);
+    for host in adapter::hosts() {
+        if SMOKE_PENDING.contains(&host) {
+            continue;
+        }
+        // 约定：冒烟函数与宿主同名，且 headless_args 有实现（有烟可冒）。
+        assert!(
+            adapter::find(host)
+                .and_then(|a| a.headless_args("x"))
+                .is_some(),
+            "{host} 在 SMOKE_PENDING 之外就必须有无头冒烟"
+        );
+    }
 }
 
 /// 每个版本目录的无头 fixture 都是合法的、含 SessionStart + Stop 的录制——不 ignore，CI 每次跑，
