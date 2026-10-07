@@ -122,7 +122,7 @@ NEEDS ATTENTION
   agora ⎇ main
 UNCLEAR
 ? codex-desktop-2d         ◆ Codex   @ mac    unknown 2h
-  hooks silent; no process handle · 等下一条 hook，或去它自己的窗口看
+  hooks silent; no process handle · 等下一条 hook，或去它自己的窗口看（满 external_unknown_ttl 自动删记录）
 WORKING
 ● 重构 sglog parser        ◆ Codex   @ zuan
 ◆ agora-1qd 补一轮回归      ✦ Claude  @ mac    turn done 4h
