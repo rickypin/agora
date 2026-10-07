@@ -44,7 +44,7 @@ M1b 演示剧本（人按此关闭 epic）
 前置：M1a 剧本通过；本机 Claude Code 与 Grok 已装；Codex 按 agora-dvh.2 的结论决定是否入列。
 1. `agora hooks install claude`：装前显示 diff，`~/.claude/settings.json` 多出 agora 条目，重复安装不重复；grok 同理。
 2. fake-agent 起十个会话：4 RUNNING / 2 WAITING / 2 TURN_DONE / 1 FINISHED / 1 FAILED → Dashboard 排序 FAILED 最上、WAITING 与 TURN_DONE 次之、RUNNING 最下；每行带任务标签与两行预览；再让一个无 hook 的 fake 会话安静 60 s → IDLE，六态齐全（A14 A17 A23）。
-3. 真实 Claude Code：New Agent 起会话，任务是写一个文件 → RUNNING（source=hook）→ 权限请求 → WAITING 行展开显示问题 → Dashboard 点 allow，不开终端 → 文件被创建 → TURN_DONE 两行显示最后回复 → Dashboard 输入下一条指令 → RUNNING（A15）。
+3. 真实 Claude Code：New Agent 起会话，任务是写一个文件 → RUNNING（source=hook）→ 权限请求 → WAITING，选中行在主区显示问题（A50）→ Dashboard 点 allow，不开终端 → 文件被创建 → TURN_DONE 两行显示最后回复 → Dashboard 输入下一条指令 → RUNNING（A15）。
 4. 同一场景改在终端按 1 → Dashboard 收到 decision.resolved，行退出 WAITING。
 5. Grok 的权限请求：WAITING 行只有"打开终端"（ADR-002 D2，decision_via_hook = false；A15 的 Grok 边界）。
 6. RUNNING → WAITING 弹浏览器通知，点击落到该行就地回答（A18）。
@@ -93,8 +93,8 @@ M3 演示剧本（agent 代检，无 👁 步骤；人看代检报告后关闭 e
 前置：M1b 剧本通过；本机 agora 仓库有 beads（bd ready 非空）；config 里 worktree_root 用默认值。
 
 1. New Agent：Project 选 agora → Task 字段列出 bd ready 的任务，选一个 → Name、Worktree 名（= issue id）、首条 prompt（含 issue id 与 claim 提示）自动填好；Worktree 选'新建…' → 创建后自动选中，git worktree list 里多一行、分支基于主 worktree 当前分支（A43 A44；agora-h1k.2 / agora-h1k.1）。Create 后 bd show 该 issue 仍是 open：agora 没写 beads（不变量 12）。
-2. 会话行展开 → 显示该任务的验收标准全文（与 bd show 一致、可折叠）；在 beads 里改验收标准，缓存过期（task 索引 TTL 300 s）后展开区跟着变，agora 的库里没有这段文字（A40；agora-h1k.3）。
-3. 让 agent 改两个文件后回 TURN_DONE → 行展开列出改动文件；点'看 diff'→ 主区切成只读终端显示 git diff（crumb 是 git diff / <名字>；没有顶栏标签页，agora-a46），打字无效、「关闭 diff」回到该会话的终端、侧栏不多一行；期间 git status 与 reflog 证明没有任何写操作（A41；agora-h1k.5）。
+2. 选中会话行 → 主区显示该任务的验收标准全文（与 bd show 一致、可折叠）；在 beads 里改验收标准，缓存过期（task 索引 TTL 300 s）后主区跟着变，agora 的库里没有这段文字（A40；agora-h1k.3）。
+3. 让 agent 改两个文件后回 TURN_DONE → 主区列出改动文件；点'看 diff'→ 主区切成只读终端显示 git diff（crumb 是 git diff / <名字>；没有顶栏标签页，agora-a46），打字无效、「关闭 diff」回到该会话的终端、侧栏不多一行；期间 git status 与 reflog 证明没有任何写操作（A41；agora-h1k.5）。
 4. 停 daemon，在 tmux 里让一个会话退出，等 1 分钟再起 daemon → 该会话 ended_at 是退出时刻而不是 daemon 起来的时刻；停 daemon 期间一个会话进入 WAITING，起 daemon 重放投递箱后'waiting Nm'从事件时间算起（A42；agora-h1k.4）。
 5. CI 绿；tests/arch_boundary.rs 的 git 子进程白名单与 beads 零写入守卫逐条关掉变红。
 全程单节点、桌面、只读：不做合并、不做 diff 组件、不写 beads（§11）。
@@ -106,7 +106,7 @@ M3b 演示剧本（agent 代检，无 👁 步骤；人按 MISSION §1「一天�
 前置：M1b / M3 剧本通过；本机装了 claude / codex / grok 三家 hook。
 
 1. 在 Terminal.app（独立 tmux server）起 3 个 external 会话各回一句，分别两次 Ctrl+C、关窗口、/clear 结束 → 侧栏 NEEDS ATTENTION 里不出现它们，Finished 折叠区计数 +3，展开折叠区能看到并能点开两行摘要（agora-rzh 修完后关窗口那条 reason 是 process gone、其余是 session ended (hook)）。
-2. agora 起一个会话回一句后 Kill → 它留在 NEEDS ATTENTION（FINISHED，agora 来源）；点它展开一次再点别的行 → 它进折叠区。折叠区排序仍是 attention 顺序，Alt/Option+N 跳的第 N 条等于眼睛看到的第 N 条。
+2. agora 起一个会话回一句后 Kill → 它留在 NEEDS ATTENTION（FINISHED，agora 来源）；点它一次（主区打开）再点别的行 → 它进折叠区。折叠区排序仍是 attention 顺序，Alt/Option+N 跳的第 N 条等于眼睛看到的第 N 条。
 3. Header 的 Finished 计数点一下 → 确认框列出将删的行数 → 确认后折叠区清空、GET /api/sessions 少同样多行、每行都是 DELETE metadata（tmux 会话数不变、没有 kill）。
 4. 把 external_finished_ttl 调成 1m，再起一个 external 会话 Ctrl+C 结束 → 不到两个 sweep 周期后该行从 GET /api/sessions 消失，daemon.log 一行说明；agora 起的 FINISHED 行不受影响。
 5. agora-rzh 修完后，通知按「人自己结束的不弹、进程意外没了才弹」分档。注意 notification_for 的第一道门是「转换前必须是 RUNNING / IDLE」：第 1 步那三条回完一句都停在 TURN_DONE，怎么结束都不弹（TURN_DONE → FINISHED 本来就不通知，见 docs/spec/api.md notification 段），照第 1 步验不出分档。所以这一步另起两条正忙的会话：Claude 与 Codex 各让它跑一条前台长命令（如 sleep 45）、停在 RUNNING 时关窗口 → Claude 那条落到 FINISHED / source=hook（它发 SessionEnd）不弹、Codex 那条落到 FINISHED / source=process（它不发 SessionEnd）弹一条「Codex / <name> @ <node> finished」；同一个物理动作两种结果，才是这条规则的正反对照。再加第 1 步里 Ctrl+C 与 /clear 结束的两条，同样不弹。（2026-09-09 真宿主实测，agora-agu。）

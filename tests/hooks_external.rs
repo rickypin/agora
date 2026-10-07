@@ -1,5 +1,10 @@
 //! dvh.12：agora 没起过的会话经 hook 自己出现（MISSION §5.4）。
 //! 无运行时句柄 → external 行，存活看 agent 进程号；信封里的 pane 能定位到采纳 socket → adopted 行，有终端。
+//!
+//! 一个容易绊人的例外（agora-i8d4，口径全文见 `docs/spec/api.md`「外部会话」段）：无句柄的 external 行在
+//! 见到第一条 `prompt.submitted` 之前收到 `SessionEnd(reason = resume | clear)`，那不是这行的对话结束了，
+//! 是身份交接（`claude --resume` / `/clear` 先发新 id 的 SessionStart）——这种行按「从没被登记过」删掉，
+//! 见 `a_resume_handoff_before_the_first_prompt_leaves_no_row`；有过 prompt 的行仍按普通结束。
 
 mod common;
 
