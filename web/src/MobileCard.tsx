@@ -9,7 +9,7 @@
  * 动作全部走与桌面相同的节点 API（allow/deny 带 pending_decision.request_id、text 经 PTY、
  * Kill / Restart 先不带 confirmed 发、节点说要杀才弹框——MISSION §8）。
  */
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { agentBadge } from "./agentBadge";
 import type { SessionApi } from "./api";
 import { isHandleless, seenKey, seenRelevant, statusLine, taskLabel } from "./attention";
@@ -33,12 +33,14 @@ interface Props {
   onBack: () => void;
   /** 「看过」记号（打开卡片 = 看到这一条结果）：写进每设备 localStorage 的集合。 */
   onSeen?: (key: string) => void;
+  /** 推送点击进来且这一行可发送（turn_done / idle）：把焦点放进底部 composer（agora-thc.7）。 */
+  focusComposer?: boolean;
 }
 
 type Pending = { kind: "kill" | "restart" } | null;
 type Sent = { text: string; phase: "sending" | "sent" | "failed" };
 
-export function MobileCard({ row, api, now, onBack, onSeen }: Props) {
+export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [more, setMore] = useState(false);
   const [pending, setPending] = useState<Pending>(null);
@@ -47,6 +49,7 @@ export function MobileCard({ row, api, now, onBack, onSeen }: Props) {
   const [note, setNote] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [sent, setSent] = useState<Sent | null>(null);
+  const composerRef = useRef<HTMLInputElement>(null);
 
   // 打开卡片就是"看到结果"：手机没有并存的列表可以"离开"，记在打开这一刻才不作废记号。
   const markSeen = useCallback(() => {
@@ -83,6 +86,10 @@ export function MobileCard({ row, api, now, onBack, onSeen }: Props) {
   const canDecide = waiting && row.respond_via === "hook" && row.reason === "permission" && !!decision;
   const within = typeof row.respond_within_secs === "number" ? row.respond_within_secs : null;
   const canCompose = (row.status === "turn_done" || row.status === "idle") && !handleless;
+  // 推送点击进来：可发送的行把焦点直接放进 composer（ux.md「行为」；焦点只在打开那一下要，之后别抢）。
+  useEffect(() => {
+    if (focusComposer && canCompose) composerRef.current?.focus();
+  }, [focusComposer, canCompose]);
   const canRestart = !handleless && typeof row.command === "string" && row.command.trim() !== "";
   const detail = str(row.detail);
   const prompt = str(row.prompt).split("\n")[0] ?? "";
@@ -270,6 +277,7 @@ export function MobileCard({ row, api, now, onBack, onSeen }: Props) {
           }}
         >
           <input
+            ref={composerRef}
             value={draft}
             placeholder="下一条指令"
             aria-label="下一条指令"

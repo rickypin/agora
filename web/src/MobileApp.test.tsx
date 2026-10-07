@@ -170,3 +170,61 @@ describe("mobile information budget (A52)", () => {
     expect(s.length).toBe(80);
   });
 });
+
+describe("mobile push entry (agora-thc.7)", () => {
+  /** 假 SW 消息总线：jsdom 没有 navigator.serviceWorker，这里只造 add/remove。 */
+  function stubServiceWorker() {
+    const listeners = new Set<(ev: MessageEvent) => void>();
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: {
+        addEventListener: (type: string, fn: (ev: MessageEvent) => void) => {
+          if (type === "message") listeners.add(fn);
+        },
+        removeEventListener: (type: string, fn: (ev: MessageEvent) => void) => {
+          if (type === "message") listeners.delete(fn);
+        },
+      },
+    });
+    return (data: unknown) => {
+      for (const fn of listeners) fn({ data } as MessageEvent);
+    };
+  }
+
+  it("a push click on a sendable row opens its card with focus in the composer", async () => {
+    const fire = stubServiceWorker();
+    const t = setup([row("n:done", { status: "turn_done", detail: "做完了" })]);
+    await online(t);
+    await act(async () => {
+      fire({ type: "agora-open-session", session: "n:done" });
+    });
+    const input = await screen.findByTestId("mobile-next-input");
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("a push click on a WAITING row opens the decision card and does not focus a composer", async () => {
+    const fire = stubServiceWorker();
+    const t = setup([
+      row("n:wait", {
+        status: "waiting",
+        reason: "permission",
+        pending_decision: { request_id: "r1", summary: "Bash: rm", epoch: 1, host: "claude" },
+      }),
+    ]);
+    await online(t);
+    await act(async () => {
+      fire({ type: "agora-open-session", session: "n:wait" });
+    });
+    expect(await screen.findByTestId("mobile-decision-text")).toBeTruthy();
+    expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+  });
+
+  it("the gear opens settings", async () => {
+    const t = setup([row("n:a")]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("mobile-settings-open"));
+    expect(await screen.findByTestId("mobile-settings")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("mobile-settings-back"));
+    expect(screen.queryByTestId("mobile-settings")).toBeNull();
+  });
+});

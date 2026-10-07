@@ -9,6 +9,7 @@ import {
   isPaired,
   redeemPairOnce,
 } from "./pair";
+import { InstallHint, iosWithoutStandalone } from "./InstallHint";
 import { Workspace } from "./Workspace";
 
 type Probe = "probing" | "ok" | "down";
@@ -53,6 +54,7 @@ export function App() {
         <h1>agora</h1>
         <p>daemon：{probe === "probing" ? "探测中…" : probe === "ok" ? "在线" : "不可达"}</p>
         <p>{authLine(auth)}</p>
+        {mobile && iosWithoutStandalone() && <InstallHint />}
         <PairPaste onPaired={() => setAuth("paired")} />
       </main>
     );

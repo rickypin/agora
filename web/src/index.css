@@ -385,3 +385,12 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .device-list table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .device-list th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; }
 .device-list td { padding: 4px 6px; border-top: 1px solid var(--border); }
+
+/* /m 设置与推送（agora-thc.7）。 */
+.mobile-gear { margin-left: auto; }
+.mobile-settings .mobile-section { margin: 12px; }
+.mobile-push-toggle { min-width: 64px; }
+.install-hint { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+.install-hint ol { margin: 6px 0 0 18px; }
+.install-hint li { list-style: decimal; }
+.mobile-note.warning { color: var(--warn, #b58900); }

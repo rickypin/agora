@@ -23,7 +23,9 @@ import { loadSeen, sectionOf, sortByAttention, statusLine, storeSeen, taskLabel,
 import type { SessionRow } from "./events";
 import { HealthWatcher, VersionWatcher } from "./health";
 import { MobileCard } from "./MobileCard";
+import { MobileSettings } from "./MobileSettings";
 import { parseSessionTarget } from "./mobileRoute";
+import { browserPushEnv, selfCheckPush, type PushEnv } from "./push";
 import { nodeHue } from "./nodeColor";
 import { rowName, statusSymbol, str } from "./SessionRow";
 import { SessionStore, useSessions } from "./store";
@@ -44,6 +46,8 @@ interface Props {
   onRevoked?: () => void;
   /** 测试注入：现在（unix 秒）；不给就每 30 s 自己走一格。 */
   now?: number;
+  /** 测试注入：推送客户端的浏览器环境（agora-thc.7）。 */
+  pushEnv?: PushEnv;
 }
 
 /** 四段分组：先按 attention 的排序排好，再按 sectionOf 落段（段内顺序 = 排序顺序）。 */
@@ -60,7 +64,7 @@ export function mobileSummary(row: SessionRow): string {
   return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }
 
-export function MobileApp({ store: given, api: givenApi, health: givenHealth, version: givenVersion, onRevoked, now }: Props) {
+export function MobileApp({ store: given, api: givenApi, health: givenHealth, version: givenVersion, onRevoked, now, pushEnv: givenPushEnv }: Props) {
   const store = useMemo(() => given ?? new SessionStore(), [given]);
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
   const rows = useSessions(store);
@@ -88,6 +92,30 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   useEffect(() => {
     const timer = setInterval(() => setClock(Math.floor(Date.now() / 1000)), 30_000);
     return () => clearInterval(timer);
+  }, []);
+  // 打开 /m 自查一次订阅（agora-thc.7）：iOS 可能静默回收订阅，本地看着还在、其实已经没人发；
+  // 有就重新登记、没有但权限还在就重订。失败不打扰：设置页会显示状态。
+  const pushEnv = useMemo(() => givenPushEnv ?? browserPushEnv(), [givenPushEnv]);
+  useEffect(() => {
+    if (!pushEnv.supported || !pushEnv.secure) return;
+    void selfCheckPush(pushEnv);
+  }, [pushEnv]);
+  // SW 的 notificationclick 在页面已开着时发来消息（不重新加载）：定位到那一行，可发送的把焦点
+  // 放进 composer（docs/spec/ux.md「行为」；agora-thc.7）。
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const onMessage = (ev: MessageEvent) => {
+      const data = ev.data as { type?: string; session?: string | null } | null;
+      if (!data || data.type !== "agora-open-session") return;
+      const session = typeof data.session === "string" ? data.session : null;
+      if (!session) return;
+      const at = session.indexOf(":");
+      if (at <= 0) return;
+      setSelected(session);
+      setFocusComposerFor(session);
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
   }, []);
 
   // 「看过」集合（每设备 localStorage，与桌面同键；写发生在会话卡打开那一刻）。
@@ -117,12 +145,17 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   }, [rows, target]);
   const [selected, setSelected] = useState<string | null>(null);
   const [finishedOpen, setFinishedOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // 推送点击进来的那一行要不要把焦点送进 composer（只有可发送的行要；打开一次即消费）。
+  const [focusComposerFor, setFocusComposerFor] = useState<string | null>(null);
   // 深链只自动打开一次：只用 `selected === null` 判，返回收件箱后会把同一行又弹出来。
   const deepLinked = useRef(false);
   useEffect(() => {
     if (deepLinked.current || !targetRow) return;
     deepLinked.current = true;
     setSelected(targetRow.id);
+    // 可发送的行（turn_done / idle）把焦点放进 composer——推送点开就是要你回话（ux.md）。
+    if (targetRow.status === "turn_done" || targetRow.status === "idle") setFocusComposerFor(targetRow.id);
   }, [targetRow]);
   useEffect(() => {
     // 选中的行没了（被删 metadata）：回到收件箱。
@@ -135,8 +168,24 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   if (selectedRow) {
     return (
       <main className="mobile" data-testid="mobile-inbox">
-        <MobileCard row={selectedRow} api={api} now={nowSeconds} onBack={() => setSelected(null)} onSeen={markSeen} />
+        <MobileCard
+          row={selectedRow}
+          api={api}
+          now={nowSeconds}
+          onBack={() => setSelected(null)}
+          onSeen={markSeen}
+          focusComposer={focusComposerFor === selectedRow.id}
+        />
       </main>
+    );
+  }
+  if (settingsOpen) {
+    return (
+      <MobileSettings
+        env={givenPushEnv}
+        onClose={() => setSettingsOpen(false)}
+        onRevoked={onRevoked ?? (() => {})}
+      />
     );
   }
 
@@ -151,6 +200,9 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
         <span className="mobile-carrier" data-testid="mobile-carrier" data-reachable={String(nodes.reachable === true)}>
           承载节点 {localNode ?? "…"} {nodes.reachable === false ? "○" : "●"}
         </span>
+        <button type="button" className="mobile-gear" data-testid="mobile-settings-open" onClick={() => setSettingsOpen(true)}>
+          设置
+        </button>
       </header>
       <div className="mobile-inbox">
         {OPEN_SECTIONS.map(({ key, label }) => (

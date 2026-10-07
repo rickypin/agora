@@ -78,6 +78,7 @@ agora 没起过的会话经 hook 自己出现（§5.4，A16 / A22 合流）：�
 - 订阅按**设备**存（`push_subscriptions`，schema v7）；端点只收 `https://*.push.apple.com`（别的地址 400，不给浏览器拿节点当 SSRF 跳板）、`p256dh` 必须 65 字节、`auth` 16 字节；`POST /api/push/subscriptions { endpoint, keys { p256dh, auth } }` 绑定当前设备、幂等；`DELETE` 按 endpoint 解绑、幂等。设备吊销（`DELETE /api/auth/devices/:id`）后不再向它的订阅发送（发送时与 `devices.revoked_at` 联查）。
 - **发送**：承载节点订阅自己 EventBus 的 `Event::Notification`（本机与 peer 同源，`src/peer/view.rs` 已转发），对每个有效订阅发一条；**payload 只带标题与全局会话 id，不带 `body`**（body 是权限命令 / 回复原文，锁屏不显示）。通知转换沿用 MISSION §6.6 的四条。
 - **失败**：`410` / `404` 删订阅；其余按类型退避；发送不阻塞事件流与 WS。
+- **客户端**（thc.7；`web/src/push.ts` + `web/public/sw.js`）：订阅只在用户手势里开（iOS 的权限规矩），applicationServerKey 取 `/api/system` 的 `push.vapid_public_key`；每次打开 /m 自查（本地有订阅就重新登记、没有但权限还在就重订，iOS 可能静默回收）；设置页可关（先 `DELETE` 再本地退订）。SW 只处理 `push`（`showNotification`，`tag = session`，同一会话通知中心只占一格）与 `notificationclick`（聚焦已开的 `/m` 并发 `{type:"agora-open-session", session}`；没有就 `openWindow /m?session=…`）；页面据此打开会话卡，可发送的行（turn_done / idle）把焦点放进底部 composer。`health.push.apple=false` 时设置页显示「推送不可达：原因；PWA 打开期间仍实时更新」。桌面浏览器通知（`notify.ts`）不变。
 - **health.push**：`apple: true | false | null` + `reason`（仅 false 时有值）；`fcm: null` = Android 未启用（agora-w9ki）。`true` = 最近一次投递拿到了应答（2xx 与 4xx 都算——到得了 Apple，拒收是另一件事）；`false` = 连不上（DNS / TCP / TLS / 超时，`reason` 给类型）；`null` = 还没发过、没评估过。状态由投递实时驱动、不主动探测端点。不可达时 PWA 打开期间仍走 WS 实时更新。
 - **兼容**：本段落地时 `api_version` 从 1.9 bump 到 1.10（minor；新增端点、`/api/system` 新字段与 health 的 push 段，老调用方不受影响）。
 
