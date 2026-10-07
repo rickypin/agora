@@ -514,6 +514,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 - **桌面（全功能工作台）**：终端、创建、详情与树视图、快捷键（§6.1–§6.5）；桌面优先优化终端与创建。
 - **手机（交互收件箱，V2 首批为 iPhone）**：只做「看谁在等我 + 当场处置」——收件箱、会话卡（状态、任务标签、最近一轮的两个气泡、决策原文、底部 composer）、allow / deny、Kill / Restart（确认）、推送深链。交互语法沿用即时消息的熟悉形态（固定 composer、气泡、乐观发送），但**不做消息流与完整对话历史**（§11 的 Conversation indexing，承接 agora-ghl3）；**没有终端、没有 New Agent、没有 diff / 验收 / 改动列表、没有命令面板与快捷键**（A52）。手机不是节点：不装 daemon / tmux / hooks、不跑 agent，只配对一个承载节点（通常是常开的 zuan），经 peer 一跳看与操作全部节点（§3.5、§6.6）。
 - **`respond_via = terminal` 的问题**（Grok 权限、AskUserQuestion 类）在手机上显示「需要到桌面」，不提供"打开终端"、不注入键击（§1.2）。
+- **无句柄行有没有 composer 看 `text_via`**（§5.5、ADR-002 D11：`runtime` | `host` | `none`）：`host`（宿主自报输入通道，目前是 pi 的扩展）与有终端的一样能给下一条指令——只是不经 PTY，走节点上的 `input/` 队列由宿主自己执行；`none` 才是 `mobile-terminal-only`「到桌面」（agora-t5kf.3）。
 - **桌面窄屏**（< 700 px）不再叠出第二套全功能布局：给「用手机面板打开」的引导；iPad 等中间形态走桌面。
 - 推送入口与载荷策略见 §6.6；Android 与手机终端 ergonomics 见 §11（承接 agora-w9ki）。
 
