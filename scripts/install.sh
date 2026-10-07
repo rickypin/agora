@@ -123,6 +123,11 @@ abs_dir() {
 }
 HOME_DIR=$(abs_dir "$HOME_DIR")
 HOME_DEFAULT_ABS=$(abs_dir "$HOME_DEFAULT")
+# --unit-dir 也要归一：macOS 的 tempdir 在 /var/folders（/private/var 的链接），写单元与把
+# plist 路径交给 launchctl 的必须是同一条真实路径——不归一时 bootstrap 收到 /var/...，
+# 测试按 canonicalize 比 /private/var/... 就差一个前缀，macOS CI 连红两条（2026-10-06，
+# agora-d4na）。空值保持空（各分支再落默认目录）：abs_dir("") 会拿 cwd 当已存在的祖先。
+[ -z "$UNIT_DIR" ] || UNIT_DIR=$(abs_dir "$UNIT_DIR")
 
 # 只允许 node.id 的字符集（src/config.rs）：字母、数字、- 与 _；其余换成 -。
 sanitize_id() { printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '-' | sed 's/^-*//; s/-*$//'; }
@@ -425,7 +430,10 @@ if [ "$OS" = Darwin ]; then
     if [ "$NO_SERVICE" = 1 ]; then
         say "service: --no-service，未 bootstrap；之后手动: launchctl bootstrap gui/$(id -u) $PLIST"
     elif [ "$DRY_RUN" = 1 ]; then
-        say "[dry-run] 先看 launchctl print gui/$(id -u)/$LAUNCHD_LABEL：未加载就 bootstrap，已加载但单元内容变了就 bootout + bootstrap，两者都不成立则不动 daemon"
+        # ${LAUNCHD_LABEL} 必须带花括号：macOS 的 /bin/sh（bash 3.2）在 set -u 下会把变量名后
+        # 直接跟的全角标点吞进变量名，报 `LAUNCHD_LABEL…: unbound variable`，Linux 上却正常
+        # （2026-10-06 macOS CI 三条红之一，agora-d4na；守卫见 install_script.rs）。
+        say "[dry-run] 先看 launchctl print gui/$(id -u)/${LAUNCHD_LABEL}：未加载就 bootstrap，已加载但单元内容变了就 bootout + bootstrap，两者都不成立则不动 daemon"
     else
         domain=gui/$(id -u)
         if launchctl print "$domain/$LAUNCHD_LABEL" >/dev/null 2>&1; then

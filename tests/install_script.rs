@@ -427,6 +427,49 @@ fn macos_branch_writes_launchd_unit_and_bootstraps_it() {
     assert!(stderr(&out).contains("已 bootstrap"), "{}", stderr(&out));
 }
 
+/// --unit-dir 要按 `pwd -P` 归一后再写单元、交给 launchctl：macOS 的 tempdir 在 /var/folders
+/// （/private/var 的链接），不归一时 bootstrap 收到 /var/...、断言按 canonicalize 比
+/// /private/var/...，只差一个前缀就让 macOS CI 连红（2026-10-06，agora-d4na）。这里用符号
+/// 链接造出同一形状的不变式，Linux 上也钉得住（macOS CI 上另有 /var 真路径的天然复现）。
+#[test]
+fn macos_unit_dir_is_canonicalized_before_launchctl() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("agora");
+    let real_units = tmp.path().join("real-units");
+    fs::create_dir_all(&real_units).unwrap();
+    let link_units = tmp.path().join("link-units");
+    std::os::unix::fs::symlink(&real_units, &link_units).unwrap();
+    let (path, log, state) = fake_launchctl(tmp.path());
+
+    let out = run_env(
+        &install_args(&home, &link_units),
+        Some(&path),
+        &launchd_env(&log, &state),
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let calls = launchctl_calls(&log);
+    let plist_real = real_units
+        .canonicalize()
+        .unwrap()
+        .join("dev.agora.daemon.plist")
+        .display()
+        .to_string();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.starts_with("bootstrap gui/") && c.ends_with(plist_real.as_str())),
+        "bootstrap 没收到归一的 plist 路径: {calls:?}"
+    );
+    let plist_link = link_units
+        .join("dev.agora.daemon.plist")
+        .display()
+        .to_string();
+    assert!(
+        !calls.iter().any(|c| c.ends_with(plist_link.as_str())),
+        "launchctl 收到未归一的路径: {calls:?}"
+    );
+}
+
 /// 断言里不写死 uid（不同机器不一样）也不写死 tempdir 的真实路径（macOS 的 /var 是
 /// /private/var 的链接，脚本走 `pwd -P` 拿的是后者）：uid 从第一行 print 里反推。
 fn uid_hint(calls: &[String]) -> String {
@@ -696,6 +739,65 @@ fn agora_install_os_only_lets_you_pretend_to_be_a_supported_os() {
     );
     assert!(!units.join("dev.agora.daemon.plist").is_file());
     assert!(!log.exists(), "--no-service 不该叫 launchctl");
+}
+
+/// `$VAR` 后面直接跟非 ASCII 字节（最常见是全角标点）在 Linux 的 bash/dash 上没事，macOS 的
+/// /bin/sh（bash 3.2）在 set -u 下却会把那些字节算进变量名，报 `VAR…: unbound variable`：
+/// scripts/install.sh:428 的 `$LAUNCHD_LABEL：` 就是这样让 dry-run 在 Mac 上崩掉的
+/// （2026-10-06 macOS CI 三条红之一，agora-d4na）。要接中文标点就写 `${VAR}`。
+/// 只查会被 shell 展开的位置：单/双引号 heredoc 原样输出，跳过不查。
+#[test]
+fn install_script_never_glues_non_ascii_after_variable() {
+    let src = fs::read_to_string(script()).unwrap();
+    let mut bad: Vec<String> = Vec::new();
+    let mut skipped_heredoc: Option<String> = None;
+    for (idx, line) in src.lines().enumerate() {
+        if let Some(tag) = skipped_heredoc.clone() {
+            if line.trim() == tag {
+                skipped_heredoc = None;
+            }
+            continue;
+        }
+        if let Some(pos) = line.find("<<") {
+            let rest = line[pos + 2..].trim_start();
+            let quoted = rest.starts_with('\'') || rest.starts_with('"') || rest.starts_with('\\');
+            let tag: String = rest
+                .chars()
+                .skip_while(|c| *c == '\'' || *c == '"' || *c == '\\')
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if quoted && !tag.is_empty() {
+                skipped_heredoc = Some(tag);
+            }
+        }
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] != b'$' {
+                i += 1;
+                continue;
+            }
+            let Some(next) = bytes.get(i + 1) else { break };
+            if *next == b'{' || !(next.is_ascii_alphabetic() || *next == b'_') {
+                i += 1;
+                continue;
+            }
+            let mut j = i + 2;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if bytes.get(j).is_some_and(|b| !b.is_ascii()) {
+                bad.push(format!(":{}: {}", idx + 1, line.trim()));
+                break;
+            }
+            i = j;
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "$VAR 后直接跟非 ASCII（macOS 的 sh 会把它吞进变量名）：改 ${{VAR}} 或加空格\n{}",
+        bad.join("\n")
+    );
 }
 
 /// 一个当前不存在的 pid：spawn 一个 sleep 再 kill + wait 回收，槽位就空了（两个平台都这么拿）。
