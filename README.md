@@ -1,6 +1,6 @@
 # agora
 
-多 Agent 管理工具（M0 设计阶段完成：MISSION 与四篇 ADR 定稿、M1a / M1b 已拆成任务；正在进入 M1a 终端底座施工）。一句话定义与层次定位见 `MISSION.md`。
+多 Agent 管理工具：跨节点的 CLI coding agent 控制台（Rust daemon + 内嵌 React 前端）。桌面是全功能工作台；iPhone 上是交互收件箱（主屏 PWA + Web Push）。一句话定义与层次定位见 `MISSION.md`。
 
 ## 从哪里读起
 
