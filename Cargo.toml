@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.90"
 description = "agora — 多 Agent 管理工具的单 binary daemon"
-license = "UNLICENSED"
+license = "MIT"
 publish = false
 
 [workspace]
