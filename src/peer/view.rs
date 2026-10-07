@@ -21,6 +21,11 @@
 //!      `GET /api/sessions` 里额外报一个它自己时钟的当下，与它报的 `status_since` 同一只表，相减
 //!      是相对量、时钟偏差自己抵消；新状态（或重启后第一次见到）的本机时刻再往前推到那个读数，
 //!      仍是下界、仍是本节点时钟打的数。
+//!    - **两条路径同一个起点口径**（agora-cjv 的 D）：最近一次快照实测的钟差存在视图里，事件流
+//!      带来的新状态也按它折算，不再用"本机第一次看见"——重启前后算的是同一个量。
+//!    - **「看过」的锚是 peer 自己那只表的数**（agora-cjv 的 E）：peer 报的 `status_since` 原样
+//!      存一份 `peer_status_since`（只出现在 peer 行），前端 `seenKey` 优先用它——“这一次完成”
+//!      的身份不会因本机重启重算本地起点而漂移。
 //!    - **下界在 UI 上画成下界**：peer 行的时长带 `≥`（`web/src/attention.ts` 的 `statusLine`）。
 //!
 //! 3. **断线保留、标 stale**：peer 掉线后行一条不删，每行 `stale: true` 并带 `last_seen`（该 peer
@@ -73,6 +78,9 @@ struct PeerView {
     /// stale 期间每行 `last_seen` 的来源（unix 秒，本机时钟）；非 stale 时 None。存在这里是为了
     /// stale 期间再进来的行（理论上不会有——流已断——但 `apply` 的形态要自洽）也带同一个值。
     last_seen: Option<i64>,
+    /// peer 时钟 − 本机时钟（秒），最近一次全量快照实测（agora-cjv 的 D 半边）：事件流那两条路
+    /// 也用它把 peer 的 `status_since` 折算成本节点时钟的起点，与快照路径同一个口径。
+    offset: Option<i64>,
 }
 
 /// 客户端任务的唤醒把手：`retry_now` 缩短一次退避等待（在线时无事），`reconnect` 让在线的
@@ -176,7 +184,8 @@ impl PeerViews {
     /// 不合规则 1 的行丢弃并 warn，不算进视图。
     ///
     /// `reported_now` = peer 打这份快照时它自己时钟的当下（`GET /api/sessions` 顶层的 `now`，
-    /// 老节点没有就是 None）。只用来与行里 peer 报的 `status_since` 相减得时长差，见模块头规则 2。
+    /// 老节点没有就是 None）。存成 peer 时钟 − 本机时钟的差（`PeerView::offset`），快照与事件
+    /// 两条路都用它把 peer 的 `status_since` 折算成本节点时钟的起点，见模块头规则 2。
     pub fn replace(&self, peer: &str, rows: Vec<Value>, reported_now: Option<i64>) -> Vec<Event> {
         let now = self.now();
         let mut inner = lock(&self.inner);
@@ -184,12 +193,17 @@ impl PeerViews {
         let old = std::mem::take(&mut view.rows);
         view.stale = false;
         view.last_seen = None;
+        // D（agora-cjv）：把这份快照实测的钟差留下来，事件流那两条路也用它折算起点。只记有的：
+        // 老节点不报 `now`，保留上一次的（同一个 peer 不会时有时无）。
+        if let Some(reported) = reported_now {
+            view.offset = Some(reported - now);
+        }
         let mut events = Vec::new();
         for raw in rows {
             let Some(gid) = accept(peer, &raw) else {
                 continue;
             };
-            let row = stamp(raw, old.get(&gid), now, reported_now, false, None);
+            let row = stamp(raw, old.get(&gid), now, view.offset, false, None);
             match old.get(&gid) {
                 None => events.push(Event::SessionCreated {
                     id: gid.clone(),
@@ -227,14 +241,14 @@ impl PeerViews {
                 let now = self.now();
                 let mut inner = lock(&self.inner);
                 let view = inner.peers.entry(peer.to_owned()).or_default();
-                // 事件流里没有 peer 自己时钟的当下读数（`status_changed` / `session_updated` 只带
-                // 它的 `status_since`），所以这条路算不出时长差：新状态的起点仍是本机第一次看见它
-                // 的时刻（下界，UI 上画成 `≥N`）。
+                // D（agora-cjv）：事件流里没有 peer 自己时钟的当下读数，但视图里有最近一次快照
+                // 实测的钟差，照样把 peer 的 `status_since` 折算成本节点时钟的起点——与快照路径
+                // 同一个量，本机重启不会移动它；老节点（没钟差）退回本机此刻。
                 let row = stamp(
                     raw.clone(),
                     view.rows.get(&gid),
                     now,
-                    None,
+                    view.offset,
                     view.stale,
                     view.last_seen,
                 );
@@ -304,7 +318,7 @@ impl PeerViews {
                     }
                 }
                 let (stale, last_seen) = (view.stale, view.last_seen);
-                let row = stamp(raw, Some(prev), now, None, stale, last_seen);
+                let row = stamp(raw, Some(prev), now, view.offset, stale, last_seen);
                 let json = row.json.clone();
                 view.rows.insert(id.to_owned(), row);
                 drop(inner);
@@ -477,7 +491,7 @@ fn stamp(
     mut raw: Value,
     prev: Option<&Row>,
     now: i64,
-    reported_now: Option<i64>,
+    peer_offset: Option<i64>,
     stale: bool,
     last_seen: Option<i64>,
 ) -> Row {
@@ -490,9 +504,21 @@ fn stamp(
         // `status_since` 后退一改，前端"看过"的键（`<id>@<status_since>`，agora-23h）就对不上，
         // 一个已经看过的 FINISHED 行会因此弹回 NEEDS ATTENTION。之后本机时钟自己会把时长算长。
         Some(p) if p.token == token => p.since,
-        // 新状态（含本机重启后第一次见到这一行）：本节点此刻 与 peer 报的时长差，取更早的那个。
-        _ => now.min(reported_start(reported_now, token.1, now)),
+        // 新状态（含本机重启后第一次见到这一行）：peer 报的起点按钟差折算（D，agora-cjv），
+        // 事件路径与快照路径算的是同一个量；算不出才退回本节点此刻。
+        _ => reported_start(peer_offset, token.1, now),
     };
+    // E（agora-cjv）：peer 自己时钟的 `status_since` 原样保一份——它是"这一次完成"的身份，前端
+    // 「看过」的键拿它当锚：本机重启后本地起点即使因 ±1 s 量化漂移，记号也不失效。peer 夹带
+    // 同名键不认（只信我们自己从 `status_since` 抄下来的那个）。
+    match token.1 {
+        Some(peer_since) => set(&mut raw, "peer_status_since", Value::from(peer_since)),
+        None => {
+            if let Value::Object(map) = &mut raw {
+                map.remove("peer_status_since");
+            }
+        }
+    }
     set(&mut raw, "status_since", Value::from(since));
     mark(&mut raw, stale, last_seen);
     Row {
@@ -502,21 +528,24 @@ fn stamp(
     }
 }
 
-/// peer 报的时长差换算成本节点时钟的一个时刻：`now - (它的 now - 它的 status_since)`。
+/// peer 报的起点按钟差折算成本节点时钟的一个时刻：`status_since − offset`（`offset` = peer 时钟
+/// − 本机时钟，最近一次全量快照实测）。钟差是同一对表上两个读数之差（相对量），两台机器之间的
+/// 时钟偏差在里面自己抵消掉了——所以"不信 peer 报的绝对时刻"（ADR-004 危险句）守得住。
 ///
-/// 两个读数都来自 peer 那一只表，相减是**相对量**，两台机器之间的时钟偏差在里面自己抵消掉了——
-/// 所以"不信 peer 报的绝对时刻"（ADR-004 危险句）守得住，而本机重启后第一次见到一个旧状态时，
-/// 等待时长不再是 0（agora-5gg.12）。读不出 / 非正 / 超过 [`MAX_REPORTED_WAIT_SECS`] 都当它
-/// 没报，退回本节点此刻（= 改之前的行为，一个更弱的下界，不会画成比真相长）。另一重保障在调用方：
-/// `stamp` 取的是 `now.min(...)`，所以万一这里放过一个负的（peer 的时钟倒跳），起点也跑不到本节点
-/// 当下之后去。
-fn reported_start(reported_now: Option<i64>, reported_since: Option<i64>, now: i64) -> i64 {
-    let (Some(peer_now), Some(peer_since)) = (reported_now, reported_since) else {
+/// 两个限制：折算出的起点不在过去（peer 的时钟在一次驻留里倒跳）/ 超过
+/// [`MAX_REPORTED_WAIT_SECS`]（`status_since` 坏成 0）一律当它没报，退回本节点此刻（一个更弱的
+/// 下界，只会短、不会长）；读不出（老节点不报 `now`）同样退回此刻。
+fn reported_start(peer_offset: Option<i64>, peer_since: Option<i64>, now: i64) -> i64 {
+    let (Some(offset), Some(since)) = (peer_offset, peer_since) else {
         return now;
     };
-    match peer_now.checked_sub(peer_since) {
-        Some(elapsed) if elapsed > 0 && elapsed <= MAX_REPORTED_WAIT_SECS => now - elapsed,
-        _ => now,
+    let Some(start) = since.checked_sub(offset) else {
+        return now;
+    };
+    if start <= now && now.saturating_sub(start) <= MAX_REPORTED_WAIT_SECS {
+        start
+    } else {
+        now
     }
 }
 
@@ -624,6 +653,102 @@ mod tests {
         assert_eq!(session["status"], "running");
         assert_eq!(session["status_since"], T0 + 600);
         assert_eq!(session["source"], "hook");
+    }
+
+    #[test]
+    fn an_event_learned_start_agrees_with_a_restart_snapshot() {
+        // D（agora-cjv）：事件路径与快照路径必须是同一个起点口径。以前事件带来的新状态打的是
+        // "本机第一次看见"（F），快照路径折算 peer 的相对时长（S），F 与 S 差一个事件延迟：
+        // 本机重启后重算成 S，前端「看过」的键 `<id>@<status_since>` 对不上，已看过的 FINISHED
+        // 弹回 NEEDS ATTENTION。
+        const OFFSET: i64 = 1000; // peer 的表比本机快 1000 s
+        let peer_now = T0 + OFFSET;
+        let v = fixed(T0);
+        // 先有一份快照（行还在 running），钟差由此进入视图。
+        v.replace(
+            "b",
+            vec![row("b:1", "b", "running", peer_now - 500)],
+            Some(peer_now),
+        );
+        // 事件带来新状态 finished，peer 的 status_since 说它是 5 s 前完成的。
+        let _ = v.apply(
+            "b",
+            &json!({ "type": "status_changed", "id": "b:1", "status": "finished", "status_since": peer_now - 5, "source": "hook", "reason": null, "alive": false }),
+        );
+        let before = v.get("b:1").unwrap()["status_since"].as_i64().unwrap();
+        assert_eq!(
+            before,
+            T0 - 5,
+            "status_changed 路径也要按 peer 相对时长折算（D）"
+        );
+        // 另一条事件路径（整行 session_updated）同一个口径。
+        let _ = v.apply(
+            "b",
+            &json!({ "type": "session_updated", "id": "b:1", "session": { "id": "b:1", "node": "b", "status": "waiting", "status_since": peer_now - 50, "alive": true } }),
+        );
+        let before = v.get("b:1").unwrap()["status_since"].as_i64().unwrap();
+        assert_eq!(
+            before,
+            T0 - 50,
+            "session_updated 路径也要按 peer 相对时长折算（D）"
+        );
+
+        // 本机重启：空视图 + 一小时后的本机时钟，peer 那侧一个字没变。快照路径算出的起点必须与
+        // 重启前事件路径那个逐字节相同——前端记号才认得出"还是同一次完成"。
+        let restarted = PeerViews::with_clock(Arc::new(|| T0 + 3600));
+        restarted.replace(
+            "b",
+            vec![row("b:1", "b", "waiting", peer_now - 50)],
+            Some(peer_now + 3600),
+        );
+        let after = restarted.get("b:1").unwrap()["status_since"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(after, before, "重启前后同一个完成必须是同一个起点");
+
+        // 反向不变量：真来了新一次完成（peer 的 status_since 变了）记号必须作废。
+        let _ = v.apply(
+            "b",
+            &json!({ "type": "status_changed", "id": "b:1", "status": "finished", "status_since": peer_now + 100, "source": "hook", "reason": null, "alive": false }),
+        );
+        assert_ne!(
+            v.get("b:1").unwrap()["status_since"].as_i64().unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn peer_rows_keep_the_peers_own_status_since_as_the_seen_anchor() {
+        // E（agora-cjv）：peer 自己时钟的 status_since 原样留一份当"这一次完成"的身份——前端「看过」
+        // 的键用它当锚，本机重启后重算的本地起点差 ±1 s 也不会让记号失效（D 的钟差读数是整数秒，
+        // 两次测量跨秒量化差 1）。本地那格仍是本节点时钟的数（ADR-004）。
+        const OFFSET: i64 = 1000;
+        let peer_now = T0 + OFFSET;
+        let v = fixed(T0);
+        v.replace(
+            "b",
+            vec![row("b:1", "b", "finished", peer_now - 5)],
+            Some(peer_now),
+        );
+        let r = v.get("b:1").unwrap();
+        assert_eq!(r["peer_status_since"], peer_now - 5);
+        assert_eq!(r["status_since"], T0 - 5, "本地那格仍是本节点时钟打的数");
+
+        // peer 夹带同名键不认：锚只从我们自己抄下的 `status_since` 来。
+        v.replace(
+            "b",
+            vec![json!({ "id": "b:1", "node": "b", "status": "running", "status_since": peer_now, "peer_status_since": 123, "alive": true })],
+            Some(peer_now),
+        );
+        assert_eq!(v.get("b:1").unwrap()["peer_status_since"], peer_now);
+
+        // 没有 status_since 的 peer 行（老节点）不留锚，前端退回本地起点。
+        v.replace(
+            "b",
+            vec![json!({ "id": "b:1", "node": "b", "status": "running", "alive": true })],
+            Some(peer_now),
+        );
+        assert!(v.get("b:1").unwrap().get("peer_status_since").is_none());
     }
 
     #[test]

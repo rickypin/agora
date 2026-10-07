@@ -56,10 +56,21 @@ export type SeenSet = ReadonlySet<string>;
 
 const NO_SEEN: SeenSet = new Set();
 
-/** 「看过」集合的键：这一行的这一次完成。没有 status_since 的行（旧节点 / 测试桩）退化为
- * `<id>@<status>`——不带状态的话，同一行的 FINISHED 与 TURN_DONE 记号会撞同一个键、互相顶用（agora-no5）；
- * 真实 daemon 的行总带 status_since，带数字那条路径一字未动（老浏览器已存的记号不失效）。 */
-export function seenKey(row: { id: string; status: string; status_since?: unknown }): string {
+/** 「看过」集合的键：这一行的这一次完成。
+ *
+ * 优先用 `peer_status_since`（peer 行才有）：那是 peer 自己那只表上的 `status_since`，就是
+ * "这一次完成"的身份；行上的 `status_since` 是本节点时钟重写过的，本机重启后按新测的钟差重算
+ * 可能差 ±1 s（读数是整数秒），拿它当锚已看过的 peer FINISHED 会弹回 NEEDS ATTENTION（agora-cjv）。
+ *
+ * 本地行用 `status_since`；没有 `status_since` 的行（旧节点 / 测试桩）退化为 `<id>@<status>`——
+ * 不带状态的话，同一行的 FINISHED 与 TURN_DONE 记号会撞同一个键、互相顶用（agora-no5）。 */
+export function seenKey(row: {
+  id: string;
+  status: string;
+  status_since?: unknown;
+  peer_status_since?: unknown;
+}): string {
+  if (typeof row.peer_status_since === "number") return `${row.id}@${row.peer_status_since}`;
   return typeof row.status_since === "number" ? `${row.id}@${row.status_since}` : `${row.id}@${row.status}`;
 }
 

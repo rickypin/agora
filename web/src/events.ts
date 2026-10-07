@@ -142,6 +142,13 @@ export interface SessionRow {
    * 非 stale 时这个键不存在，本机行永远没有。
    */
   last_seen?: string;
+  /**
+   * 只有并入的 peer 行带它：peer 自己那只表的 `status_since` 原样一份（`docs/spec/api.md`"peer
+   * 视图"；agora-cjv）。行上的 `status_since` 是本节点时钟重写过的（可能因重启 / 钟差读数
+   * ±1 s 量化漂移），前端「看过」的记号拿这个当锚——“这一次完成”的身份不随本机重启移动。
+   * 老节点不发这个键，`seenKey` 退回本地起点。
+   */
+  peer_status_since?: number;
   pending_decision?: { request_id: string; summary: string; epoch: number; host?: string } | null;
   /**
    * 用户按过 Kill 的时刻（Restart 清空）。`killed_at && rowProcess(row) === "alive"` = 进程还在吃

@@ -381,3 +381,26 @@ describe("seenKey without status_since (agora-no5)", () => {
     expect(needsAttention(second, seen)).toBe(true);
   });
 });
+
+// agora-cjv（E）：peer 行的记号锚是 peer 自己那只表的 status_since——本机重启后行上的本地起点会被
+// 重算（钟差读数是整数秒，两次测量可能差 1），锚不动记号就不作废；peer 真的又完成一次（锚变了）
+// 记号才作废。老节点的行不发这个字段，退回本地起点。
+describe("seenKey on peer rows (agora-cjv)", () => {
+  const peerRow = (extra: Record<string, unknown> = {}) =>
+    row("b:1", "finished", { node: "b", origin: "agora", status_since: 1000, peer_status_since: 500, ...extra });
+
+  it("anchors on the peer's own status_since, not the locally rewritten one", () => {
+    expect(seenKey(peerRow())).toBe("b:1@500");
+    const restamped = peerRow({ status_since: 1001 });
+    expect(seenKey(restamped)).toBe(seenKey(peerRow()));
+    const seen = new Set([seenKey(peerRow())]);
+    expect(sectionOf(restamped, seen)).toBe("finished");
+    const again = peerRow({ status_since: 2000, peer_status_since: 1500 });
+    expect(seen.has(seenKey(again))).toBe(false);
+    expect(needsAttention(again, seen)).toBe(true);
+  });
+
+  it("falls back to the local anchor when an old peer does not send the field", () => {
+    expect(seenKey(row("b:2", "finished", { node: "b", status_since: 1000 }))).toBe("b:2@1000");
+  });
+});

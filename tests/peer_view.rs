@@ -673,6 +673,8 @@ async fn a_local_restart_does_not_reset_a_peer_rows_wait() {
         before >= EIGHT_DAYS,
         "第一次并入就该按 peer 报的时长画下界: {before} < {EIGHT_DAYS}"
     );
+    // E（agora-cjv）：前端「看过」的锚是 peer 自己那只表的 `status_since`，与本地重写的起点无关。
+    let anchor_before = a.state.peer_views.get(&gid).unwrap()["peer_status_since"].clone();
 
     // 本机 daemon 重启 = 换一个进程、`PeerViews` 是全新的空表，peer 那侧一个字没变。
     // 这一份就是 bug 现场：prev 为空，能带上 8 天的只有 peer 报的时长差。
@@ -683,6 +685,10 @@ async fn a_local_restart_does_not_reset_a_peer_rows_wait() {
         after >= EIGHT_DAYS,
         "本机重启后同状态 peer 行的等待时长不小于 peer 报的相对时长: {after} < {EIGHT_DAYS}"
     );
+    // 锚跨重启逐字节相同：本地起点按新测的钟差重算可能差 ±1 s（读数是整数秒），拿它当键已看过的
+    // peer FINISHED 会弹回 NEEDS ATTENTION（agora-cjv）；锚不动，记号就认得出“还是同一次完成”。
+    let anchor_after = restarted.state.peer_views.get(&gid).unwrap()["peer_status_since"].clone();
+    assert_eq!(anchor_before, anchor_after, "锚跨本机重启不许漂移");
     // 人在 API 上看到的那一行同样是下界（浏览器据此画 `≥8d`）。
     let body = restarted.list_as_human().await;
     let row = find(rows_of(&body), "on-b");
