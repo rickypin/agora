@@ -90,12 +90,17 @@ export function MobileApp({ store: given, health: givenHealth, version: givenVer
   const seen: SeenSet = useMemo(() => loadSeen(), []);
   const sections = useMemo(() => groupSections(rows, seen), [rows, seen]);
 
-  // 深链（推送点击进来）：`/m?session=<node>:<id>`。node 是行的完整身份的一部分，先精确匹配、
-  // 再退回 id（旧载荷 / 手输）。
+  // 深链（推送点击进来）：`/m?session=<node>:<id>`。行的全局 id 就是 `<node>:<id>`
+  // （api/sessions.rs 的 export），所以先拼回全名精确匹配、再退回幂等写法（手输 / 旧载荷）。
   const target = useMemo(() => parseSessionTarget(window.location.search), []);
   const targetRow = useMemo(() => {
     if (!target) return undefined;
-    return rows.find((r) => r.id === target.id && r.node === target.node) ?? rows.find((r) => r.id === target.id);
+    const full = `${target.node}:${target.id}`;
+    return (
+      rows.find((r) => r.id === full && r.node === target.node) ??
+      rows.find((r) => r.id === full) ??
+      rows.find((r) => r.id === target.id)
+    );
   }, [rows, target]);
   const [selected, setSelected] = useState<string | null>(null);
   const [finishedOpen, setFinishedOpen] = useState(false);

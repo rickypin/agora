@@ -116,11 +116,11 @@ describe("mobile inbox sections", () => {
 
   it("locates a deep-linked row even when it sits in the collapsed finished section", async () => {
     window.history.replaceState(null, "", "/m?session=zuan:n:e");
-    const t = setup([row("n:a", { status: "waiting" }), row("n:e", { status: "finished", origin: "external" })]);
+    const t = setup([row("zuan:n:a", { status: "waiting" }), row("zuan:n:e", { status: "finished", origin: "external" })]);
     await online(t);
 
     expect(screen.getByTestId("mobile-finished-toggle").getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByTestId("mobile-row-n:e").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("mobile-row-zuan:n:e").getAttribute("aria-current")).toBe("true");
   });
 });
 
