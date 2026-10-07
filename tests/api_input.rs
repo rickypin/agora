@@ -672,8 +672,10 @@ async fn host_text_channel_queues_the_prompt_and_waits_for_the_extension_ack() {
     assert_eq!(row.respond_via, "terminal", "决策那一栏不受文本通道影响");
 
     // 扩展的替身：轮询自己那个队列目录，见到 `.json` 就改名 `.done`，把文本带回来。
+    // 目录键是**宿主自己的**会话 id（`agent_session_id` = pi 载荷里的 session_id），不是 agora id
+    // ——扩展只知道自己那个（2026-10-07 真机代检：daemon 拿 agora id 当键时两边永远碰不上）。
     let dir = fx.sessions.input_dir().unwrap();
-    let sid = id.clone();
+    let sid = "pi-1".to_owned();
     let consumer = tokio::spawn(async move {
         let session_dir = agora::hook::input::session_dir(&dir, &sid);
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -725,7 +727,7 @@ async fn host_text_channel_times_out_when_the_extension_does_not_take_it() {
         .record
         .id
         .clone();
-    let dir = agora::hook::input::session_dir(&fx.sessions.input_dir().unwrap(), &id);
+    let dir = agora::hook::input::session_dir(&fx.sessions.input_dir().unwrap(), "pi-2");
 
     let (status, body) = call(
         &fx,

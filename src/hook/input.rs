@@ -14,8 +14,10 @@
 //! <id>.failed   注入抛错（文件内容是给排障的一句话；API 报 host_rejected）
 //! ```
 //!
-//! 目录名是会话 id 的逐字节 hex（与 `hooks/state` 同一习惯：数据库 id 不参与路径语义）。权限跟
-//! 投递箱一个理由——同一台机器上的其他用户能往里塞 prompt 就等于能指挥别人的 agent。
+//! 目录名是**宿主自己的**会话 id（`agent_session_id`）的逐字节 hex（与 `hooks/state` 同一习惯：
+//! 数据库 id 不参与路径语义）。用它而不是 agora 的 id 是因为扩展只知道自己那个——2026-10-07
+//! 真机代检第一次拿 agora id 当键，件写下去没人取、API 504 `host_timeout`。权限跟投递箱一个
+//! 理由——同一台机器上的其他用户能往里塞 prompt 就等于能指挥别人的 agent。
 //!
 //! 超时删 `.json` 的竞态：扩展可能刚读到、还没 rename（几百微秒的窗口），daemon 这时删掉 `.json`，
 //! 扩展的 rename 失败就放掉。真正的坏情形是扩展 rename 成功前的最后一步被删（概率更低），那一条
@@ -31,7 +33,7 @@ pub fn home_dir(agora_home: &Path) -> PathBuf {
     agora_home.join("input")
 }
 
-/// 一个会话的队列目录：`<home>/input/<session hex>`。
+/// 一个会话的队列目录：`<home>/input/<宿主会话 hex>`（`session` 是宿主自己的会话 id）。
 pub fn session_dir(home: &Path, session: &str) -> PathBuf {
     let key: String = session
         .as_bytes()

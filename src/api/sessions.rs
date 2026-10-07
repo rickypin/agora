@@ -639,14 +639,31 @@ pub async fn input(
                 Err(SessionError::NoRuntime(_)) => {
                     let sessions = state.sessions.clone();
                     let sid = id.clone();
-                    let via =
-                        tokio::task::spawn_blocking(move || sessions.get(&sid).map(|v| v.text_via))
-                            .await
-                            .map_err(join_error)?
-                            .map_err(ApiError::from)?;
-                    if via != "host" {
+                    let view = tokio::task::spawn_blocking(move || sessions.get(&sid))
+                        .await
+                        .map_err(join_error)?
+                        .map_err(ApiError::from)?;
+                    if view.text_via != "host" {
                         return Err(SessionError::NoRuntime(id).into());
                     }
+                    // 队列目录名是**宿主自己的**会话 id（ADR-002 D11）：扩展知道自己那个（pi 的
+                    // `ctx.sessionManager.getSessionId()`），不知道 agora 的 `zuan:736106`——
+                    // 拿 agora id 当键两边永远碰不上（2026-10-07 真机代检：504 host_timeout，
+                    // 队列里那件没人取）。
+                    let Some(key) = view
+                        .record
+                        .agent_session_id
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                    else {
+                        return Err(ApiError {
+                            status: StatusCode::BAD_GATEWAY,
+                            kind: "host_rejected",
+                            message:
+                                "宿主自报了输入通道，但没报自己的会话 id，队列不知道该写到哪个目录"
+                                    .to_owned(),
+                        });
+                    };
                     let Some(dir) = state.sessions.input_dir() else {
                         return Err(ApiError {
                             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -656,13 +673,13 @@ pub async fn input(
                                     .to_owned(),
                         });
                     };
-                    let sid = id.clone();
                     // 前端给 PTY 路径发的是 `文本\n`（尾换行就是那边的一次回车）。队列这条路上
                     // 它没有意义：宿主把整串当 prompt，多一个换行就是消息里多一个空行。
                     let queued_data = data.trim_end_matches(['\r', '\n']).to_owned();
                     let dir_q = dir.clone();
+                    let key_q = key.clone();
                     let qid = tokio::task::spawn_blocking(move || {
-                        crate::hook::input::enqueue(&dir_q, &sid, &queued_data)
+                        crate::hook::input::enqueue(&dir_q, &key_q, &queued_data)
                     })
                     .await
                     .map_err(join_error)?
@@ -671,12 +688,12 @@ pub async fn input(
                         kind: "internal",
                         message: format!("写宿主输入队列失败: {source}"),
                     })?;
-                    match crate::hook::input::wait_acked(&dir, &id, &qid, state.input_ack_wait)
+                    match crate::hook::input::wait_acked(&dir, &key, &qid, state.input_ack_wait)
                         .await
                     {
                         crate::hook::input::Outcome::Acked => {
                             tracing::info!(component = "api", principal = %principal.log_id(),
-                                session_id = %id, queued = %qid, "text via host");
+                                session_id = %id, host_session = %key, queued = %qid, "text via host");
                         }
                         crate::hook::input::Outcome::Rejected(reason) => {
                             return Err(ApiError {

@@ -163,7 +163,7 @@ AgentFallback {                      # 所有 agent 都有默认实现
 D5 的 respond 只解决"答挂起"：文本（下一条指令）一直只有一条路——写运行时 PTY，无句柄的行只能到终端（MISSION §5.5）。pi 的扩展把第二条路打开了：扩展常驻 agent 进程，`pi.sendUserMessage(text)` 文档写「Always triggers a turn」（2026-10-07 隔离 TUI 实测：空闲时注入 → `before_agent_start` 带该 prompt → `agent_settled`）。所以**宿主自己会执行文本时，agora 不必有 PTY**。
 
 - **能力自报**：宿主在载荷里带 `input_channel: 1`（`AgentHooks::input_channel`）；它随检查点落盘（**不推进 `HOOK_SNAPSHOT_VERSION`**：老读者忽略未知字段、老文件读成 0，两边都退回旧口径），`GET /api/sessions` 上行 `text_via = runtime | host | none`。没自报的宿主（Claude / Codex / Grok）永远是 `none`——D2「没有的能力就写没有」。
-- **队列**：`<AGORA_HOME>/input/<session hex>/<id>.json`（0700 目录 / 0600 文件，`.part` + rename——与投递箱同一套权限理由：同一台机器上的人能塞 prompt 就能指挥别人的 agent）。扩展取件 `rename` 成 `.claimed` 再注入，成功 `.done`、抛错 `.failed`（内容是给人看的一句话）。四态都是一次 rename，扩展不需要反向 rpc。
+- **队列**：`<AGORA_HOME>/input/<宿主会话 hex>/<id>.json`（0700 目录 / 0600 文件，`.part` + rename——与投递箱同一套权限理由：同一台机器上的人能塞 prompt 就能指挥别人的 agent）。目录名是**宿主自己的**会话 id（`agent_session_id`）而不是 agora 的 `zuan:736106`：扩展只知道自己那个（`ctx.sessionManager.getSessionId()`），两边要认出彼此只能用它——2026-10-07 真机代检第一次拿 agora id 当键，件写下去没人取、504 `host_timeout`。扩展取件 `rename` 成 `.claimed` 再注入，成功 `.done`、抛错 `.failed`（内容是给人看的一句话）。四态都是一次 rename，扩展不需要反向 rpc。
 - **ack 就是 `.done`**：`POST /input {kind:text}` 等到它（上限 10 s，`AppState::input_ack_wait`）才回 200；没人取 → 504 `host_timeout` 并把还没被取走的 `.json` 删掉（重试不跑两遍），宿主拒绝 → 502 `host_rejected`。"收下就跑"没有诚实可言：宿主进程可能早就不在了。
 - **不新增状态事件**：注入的 prompt 走已有的 `before_agent_start` → RUNNING、`agent_settled` → TURN_DONE，两行预览、通知、手机乐观气泡（行 prompt 首行相等即让位）全照旧——D1 的"只有宿主说得出一轮"不变。
 - **边界**：只有认证过的 API 调用会写队列（队列文件对同用户可读，同用户本来就能敲那个终端）；纯文本 v1 不展开斜杠命令（防手机误触 `/quit`）；单机本地（扩展与 daemon 同 `AGORA_HOME`；peer 行没有这条路）。宿主侧的能力在扩展里，扩展版本决定能不能收——老扩展没有这一步，行上的 `text_via` 就是 `none`。
