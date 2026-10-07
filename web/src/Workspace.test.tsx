@@ -49,14 +49,15 @@ function row(id: string, status = "running"): SessionRow {
 
 /** 假的 Notification API：记下弹了什么，点击靠测试自己触发 onclick。 */
 function fakeNotify(permission: Permission) {
-  const created: { title: string; body: string; tag: string; note: NotificationLike }[] = [];
+  const created: { title: string; body: string; tag: string; closed: number; note: NotificationLike }[] = [];
   const deps: NotifierDeps = {
     permission: () => permission,
     request: async () => (permission = "granted"),
     create: (title, opts) => {
-      const note: NotificationLike = { onclick: null, close() {} };
-      created.push({ title, body: opts.body, tag: opts.tag, note });
-      return note;
+      const entry = { title, body: opts.body, tag: opts.tag, closed: 0, note: null as unknown as NotificationLike };
+      entry.note = { onclick: null, close: () => void (entry.closed += 1) };
+      created.push(entry);
+      return entry.note;
     },
     focus: () => {},
   };
@@ -372,6 +373,31 @@ describe("Workspace", () => {
       await new Promise((r) => setTimeout(r, 5));
     });
     expect(n.created.map((c) => c.title)).toEqual(["t2"]);
+  });
+
+  it("ended_at 被撤销、行又活了时撤回已弹出的「会话结束」通知（agora-gf7t）", async () => {
+    // 服务端不为 finished → running 这个转换发通知（四种转换只从 RUNNING / IDLE 出发），
+    // 不收就永远留在屏上。
+    const n = fakeNotify("granted");
+    const t = setup([row("n:a")], [], n.deps);
+    await online(t);
+    await act(async () => {
+      t.sock.send([
+        { type: "status_changed", id: "n:a", status: "finished", source: "process", reason: null, alive: false, ended_at: "2026-10-07T00:00:00Z", status_since: 5 },
+        { type: "notification", id: "n:a", title: "Claude / a @ n finished", body: "", status: "finished" },
+      ]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(n.created).toHaveLength(1);
+    expect(n.created[0]!.closed).toBe(0);
+    // 误判被撤回：会话又活了过来（ended_at 清空），不会再有一条新通知把它换掉。
+    await act(async () => {
+      t.sock.send([
+        { type: "session_updated", id: "n:a", session: { ...row("n:a"), ended_at: null } },
+      ]);
+      await new Promise((r) => setTimeout(r, 5));
+    });
+    expect(n.created[0]!.closed).toBe(1);
   });
 
   it("switching rows and closing the terminal view only mounts and unmounts terminals, never writes to the API (A20)", async () => {

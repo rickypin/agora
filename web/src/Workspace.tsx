@@ -8,7 +8,7 @@ import { HealthWatcher, versionBlocked, VersionWatcher } from "./health";
 import { isDesktop, matchShortcut } from "./keys";
 import { DeviceDialog } from "./DeviceDialog";
 import { NewAgentDialog, type NewAgentInitial } from "./NewAgentDialog";
-import { browserDeps, Notifier, type NotifierDeps, type Permission } from "./notify";
+import { browserDeps, isEndStatus, Notifier, type NotifierDeps, type Permission } from "./notify";
 import { hasRespondPanel, RespondPanel } from "./RespondPanel";
 import { RowResult } from "./RowResult";
 import { SessionSettings } from "./SessionSettings";
@@ -369,6 +369,15 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
       return next;
     });
   }, [byId]);
+
+  // 误判被撤回时撤回已弹出的「会话结束」通知（agora-gf7t）：`ended_at` 被撤销、行离开
+  // finished / failed（又活了）的那个转换不在服务端的四种通知转换里，不会再发一条新通知把它
+  // 换掉。判据用行当前的状态而不是 `ended_at` 在不在：老节点不发这个字段，而等待类通知的
+  // 撤回与否由 `Notifier::retractTerminal` 自己把关。
+  useEffect(() => {
+    if (byId.size === 0) return;
+    for (const r of byId.values()) if (!isEndStatus(r.status)) notifier.retractTerminal(r.id);
+  }, [byId, notifier]);
 
   // 侧栏显示顺序：visibleOrder 一条（A47，agora-uvd.2）。attention 分支原样 =
   // partitionByAttention(fuzzyFilter(sortByAttention))；tree 分支是树的 DFS 顺序（agora-uvd.3，

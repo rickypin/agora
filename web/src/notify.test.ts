@@ -63,4 +63,22 @@ describe("Notifier", () => {
     expect(await m.request()).toBe("denied");
     expect(y.requests).toBe(0);
   });
+
+  it("结束类通知可撤回、等待类不撤（agora-gf7t）", () => {
+    const x = deps("granted");
+    const n = new Notifier(x.d, () => {});
+    expect(n.show({ id: "n:1", title: "finished", body: "", status: "finished" })).toBe(true);
+    expect(n.show({ id: "n:2", title: "needs input", body: "Bash", status: "waiting" })).toBe(true);
+    expect(n.show({ id: "n:3", title: "turn done", body: "ok", status: "turn_done" })).toBe(true);
+    // 结束类：撤，且只撤一次。
+    expect(n.retractTerminal("n:1")).toBe(true);
+    expect(x.created[0]!.closed).toBe(1);
+    expect(n.retractTerminal("n:1")).toBe(false);
+    // 等待类等人点开，不撤。
+    expect(n.retractTerminal("n:2")).toBe(false);
+    expect(n.retractTerminal("n:3")).toBe(false);
+    expect(x.created[1]!.closed + x.created[2]!.closed).toBe(0);
+    // 没挂着这条会话：false。
+    expect(n.retractTerminal("n:none")).toBe(false);
+  });
 });
