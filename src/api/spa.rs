@@ -25,12 +25,17 @@ pub async fn serve(uri: Uri) -> Response {
     }
 
     // 命中静态文件就返回，否则退回 index.html（SPA 路由；ADR-003 的配对链接走 fragment）。
+    // MIME 要按**实际返回的那个文件**猜：以前按请求路径猜，未带扩展名的 /m 回退到 index.html 时
+    // 被猜成 application/octet-stream，浏览器把它当下载，PWA 直接白屏（agora-thc.5）。
     let candidate = if path.is_empty() { "index.html" } else { path };
-    let file = Assets::get(candidate).or_else(|| Assets::get("index.html"));
+    let (served, file) = match Assets::get(candidate) {
+        Some(file) => (candidate, Some(file)),
+        None => ("index.html", Assets::get("index.html")),
+    };
 
     match file {
         Some(file) => {
-            let mime = mime_guess::from_path(candidate).first_or_octet_stream();
+            let mime = mime_guess::from_path(served).first_or_octet_stream();
             ([(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response()
         }
         None => (

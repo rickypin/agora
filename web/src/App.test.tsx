@@ -86,3 +86,30 @@ describe("App pair gate under StrictMode", () => {
     expect(net.pairPosts).toEqual(["def"]);
   });
 });
+
+describe("narrow desktop", () => {
+  it("guides to /m instead of rendering the full workspace below 700px", async () => {
+    net.devicesOk = true;
+    // jsdom 没有 matchMedia：这几天里只在这个 describe 里造一个「窗口很窄」的替身。
+    const w = window as unknown as { matchMedia?: typeof window.matchMedia };
+    const original = w.matchMedia;
+    w.matchMedia = ((query: string) => ({
+      matches: true,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      render(<App />);
+      expect(await screen.findByText(/打开手机收件箱/)).toBeTruthy();
+      expect(screen.queryByText("workspace-placeholder")).toBeNull();
+    } finally {
+      if (original) w.matchMedia = original;
+      else delete w.matchMedia;
+    }
+  });
+});

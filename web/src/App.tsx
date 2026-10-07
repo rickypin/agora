@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchHealth } from "./health";
+import { MobileApp } from "./MobileApp";
+import { isMobilePath, useNarrow } from "./mobileRoute";
 import { clearFragment, extractPairToken, isPaired, redeemPairOnce } from "./pair";
 import { Workspace } from "./Workspace";
 
@@ -10,6 +12,10 @@ type Auth = "checking" | "paired" | "unpaired" | "pair_failed" | "revoked";
 export function App() {
   const [probe, setProbe] = useState<Probe>("probing");
   const [auth, setAuth] = useState<Auth>("checking");
+  // 手机入口按地址栏判（`/m`）：同一份 bundle、同一套 api / events / attention，与桌面只差一个壳。
+  const mobile = isMobilePath(window.location.pathname);
+  // 桌面窗口窄于 700 px：不做抽屉式全功能布局，引导去 /m（MISSION §6.6；agora-thc.5）。
+  const narrow = useNarrow();
 
   useEffect(() => {
     let cancelled = false;
@@ -37,15 +43,30 @@ export function App() {
 
   if (auth !== "paired") {
     return (
-      <main className="gate">
+      <main className={`gate${mobile ? " gate-mobile" : ""}`}>
         <h1>agora</h1>
         <p>daemon：{probe === "probing" ? "探测中…" : probe === "ok" ? "在线" : "不可达"}</p>
         <p>{authLine(auth)}</p>
       </main>
     );
   }
+  if (mobile) return <MobileApp onRevoked={() => setAuth("revoked")} />;
+  if (narrow) return <NarrowScreen />;
   // 事件流被服务端以 4401 关掉 = 本设备在别处被吊销（agora-0jt）：不再重连，回到配对门。
   return <Workspace onRevoked={() => setAuth("revoked")} />;
+}
+
+/** 桌面窗口窄于 700 px 的引导页：桌面控制台放不下，手机形态在 /m（MISSION §6.6；agora-thc.5）。 */
+function NarrowScreen() {
+  return (
+    <main className="gate narrow-guide">
+      <h1>agora</h1>
+      <p>窗口太窄，桌面控制台放不下。</p>
+      <p>
+        <a href="/m">打开手机收件箱 /m</a>，或把窗口拉宽（≥ 700px）。
+      </p>
+    </main>
+  );
 }
 
 function authLine(auth: Auth): string {

@@ -315,3 +315,29 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 /* 行上的「仓库 ⎇ 分支」一行（A49，agora-uvd.8）：meta 之下、预览之上，只有名字与分支，路径在 title。
    树视图不画（组头已说明）。 */
 .row .line-project { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 手机交互收件箱 /m（MISSION §6.9；agora-thc.5） ----------
+   同一份 bundle 的第二种壳：只有"看谁在等我"的信息预算，行是可点的一整块。宽屏下居中成一条
+   手机宽的栏，两侧各一条边框——避免在桌面误开 /m 时被拉成一整屏的稀疏列表。 */
+.mobile { display: flex; flex-direction: column; height: 100%; max-width: 44rem; margin: 0 auto; }
+@media (min-width: 700px) { .mobile { border-left: 1px solid var(--border); border-right: 1px solid var(--border); } }
+.mobile-top { position: sticky; top: 0; z-index: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; padding: 0.75rem 0.9rem; border-bottom: 1px solid var(--border); background: var(--bg); }
+.mobile-top h1 { letter-spacing: 0.06em; }
+.mobile-carrier { color: var(--muted); font-size: 12px; }
+.mobile-inbox { flex: 1; overflow-y: auto; padding: 0.4rem 0.6rem 2.5rem; }
+.mobile-section h2 { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; margin: 0; padding: 0.7rem 0.3rem 0.3rem; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.mobile-section ul { display: flex; flex-direction: column; gap: 0.4rem; margin: 0; padding: 0; list-style: none; }
+.mobile-row { display: flex; flex-direction: column; gap: 0.25rem; width: 100%; padding: 0.55rem 0.65rem; text-align: left; background: var(--panel); border-radius: 8px; }
+.mobile-row.selected { background: var(--panel-2); border-color: var(--accent); }
+.mobile-row-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.4rem; }
+.mobile-symbol { width: 1em; flex: none; }
+.mobile-row-name { font-weight: 600; }
+.mobile-agent { flex: none; font-size: 11px; color: hsl(var(--hue, 0) 70% 68%); }
+.mobile-node-chip { flex: none; font-size: 11px; color: hsl(var(--hue, 0) 60% 70%); }
+.mobile-node-chip.local { color: var(--muted); }
+.mobile-status { margin-left: auto; flex: none; color: var(--muted); }
+.mobile-row-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-row-summary { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.mobile-empty { margin: 0; padding: 0.2rem 0.3rem 0.4rem; color: var(--muted); }
+.mobile-finished-toggle { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; width: 100%; margin-bottom: 0.4rem; padding: 0.55rem 0.3rem; color: var(--muted); background: none; border-color: transparent; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.narrow-guide a { color: var(--accent); }
