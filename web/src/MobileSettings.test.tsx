@@ -121,3 +121,30 @@ describe("MobileSettings", () => {
     await waitFor(() => expect(revoked).toEqual([true]));
   });
 });
+
+/**
+ * 防回归（2026-10-07 iPhone 实测）：设置页不得因为 effect 依赖每次渲染都新建的对象而死循环。
+ * `browserPushEnv()` 每次调用返回新对象；如果没有 useMemo，点「设置」会冻结页面（桌面复现 CDP
+ * 超时），用户看到的就是"点了没反应"。这里不注入 env，数 browserPushEnv 被调用几次。
+ */
+describe("MobileSettings render stability", () => {
+  it("calls browserPushEnv once, not on every render", async () => {
+    const push = await import("./push");
+    const spy = vi.spyOn(push, "browserPushEnv");
+    try {
+      render(
+        <MobileSettings
+          onClose={() => {}}
+          onRevoked={() => {}}
+          probe={async () => ({ apple: null, reason: null })}
+        />,
+      );
+      // 等渲染与自查落定（若是死循环，这里的 microtask 会一直转、调用数会爆掉）。
+      await screen.findByTestId("mobile-push-toggle");
+      await new Promise((r) => setTimeout(r, 50));
+      expect(spy.mock.calls.length).toBeLessThanOrEqual(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

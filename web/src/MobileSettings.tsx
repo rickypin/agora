@@ -4,7 +4,7 @@
  * 数据只有两处来源：`push.ts`（本设备的权限与订阅；经注入的 [`PushEnv`] 可单测）与
  * `/api/health` 的 `push.apple`（承载节点到不了 Apple 时显示原因；MISSION §10.3）。
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { InstallHint, iosWithoutStandalone } from "./InstallHint";
 import { apiFetch } from "./net";
@@ -42,7 +42,11 @@ const STATE_TEXT: Record<PushReport["state"], string> = {
 };
 
 export function MobileSettings({ onClose, onRevoked, env, probe }: Props) {
-  const pushEnv = env ?? browserPushEnv();
+  // 这两个必须是稳定引用：effect 依赖它们，而 `browserPushEnv()` 每次调用都返回新对象——
+  // 直接写在渲染里会让 effect 每渲染一次跑一次、`setReport` 再触发渲染，设置页当场死循环
+  // （2026-10-07 iPhone 实测：点「设置」像没反应；桌面复现是 renderer 卡死）。
+  const pushEnv = useMemo(() => env ?? browserPushEnv(), [env]);
+  const probeFn = useMemo(() => probe ?? fetchPushHealth, [probe]);
   const [report, setReport] = useState<PushReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [degrade, setDegrade] = useState<{ apple: boolean | null; reason: string | null } | null>(null);
@@ -51,8 +55,8 @@ export function MobileSettings({ onClose, onRevoked, env, probe }: Props) {
   useEffect(() => {
     // 打开设置先自查一次（iOS 可能静默丢订阅）：自查结果就是首屏状态。
     void selfCheckPush(pushEnv).then(setReport);
-    void (probe ?? fetchPushHealth)().then(setDegrade);
-  }, [pushEnv, probe]);
+    void probeFn().then(setDegrade);
+  }, [pushEnv, probeFn]);
 
   async function toggle() {
     setBusy(true);
