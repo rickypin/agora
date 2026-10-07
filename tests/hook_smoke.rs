@@ -4,7 +4,7 @@
 //! agent 升级改了事件名或字段，这里变红并给出录制命令，而不是线上永远 RUNNING。agent 版本不在
 //! 版本表、或版本目录里没有 fixture，同样红。没装的 agent 跳过：GitHub 的 runner 上一个都没有。
 //!
-//! 三个冒烟是 `#[ignore]`：CI 用 `cargo test --test hook_smoke -- --ignored` 显式跑；开发机上
+//! 四个冒烟是 `#[ignore]`：CI 用 `cargo test --test hook_smoke -- --ignored` 显式跑；开发机上
 //! 普通 `cargo test` 不该每次都真起三个 agent 花 token 等半分钟。
 //!
 //! 隔离：agent 的 HOME 是临时目录，用户自己的配置一个字节不动，hook 装进临时 HOME，事件投到
@@ -146,6 +146,18 @@ fn seed_credentials(host: &str, real: &Path, user: &Path) {
             &real.join(".codex/auth.json"),
             &user.join(".codex/auth.json"),
         ),
+        // pi：登录态在 auth.json，模型配置在 models.json；settings.json 指认默认模型。
+        // trust.json 也得借：pi 对未信任来源的扩展不放行（2026-10-07 隔离 e2e 实测，不拷它扩展不加载，
+        // 一条事件都收不到），临时 HOME 里那份 agora 扩展才跑得起来。扩展目录不拷——临时 HOME 里
+        // 只留 Installer 现装的那一个。
+        "pi" => {
+            for f in ["auth.json", "models.json", "settings.json", "trust.json"] {
+                copy_if_exists(
+                    &real.join(".pi/agent").join(f),
+                    &user.join(".pi/agent").join(f),
+                );
+            }
+        }
         other => panic!("{other} 没有凭据借用规则：新 adapter 要在这里加一条"),
     }
 }
@@ -182,6 +194,28 @@ fn run_with_timeout(cmd: &mut Command, limit: Duration) -> (Option<i32>, String,
         std::thread::sleep(Duration::from_millis(100));
     };
     (status, out.join().unwrap(), err.join().unwrap())
+}
+
+/// 等录制文件"安静下来"再读：pi 的扩展是旁路投递，串行队列里最后一件（`session_shutdown(quit)`）
+/// 在 agent 退出之后才落盘，读得太早 fixture 会缺一条（2026-10-07 实测：迟到 ≲ 1 s）。其它宿主的
+/// hook 是 agent 同步调用的，进程退出时文件已经完整——这里只多等一个安静窗口，立刻返回。
+fn settle_record(rec: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let mut last = u64::MAX;
+    let mut quiet = 0;
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(400));
+        let size = fs::metadata(rec).map(|m| m.len()).unwrap_or(0);
+        if size == last {
+            quiet += 1;
+            if quiet >= 2 && size > 0 {
+                return;
+            }
+        } else {
+            quiet = 0;
+        }
+        last = size;
+    }
 }
 
 fn tail(s: &str, n: usize) -> String {
@@ -235,8 +269,7 @@ fn smoke(host: &str) {
         user_home: user_home.clone(),
     };
     inst.ensure_bin_link(Path::new(AGORA_BIN)).unwrap();
-    let plan = inst.plan_install(hooks).unwrap();
-    inst.write(&plan).unwrap();
+    let installed_file = inst.install_for(hooks).unwrap();
     let rec = agora_home.join(format!("{SCENARIO}.jsonl"));
 
     let mut command = Command::new(cmd);
@@ -253,6 +286,7 @@ fn smoke(host: &str) {
         .env_remove("CODEX_HOME");
     let started = Instant::now();
     let (status, stdout, stderr) = run_with_timeout(&mut command, AGENT_TIMEOUT);
+    settle_record(&rec);
     let context = format!(
         "agent 退出码 {status:?}，用时 {:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
         started.elapsed(),
@@ -261,13 +295,13 @@ fn smoke(host: &str) {
     );
     let text = fs::read_to_string(&rec).unwrap_or_else(|_| {
         panic!("{host} {version}: 一条 hook 事件都没收到——hook 装进 {} 了但 `{cmd}` 没跑它？\n{context}",
-            plan.file.display())
+            installed_file.display())
     });
     let got = key_sets(&text);
     let events: BTreeSet<String> = got.keys().map(|e| norm(e)).collect();
     assert!(
-        events.contains("sessionstart") && events.contains("stop"),
-        "{host} {version}: 无头一轮没拿到 SessionStart + Stop，只有 {:?}\n{context}",
+        events.contains("sessionstart") && events.iter().any(|e| ends_the_turn(e)),
+        "{host} {version}: 无头一轮没拿到 SessionStart + 轮末事件（stop / agent_settled），只有 {:?}\n{context}",
         got.keys().collect::<Vec<_>>()
     );
 
@@ -340,31 +374,35 @@ fn grok() {
     smoke("grok");
 }
 
-/// 有 hook 但冒烟还没落地的 adapter（例外必须点名 + 有 issue，不许默默放行）：pi 的七个交互场景
-/// fixture 还没录（agora-c3i.3），而 `tests/fixtures_replay.rs` 的目录规则不允许只录冒烟——
-/// 在那一批落地前，pi 的 `headless_args` 也故意不给（见 src/adapter/pi.rs），所以它没有冒烟可跑。
-const SMOKE_PENDING: &[&str] = &["pi"];
+#[test]
+#[ignore = "真起本机的 agent；CI 用 cargo test --test hook_smoke -- --ignored 显式跑"]
+fn pi() {
+    smoke("pi");
+}
+
+/// 一轮无头对话的收尾事件（归一后）：Claude / Codex / Grok 叫 `stop`，pi 叫 `agent_settled`
+/// （ADR-002 附录 A：`turn_end` 每个模型轮都发，`agent_settled` 才是轮次边界）。
+fn ends_the_turn(event: &str) -> bool {
+    event == "stop" || event == "agentsettled"
+}
 
 /// 新 adapter 有 hook 就得有自己的冒烟函数与凭据借用规则；这一条不 ignore，CI 每次跑。
 #[test]
 fn every_hooked_agent_has_a_smoke() {
     assert_eq!(adapter::hosts(), vec!["claude", "codex", "grok", "pi"]);
     for host in adapter::hosts() {
-        if SMOKE_PENDING.contains(&host) {
-            continue;
-        }
         // 约定：冒烟函数与宿主同名，且 headless_args 有实现（有烟可冒）。
         assert!(
             adapter::find(host)
                 .and_then(|a| a.headless_args("x"))
                 .is_some(),
-            "{host} 在 SMOKE_PENDING 之外就必须有无头冒烟"
+            "{host} 必须有无头冒烟"
         );
     }
 }
 
-/// 每个版本目录的无头 fixture 都是合法的、含 SessionStart + Stop 的录制——不 ignore，CI 每次跑，
-/// 没有真实 agent 也守得住"fixture 本身没坏"。
+/// 每个版本目录的无头 fixture 都是合法的、含 SessionStart + 轮末事件（stop / agent_settled）的录制
+/// ——不 ignore，CI 每次跑，没有真实 agent 也守得住"fixture 本身没坏"。
 #[test]
 fn headless_fixtures_carry_session_start_and_stop() {
     let mut seen = 0;
@@ -382,7 +420,7 @@ fn headless_fixtures_carry_session_start_and_stop() {
                 .map(|e| norm(e))
                 .collect();
             assert!(
-                events.contains("sessionstart") && events.contains("stop"),
+                events.contains("sessionstart") && events.iter().any(|e| ends_the_turn(e)),
                 "{}: {events:?}",
                 f.display()
             );

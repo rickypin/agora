@@ -20,6 +20,10 @@
 //!   false（ADR-002 D2「没有的能力就写没有」）；无运行时句柄，手机侧的深链与状态照常，回复要回终端。
 //! - 登记即空闲：扩展在 `session_start` 里报 `ctx.isIdle()`（/reload 或启动后停在提示符），行直接
 //!   落 IDLE 而不是 STARTING——真值表 x14、agora-wmrq。
+//! - 投递串行（顺序就是语义），**`session_shutdown` 例外**：它同步 spawn——pi 退出是同步的
+//!   `process.exit()`，排队等微任务的那次投递跑不到（agora-c3i.3 录 fixture 时实测）。
+//! - fixture：七个交互场景 + `headless.jsonl` 在 `testdata/pi/1.0.4/hooks/`；无头冒烟
+//!   `tests/hook_smoke.rs::pi`（`headless_args` = `pi -p`）。
 //!
 //! 进程号：扩展 spawn hook 时显式带 `PI_PID`（`process.pid`），信封按 `PI_` 前缀收进 `agent_env`，
 //! 本 adapter 只认它——不拿 `ppid` 兜底，免得手工敲的 `agora hook --host pi` 把 shell 当成会话本体。
@@ -129,11 +133,11 @@ impl AgentIdentity for Pi {
             .map(|_| vec!["--session-id".to_owned(), new_id.to_owned()])
     }
 
-    // headless_args 暂不实现：`pi -p` 确实是无头单轮（上面实测），但 tests/hook_smoke.rs 的版本
-    // 漂移守卫要求 testdata/pi/<版本>/hooks/headless.jsonl，而 tests/fixtures_replay.rs 的目录规则
-    // 不允许"只录冒烟"的版本目录长期存在（每个 agent 至少留一个七场景齐全的实测目录）。真录七个
-    // 交互场景是独立的一批活（agora-c3i.3），在那之前不把冒烟守卫点着——否则开发机上 `--ignored`
-    // 一跑就是红。
+    /// `pi -p '<prompt>'`：无头单轮，跑完就 `session_shutdown(reason=quit)`（实测序列见模块头）。
+    /// 版本漂移冒烟（ADR-002 D10 第 4 条；`tests/hook_smoke.rs`）用它。
+    fn headless_args(&self, prompt: &str) -> Option<Vec<String>> {
+        Some(vec!["-p".to_owned(), prompt.to_owned()])
+    }
 
     /// 交互会话把首条 prompt 当位置参数（`pi [options] [--] [@files...] [messages...]`）。
     fn initial_prompt_args(&self, prompt: &str) -> Option<Vec<String>> {

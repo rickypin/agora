@@ -354,6 +354,21 @@ impl Installer {
         }
     }
 
+    /// 按宿主的形态装 hook 并返回实际写的文件路径：JSON 条目式走 [`Self::plan_install`]，文件式
+    /// （pi）走 [`Self::plan_file_install`]。给测试与冒烟用：它们只要"装上了 + 文件在哪"，
+    /// 不想各自把两条路分一遍（agora-c3i.3；CLI 的分支在 [`run_with`]）。
+    pub fn install_for(&self, hooks: &dyn AgentHooks) -> Result<PathBuf, InstallError> {
+        if hooks.file_install(&self.agora_home).is_some() {
+            let plan = self.plan_file_install(hooks)?;
+            self.write_file(&plan)?;
+            Ok(plan.file)
+        } else {
+            let plan = self.plan_install(hooks)?;
+            self.write(&plan)?;
+            Ok(plan.file)
+        }
+    }
+
     /// 先 `.part` 再 rename：agent 的 file watcher 看到的永远是完整文件。
     pub fn write(&self, plan: &Plan) -> Result<(), InstallError> {
         if let Some(dir) = plan.file.parent() {

@@ -1,7 +1,7 @@
 //! pi adapter 的 hook 链路（agora-c3i.1）：扩展投来的事件经投递箱 → receiver → external / headless
 //! 行与状态机。载荷形态是 2026-10-07 本机 pi 1.0.4 实测的（`pi --extension` 真跑，事件序见
-//! `src/adapter/pi.rs` 的模块头）；testdata 的全套 fixture 还没录（理由见 pi.rs 里 `headless_args`
-//! 旁的注释，agora-c3i.3），所以这里按实测键集合合成载荷。
+//! `src/adapter/pi.rs` 的模块头）；testdata/pi/1.0.4/hooks 的七个场景 + headless 已于 2026-10-07 真录
+//! （方法见 testdata/README.md 的 pi 一节），所以这里按 fixture 形态合成载荷的写法只是另一种参照。
 //!
 //! 两条路都要钉住：`mode = tui` 的交互会话是 `external`（有进程号、可探活、turn_done 弹通知）；
 //! `mode = print` 的一次性会话是 `headless`（收进折叠区、不通知、满 24 h 删）。判据只看载荷结构。

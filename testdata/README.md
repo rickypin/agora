@@ -93,6 +93,28 @@ stop(end_turn) → session_end(shutdown) → 退出时再一次 stop(shutdown)�
 “去掉 `_` 再小写”归一，两种写法进同一个事件；新 fixture 的 `expect` 行就是这件事的守卫（回放跑的是本次
 真录的 payload，不只是键集合）。七个交互场景没重录。
 
+## pi/1.0.4
+
+2026-10-07 在本机 pi 1.0.4 上录的（交互式 TUI：隔离 HOME + `AGORA_HOOK_RECORD` 在 tmux 里走剧本；
+`headless.jsonl` 由冒烟测试录制模式录 `pi -p`）。七个场景齐全，逐场景：
+
+- `turn_complete`：`session_start(idle=true)` → `before_agent_start` → `agent_settled` → `session_shutdown(quit)`。
+- `permission_terminal` / `permission_dashboard`：**pi 没有审批**（工具默认不问人，ADR-002 附录 A 第 7 行），
+  两个文件都是**无 hold 的工具轮**（prompt → bash → agent_settled），`hold` 全 false；文件名保留是为了对齐
+  `tests/fixtures_replay.rs` 的目录规则。
+- `parallel_tools`：一条消息两次 bash 调用，pi 逐个跑（两个 `tool_execution_start`，串行）。
+- `clear`：`/new` → `session_shutdown(reason=new)`（**不结束行**：adapter 只认 quit）→ 新 id 的
+  `session_start(idle=true)`。
+- `interrupted`：`sleep 60` 的工具跑到一半按 Esc → `agent_settled`（末条 assistant 文本为空）；pi 的
+  失败与中断在 hook 层同形——没有 Claude 的 Interrupt / StopFailure 那种事件。
+- `api_error`：临时 HOME 的 `models.json` 把 ais 的 baseUrl 改成 `http://127.0.0.1:1/v1`（连不上），
+  14 s 后 `agent_settled`（末条 assistant 文本同样为空）。
+
+三处与其它宿主不同、写在这里防后来者当 bug：① 登记带 `idle`（扩展报 `ctx.isIdle()`，真值表 x14/a24）；
+② 轮次边界是 `agent_settled` 不是 `turn_end`（后者每个模型轮都发）；③ 空 assistant 文本被脱敏器写成
+`<last_assistant_message>` 占位符（它把空串也替掉），空串那一格由 adapter / 状态机单测钉。冒烟见
+`tests/hook_smoke.rs::pi`（键集合基线 `headless.jsonl`）。
+
 ## generic/pane
 
 文本兜底（ADR-002 D6）的屏幕 fixture：首行 `# expect: waiting [secret] | none`，其余是屏幕内容

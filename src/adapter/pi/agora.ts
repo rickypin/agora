@@ -9,7 +9,9 @@
  * 不在，全部静默；事件落了投递箱就有，daemon 下次扫描照样能收（agora hook 自己负责落盘）。
  * 投递**串行**（等上一件 `agora hook` 退出再发下一件）：投递件按落盘顺序应用，顺序就是语义，
  * 各件独立 spawn 会乱序（2026-10-07 实测：`pi -p` 的 before_agent_start 抢在 session_start 前
- * 落盘，行按 prompt 先应用）；一件最多等 5 s，超时杀掉继续。
+ * 落盘，行按 prompt 先应用）；一件最多等 5 s，超时杀掉继续。唯一例外是 `session_shutdown`：
+ * pi 退出是同步的 `process.exit()`，排进 promise 队列的微任务跑不到（2026-10-07 实测：quit 那条
+ * 永远不落盘），所以它同步 spawn——它前面的事件早发完了，不靠这条序。
  *
  * 只发本文件里列的这几个事件与字段，不把 pi 的原始事件整包转出去（`agent_end.messages` 里带着
  * 整段系统提示与转录）。字段名与 `src/adapter/pi.rs` 的 `parse` 一一对应。
@@ -129,6 +131,12 @@ export default function (pi: ExtensionAPI) {
     try {
       const payload: Record<string, unknown> = { hook_event_name: event, ...session(ctx), ...extra };
       for (const k of Object.keys(payload)) if (payload[k] === undefined) delete payload[k];
+      if (event === "session_shutdown") {
+        // 同步 spawn，不过队列：pi 收到 session_shutdown 后可能立刻 `process.exit()`，队列里的
+        // 微任务不保证跑得到（2026-10-07 实测：`pi -p` 的 quit 一条没落盘）。
+        void send(payload);
+        return;
+      }
       queue = queue.then(() => send(payload)).catch(() => {});
     } catch {
       /* 投递是旁路，永不打断 pi */
