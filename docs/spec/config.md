@@ -164,6 +164,7 @@ macOS 那一支在 Linux 上也能跑：环境变量 **`AGORA_INSTALL_OS=Darwin|
 
 ```
 scripts/install.sh --binary <path> [--home <dir>] [--node-id <id>] [--listen <addr>] [--tls-listen <addr>]
+                   [--public-url <url>] [--tls-external-tailscale] [--tailscale-dns <name>]
                    [--tmux-socket <name>] [--unit-dir <dir>] [--no-service] [--skip-tmux] [--dry-run]
 ```
 
@@ -174,6 +175,9 @@ scripts/install.sh --binary <path> [--home <dir>] [--node-id <id>] [--listen <ad
 | `--node-id <id>` | 短主机名（`hostname -s`，去掉域名，非法字符换成 `-`） | `node.id`。`--home` 不是默认路径（同机第二个实例）时默认 `<主机名>-<用户名>`，让 `<node>:<id>` 在 peer 眼里不撞；同机多个 OS 用户各装各的时请显式给 `--node-id` |
 | `--listen <addr>` | `127.0.0.1:7680` | `server.listen`。未指定且 7680 已被占（`nc -z` / `ss` / `lsof` / bash `/dev/tcp` 探测，都没有就当空闲）→ 从 7681 起顺延到第一个空闲端口并在 stderr 说明；这只发生在**首次写 config.yaml** 时，daemon 自己仍是"端口被占就报错退出"（ADR-003 D6） |
 | `--tls-listen <addr>` | 不写 | `server.tls_listen`（例 `0.0.0.0:7681`）；被 peer / 手机访问的节点才开。与 `--listen` 同端口在写文件之前就拒绝 |
+| `--public-url <url>` | 不写 | `server.public_url`（远端配对链接与 QR 的对外地址，例 `https://host:7681`）；必须以 `http://` 或 `https://` 开头 |
+| `--tls-external-tailscale` | 关 | ADR-003 D4 的默认路径：`tls.mode: external` + `tailscale cert` 到 `<home>/tls-external/`（0600）、`renew_command` 用 `tailscale cert --min-validity 720h`、`renew_before: 720h`。需要 `--tls-listen`；`--public-url` 缺省推成 `https://<tailnet DNS>:<tls 端口>`。只在 config.yaml 不存在时生效（已有的手工加 tls 段）；Tailscale 账号要先在管理后台启用 HTTPS Certificates，否则 `tailscale cert` 报 `account does not support getting TLS certs` |
+| `--tailscale-dns <name>` | 问 `tailscale status --json` | tailnet DNS 名（`Self.DNSName`，去掉末尾点）；CLI 查不到或测试时显式给 |
 | `--tmux-socket <name>` | 不写 | 写 `runtime.tmux.socket` 并把 `adopt_sockets` 置空——开发机上起第二个实例验证用（AGENTS.md「并行施工」的隔离规矩），正常安装不用 |
 | `--unit-dir <dir>` | `~/.config/systemd/user` / `~/Library/LaunchAgents` | 单元文件目录；测试与开发机验证指到临时目录 |
 | `--no-service` | | 只写单元文件，不 `enable` / `bootstrap` |

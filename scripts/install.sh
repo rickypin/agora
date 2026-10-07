@@ -35,7 +35,14 @@ usage() {
   --node-id <id>        node.id（默认短主机名；--home 不是默认路径时为 <主机名>-<用户名>）
   --listen <addr>       server.listen（默认 127.0.0.1:7680；未指定且被占则顺延到下一个空闲端口）
   --tls-listen <addr>   server.tls_listen（可选，例 0.0.0.0:7681；被 peer / 手机访问的节点才开）
-  --tmux-socket <name>  runtime.tmux.socket（开发机上起第二个实例用；同时把 adopt_sockets 置空）
+  --public-url <url>    server.public_url（远端配对链接与 QR 的对外地址，例 https://host:7681）
+  --tls-external-tailscale
+                        把该节点的 TLS 做成 external + tailscale cert（ADR-003 D4 的默认路径）：
+                        证书写到 <home>/tls-external/（0600）、renew_command 用 tailscale cert，
+                        续期靠 daemon 的热加载。需要 --tls-listen；--public-url 缺省推成
+                        https://<tailnet DNS>:<tls 端口>。只在 config.yaml 不存在时生效。
+  --tailscale-dns <name>
+                        tailnet 里的 DNS 名（缺省问 tailscale status --json；测试或 CLI 查不到时显式给）
   --unit-dir <dir>      单元文件目录（默认 ~/.config/systemd/user 或 ~/Library/LaunchAgents）
   --no-service          只写单元文件，不 enable / bootstrap
   --skip-tmux           只校验 tmux 版本，不安装
@@ -60,6 +67,9 @@ HOME_DIR=
 NODE_ID=
 LISTEN=
 TLS_LISTEN=
+PUBLIC_URL=
+TLS_TS=0
+TS_DNS=
 TMUX_SOCKET=
 UNIT_DIR=
 NO_SERVICE=0
@@ -74,6 +84,9 @@ while [ $# -gt 0 ]; do
         --node-id) need_arg "$@"; NODE_ID=$2; shift 2 ;;
         --listen) need_arg "$@"; LISTEN=$2; shift 2 ;;
         --tls-listen) need_arg "$@"; TLS_LISTEN=$2; shift 2 ;;
+        --public-url) need_arg "$@"; PUBLIC_URL=$2; shift 2 ;;
+        --tls-external-tailscale) TLS_TS=1; shift ;;
+        --tailscale-dns) need_arg "$@"; TS_DNS=$2; shift 2 ;;
         --tmux-socket) need_arg "$@"; TMUX_SOCKET=$2; shift 2 ;;
         --unit-dir) need_arg "$@"; UNIT_DIR=$2; shift 2 ;;
         --no-service) NO_SERVICE=1; shift ;;
@@ -85,6 +98,16 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$BINARY" ] || { usage; die "--binary 必填"; }
 [ -f "$BINARY" ] || die "--binary 不是文件: $BINARY"
+if [ -n "$PUBLIC_URL" ]; then
+    case "$PUBLIC_URL" in
+        http://*|https://*) ;;
+        *) die "--public-url 要以 http:// 或 https:// 开头: $PUBLIC_URL" ;;
+    esac
+fi
+if [ "$TLS_TS" = 1 ]; then
+    [ -n "$TLS_LISTEN" ] || die "--tls-external-tailscale 需要 --tls-listen（手机 / peer 连的就是它）"
+    [ "$DRY_RUN" = 1 ] || command -v tailscale >/dev/null 2>&1 || die "PATH 里没有 tailscale：先装 Tailscale 并 tailscale up"
+fi
 
 # 系统判定。AGORA_INSTALL_OS 是测试钩子（见 usage）：CI 虽然有 macos runner，守卫却一律带
 # --no-service，launchctl 那一半（print / bootstrap / bootout）此前在任何机器上都没被执行过。
@@ -258,6 +281,10 @@ else
     fi
 fi
 
+if [ -f "$CONFIG" ] && [ "$TLS_TS" = 1 ]; then
+    # 不悄悄改已有配置：tls 段照 docs/spec/config.md 手工加，脚本只负责全新安装。
+    die "config.yaml 已存在：--tls-external-tailscale 只写新配置；请在 ${CONFIG} 里手工加 tls 段（见 docs/spec/config.md）"
+fi
 if [ -f "$CONFIG" ]; then
     say "config.yaml: 已存在，不动（${CONFIG}）"
 else
@@ -285,11 +312,37 @@ else
     fi
     tls_line=
     [ -z "$TLS_LISTEN" ] || tls_line=$(printf '  tls_listen: "%s"\n' "$TLS_LISTEN")
+    public_line=
+    external_block=
+    if [ "$TLS_TS" = 1 ]; then
+        dns=$TS_DNS
+        if [ -z "$dns" ]; then
+            dns=$(tailscale status --json 2>/dev/null | sed -n 's/.*"DNSName"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 | sed 's/\.$//')
+        fi
+        [ -n "$dns" ] || die "取不到 tailnet DNS 名；用 --tailscale-dns <name> 指定（tailscale status --json 的 Self.DNSName）"
+        cert_dir=$HOME_DIR/tls-external
+        cert_file=$cert_dir/cert.pem
+        key_file=$cert_dir/key.pem
+        [ -n "$PUBLIC_URL" ] || PUBLIC_URL="https://${dns}:${TLS_LISTEN##*:}"
+        say "TLS: tailscale cert（domain ${dns}）→ ${cert_file}（目录 0700、文件 0600）"
+        if [ "$DRY_RUN" = 1 ]; then
+            say "[dry-run] mkdir -m 700 -p $cert_dir && tailscale cert --min-validity 720h --cert-file $cert_file --key-file $key_file $dns"
+        else
+            run mkdir -m 700 -p "$cert_dir"
+            # tailscale cert 幂等：有效期内直接复用，快到期才走 ACME；失败就停，别写出半套配置。
+            run tailscale cert --min-validity 720h --cert-file "$cert_file" --key-file "$key_file" "$dns" \
+                || die "tailscale cert 失败（Tailscale 管理后台要启用 HTTPS Certificates）"
+            run chmod 600 "$cert_file" "$key_file"
+        fi
+        # renew_command 是 argv（daemon 直传不经 shell）：与这里生成时同一条命令，到期前 720h 调。
+        external_block=$(printf 'tls:\n  mode: external\n  external:\n    cert_file: "%s"\n    key_file: "%s"\n    renew_command: ["tailscale", "cert", "--min-validity", "720h", "--cert-file", "%s", "--key-file", "%s", "%s"]\n    renew_before: "720h"\n' "$cert_file" "$key_file" "$cert_file" "$key_file" "$dns")
+    fi
+    [ -z "$PUBLIC_URL" ] || public_line=$(printf '  public_url: "%s"\n' "$PUBLIC_URL")
     runtime_block=
     if [ -n "$TMUX_SOCKET" ]; then
         runtime_block=$(printf 'runtime:\n  tmux:\n    socket: "%s"\n    adopt_sockets: []   # 第二个实例：不扫用户默认 socket\n' "$TMUX_SOCKET")
     fi
-    say "config.yaml: 写入 node.id=$NODE_ID server.listen=$LISTEN${TLS_LISTEN:+ server.tls_listen=$TLS_LISTEN}${TMUX_SOCKET:+ runtime.tmux.socket=$TMUX_SOCKET}"
+    say "config.yaml: 写入 node.id=$NODE_ID server.listen=$LISTEN${TLS_LISTEN:+ server.tls_listen=$TLS_LISTEN}${PUBLIC_URL:+ server.public_url=$PUBLIC_URL}${TLS_TS:+ tls=external/tailscale}${TMUX_SOCKET:+ runtime.tmux.socket=$TMUX_SOCKET}"
     if [ "$DRY_RUN" = 1 ]; then
         say "[dry-run] write $CONFIG"
     else
@@ -300,8 +353,10 @@ else
             printf 'server:\n'
             printf '  listen: "%s"\n' "$LISTEN"
             [ -z "$tls_line" ] || printf '%s\n' "$tls_line"
+            [ -z "$public_line" ] || printf '%s\n' "$public_line"
             printf 'node:\n'
             printf '  id: "%s"\n' "$NODE_ID"
+            [ -z "$external_block" ] || printf '%s\n' "$external_block"
             [ -z "$runtime_block" ] || printf '%s\n' "$runtime_block"
         } >"$tmp"
         mv -f "$tmp" "$CONFIG"

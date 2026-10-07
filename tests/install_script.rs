@@ -808,3 +808,135 @@ fn dead_pid() -> u32 {
     child.wait().unwrap();
     pid
 }
+
+/// `--tls-external-tailscale`（agora-thc.3 的安装半边）：写 external 段 + 生成 tailscale cert +
+/// public_url。假 `tailscale` 只钉脚本怎么叫它、退出码；真证书与真信任链归 thc.3 的代检。
+#[test]
+fn tls_external_tailscale_writes_config_and_cert() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("agora");
+    let units = tmp.path().join("units");
+    let fake_bin = tmp.path().join("fakebin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    let log = tmp.path().join("tailscale.log");
+    let script = fake_bin.join("tailscale");
+    isolate::exec_script(
+        &script,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$TAILSCALE_LOG"
+case "$1" in
+  status) printf '%s\n' '{"Self":{"DNSName":"zuan.example.ts.net."}}' ;;
+  cert)
+    shift
+    cert= key=
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --cert-file) cert=$2; shift 2 ;;
+        --key-file) key=$2; shift 2 ;;
+        --min-validity) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    printf 'dummy-cert\n' > "$cert"
+    printf 'dummy-key\n' > "$key"
+    ;;
+esac
+"#,
+    );
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let envs = [("TAILSCALE_LOG", log.to_str().unwrap())];
+    let out = run_env(
+        &[
+            "--binary",
+            AGORA_BIN,
+            "--home",
+            home.to_str().unwrap(),
+            "--unit-dir",
+            units.to_str().unwrap(),
+            "--listen",
+            LISTEN,
+            "--tls-listen",
+            "0.0.0.0:7762",
+            "--tls-external-tailscale",
+            "--no-service",
+            "--skip-tmux",
+        ],
+        Some(&path),
+        &envs,
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(out.stdout.is_empty());
+
+    // 证书落在 <home>/tls-external/，0600；daemon 自己的加载器接受这份 config。
+    let cert = home.join("tls-external/cert.pem");
+    let key = home.join("tls-external/key.pem");
+    assert!(cert.is_file() && key.is_file(), "{}", cert.display());
+    assert_eq!(
+        fs::metadata(&cert).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let settings = Config::load(&home, "tmux").unwrap();
+    assert_eq!(settings.raw.tls.mode, "external");
+    assert_eq!(
+        settings.raw.tls.external.cert_file.as_deref(),
+        Some(cert.as_path())
+    );
+    assert_eq!(
+        settings.raw.tls.external.key_file.as_deref(),
+        Some(key.as_path())
+    );
+    assert_eq!(
+        settings.raw.server.public_url.as_deref(),
+        Some("https://zuan.example.ts.net:7762"),
+        "public_url 缺省推成 https://<tailnet DNS>:<tls 端口>"
+    );
+    let renew = settings
+        .raw
+        .tls
+        .external
+        .renew_command
+        .expect("renew_command");
+    assert!(renew.iter().any(|a| a == "tailscale"), "{renew:?}");
+    assert!(renew.iter().any(|a| a == "cert"), "{renew:?}");
+    // 假 tailscale 收到的调用形状：先 status --json 取 DNS 名，再 cert --min-validity …。
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(calls.contains("status --json"), "{calls}");
+    assert!(calls.contains("cert --min-validity 720h"), "{calls}");
+    assert!(calls.contains("zuan.example.ts.net"), "{calls}");
+
+    // 已有 config 再带这个旗标：拒绝并说清出路，不悄悄改配置。
+    let again = run_env(
+        &[
+            "--binary",
+            AGORA_BIN,
+            "--home",
+            home.to_str().unwrap(),
+            "--unit-dir",
+            units.to_str().unwrap(),
+            "--listen",
+            LISTEN,
+            "--tls-listen",
+            "0.0.0.0:7762",
+            "--tls-external-tailscale",
+            "--no-service",
+            "--skip-tmux",
+        ],
+        Some(&path),
+        &envs,
+    );
+    assert!(!again.status.success());
+    assert!(stderr(&again).contains("已存在"), "{}", stderr(&again));
+    assert_eq!(
+        Config::load(&home, "tmux").unwrap().raw.tls.mode,
+        "external",
+        "拒绝时不能动配置"
+    );
+}
