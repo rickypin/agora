@@ -885,13 +885,17 @@ esac
     );
     let settings = Config::load(&home, "tmux").unwrap();
     assert_eq!(settings.raw.tls.mode, "external");
+    // 脚本把 HOME_DIR 按 `pwd -P` 解过符号链接（macOS 的 tempdir 在 /private/var 下），断言里的
+    // 路径要跟它同一份形式，否则 macOS CI 上只是差一个 /private 前缀就红。
+    let cert_real = home.canonicalize().unwrap().join("tls-external/cert.pem");
+    let key_real = home.canonicalize().unwrap().join("tls-external/key.pem");
     assert_eq!(
         settings.raw.tls.external.cert_file.as_deref(),
-        Some(cert.as_path())
+        Some(cert_real.as_path())
     );
     assert_eq!(
         settings.raw.tls.external.key_file.as_deref(),
-        Some(key.as_path())
+        Some(key_real.as_path())
     );
     assert_eq!(
         settings.raw.server.public_url.as_deref(),
