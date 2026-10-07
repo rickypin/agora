@@ -162,10 +162,16 @@ async fn an_interactive_pi_session_registers_external_and_goes_turn_done() {
 #[tokio::test]
 async fn a_print_mode_pi_session_registers_headless_and_stays_out_of_the_inbox() {
     let (fx, receiver, home) = with_hooks();
+    // 注册竞速：真 daemon 上每条事件的 hook 各自 spawn，`before_agent_start` 可能先到
+    // （2026-10-07 实测：pi -p 因此落成过 external）。判据是载荷里的 mode，不绑事件名。
     let id = ingest(
         &receiver,
         home.path(),
-        &delivery("pi-2", session_start("pi-2", "print"), None),
+        &delivery(
+            "pi-2",
+            json!({ "hook_event_name": "before_agent_start", "session_id": "pi-2", "cwd": "/work/agora", "mode": "print", "prompt": "hi" }),
+            None,
+        ),
     )
     .unwrap();
     let rec = fx.sessions.record(&id).unwrap();

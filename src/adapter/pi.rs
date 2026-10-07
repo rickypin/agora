@@ -195,12 +195,16 @@ impl AgentHooks for Pi {
         env.get("PI_PID")?.trim().parse().ok()
     }
 
-    /// `-p` / `--mode json` 是无头一次性（脚本、冒烟、宿主子任务）：照常登记成 `headless`——不通知、
+    /// `-p` / `--mode json` 是无头一次性（脚本、冒烟、宿主子任务）：登记成 `headless`——不通知、
     /// 收进折叠区、满 24 h 不论状态即删。`tui` / `rpc` 是人的会话（或长期被外部驱动的会话），按
     /// `external` 登记。判据只看载荷结构（`mode`），缺字段一律不判无头。
+    ///
+    /// **不绑定事件名**：扩展每条事件都带 `mode`，而注册只看"第一条让 daemon 认出这个会话的
+    /// 投递件"——每条事件的 hook 是各自 spawn 的进程，`before_agent_start` 完全可能比
+    /// `session_start` 先被 daemon 处理。只认 SessionStart 的话，先到的那条会让 `pi -p` 落成
+    /// `external`（2026-10-07 真 daemon 实测撞上：4 条投递件顺序正常，但 acks 竞速反了）。
     fn is_headless(&self, payload: &Value) -> bool {
-        event_name(payload) == Some("session_start")
-            && matches!(str_of(payload, &["mode"]), Some("print" | "json"))
+        matches!(str_of(payload, &["mode"]), Some("print" | "json"))
     }
 
     fn parse(&self, payload: &Value) -> Vec<AgoraEvent> {
@@ -307,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn headless_is_print_and_json_only_and_only_on_session_start() {
+    fn headless_is_print_and_json_on_any_event() {
         for mode in ["print", "json"] {
             let mut p = payload("session_start");
             p["mode"] = json!(mode);
@@ -322,10 +326,17 @@ mod tests {
         let mut p = payload("session_start");
         p.as_object_mut().unwrap().remove("mode");
         assert!(!PI.is_headless(&p));
-        // 只在 SessionStart 上问。
-        let mut p = payload("agent_settled");
-        p["mode"] = json!("print");
-        assert!(!PI.is_headless(&p));
+        // 注册只看第一条让 daemon 认出会话的投递件——事件名不绑，否则 ack 竞速会让 pi -p 落成
+        // external（2026-10-07 真 daemon 实测）。
+        for event in [
+            "before_agent_start",
+            "tool_execution_start",
+            "agent_settled",
+        ] {
+            let mut p = payload(event);
+            p["mode"] = json!("print");
+            assert!(PI.is_headless(&p), "{event}");
+        }
     }
 
     #[test]
