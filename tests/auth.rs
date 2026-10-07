@@ -713,3 +713,143 @@ async fn peer_cannot_mint_pair_link_or_touch_devices() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     assert_eq!(json(resp).await["error"], "not_found");
 }
+
+// ---------- agora-thc.1：public_url 的配对链接、加固头、按监听器的 Secure ----------
+
+/// 配对新链接的 origin 取 `server.public_url`（手机扫得开的地址），并带回二维码矩阵
+/// （Dashboard 直接画，不用再引一个 JS 的 QR 库）。
+#[tokio::test]
+async fn pair_new_uses_public_url_and_returns_a_qr() {
+    let fx = Fx::new();
+    let cookie = fx.pair().await;
+    let rt = Arc::new(common::FakeRuntime::default());
+    let sessions = Arc::new(SessionManager::new(fx.db.clone(), rt as Arc<dyn Runtime>));
+    let mut state = AppState::new(fx.auth.clone(), sessions, common::NODE);
+    state.public_url = Some("https://zuan.example:7681/".into());
+
+    let resp = api::router(state)
+        .oneshot(
+            Request::post("/api/auth/pair/new")
+                .header(header::HOST, HOST)
+                .header(header::ORIGIN, format!("http://{HOST}"))
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json(resp).await;
+    let url = body["url"].as_str().unwrap();
+    assert!(
+        url.starts_with("https://zuan.example:7681/#pair="),
+        "origin 必须取 public_url 且去掉尾斜杠：{url}"
+    );
+    let qr = &body["qr"];
+    let size = qr["size"].as_u64().unwrap() as usize;
+    let rows: Vec<&str> = qr["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r.as_str().unwrap())
+        .collect();
+    assert_eq!(rows.len(), size, "矩阵行数 = 边长");
+    assert!(rows.iter().all(|r| r.len() == size), "每行等宽");
+    assert!(rows.iter().all(|r| r.chars().all(|c| c == '0' || c == '1')));
+    assert_eq!(&rows[0][..7], "1111111", "左上角是位置探测图形");
+}
+
+/// 加固头（ADR-003 D7）：所有响应都有 nosniff / DENY / no-referrer / frame-ancestors，
+/// HSTS 只在 TLS 监听器上出现（请求扩展 TlsListener 是监听器盖的标记，线上伪造不了）。
+#[tokio::test]
+async fn security_headers_are_applied_and_hsts_only_on_tls() {
+    let fx = Fx::new();
+    let plain = fx
+        .app()
+        .oneshot(
+            Request::get("/api/health")
+                .header(header::HOST, HOST)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plain.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(plain.headers()["x-frame-options"], "DENY");
+    assert_eq!(plain.headers()["referrer-policy"], "no-referrer");
+    assert_eq!(
+        plain.headers()["content-security-policy"],
+        "frame-ancestors 'none'"
+    );
+    assert!(
+        !plain.headers().contains_key("strict-transport-security"),
+        "明文监听器不发 HSTS"
+    );
+
+    let rt = Arc::new(common::FakeRuntime::default());
+    let sessions = Arc::new(SessionManager::new(fx.db.clone(), rt as Arc<dyn Runtime>));
+    let state = AppState::new(fx.auth.clone(), sessions, common::NODE);
+    let tls = api::router(state).layer(axum::Extension(agora::api::TlsListener));
+    let secure = tls
+        .oneshot(
+            Request::get("/api/health")
+                .header(header::HOST, HOST)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        secure.headers()["strict-transport-security"],
+        "max-age=31536000"
+    );
+    assert_eq!(secure.headers()["x-frame-options"], "DENY");
+}
+
+/// ADR-003 D7：TLS 监听器发的 cookie 加 Secure；明文监听器上不加（同一台机器双开时，
+/// 全局加 Secure 会让 http://127.0.0.1 的本机浏览器根本收不到 cookie）。
+#[tokio::test]
+async fn pair_cookie_gets_secure_only_on_the_tls_listener() {
+    let fx = Fx::new();
+    let token = fx.auth.mint_pair_token(PairedVia::Socket).unwrap();
+    let pair_req = |token: String| {
+        Request::post("/api/auth/pair")
+            .header(header::HOST, HOST)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::USER_AGENT, "Mozilla/5.0 (iPhone) Safari/1")
+            .body(Body::from(format!("{{\"token\":\"{token}\"}}")))
+            .unwrap()
+    };
+
+    // 明文：同一个 Router 直接 oneshot（等价于明文监听器路径），没有 TlsListener 标记。
+    let plain = fx.app().oneshot(pair_req(token.clone())).await.unwrap();
+    assert_eq!(plain.status(), StatusCode::OK);
+    let set = plain.headers()[header::SET_COOKIE].to_str().unwrap();
+    assert!(!set.contains("Secure"), "明文监听器不加 Secure：{set}");
+
+    // TLS：监听器给每个请求盖 TlsListener（peer_token.rs 的既有做法）。
+    let rt = Arc::new(common::FakeRuntime::default());
+    let sessions = Arc::new(SessionManager::new(fx.db.clone(), rt as Arc<dyn Runtime>));
+    let state = AppState::new(fx.auth.clone(), sessions, common::NODE);
+    let tls = api::router(state).layer(axum::Extension(agora::api::TlsListener));
+    // 一次性链接用过一次就废：TLS 那条路要换一枚 token，否则 401 是"链接已用"，不是 Secure 有问题。
+    let token = fx.auth.mint_pair_token(PairedVia::Socket).unwrap();
+    let resp = tls.oneshot(pair_req(token)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let set = resp.headers()[header::SET_COOKIE].to_str().unwrap();
+    assert!(set.contains("Secure"), "TLS 监听器必须加 Secure：{set}");
+    assert!(set.contains("HttpOnly") && set.contains("SameSite=Lax"));
+}
+
+/// 吊销设备后它下一次请求 401（A37 的机械半边；真机免登录那条 👁 归 epic 剧本）。
+/// WS 升级前的那道同源检查在 `tests/events.rs::cross_origin_upgrade_is_refused_and_no_cookie_is_401`
+/// 与 `tests/gateway.rs::terminal_ws_rejects_cross_origin_and_unknown_session`。
+#[tokio::test]
+async fn revoked_device_gets_401_on_its_next_request() {
+    let fx = Fx::new();
+    let cookie = fx.pair().await;
+    assert_eq!(fx.get_devices(&cookie).await, StatusCode::OK);
+    let me = fx.auth.list_devices().unwrap().remove(0);
+    fx.auth.revoke(&me.id).unwrap();
+    assert_eq!(fx.get_devices(&cookie).await, StatusCode::UNAUTHORIZED);
+}

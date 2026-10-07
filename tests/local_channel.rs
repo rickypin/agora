@@ -149,3 +149,121 @@ async fn cleanup_only_removes_the_socket_it_bound() {
     assert!(!path.exists());
     assert!(!second_cleanup.remove(), "已经没了 → false");
 }
+
+// ---------- `agora pair`（agora-thc.1）：经 socket 铸造、origin 取 public_url、终端 QR ----------
+
+const AGORA_BIN: &str = env!("CARGO_BIN_EXE_agora");
+
+fn pair_home() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(
+        home.join("config.yaml"),
+        "server:\n  public_url: https://zuan.example:7681\n",
+    )
+    .unwrap();
+    (dir, home)
+}
+
+/// 起一个假 daemon 应答 Request::Pair，记下收到的 origin。
+async fn pair_socket(
+    home: &std::path::Path,
+) -> (
+    std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    tokio::task::JoinHandle<Result<(), local::SocketError>>,
+) {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let seen2 = seen.clone();
+    let handler: local::Handler = local::sync_handler(move |req| match req {
+        Request::Pair { origin } => {
+            *seen2.lock().unwrap() = origin.clone();
+            Response::Pair {
+                url: format!(
+                    "{}/#pair=tok",
+                    origin.unwrap_or_else(|| "http://daemon-own-origin".into())
+                ),
+            }
+        }
+        other => Response::Error {
+            message: format!("不认识的请求: {other:?}"),
+        },
+    });
+    let path = home.join(local::SOCKET_FILE);
+    let p = path.clone();
+    let server = tokio::spawn(async move { local::serve(&p, handler).await });
+    for _ in 0..100 {
+        if path.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    (seen, server)
+}
+
+/// 非终端：stdout 只有链接（干净可管道），二维码跳过并提示；origin 必须是配置里的 public_url
+/// ——这是「远端设备扫得开」的全部依据。
+#[tokio::test]
+async fn pair_cli_passes_public_url_and_skips_qr_when_piped() {
+    let (_dir, home) = pair_home();
+    let (seen, server) = pair_socket(&home).await;
+
+    let out = tokio::process::Command::new(AGORA_BIN)
+        .arg("pair")
+        .env("AGORA_HOME", &home)
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("https://zuan.example:7681/#pair=tok"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains('█'), "非终端不该打印二维码：{stdout}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("跳过二维码"),
+        "跳过要说明，不然用户以为坏了"
+    );
+    assert_eq!(
+        seen.lock().unwrap().as_deref(),
+        Some("https://zuan.example:7681"),
+        "CLI 必须把 public_url 经 socket 交给 daemon 铸造"
+    );
+    server.abort();
+}
+
+/// 终端里（PTY）：链接 + 可扫的二维码。用真 PTY 跑 `agora pair`，因为"是不是终端"正是被分支的判据。
+#[tokio::test]
+async fn pair_cli_prints_a_qr_in_a_terminal() {
+    use agora::gateway::AttachedPty;
+    use agora::runtime::{AttachSpec, Size};
+
+    let (_dir, home) = pair_home();
+    let (_seen, server) = pair_socket(&home).await;
+
+    let mut pty = AttachedPty::spawn(
+        &AttachSpec {
+            argv: vec![AGORA_BIN.to_owned(), "pair".to_owned()],
+            env: vec![("AGORA_HOME".to_owned(), home.display().to_string())],
+        },
+        Size::default(),
+    )
+    .unwrap();
+    let mut got = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match tokio::time::timeout(left, pty.read()).await {
+            Ok(Some(bytes)) => got.push_str(&String::from_utf8_lossy(&bytes)),
+            Ok(None) | Err(_) => break,
+        }
+    }
+    assert!(got.contains("#pair=tok"), "终端里也要打印链接：{got}");
+    assert!(
+        got.contains('█') || got.contains('▀'),
+        "终端里要画二维码：{got}"
+    );
+    server.abort();
+}

@@ -71,7 +71,9 @@ impl FromRequestParts<AppState> for Principal {
         // 两个 30 天窗口才是同一个窗口（RenewSlot 的注释里有为什么不能只在配对时发）。
         if auth.renewed {
             if let Some(slot) = parts.extensions.get::<RenewSlot>() {
-                slot.set(session_cookie(&token, state.auth.config()));
+                let secure = parts.extensions.get::<TlsListener>().is_some()
+                    || state.auth.config().cookie_secure;
+                slot.set(session_cookie(&token, state.auth.config(), secure));
             }
         }
         // 请求日志那一行的 principal 栏（api::log_request 开的 span）。
@@ -237,6 +239,7 @@ pub struct PairReply {
 pub async fn pair(
     State(state): State<AppState>,
     ClientAddr(addr): ClientAddr,
+    tls: Option<axum::Extension<TlsListener>>,
     headers: HeaderMap,
     Json(body): Json<PairBody>,
 ) -> Result<Response, ApiError> {
@@ -245,16 +248,24 @@ pub async fn pair(
         .and_then(|v| v.to_str().ok());
     let from = addr.map(|a| a.to_string());
     let (device, session) = state.auth.redeem(&body.token, ua, from.as_deref())?;
-    let cookie = session_cookie(&session, state.auth.config());
+    // ADR-003 D7：TLS 监听器发的 cookie 加 Secure。按监听器分（而不是配置一开就全局加），
+    // 是因为同一台机器可能明文与 TLS 双开：全局 Secure 的 cookie 在 http://127.0.0.1 上
+    // 根本不会被浏览器发回来，本机 `agora open` 那条路会无声地坏掉。
+    let secure = tls.is_some() || state.auth.config().cookie_secure;
+    let cookie = session_cookie(&session, state.auth.config(), secure);
     Ok(([(header::SET_COOKIE, cookie)], Json(PairReply { device })).into_response())
 }
 
 #[derive(Debug, Serialize)]
 pub struct PairLink {
     pub url: String,
+    /// 二维码矩阵（Dashboard 画 SVG 用）；编码失败时为 null——链接本身照给。
+    pub qr: Option<crate::pair::Qr>,
 }
 
-/// 已认证的 Human session 铸造新链接（Dashboard "配对新设备"）；origin 取自 Host。
+/// 已认证的 Human session 铸造新链接（Dashboard "配对新设备"）；origin 取自
+/// `server.public_url`，缺失回落请求的 Host 并记日志（agora-thc.1）——回落出来的链接只对
+/// 本机浏览器成立，手机扫了连不上，所以那行日志是给人排查用的。
 pub async fn pair_new(
     principal: Principal,
     State(state): State<AppState>,
@@ -262,27 +273,45 @@ pub async fn pair_new(
 ) -> Result<Json<PairLink>, ApiError> {
     human_only(&principal)?;
     let token = state.auth.mint_pair_token(PairedVia::Session)?;
-    let host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("127.0.0.1");
-    let origin = format!("http://{host}");
-    tracing::info!(component = "auth", principal = %principal.log_id(), "铸造配对链接");
-    Ok(Json(PairLink {
-        url: Auth::pair_link(&origin, &token),
-    }))
+    let origin = match state.public_url.as_deref() {
+        Some(url) => url.trim_end_matches('/').to_owned(),
+        None => {
+            let host = headers
+                .get(header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("127.0.0.1");
+            tracing::info!(
+                component = "auth",
+                host,
+                "server.public_url 未配置，配对链接回落到请求 Host（远端设备扫不开）"
+            );
+            format!("http://{host}")
+        }
+    };
+    let url = Auth::pair_link(&origin, &token);
+    tracing::info!(component = "auth", principal = %principal.log_id(), origin, "铸造配对链接");
+    let qr = match crate::pair::Qr::encode(&url) {
+        Ok(qr) => Some(qr),
+        Err(err) => {
+            tracing::warn!(component = "auth", %err, "配对链接编码成二维码失败");
+            None
+        }
+    };
+    Ok(Json(PairLink { url, qr }))
 }
 
 /// 只删当前设备。
 pub async fn logout(
     principal: Principal,
     State(state): State<AppState>,
+    tls: Option<axum::Extension<TlsListener>>,
 ) -> Result<Response, ApiError> {
     if let Principal::Human { device } = &principal {
         state.auth.revoke(device)?;
     }
+    let secure = tls.is_some() || state.auth.config().cookie_secure;
     Ok((
-        [(header::SET_COOKIE, clear_cookie())],
+        [(header::SET_COOKIE, clear_cookie(secure))],
         StatusCode::NO_CONTENT,
     )
         .into_response())
@@ -313,19 +342,23 @@ pub async fn revoke_device(
 /// 配对应答只有 `HttpOnly; SameSite=Lax; Path=/`）。取值跟着 `auth.session_idle` 走，
 /// 不写死 30 天：两个窗口一旦对不上，要么服务端先拒（用户看到莫名其妙的 401），
 /// 要么浏览器先丢（用户看到莫名其妙的重新配对）。
-fn session_cookie(session: &str, cfg: &AuthConfig) -> HeaderValue {
+fn session_cookie(session: &str, cfg: &AuthConfig, secure: bool) -> HeaderValue {
     let mut s = format!(
         "{COOKIE_NAME}={session}; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
         cfg.session_idle.as_secs()
     );
-    if cfg.cookie_secure {
+    if secure {
         s.push_str("; Secure");
     }
     HeaderValue::from_str(&s).unwrap_or_else(|_| HeaderValue::from_static(""))
 }
 
-fn clear_cookie() -> HeaderValue {
-    HeaderValue::from_static("agora_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+fn clear_cookie(secure: bool) -> HeaderValue {
+    let mut s = format!("{COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+    if secure {
+        s.push_str("; Secure");
+    }
+    HeaderValue::from_str(&s).unwrap_or_else(|_| HeaderValue::from_static(""))
 }
 
 #[cfg(test)]

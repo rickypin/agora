@@ -113,3 +113,47 @@ describe("narrow desktop", () => {
     }
   });
 });
+
+describe("App pair gate paste box", () => {
+  beforeEach(() => {
+    net.pairPosts.length = 0;
+    net.devicesOk = false;
+  });
+  afterEach(() => {
+    cleanup();
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("pasting a pair link from another browser redeems it and enters the workspace", async () => {
+    // 没有 fragment（主屏 PWA 与 Safari 存储不共享的那个场景）：门页显示粘贴框。
+    window.location.hash = "";
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    const input = await screen.findByTestId("pair-paste-input");
+    // fireEvent 更贴近"粘贴 + 点按钮"，不引额外依赖：直接设值再提交。
+    const { fireEvent } = await import("@testing-library/react");
+    const pasted = "pasted-token-" + "x".repeat(30);
+    fireEvent.change(input, { target: { value: `https://zuan.example:7681/#pair=${pasted}` } });
+    fireEvent.submit(input.closest("form")!);
+    expect(await screen.findByText("workspace-placeholder")).toBeTruthy();
+    expect(net.pairPosts).toEqual([pasted]);
+  });
+
+  it("a bad paste reports and stays on the gate", async () => {
+    window.location.hash = "";
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    const input = await screen.findByTestId("pair-paste-input");
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.change(input, { target: { value: "not a link" } });
+    fireEvent.submit(input.closest("form")!);
+    expect(await screen.findByTestId("pair-paste-error")).toBeTruthy();
+    expect(net.pairPosts).toEqual([]);
+  });
+});

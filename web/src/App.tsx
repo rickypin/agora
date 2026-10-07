@@ -1,8 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { fetchHealth } from "./health";
 import { MobileApp } from "./MobileApp";
 import { isMobilePath, useNarrow } from "./mobileRoute";
-import { clearFragment, extractPairToken, isPaired, redeemPairOnce } from "./pair";
+import {
+  clearFragment,
+  extractPairToken,
+  extractPairTokenFromText,
+  isPaired,
+  redeemPairOnce,
+} from "./pair";
 import { Workspace } from "./Workspace";
 
 type Probe = "probing" | "ok" | "down";
@@ -47,6 +53,7 @@ export function App() {
         <h1>agora</h1>
         <p>daemon：{probe === "probing" ? "探测中…" : probe === "ok" ? "在线" : "不可达"}</p>
         <p>{authLine(auth)}</p>
+        <PairPaste onPaired={() => setAuth("paired")} />
       </main>
     );
   }
@@ -54,6 +61,56 @@ export function App() {
   if (narrow) return <NarrowScreen />;
   // 事件流被服务端以 4401 关掉 = 本设备在别处被吊销（agora-0jt）：不再重连，回到配对门。
   return <Workspace onRevoked={() => setAuth("revoked")} />;
+}
+
+/**
+ * 门页的粘贴配对（agora-thc.1）：在终端跑 `agora pair`（或 Dashboard 里"配对新设备"）拿到链接，
+ * 粘进来兑换。iOS 主屏 PWA 与 Safari 的存储不共享时，这是主屏里补配对的唯一入口——
+ * 扫码进 Safari 配好，主屏打开仍是门页，把链接粘进来即可。
+ */
+function PairPaste({ onPaired }: { onPaired: () => void }) {
+  const [text, setText] = useState("");
+  const [state, setState] = useState<"idle" | "busy" | "bad">("idle");
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    const token = extractPairTokenFromText(text);
+    if (!token) {
+      setState("bad");
+      return;
+    }
+    setState("busy");
+    const device = await redeemPairOnce(token);
+    if (device) {
+      clearFragment();
+      onPaired();
+    } else {
+      setState("bad");
+    }
+  }
+
+  return (
+    <form className="pair-paste" data-testid="pair-paste" onSubmit={(e) => void submit(e)}>
+      <input
+        value={text}
+        placeholder="粘贴配对链接或 token"
+        aria-label="粘贴配对链接"
+        data-testid="pair-paste-input"
+        onChange={(e) => {
+          setText(e.target.value);
+          setState("idle");
+        }}
+      />
+      <button type="submit" disabled={state === "busy"} data-testid="pair-paste-submit">
+        {state === "busy" ? "配对中…" : "配对"}
+      </button>
+      {state === "bad" && (
+        <p className="error" data-testid="pair-paste-error">
+          链接无效或已用过；重新生成一条再试。
+        </p>
+      )}
+    </form>
+  );
 }
 
 /** 桌面窗口窄于 700 px 的引导页：桌面控制台放不下，手机形态在 /m（MISSION §6.6；agora-thc.5）。 */

@@ -6,6 +6,7 @@ import { CommandPalette } from "./CommandPalette";
 import { nodeStatuses } from "./Header";
 import { HealthWatcher, versionBlocked, VersionWatcher } from "./health";
 import { isDesktop, matchShortcut } from "./keys";
+import { DeviceDialog } from "./DeviceDialog";
 import { NewAgentDialog, type NewAgentInitial } from "./NewAgentDialog";
 import { browserDeps, Notifier, type NotifierDeps, type Permission } from "./notify";
 import { hasRespondPanel, RespondPanel } from "./RespondPanel";
@@ -113,6 +114,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   const clearRespondFocus = useCallback(() => setRespondFocus(null), []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newAgentOpen, setNewAgentOpen] = useState(false);
+  const [devicesOpen, setDevicesOpen] = useState(false);
   // 打开对话框时的预填（A48，agora-uvd.4）：树视图组头「+」带来的 Node / Project / Worktree；
   // 别的入口（按钮、Alt/Option+N、命令面板）不传，关掉就清空——下次打开不该还记着上次站在哪。
   const [newAgentInitial, setNewAgentInitial] = useState<NewAgentInitial | undefined>(undefined);
@@ -486,6 +488,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         active={view?.id ?? null}
         onOpen={openFromSidebar}
         onNewAgent={openNewAgent}
+        onDevices={() => setDevicesOpen(true)}
         onRowRender={onRowRender}
         filter={filter}
         onFilter={changeFilter}
@@ -611,6 +614,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
           <p className="muted empty">{rows.length ? "从左侧选一个 agent。" : "还没有会话。"}</p>
         )}
       </section>
+      {devicesOpen && <DeviceDialog onClose={() => setDevicesOpen(false)} />}
       {newAgentOpen && (
         <NewAgentDialog
           api={api}

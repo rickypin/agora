@@ -371,3 +371,17 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .mobile-composer button { padding: 0 0.9rem; }
 .mobile-note { margin: 0; color: var(--muted); font-size: 12px; }
 .mobile-error { margin: 0; color: var(--bad); }
+
+/* 设备管理（agora-thc.1）：配对 QR 与设备列表。 */
+.pair-paste { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+.pair-paste input { min-width: 260px; padding: 6px 8px; }
+.pair-paste .error { flex-basis: 100%; }
+.devices-open { margin-top: 6px; }
+.dialog.devices { width: 520px; }
+.device-pair { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+.pair-link { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.pair-link code { word-break: break-all; background: var(--panel); padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
+.pair-qr { border: 1px solid var(--border); border-radius: 4px; }
+.device-list table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.device-list th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; }
+.device-list td { padding: 4px 6px; border-top: 1px solid var(--border); }

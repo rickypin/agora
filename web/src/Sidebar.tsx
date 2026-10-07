@@ -89,6 +89,8 @@ interface SidebarProps {
   onOpen: (id: string) => void;
   /** 打开 New Agent 对话框；树视图的组头带一份预填过来（A48，agora-uvd.4），别处不传参、行为不变。 */
   onNewAgent?: (initial?: NewAgentInitial) => void;
+  /** 打开设备管理（配对新设备 / 设备列表与吊销，agora-thc.1）；不给就不渲染入口。 */
+  onDevices?: () => void;
   onRowRender?: (id: string) => void;
   filter: string;
   onFilter: (v: string) => void;
@@ -190,6 +192,7 @@ export function Sidebar({
   active,
   onOpen,
   onNewAgent,
+  onDevices,
   onRowRender,
   filter,
   onFilter,
@@ -361,6 +364,11 @@ export function Sidebar({
       <button className="new-agent" onClick={() => onNewAgent?.()}>
         + New Agent
       </button>
+      {onDevices && (
+        <button className="devices-open" data-testid="open-devices" onClick={onDevices}>
+          设备
+        </button>
+      )}
       {total === 0 && unregistered.length === 0 && <p className="muted pad">还没有会话。</p>}
       {total > 0 && rows.length === 0 && <p className="muted pad">没有匹配的会话。</p>}
       {showSections && hasAttention && (

@@ -128,6 +128,10 @@ pub struct AppState {
     /// VAPID 公钥（`GET /api/system` 的 `push.vapid_public_key`）。没启用推送的进程（测试 /
     /// 还没生成过密钥的 daemon）是 None，客户端据此知道"这个节点还没法推"。
     pub vapid: Option<Arc<crate::push::vapid::Vapid>>,
+    /// `server.public_url`：远端配对链接（QR / Dashboard "配对新设备"）的对外 origin。
+    /// 配置里没有时回落请求的 Host 并记日志——但那条链接只对本机浏览器成立，
+    /// 手机扫了连不上（agora-thc.1）。
+    pub public_url: Option<Arc<str>>,
 }
 
 /// 不可用的探测结果保留多久再重探。
@@ -159,6 +163,7 @@ impl AppState {
             push_store: crate::push::PushStore::new(sessions.db_handle()),
             push_health: crate::push::PushHealth::new(),
             vapid: None,
+            public_url: None,
         }
     }
 
@@ -269,7 +274,46 @@ pub fn router(state: AppState) -> Router {
         .fallback(get(spa::serve))
         .layer(middleware::from_fn(log_request))
         .layer(middleware::from_fn(renew_session_cookie))
+        .layer(middleware::from_fn(security_headers))
         .with_state(state)
+}
+
+/// 响应加固头（ADR-003 D7；agora-thc.1）：SPA 与 API 同一份策略。
+///
+/// - `nosniff`：Content-Type 说是什么就是什么；SPA 回退到 index.html 的 MIME 曾错成
+///   octet-stream，浏览器嗅探的错误路径不再有第二次机会（agora-thc.5）。
+/// - `X-Frame-Options: DENY` + CSP `frame-ancestors 'none'`：这个页面不能被别人嵌进 iframe
+///   点按（Dashboard 上的 Kill / Allow 都是真动作），两条一起给是照顾老浏览器。
+/// - `Referrer-Policy: no-referrer`：配对链接在 fragment 里，任何外链都不该带着 URL 出去。
+/// - HSTS 只在 TLS 监听器上发：明文监听器发了也无效，还会让只跑 loopback 的开发机多一层
+///   记忆（浏览器对 http://host 的 HSTS 不生效，但条件严格化没有收益、只有困惑）。
+async fn security_headers(req: Request, next: Next) -> Response {
+    let tls = req.extensions().get::<auth::TlsListener>().is_some();
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    headers.insert(
+        "x-content-type-options",
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        "x-frame-options",
+        axum::http::HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        "referrer-policy",
+        axum::http::HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        "content-security-policy",
+        axum::http::HeaderValue::from_static("frame-ancestors 'none'"),
+    );
+    if tls {
+        headers.insert(
+            "strict-transport-security",
+            axum::http::HeaderValue::from_static("max-age=31536000"),
+        );
+    }
+    resp
 }
 
 /// 滑动续期：`Principal` 提取器认证成功且刚把 `last_seen_at` 往后推时，会把要重发的

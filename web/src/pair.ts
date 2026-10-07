@@ -7,6 +7,21 @@ export function extractPairToken(hash: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * 从粘贴板里认出 token：整条链接（`https://host/#pair=<token>`）或裸 token 都行。
+ *
+ * 为什么门页要有这条：iOS 主屏 PWA 与 Safari 的存储 / cookie 可能不共享——扫码通常进 Safari，
+ * 配对好了之后从主屏打开还是未配对（ADR-003 D2 的已知形状，agora-thc.1）。这时把链接粘进
+ * 主屏 PWA 的门页就能补齐，不必回到终端。裸 token 也收（人可能只复制了那一截）。
+ */
+export function extractPairTokenFromText(text: string): string | null {
+  const trimmed = text.trim();
+  const m = /#pair=([A-Za-z0-9_-]{20,})/.exec(trimmed);
+  if (m) return m[1];
+  // 裸 token：32 字节 base64url 是 43 字符；放宽到 ≥20，交给服务端判无效比前端猜错好。
+  return /^[A-Za-z0-9_-]{20,}$/.test(trimmed) ? trimmed : null;
+}
+
 export interface PairedDevice {
   id: string;
   name: string;

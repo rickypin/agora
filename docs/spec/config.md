@@ -8,7 +8,7 @@
 server:                       # ADR-003 D5：两个监听器
   listen: "127.0.0.1:7680"    # 明文监听器：只允许 loopback 地址，配置校验拒绝其它
   tls_listen: null            # TLS 监听器：非 loopback、永远 TLS；被 peer 或手机访问时才开，例 "0.0.0.0:7681"（端口须不同于 listen）
-  public_url: null            # 远端配对链接与 QR 用的对外地址，例 "https://zuan.tail6f613.ts.net:7681"；不自动猜。消费点：POST /api/auth/pair/new 与 agora pair 的 QR（接线归 agora-thc.1）
+  public_url: null            # 远端配对链接与 QR 用的对外地址，例 "https://zuan.tail6f613.ts.net:7681"；不自动猜。消费点：POST /api/auth/pair/new 与 agora pair 的 QR；缺失时回落到请求 Host（或 daemon 自己的明文地址）并记日志说明，那种链接只有本机浏览器能用
 node:
   id: "mac"                   # §3.5：全局会话 id `<node>:<id>` 的前缀，安装脚本写短主机名（文末「安装」），改名需迁移；没有 config.yaml 时默认 "local"
 peers: []                     # §3.5：默认空。每项 { name, url, token_file, cert_fingerprint: "sha256:<SPKI hex>" }（ADR-003 D3 / D4）；

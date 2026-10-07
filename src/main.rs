@@ -27,6 +27,8 @@ use std::sync::Arc;
 
 use agora::api::{self, AppState};
 use agora::auth::{self, Auth, PairedVia};
+use std::io::IsTerminal;
+
 use agora::config::{self, Config, Settings};
 use agora::local::{self, Request, Response, SOCKET_FILE};
 use agora::peer::backoff::CONNECT_TIMEOUT;
@@ -41,7 +43,7 @@ use agora::tls::{self, Mode, TlsFiles};
 /// V1 唯一的运行时；配置里 `runtime.kind` 缺省就是它。
 const RUNTIME_KIND: &str = "tmux";
 
-const USAGE: &str = "用法: agora [serve | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | peer token create <name> [--rotate]|list|revoke <name> | tls fingerprint|rotate-key | upgrade --from <新二进制> [--no-restart] | upgrade --probe | fake-agent <script>|-e <inline>]";
+const USAGE: &str = "用法: agora [serve | pair | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | peer token create <name> [--rotate]|list|revoke <name> | tls fingerprint|rotate-key | upgrade --from <新二进制> [--no-restart] | upgrade --probe | fake-agent <script>|-e <inline>]";
 
 #[tokio::main]
 async fn main() {
@@ -49,6 +51,7 @@ async fn main() {
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let code = match argv.as_slice() {
         [] | ["serve"] => serve().await,
+        ["pair"] => pair_qr().await,
         ["url"] => pair_link(false).await,
         ["open"] => pair_link(true).await,
         ["auth", "devices"] => auth_devices(),
@@ -362,6 +365,13 @@ async fn serve() -> i32 {
     );
     state.runtime_path_source = path_source;
     state.tls_mode = tls_mode;
+    // server.public_url：远端配对链接（agora pair QR / Dashboard 配对新设备）的对外 origin。
+    state.public_url = settings
+        .raw
+        .server
+        .public_url
+        .as_deref()
+        .map(Arc::<str>::from);
     // 配置里的 peer 从第一秒起就在 health / Header 里（离线、没见过），不等连上才出现（MISSION §10.3）。
     // 同时装节点名 → transport 的表（agora-7ku.11）：peer 客户端（7ku.5）与一跳转发（7ku.7）都从
     // state.registry 查。名字重复或与本机 node.id 同名是配置错误，与其他配置错误一样退出码 2；
@@ -527,6 +537,48 @@ async fn report_bind_failure(home: &Path, addr: std::net::SocketAddr, err: &api:
 }
 
 // ---------- CLI ----------
+
+/// `agora pair`（V2-1）：给要用手机配对的人——打印链接与二维码。origin 取
+/// `server.public_url`（远端设备扫得开）；没配就走 daemon 自己的监听地址，并提示一句。
+/// 与 `agora url` / `agora open` 同一条 socket 通路（ADR-003 D2：不经 HTTP，也不落 token 明文）。
+async fn pair_qr() -> i32 {
+    let home = home_or_exit();
+    let settings = settings_or_exit(&home);
+    let origin = settings.raw.server.public_url.clone();
+    if origin.is_none() {
+        eprintln!(
+            "提示：server.public_url 未配置，链接用 daemon 的监听地址——只对本机浏览器成立，手机扫了连不上"
+        );
+    }
+    match local::request(&home.join(SOCKET_FILE), &Request::Pair { origin }).await {
+        Ok(Response::Pair { url }) => {
+            println!("{url}");
+            if std::io::stdout().is_terminal() {
+                match agora::pair::Qr::encode(&url) {
+                    Ok(qr) => println!("\n{}", qr.terminal(2)),
+                    Err(err) => {
+                        eprintln!("二维码生成失败（链接已在上方，可手输或改成粘贴）：{err}")
+                    }
+                }
+            } else {
+                eprintln!("（stdout 不是终端，跳过二维码；链接已打印）");
+            }
+            0
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("{message}");
+            1
+        }
+        Ok(other) => {
+            eprintln!("daemon 应答异常: {other:?}");
+            1
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            1
+        }
+    }
+}
 
 async fn pair_link(open: bool) -> i32 {
     let home = home_or_exit();

@@ -31,6 +31,7 @@ pub mod fake_agent;
 pub mod gateway;
 pub mod hook;
 pub mod local;
+pub mod pair;
 pub mod peer;
 pub mod project;
 pub mod push;
