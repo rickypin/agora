@@ -15,9 +15,15 @@
  *
  * 只发本文件里列的这几个事件与字段，不把 pi 的原始事件整包转出去（`agent_end.messages` 里带着
  * 整段系统提示与转录）。字段名与 `src/adapter/pi.rs` 的 `parse` 一一对应。
+ *
+ * 另一半是**输入队列**（agora-t5kf.2 / ADR-002 D11）：扩展每 1 s 看一遍
+ * `$AGORA_HOME/input/<session hex>/`，把 daemon 写下的 `<id>.json` 认领（`.claimed`）、
+ * `pi.sendUserMessage` 注入、改名 `.done` 回报；这才是"手机给终端里的 pi 发下一条指令"。
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 // 安装时替换成 JS 字符串字面量（含引号）：agora 二进制与 AGORA_HOME。
 const AGORA = {{AGORA}};
@@ -69,6 +75,9 @@ export default function (pi: ExtensionAPI) {
       session_name: get("getSessionName"),
       cwd: c?.cwd ?? get("getCwd"),
       mode: c?.mode,
+      // 输入通道版本（ADR-002 D11）：这个扩展会收 $AGORA_HOME/input 队列并 `sendUserMessage`；
+      // 没有这个字段（旧扩展 / 别的宿主）的行 text_via = none，只能到终端。
+      input_channel: 1,
     };
   };
 
@@ -143,9 +152,85 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  pi.on("session_start", (e, ctx) =>
-    emit("session_start", { reason: e.reason, idle: idleOf(ctx) }, ctx),
-  );
+  // ── 宿主文本通道：收 daemon 的输入队列（agora-t5kf.2 / ADR-002 D11）────────────────────
+  // daemon 把手机 / 桌面发的下一条指令写进 `$AGORA_HOME/input/<session hex>/<id>.json`；这里取件、
+  // `pi.sendUserMessage` 注入、改名回报。先改名再注入（`.json` → `.claimed`）：daemon 的超时清理
+  // 只删还没被取走的 `.json`，在途的那件不会被误删；成功 `.done`（ack），抛错 `.failed`（内容
+  // 是一句给人看的话）。轮询 1 s：fs.watch 在部分文件系统上不可靠，延迟 1 s 还能接受。
+  const INPUT_DIR = `${AGORA_HOME}/input`;
+  const INPUT_POLL_MS = 1000;
+  let mySession: string | undefined;
+
+  const hexOf = (s: string): string => Buffer.from(s, "utf8").toString("hex");
+  const sibling = (dir: string, name: string, suffix: string): string =>
+    path.join(dir, `${name.replace(/\.json$/, "")}.${suffix}`);
+
+  /** 取一件：认领 → 注入 → 回报。每步失败都静默（投递是旁路，永不打断 pi）。 */
+  const takeOne = (dir: string): void => {
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return;
+    }
+    const name = names.filter((n) => n.endsWith(".json")).sort()[0];
+    if (!name) return;
+    const from = path.join(dir, name);
+    const claimed = sibling(dir, name, "claimed");
+    let text: string;
+    try {
+      text = fs.readFileSync(from, "utf8");
+      fs.renameSync(from, claimed);
+    } catch {
+      return; // daemon 超时已删、或另一个取件者拿走了
+    }
+    try {
+      // followUp：在跑就排队到这一轮的工具调用之后；空闲时照常起一轮（两种都实测过）。
+      pi.sendUserMessage(text, { deliverAs: "followUp" });
+      fs.renameSync(claimed, sibling(dir, name, "done"));
+    } catch (err) {
+      try {
+        fs.writeFileSync(claimed, `pi.sendUserMessage 失败：${String(err)}\n`);
+      } catch {
+        /* 旁路 */
+      }
+      try {
+        fs.renameSync(claimed, sibling(dir, name, "failed"));
+      } catch {
+        /* 旁路 */
+      }
+    }
+  };
+
+  /** 每轮最多取 8 件，免得一次塞很多时把 pi 拖住。 */
+  const scan = (): void => {
+    if (!mySession) return;
+    const dir = path.join(INPUT_DIR, hexOf(mySession));
+    for (let i = 0; i < 8; i++) {
+      let pending: string[];
+      try {
+        pending = fs.readdirSync(dir).filter((n) => n.endsWith(".json"));
+      } catch {
+        return; // 目录不在：还没人发过东西
+      }
+      if (pending.length === 0) return;
+      takeOne(dir);
+    }
+  };
+
+  const inputTimer = setInterval(scan, INPUT_POLL_MS);
+  (inputTimer as { unref?: () => void }).unref?.();
+
+  pi.on("session_start", (e, ctx) => {
+    try {
+      const id = (session(ctx) as { session_id?: unknown }).session_id;
+      if (typeof id === "string" && id) mySession = id;
+    } catch {
+      /* 旁路 */
+    }
+    scan();
+    emit("session_start", { reason: e.reason, idle: idleOf(ctx) }, ctx);
+  });
   pi.on("before_agent_start", (e, ctx) => emit("before_agent_start", { prompt: e.prompt ?? "" }, ctx));
   pi.on("tool_execution_start", (e, ctx) => emit("tool_execution_start", { tool_name: e.toolName ?? "tool" }, ctx));
   // agent_settled = pi 不会再自动继续（重试 / 压缩 / 排队都做完了）——这就是 TURN_DONE 的边界；

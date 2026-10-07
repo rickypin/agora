@@ -429,3 +429,143 @@ fn headless_fixtures_carry_session_start_and_stop() {
     }
     assert!(seen > 0, "没有任何无头 fixture");
 }
+
+/// 宿主文本通道的端到端（agora-t5kf.2 / ADR-002 D11）：真 pi、真扩展、真 tmux。
+/// daemon 那一半（`text_via`、排队、等 ack）在 `tests/api_input.rs`；这里从"队列里的一件"看到
+/// "pi 真的收到了"：扩展取件注入后 TUI 上出现那句话、件被改名 `.done`（= API 的 ack）、
+/// hook 报回 `before_agent_start`（一轮真的开始了）。没有 daemon：投递落在 `hooks/inbox/`。
+#[test]
+#[ignore = "真起本机的 pi 与 tmux；CI 用 cargo test --test hook_smoke -- --ignored 显式跑"]
+fn pi_input_channel() {
+    const TEXT: &str = "队列注入的端到端测试：只回一个字：好";
+    // 钉住会话 id：扩展按它算队列目录，测试才知道该往哪写（`pi --session-id` 2026-10-07 实测有效）。
+    const SESSION: &str = "c0ffee00-1111-2222-3333-444444444444";
+    let Some(a) = adapter::find("pi") else {
+        panic!("adapter 表里没有 pi");
+    };
+    let cmd = a.default_command();
+    if matches!(
+        adapter::probe(a, cmd, Duration::from_secs(15)),
+        VersionProbe::Missing
+    ) {
+        eprintln!("pi: `{cmd}` 不在 PATH，跳过");
+        return;
+    }
+    let Some(hooks) = a.hooks() else {
+        panic!("pi 没有 hook，输入通道无从谈起");
+    };
+
+    let real_home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
+    let agora_home = isolate::home_dir("smoke-input", isolate::nth());
+    let _ = fs::remove_dir_all(&agora_home);
+    agora::local::ensure_home(&agora_home).unwrap();
+    let user = tempfile::tempdir().unwrap();
+    let user_home = user.path().to_path_buf();
+    let work = user_home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    seed_credentials("pi", &real_home, &user_home);
+    let inst = Installer {
+        agora_home: agora_home.clone(),
+        user_home: user_home.clone(),
+    };
+    inst.ensure_bin_link(Path::new(AGORA_BIN)).unwrap();
+    inst.install_for(hooks).unwrap();
+
+    let socket = isolate::socket_name("smoke-input", isolate::nth());
+    let tmux = |args: &[&str]| {
+        Command::new("tmux")
+            .args(["-L", &socket])
+            .args(args)
+            .output()
+            .expect("tmux")
+    };
+    let launch = format!(
+        "env -u AGORA_HOME -u AGORA_SESSION_ID -u AGORA_EPOCH -u GROK_SESSION_ID HOME={} {} --session-id {SESSION}",
+        user_home.display(),
+        cmd
+    );
+    let out = tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "pi",
+        "-c",
+        work.to_str().unwrap(),
+        &launch,
+    ]);
+    assert!(out.status.success(), "起 tmux 失败: {out:?}");
+
+    // 等扩展真的把 session_start 投出来（inbox 是 daemon 不在时的落点）＝ pi 起来了、扩展装上了。
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut started = false;
+    while Instant::now() < deadline && !started {
+        started = inbox_payloads(&agora_home)
+            .iter()
+            .any(|p| p["hook_event_name"] == "session_start" && p["session_id"] == SESSION);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        started,
+        "pi 起来了但没有 session_start 落进投递箱：扩展没加载？"
+    );
+
+    // daemon 侧那一半的动作：往队列里写一件（`input/<session hex>/<id>.json`）。
+    let input_root = agora::hook::input::home_dir(&agora_home);
+    let id = agora::hook::input::enqueue(&input_root, SESSION, TEXT).unwrap();
+
+    // 等 ack（`.done`）与一轮的起点（`before_agent_start` 带着我们那句）。
+    let done = agora::hook::input::session_dir(&input_root, SESSION).join(format!("{id}.done"));
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut injected = false;
+    while Instant::now() < deadline && !injected {
+        injected = done.exists()
+            && inbox_payloads(&agora_home)
+                .iter()
+                .any(|p| p["hook_event_name"] == "before_agent_start" && p["prompt"] == TEXT);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let pane =
+        String::from_utf8_lossy(&tmux(&["capture-pane", "-p", "-t", "pi"]).stdout).to_string();
+    let _ = tmux(&["kill-session", "-t", "pi"]);
+    isolate::kill_tmux(&socket);
+    assert!(
+        injected,
+        "注入没落地：.done 存在={}，inbox 里的 before_agent_start={:?}",
+        done.exists(),
+        inbox_payloads(&agora_home)
+            .iter()
+            .filter(|p| p["hook_event_name"] == "before_agent_start")
+            .map(|p| p["prompt"].clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        pane.contains(TEXT),
+        "文件与事件都对上了，但 pi 的 TUI 里没有那句话——用户到底看没看到？pane:\n{pane}"
+    );
+}
+
+/// 投递箱里所有事件的 payload（测试里没有 daemon，所以一件不落全在这里）。
+fn inbox_payloads(agora_home: &Path) -> Vec<serde_json::Value> {
+    // 投递箱是按 `<host>/<session>/<ts>-<pid>.json` 分层的（`src/hook/inbox.rs`）。
+    let mut stack = vec![agora_home.join("hooks/inbox")];
+    let mut out = Vec::new();
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|x| x == "json") {
+                if let Ok(text) = fs::read_to_string(&path) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                        // 投递件是 `{envelope, payload}`：信封是 agora 的信封，payload 才是宿主原样。
+                        out.push(v.get("payload").cloned().unwrap_or(v));
+                    }
+                }
+            }
+        }
+    }
+    out
+}

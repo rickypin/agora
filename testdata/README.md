@@ -112,8 +112,11 @@ stop(end_turn) → session_end(shutdown) → 退出时再一次 stop(shutdown)�
 
 三处与其它宿主不同、写在这里防后来者当 bug：① 登记带 `idle`（扩展报 `ctx.isIdle()`，真值表 x14/a24）；
 ② 轮次边界是 `agent_settled` 不是 `turn_end`（后者每个模型轮都发）；③ 空 assistant 文本被脱敏器写成
-`<last_assistant_message>` 占位符（它把空串也替掉），空串那一格由 adapter / 状态机单测钉。冒烟见
-`tests/hook_smoke.rs::pi`（键集合基线 `headless.jsonl`）。
+`<last_assistant_message>` 占位符（它把空串也替掉），空串那一格由 adapter / 状态机单测钉。④ 每条载荷都带
+`input_channel: 1`（扩展收 `$AGORA_HOME/input` 队列、`pi.sendUserMessage` 注入；ADR-002 D11），
+fixture 里也补上了——无句柄的 pi 行因此 `text_via = host`，是这个键把“只能到终端”改成“手机上能发话”的。
+冒烟见 `tests/hook_smoke.rs::pi`（键集合基线 `headless.jsonl`）与 `::pi_input_channel`
+（真 pi + 真 tmux：往队列里写一件 → TUI 里出现那句话 → `.done` = ack）。
 
 ## generic/pane
 
