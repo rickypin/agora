@@ -195,6 +195,9 @@ pub struct Assessment {
     pub status: Status,
     pub source: Source,
     /// 0.0–1.0；API 返回、日志记录，UI 不显示（MISSION §5.3）。
+    /// 序列化时按 3 位小数量化并以 f64 写出（agora-a4cj）：f32 直接按 f64 序列化会带二进制尾巴
+    /// （`0.8` 写成 `0.800000011920929`）。反序列化不受影响，旧检查点里的尾巴照样读得进来。
+    #[serde(serialize_with = "serialize_confidence")]
     pub confidence: f32,
     /// 给人看的一句话，措辞随版本变，**程序不得据它判断**（MISSION §2.3 规则 10）。
     pub reason: Option<String>,
@@ -207,6 +210,16 @@ pub struct Assessment {
     /// `status` 是 UNKNOWN 时：为什么说不清（封闭枚举，agora-5gg.6）。缺省同上。
     #[serde(default)]
     pub unknown_cause: Option<UnknownCause>,
+}
+
+/// [`Assessment::confidence`] 的序列化：量化到 3 位小数并以 f64 写出（agora-a4cj）——f32 直接按
+/// f64 序列化会带二进制尾巴（`0.8` → `0.800000011920929`），量化后的 f64 走 serde_json 的最短
+/// 表示就是人写的那个 `0.8`。只影响序列化；反序列化仍收 f32。
+fn serialize_confidence<S: serde::Serializer>(
+    value: &f32,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64((f64::from(*value) * 1000.0).round() / 1000.0)
 }
 
 impl Assessment {
@@ -446,8 +459,30 @@ pub fn process_layer(
 
 #[cfg(test)]
 mod tests {
-    use super::{Liveness, ProcessState, Status};
+    use super::{Assessment, Liveness, ProcessState, Source, Status};
     use serde_json::json;
+
+    #[test]
+    fn confidence_serializes_without_a_binary_tail() {
+        // agora-a4cj：f32 直接按 f64 序列化会把 0.8 写成 0.800000011920929。量化到 3 位小数后
+        // JSON 里就是人写的那个数；反序列化不受影响（读的还是 f32）。
+        let a = Assessment::new(Status::Finished, Source::Process, 0.8, None);
+        let text = serde_json::to_string(&a).unwrap();
+        assert!(text.contains(r#""confidence":0.8"#), "{text}");
+        let back: Assessment = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.confidence, 0.8);
+        // 别的常见取值同样干净。
+        for (raw, want) in [
+            (1.0_f32, r#""confidence":1.0"#),
+            (0.9, r#""confidence":0.9"#),
+            (0.25, r#""confidence":0.25"#),
+        ] {
+            let text =
+                serde_json::to_string(&Assessment::new(Status::Running, Source::Hook, raw, None))
+                    .unwrap();
+            assert!(text.contains(want), "{raw} → {text}");
+        }
+    }
 
     #[test]
     fn process_state_wire_names_are_the_locked_vocabulary() {
