@@ -40,6 +40,8 @@ pub enum InstallError {
     },
     #[error("{path} 不是 JSON 对象: {reason}")]
     NotAnObject { path: String, reason: String },
+    #[error("{path} 不是 agora 装的（没有自己的标记），不覆盖：要装先把这份文件挪走或自己处理")]
+    ForeignFile { path: String },
 }
 
 fn io(path: &Path) -> impl FnOnce(std::io::Error) -> InstallError + '_ {
@@ -181,6 +183,30 @@ impl Plan {
     }
 }
 
+/// 文件式安装的计划（pi，agora-c3i）：与 JSON [`Plan`] 平行的第二条路，报告 / diff / 幂等同一套
+/// 语义。`after = None` 是"删掉这个文件"（uninstall）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilePlan {
+    pub file: PathBuf,
+    /// 文件当前内容；None = 不存在。
+    pub before: Option<String>,
+    /// 写完后的内容；None = 删除。
+    pub after: Option<String>,
+}
+
+impl FilePlan {
+    pub fn is_noop(&self) -> bool {
+        self.before.as_deref() == self.after.as_deref()
+    }
+
+    pub fn diff(&self) -> String {
+        diff(
+            self.before.as_deref().unwrap_or(""),
+            self.after.as_deref().unwrap_or(""),
+        )
+    }
+}
+
 pub struct Installer {
     pub agora_home: PathBuf,
     pub user_home: PathBuf,
@@ -261,6 +287,71 @@ impl Installer {
             before,
             after,
         })
+    }
+
+    /// 文件式安装（宿主给了 [`FileInstall`] 才走这条；pi）。已存在但不是我们的文件（不含标记）
+    /// 一律拒绝——用户的同名文件绝不覆盖。
+    pub fn plan_file_install(&self, hooks: &dyn AgentHooks) -> Result<FilePlan, InstallError> {
+        let Some(fi) = hooks.file_install(&self.agora_home) else {
+            return Err(InstallError::NoSpec {
+                agent: hooks.host().to_owned(),
+            });
+        };
+        let file = self.user_home.join(&fi.file);
+        let before = self.read_ours(&file, &fi.marker)?;
+        Ok(FilePlan {
+            file,
+            before,
+            after: Some(fi.content),
+        })
+    }
+
+    /// 卸载：只删带标记的文件；不在就是空计划。
+    pub fn plan_file_uninstall(&self, hooks: &dyn AgentHooks) -> Result<FilePlan, InstallError> {
+        let Some(fi) = hooks.file_install(&self.agora_home) else {
+            return Err(InstallError::NoSpec {
+                agent: hooks.host().to_owned(),
+            });
+        };
+        let file = self.user_home.join(&fi.file);
+        let before = self.read_ours(&file, &fi.marker)?;
+        Ok(FilePlan {
+            file,
+            before,
+            after: None,
+        })
+    }
+
+    fn read_ours(&self, file: &Path, marker: &str) -> Result<Option<String>, InstallError> {
+        if !file.exists() {
+            return Ok(None);
+        }
+        let text = std::fs::read_to_string(file).map_err(io(file))?;
+        if !text.contains(marker) {
+            return Err(InstallError::ForeignFile {
+                path: file.display().to_string(),
+            });
+        }
+        Ok(Some(text))
+    }
+
+    /// 文件式写盘：先 `.part` 再 rename；`after = None` 是删。
+    pub fn write_file(&self, plan: &FilePlan) -> Result<(), InstallError> {
+        match &plan.after {
+            Some(text) => {
+                if let Some(dir) = plan.file.parent() {
+                    std::fs::create_dir_all(dir).map_err(io(dir))?;
+                }
+                let part = plan.file.with_extension("ts.part");
+                std::fs::write(&part, text).map_err(io(&part))?;
+                std::fs::rename(&part, &plan.file).map_err(io(&plan.file))
+            }
+            None => match std::fs::remove_file(&plan.file) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(io(&plan.file)(e)),
+            },
+        }
     }
 
     /// 先 `.part` 再 rename：agent 的 file watcher 看到的永远是完整文件。
@@ -364,6 +455,17 @@ pub fn installed_state(
     user_home: &Path,
     hooks: &dyn AgentHooks,
 ) -> HooksInstalled {
+    // 文件式宿主（pi）：文件在、带标记才算装了。
+    if let Some(fi) = hooks.file_install(agora_home) {
+        let file = user_home.join(&fi.file);
+        if !file.exists() {
+            return HooksInstalled::NoFile;
+        }
+        return match std::fs::read_to_string(&file) {
+            Ok(text) if text.contains(&fi.marker) => HooksInstalled::Yes,
+            _ => HooksInstalled::NoEntries,
+        };
+    }
     let spec = hooks.install_spec();
     let Some(first) = spec.first() else {
         return HooksInstalled::NoFile;
@@ -554,11 +656,6 @@ pub fn run_with(argv: &[&str], exe: &Path, out: &mut dyn Write) -> Result<(), In
         user_home: args.user_home.clone(),
     };
     let install = args.action == "install";
-    let plan = if install {
-        installer.plan_install(hooks)?
-    } else {
-        installer.plan_uninstall(hooks)?
-    };
     if install {
         let link = installer.bin_link_plan(exe);
         if !args.dry_run && !link.is_ok() {
@@ -566,6 +663,41 @@ pub fn run_with(argv: &[&str], exe: &Path, out: &mut dyn Write) -> Result<(), In
         }
         say(out, link.describe(exe, !args.dry_run))?;
     }
+    // 文件式宿主（pi）与 JSON 条目式宿主两条路：报告 / diff / 幂等同一套语义。
+    if hooks.file_install(&args.agora_home).is_some() {
+        let plan = if install {
+            installer.plan_file_install(hooks)?
+        } else {
+            installer.plan_file_uninstall(hooks)?
+        };
+        if plan.is_noop() {
+            say(out, format!("{} 无需改动", plan.file.display()))?;
+        } else {
+            say(out, format!("--- {}", plan.file.display()))?;
+            out.write_all(plan.diff().as_bytes())
+                .map_err(io(Path::new("stderr")))?;
+            if args.dry_run {
+                return say(out, "(--dry-run，未写入)");
+            }
+            installer.write_file(&plan)?;
+            if plan.after.is_some() {
+                say(out, format!("已写入 {}", plan.file.display()))?;
+            } else {
+                say(out, format!("已删除 {}", plan.file.display()))?;
+            }
+        }
+        if install {
+            if let Some(hint) = hooks.install_hint() {
+                say(out, hint)?;
+            }
+        }
+        return Ok(());
+    }
+    let plan = if install {
+        installer.plan_install(hooks)?
+    } else {
+        installer.plan_uninstall(hooks)?
+    };
     if plan.is_noop() {
         say(out, format!("{} 无需改动", plan.file.display()))?;
     } else {
@@ -602,6 +734,153 @@ mod tests {
         assert!(c.starts_with("if [ -x '/Users/x y/.agora/bin/agora' ]; then"));
         assert!(is_ours(Path::new("/Users/x y/.agora"), &c));
         assert!(!is_ours(Path::new("/Users/z/.agora"), &c));
+    }
+
+    #[test]
+    fn file_install_round_trips_and_refuses_foreign_files() {
+        // pi 的扩展是"往目录里放一份文件"（agora-c3i.2），不是 JSON 条目：计划 / 幂等 / 标记 /
+        // 拒绝覆盖别人的同名文件，四条都要成立。
+        let tmp = tempfile::tempdir().unwrap();
+        let inst = Installer {
+            agora_home: tmp.path().join("agora"),
+            user_home: tmp.path().join("home"),
+        };
+        let file = inst.user_home.join(crate::adapter::pi::EXTENSION_FILE);
+
+        // 首装：before 空、after 带标记与绝对路径、落盘。
+        let plan = inst.plan_file_install(&crate::adapter::pi::PI).unwrap();
+        assert!(plan.before.is_none());
+        assert!(!plan.is_noop() && plan.diff().contains("+ "));
+        inst.write_file(&plan).unwrap();
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains(crate::adapter::pi::EXTENSION_MARKER));
+        assert!(text.contains(&format!("\"{}\"", bin_path(&inst.agora_home).display())));
+        // 重复装 = no-op（内容逐字节一致）。
+        assert!(inst
+            .plan_file_install(&crate::adapter::pi::PI)
+            .unwrap()
+            .is_noop());
+
+        // 卸载：after = None，删文件；再卸是 no-op。
+        let un = inst.plan_file_uninstall(&crate::adapter::pi::PI).unwrap();
+        assert!(un.after.is_none());
+        inst.write_file(&un).unwrap();
+        assert!(!file.exists());
+        assert!(inst
+            .plan_file_uninstall(&crate::adapter::pi::PI)
+            .unwrap()
+            .is_noop());
+
+        // 别人的同名文件：装与卸都拒绝，绝不覆盖。
+        std::fs::write(&file, "// 用户自己写的扩展\n").unwrap();
+        assert!(matches!(
+            inst.plan_file_install(&crate::adapter::pi::PI),
+            Err(InstallError::ForeignFile { .. })
+        ));
+        assert!(matches!(
+            inst.plan_file_uninstall(&crate::adapter::pi::PI),
+            Err(InstallError::ForeignFile { .. })
+        ));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "// 用户自己写的扩展\n"
+        );
+    }
+
+    #[test]
+    fn installed_state_reads_the_extension_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inst = Installer {
+            agora_home: tmp.path().join("agora"),
+            user_home: tmp.path().join("home"),
+        };
+        let file = inst.user_home.join(crate::adapter::pi::EXTENSION_FILE);
+        assert_eq!(
+            installed_state(&inst.agora_home, &inst.user_home, &crate::adapter::pi::PI),
+            HooksInstalled::NoFile
+        );
+        inst.write_file(&inst.plan_file_install(&crate::adapter::pi::PI).unwrap())
+            .unwrap();
+        assert_eq!(
+            installed_state(&inst.agora_home, &inst.user_home, &crate::adapter::pi::PI),
+            HooksInstalled::Yes
+        );
+        // 文件在但不是我们的条目（被替换过）：NoEntries，不能报 Yes 让人以为 hook 还活着。
+        std::fs::write(&file, "// 别的扩展\n").unwrap();
+        assert_eq!(
+            installed_state(&inst.agora_home, &inst.user_home, &crate::adapter::pi::PI),
+            HooksInstalled::NoEntries
+        );
+    }
+
+    #[test]
+    fn hooks_install_pi_reports_dry_run_then_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let agora_home = tmp.path().join("agora");
+        std::fs::create_dir_all(&home).unwrap();
+        let exe = tmp.path().join("agora-current");
+        std::fs::write(&exe, "").unwrap();
+        let file = home.join(crate::adapter::pi::EXTENSION_FILE);
+        let h = |s: &Path| s.display().to_string();
+
+        // --dry-run：报告 diff 与"未写入"，不落盘。
+        let mut out = Vec::new();
+        run_with(
+            &[
+                "install",
+                "pi",
+                "--dry-run",
+                "--home",
+                &h(&agora_home),
+                "--user-home",
+                &h(&home),
+            ],
+            &exe,
+            &mut out,
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("--dry-run，未写入"), "{text}");
+        assert!(!file.exists());
+
+        // 真装：链接 + 文件都到位。
+        let mut out = Vec::new();
+        run_with(
+            &[
+                "install",
+                "pi",
+                "--home",
+                &h(&agora_home),
+                "--user-home",
+                &h(&home),
+            ],
+            &exe,
+            &mut out,
+        )
+        .unwrap();
+        assert!(String::from_utf8(out).unwrap().contains("已写入"));
+        assert!(file.exists());
+        assert_eq!(std::fs::read_link(bin_path(&agora_home)).unwrap(), exe);
+
+        // 卸载：删文件；链接不动（别的 agent 的条目可能还在用）。
+        let mut out = Vec::new();
+        run_with(
+            &[
+                "uninstall",
+                "pi",
+                "--home",
+                &h(&agora_home),
+                "--user-home",
+                &h(&home),
+            ],
+            &exe,
+            &mut out,
+        )
+        .unwrap();
+        assert!(String::from_utf8(out).unwrap().contains("已删除"));
+        assert!(!file.exists());
+        assert!(bin_path(&agora_home).exists());
     }
 
     #[test]
