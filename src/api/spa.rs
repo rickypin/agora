@@ -5,7 +5,7 @@
 //! 也能跑（CI 顺序是先 build 前端再 cargo）。
 
 use axum::{
-    http::{header, StatusCode, Uri},
+    http::{header, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
 };
 use rust_embed::Embed;
@@ -35,8 +35,21 @@ pub async fn serve(uri: Uri) -> Response {
 
     match file {
         Some(file) => {
-            let mime = mime_guess::from_path(served).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response()
+            // PWA 的两个文件按名字钉类型并禁缓存（agora-thc.4）：mime_guess 对 .webmanifest 不一定
+            // 认，而 SW 必须每次向网络要新脚本（no-cache），否则升级后手机上停在旧版本（A39）。
+            let mime = match served {
+                "sw.js" => "text/javascript".to_string(),
+                "manifest.webmanifest" => "application/manifest+json".to_string(),
+                _ => mime_guess::from_path(served)
+                    .first_or_octet_stream()
+                    .to_string(),
+            };
+            let mut resp = ([(header::CONTENT_TYPE, mime)], file.data).into_response();
+            if served == "sw.js" || served == "manifest.webmanifest" {
+                resp.headers_mut()
+                    .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            }
+            resp
         }
         None => (
             StatusCode::SERVICE_UNAVAILABLE,

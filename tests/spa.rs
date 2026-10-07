@@ -14,23 +14,27 @@ use axum::http::{header, Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-async fn get(app: &axum::Router, path: &str) -> (StatusCode, String, String) {
+async fn get(app: &axum::Router, path: &str) -> (StatusCode, String, String, String) {
     let resp = app
         .clone()
         .oneshot(Request::get(path).body(Body::empty()).unwrap())
         .await
         .unwrap();
     let status = resp.status();
-    let content_type = resp
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
+    let header_str = |name: header::HeaderName| {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let content_type = header_str(header::CONTENT_TYPE);
+    let cache_control = header_str(header::CACHE_CONTROL);
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     (
         status,
         content_type,
+        cache_control,
         String::from_utf8_lossy(&bytes).into_owned(),
     )
 }
@@ -42,7 +46,7 @@ async fn extensionless_spa_fallback_is_served_as_html() {
     // `/`、`/m`（手机入口）与带 query 的深链都回 index.html；MIME 必须是 text/html，
     // 不是 octet-stream（agora-thc.5 修的正是这一格）。
     for path in ["/", "/m", "/m?session=zuan:abc"] {
-        let (status, content_type, body) = get(&app, path).await;
+        let (status, content_type, _cache_control, body) = get(&app, path).await;
         assert_eq!(status, StatusCode::OK, "{path}");
         assert!(
             content_type.starts_with("text/html"),
@@ -55,9 +59,46 @@ async fn extensionless_spa_fallback_is_served_as_html() {
     }
 }
 
+/// PWA 壳的两个文件（agora-thc.4）：按名字钉 Content-Type 与 no-cache——SW 拿到缓存副本，
+/// 升级后的手机上就会一直停在旧版本（A39）。manifest 还必须指向 /m（手机入口）。
+#[tokio::test]
+async fn pwa_assets_are_served_with_their_types_and_no_cache() {
+    let fx = common::Fx::new();
+    let app = fx.app();
+
+    let (status, content_type, cache_control, body) = get(&app, "/manifest.webmanifest").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        content_type.starts_with("application/manifest+json"),
+        "manifest 的 Content-Type 是 {content_type}"
+    );
+    assert_eq!(cache_control, "no-cache");
+    let manifest: serde_json::Value = serde_json::from_str(&body).expect("manifest 是 JSON");
+    assert_eq!(manifest["start_url"], "/m");
+    assert_eq!(manifest["display"], "standalone");
+    assert!(
+        manifest["icons"].as_array().is_some_and(|a| a.len() >= 3),
+        "manifest 要带 192 / 512 / maskable 图标：{body}"
+    );
+
+    let (status, content_type, cache_control, body) = get(&app, "/sw.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        content_type.starts_with("text/javascript"),
+        "sw.js 的 Content-Type 是 {content_type}"
+    );
+    assert_eq!(cache_control, "no-cache");
+    // 升级后不能长期停在旧版本（A39）：装完就接管、激活就认领页面。
+    assert!(body.contains("skipWaiting"), "sw 要 skipWaiting：{body}");
+    assert!(
+        body.contains("clients.claim"),
+        "sw 要 clients.claim：{body}"
+    );
+}
+
 #[tokio::test]
 async fn api_paths_are_never_swallowed_by_the_spa_fallback() {
     let fx = common::Fx::new();
-    let (status, _, _) = get(&fx.app(), "/api/nope").await;
+    let (status, _, _, _) = get(&fx.app(), "/api/nope").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
