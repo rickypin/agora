@@ -5,7 +5,7 @@
 //! - 没有"杀整个 server"的方法；remove 只碰 `pane_dead=1` 的会话。
 //! - terminate 不经 tmux：`kill(-pane_pid)` 整组杀（pgid == pane_pid，实测 2026-09-02）。
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -139,6 +139,11 @@ pub struct TmuxRuntime {
     nudge_count: Mutex<HashMap<String, u32>>,
     /// 每个 socket 上一次补发 SIGCHLD 的时刻。
     last_nudge: Mutex<HashMap<String, Instant>>,
+    /// 这个进程里**成功连上过** server 的 socket（agora-sk8h）。socket 文件被
+    /// `systemd-tmpfiles` / `tmpreap` 之类扫掉之后 connect 会失败，但 server 可能还活着、会话
+    /// 一个没少（tmux 收 SIGUSR1 会重建 socket）——只有「见过」才有资格这么说。从没见过（机器刚
+    /// 起、tmux 还没起来）的文件缺失仍是「没有会话不是故障」（ADR-001 D4）。
+    seen_live: Mutex<HashSet<String>>,
 }
 
 /// 解析后的 ref；只在本模块存在。
@@ -168,6 +173,7 @@ impl TmuxRuntime {
             first_dead_seen: Mutex::new(HashMap::new()),
             nudge_count: Mutex::new(HashMap::new()),
             last_nudge: Mutex::new(HashMap::new()),
+            seen_live: Mutex::new(HashSet::new()),
         })
     }
 
@@ -301,8 +307,24 @@ impl TmuxRuntime {
 
     fn list_socket(&self, socket: &str) -> Result<Vec<RuntimeSession>, RuntimeError> {
         if !self.server_running(socket) {
+            // 两种「连不上」在文件系统上分得开（agora-sk8h）：
+            // - 文件还在、连接被拒 = server 真退了（那正是 client 说的 "no server running"；
+            //   tmux 退出不 unlink socket，实测 3.4 里 server 被杀掉后文件原地留着）；
+            // - 文件不在、而这一个进程里见过它活着 = 清理工具把文件扫掉了，server 可能还活着
+            //   （ADR-001 D4 第一条假阳性）。这一格绝不能答「没有会话」：那一答在管理器那里
+            //   就是 FINISHED + ended_at。交给 dkv3 的 per-socket 信号（采纳 socket 走
+            //   `unreadable`）或整轮降级（agora 自己的 socket，D7）。
+            // 从没见过的文件缺失（机器刚起、tmux 还没起来；daemon 重启后文件已丢）保持
+            // 「没有会话不是故障」。守卫：tests/runtime_degraded.rs::
+            // a_removed_socket_file_does_not_read_adopted_rows_as_finished。
+            if !socket_path(socket).exists() && lock(&self.seen_live).contains(socket) {
+                return Err(RuntimeError::ServerUnavailable {
+                    reason: "socket 文件不在（可能被清理工具扫掉），server 可能还活着".to_owned(),
+                });
+            }
             return Ok(Vec::new());
         }
+        lock(&self.seen_live).insert(socket.to_owned());
         let format = [
             "#{session_name}",
             "#{pane_pid}",
@@ -505,9 +527,9 @@ impl Runtime for TmuxRuntime {
                 // 用户 socket 出问题不该拖垮 agora 自己的会话列表（ADR-001 D7：warn 一句继续走）。
                 // 但不能把它当成"扫过了、里面没有会话"：那个 socket 上的 adopted 行会被 reconcile
                 // 与 view 的 missing 分支读成"会话没了"并写 ended_at（agora-dkv3）。把失败随
-                // RuntimeScan 交出去，读路径据此把那一格退回 UNKNOWN。
-                // 注意 `list_socket` 对"连不上 socket"返回的是 Ok(空)（ADR-001 D4：没有会话不是
-                // 故障），那才是真的 server 没了；走到这里的是"应答了、但拒绝 / 超时 / 报错"。
+                // RuntimeScan 交出去，读路径据此把那一格退回 UNKNOWN。走到这里的有两种：
+                // 应答了但拒绝 / 超时 / 报错；以及 socket 文件被清理工具扫掉而 server 此前活着、
+                // 会话可能一个没少（agora-sk8h）。
                 Err(err) => {
                     tracing::warn!(component = "runtime", socket = %s, %err, "扫描采纳 socket 失败");
                     unreadable.push(SocketScanFailure {

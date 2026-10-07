@@ -335,8 +335,9 @@ impl RuntimeGone {
 /// 会话销毁时 pane 进程收 SIGHUP，agent 确定不在，与 external 行的 `external process gone`
 /// 同性质。拿不到退出码（pane 连同会话一起没了），所以：
 /// - conf 0.8 而非 1.0 —— "连不上 socket"有一个已知的假阳性：socket 文件被 tmpfiles 之类清掉
-///   而运行时进程还活着（它会靠 SIGUSR1 重建 socket），那时说"server 没了"是错的（notes ③，
-///   反例写进 ADR-001 D4）；
+///   而运行时进程还活着（它会靠 SIGUSR1 重建 socket），那时说"server 没了"是错的。运行中那一半
+///   已被 agora-sk8h 挡掉（见过活的 socket 文件不在 → 报没扫到、不判 gone）；剩下的窗口是 daemon
+///   重启前文件已经丢了（进程内记忆没了），所以 0.8 不动（notes ③，反例写进 ADR-001 D4）；
 /// - 不盖 hook 先说的结束（同 0.8，`Machine::process_fact_is_no_better`）：行上留着宿主自己的
 ///   说法，只有 `alive` 变假（agora-rzh 同一条理由）。
 ///

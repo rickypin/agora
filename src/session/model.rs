@@ -75,7 +75,9 @@ pub struct SessionRecord {
     pub ended_at_approximate: bool,
     /// 这个 `ended_at` 是"运行时列表里没有它"猜出来的，因而**可以被下一轮的事实推翻**
     /// （agora-psj0）。近似值里只有这一档会错到底：socket 文件被 tmpfiles 之类扫掉而 server 还
-    /// 活着时，那几轮的列表是空的，行会被判成结束（ADR-001 D4 的已知假阳性）；socket 回来、会话
+    /// 活着时，那几轮的列表是空的，行会被判成结束（ADR-001 D4 的已知假阳性；运行中那一半已被
+    /// agora-sk8h 挡掉——见过活的 socket 文件丢了就不再答"没有会话"，只剩 daemon 重启窗口）；
+    /// socket 回来、会话
     /// 还活着时 `view()` 就把 `ended_at` 连同这个记号一起清掉。Kill 之后运行时还没报退出时刻的
     /// 近似值不带它——那一行确定已经结束，不该被任何后来的观测撤回。
     pub ended_at_from_missing: bool,

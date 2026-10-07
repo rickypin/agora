@@ -134,8 +134,9 @@ impl Runtime for FakeRuntime {
         if let Some(reason) = self.list_error.lock().unwrap().clone() {
             return Err(RuntimeError::ServerUnavailable { reason });
         }
-        // 看不见的 socket 报空而不是报错——真 tmux 的 `list_socket` 连不上 socket 就返回 Ok(空)
-        // （ADR-001 D4：没有会话不是故障），这一格正是 agora-psj0 的误判来路，不是 dkv3 的
+        // 看不见的 socket 报空而不是报错——真 tmux 的运行中这一格已被 agora-sk8h 挡掉（见证过活
+        // 的 socket 文件不在就报失败），但 daemon 重启前文件已经丢了的窗口仍然长这样，这个
+        // FakeRuntime 保留它正是为了继续钉 agora-psj0 的收回路径；不是 dkv3 的
         // `RuntimeScan::unreadable`。
         Ok(RuntimeScan::complete(
             self.sessions

@@ -416,6 +416,103 @@ async fn unscanned_adopt_socket_keeps_adopted_rows_unknown() {
     assert!(back.record.ended_at.is_none());
 }
 
+#[tokio::test]
+async fn a_removed_socket_file_does_not_read_adopted_rows_as_finished() {
+    // agora-sk8h / ADR-001 D4 第一条假阳性：socket 文件被 systemd-tmpfiles / tmpreap 之类扫掉
+    // 而 server 还活着（会话一个没少，tmux 收 SIGUSR1 会重建 socket），`list_socket` 以前连不上
+    // 就答"没有会话"，adopted 行被读成 FINISHED `runtime_gone(server)` 并写 ended_at。
+    // 修法：这个进程里见过那个 server 活着而文件不在了 → 跟 dkv3 的失败同一条路（per-socket
+    // 信号 / 整轮降级），行落 UNKNOWN，不写结束；"从没见过"的文件缺失（机器刚起）仍是空列表。
+    let adopt = isolate::socket_name("deg-gone", isolate::nth());
+    let f = fake_with("gone", "ok", Some(&adopt));
+    let mine = f.sessions.create(&spec("主 socket 的行")).unwrap();
+    f.announce(
+        mine.record
+            .runtime_ref
+            .as_deref()
+            .unwrap()
+            .rsplit(':')
+            .next()
+            .unwrap(),
+    );
+    // 这一步的扫描让运行时"见过"采纳 socket 上的 server（seen_live）。
+    let foreign_ref = f
+        .sessions
+        .unregistered()
+        .unwrap()
+        .into_iter()
+        .find(|u| u.session.name == "mywork")
+        .expect("采纳 socket 上的会话应当可见")
+        .session
+        .r#ref;
+    let adopted = f
+        .sessions
+        .adopt(&AdoptSession {
+            runtime_ref: foreign_ref.0.clone(),
+            display_name: None,
+            agent_type: None,
+            working_directory: None,
+        })
+        .unwrap();
+    let before = adopted.assessment.status;
+    assert!(adopted.alive, "起点：adopted 行是活的");
+    assert!(adopted.record.ended_at.is_none());
+
+    // 清理工具扫掉 socket 文件：connect 变成 ENOENT，而 fixture 的那个 UnixListener 还 bind 着
+    // 原来的 inode——正是"server 还活着、文件不在了"这一格。
+    let path = socket_path(&adopt);
+    std::fs::remove_file(&path).unwrap();
+    assert!(!path.exists());
+
+    let views = f.sessions.list().unwrap();
+    let a = view_of(&views, &adopted.record.id);
+    assert_eq!(
+        a.assessment.status,
+        Status::Unknown,
+        "文件被扫掉只能说没扫到：{:?} {}",
+        a.assessment.status,
+        a.assessment.reason.as_deref().unwrap_or_default()
+    );
+    assert_eq!(
+        a.assessment.unknown_cause,
+        Some(UnknownCause::RuntimeUnavailable),
+        "这一格要说清说不清的原因: {:?}",
+        a.assessment.unknown_cause
+    );
+    let reason = a.assessment.reason.clone().unwrap_or_default();
+    assert!(
+        reason.contains("runtime unavailable") && reason.contains(&adopt),
+        "原因要带上是哪个 socket 没扫到: {reason}"
+    );
+    assert!(
+        a.record.ended_at.is_none(),
+        "绝不能因为文件被扫掉就给 adopted 行写 ended_at"
+    );
+    assert_eq!(
+        a.process,
+        ProcessState::Unknown,
+        "同一个道理不能从 process 上漏出一条假的 gone"
+    );
+
+    // 主 socket 上的行不受影响；采纳 socket 失明不等于 agora 自己的运行时降级。
+    let m = view_of(&views, &mine.record.id);
+    assert!(m.alive, "采纳 socket 失明不得拖垮 agora 自己的会话");
+    assert!(m.record.ended_at.is_none());
+    let h = f.health().await;
+    assert_eq!(
+        h["runtime"]["status"], "ok",
+        "adopt 侧失明不降级 health: {:?}",
+        h["runtime"]
+    );
+
+    // socket 回来（tmux 收 SIGUSR1 重建、client 又能连上）：行原样回活，不留结束痕迹。
+    let _again = bind_fake_server(&adopt);
+    let back = f.sessions.get(&adopted.record.id).unwrap();
+    assert!(back.alive);
+    assert_eq!(back.assessment.status, before, "恢复后回到原来那一格");
+    assert!(back.record.ended_at.is_none());
+}
+
 #[test]
 fn reconcile_skips_rows_on_an_unscanned_adopt_socket() {
     // reconcile 的 missing 分支同一形状（daemon 重启时把"没扫到"当"会话消失"，早就在写近似
