@@ -134,6 +134,8 @@ select:disabled { opacity: 0.5; }
    折叠管默认露多少，40vh 管展开之后最多占多高。白空格不再由这里管——正文走 markdown 排版
    （.md 一族），只有代码块保留原样。 */
 .respond-last { max-height: 40vh; overflow: auto; font-size: 13px; display: flex; align-items: flex-start; gap: 6px; }
+/* 无句柄行的"这里发不了"说明（agora-71p2）：与输入框同一位置、同样压低存在感。 */
+.respond-note { margin: 0; font-size: 12px; }
 /* ↳ 是"这是回复"的记号，得留在正文外面：markdown 的第一个块可能是 h2 或 <pre>，把箭头塞
    进去会跟标题基线打架。flex 让它占一列，正文那列 min-width:0 才收得住宽表格 / 长代码行。 */
 .respond-last-mark { flex: none; }

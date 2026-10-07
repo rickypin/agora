@@ -175,35 +175,44 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
           )}
         </div>
       )}
+      {turnDone && !hasTerminal && (
+        // external / headless 行没有可写的运行时（MISSION §5.5「没有终端与文本输入」）：
+        // 画了输入框发出去也只会 409 no_runtime（现场 agora-71p2），这里给说明、只留看结果。
+        <p className="respond-note muted" data-testid="respond-terminal-only">
+          这一行没有可写的运行时；在它自己的终端里回复（这里只能看结果）。
+        </p>
+      )}
       {turnDone && (
         <>
-          <form
-            className="respond-next"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void send();
-            }}
-          >
-            <input
-              ref={inputRef}
-              value={text}
-              placeholder="下一条指令"
-              aria-label="下一条指令"
-              data-testid="next-input"
-              disabled={busy}
-              onChange={(e) => setText(e.target.value)}
-              onKeyDown={(e) => {
-                // Escape = 我不打字了，键盘还给终端（终端焦点规则 agora-p29 / agora-vcc 不变：
-                // 点行仍然聚焦终端，面板只在 Alt/Option+R 与通知点击两条路径上抢焦点）。
-                if (e.key !== "Escape") return;
+          {hasTerminal && (
+            <form
+              className="respond-next"
+              onSubmit={(e) => {
                 e.preventDefault();
-                onOpenTerminal(row.id);
+                void send();
               }}
-            />
-            <button type="submit" disabled={busy || !text.trim()} data-testid="next-send">
-              发送
-            </button>
-          </form>
+            >
+              <input
+                ref={inputRef}
+                value={text}
+                placeholder="下一条指令"
+                aria-label="下一条指令"
+                data-testid="next-input"
+                disabled={busy}
+                onChange={(e) => setText(e.target.value)}
+                onKeyDown={(e) => {
+                  // Escape = 我不打字了，键盘还给终端（终端焦点规则 agora-p29 / agora-vcc 不变：
+                  // 点行仍然聚焦终端，面板只在 Alt/Option+R 与通知点击两条路径上抢焦点）。
+                  if (e.key !== "Escape") return;
+                  e.preventDefault();
+                  onOpenTerminal(row.id);
+                }}
+              />
+              <button type="submit" disabled={busy || !text.trim()} data-testid="next-send">
+                发送
+              </button>
+            </form>
+          )}
           {lastShown !== null && (
             <>
               <div className="respond-last muted" data-testid="respond-last">

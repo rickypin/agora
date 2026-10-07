@@ -63,19 +63,36 @@ describe("thread", () => {
 describe("composer", () => {
   it("explains an empty thread instead of leaving the card blank", () => {
     // 现场（2026-10-07，agora-sd0b）：pi 的 external 行 reload 后只有登记——没有 ❯ 也没有 ↳，
-    // 手机打开就是一张空卡。无句柄行要把"只能到桌面终端"说出来。
+    // 手机打开就是一张空卡。无句柄行的说明现在由 mobile-terminal-only 统一承担
+    // （agora-71p2：空 thread、有内容、在跑都用这一条），有句柄的才是 mobile-empty-thread。
     setup(row("zuan:aa2462", { agent_type: "pi", origin: "external", status: "idle" }));
-    const note = screen.getByTestId("mobile-empty-thread").textContent ?? "";
-    expect(note).toContain("桌面终端");
+    expect(screen.getByTestId("mobile-terminal-only").textContent).toContain("桌面终端");
     expect(screen.queryByTestId("mobile-bubble-user")).toBeNull();
     expect(screen.queryByTestId("mobile-bubble-agent")).toBeNull();
+    expect(screen.queryByTestId("mobile-next-input")).toBeNull();
     cleanup();
 
     // 有句柄的行同样空 thread（idle）：说"回一条就会出现在这里"，不让它误以为要去桌面。
     setup(row("n:b", { status: "idle" }));
     const handled = screen.getByTestId("mobile-empty-thread").textContent ?? "";
     expect(handled).not.toContain("桌面终端");
+    expect(screen.queryByTestId("mobile-terminal-only")).toBeNull();
     expect(screen.getByTestId("mobile-next-input")).toBeTruthy();
+  });
+
+  it("an external row with content still says where to reply", () => {
+    // MISSION §5.5：external 没有终端与文本输入。以前只有空 thread 才说话（agora-sd0b），
+    // 有内容时看着像"输入框没画出来"（agora-71p2）。
+    setup(row("zuan:x", { agent_type: "pi", origin: "external", status: "turn_done", prompt: "问", detail: "答" }));
+    expect(screen.getByTestId("mobile-bubble-agent").textContent).toContain("答");
+    expect(screen.getByTestId("mobile-terminal-only").textContent).toContain("桌面终端");
+    expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+
+    // 在跑也一样说清（且不再说"等它停下来再发"——手机永远发不了）。
+    cleanup();
+    setup(row("zuan:y", { agent_type: "pi", origin: "external", status: "running", detail: "bash" }));
+    expect(screen.getByTestId("mobile-terminal-only").textContent).toContain("在跑");
+    expect(screen.queryByTestId("mobile-running-note")).toBeNull();
   });
 
   it("sends optimistically and settles to 已发送", async () => {

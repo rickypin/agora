@@ -79,6 +79,20 @@ it("turn_done: the next instruction is sent as text with a trailing newline", as
   await waitFor(() => expect(input.value).toBe(""));
 });
 
+it("turn_done on a handleless row has no one to write to: the input is gone, the result stays", () => {
+  // MISSION §5.5「external 没有终端与文本输入」/ 现场 agora-71p2：画过输入框，发出去必 409 no_runtime。
+  setup({ origin: "external", status: "turn_done", detail: "Two files." });
+  expect(screen.queryByTestId("next-input")).toBeNull();
+  expect(screen.queryByTestId("next-send")).toBeNull();
+  expect(screen.getByTestId("respond-terminal-only")).toBeTruthy();
+  expect(screen.getByTestId("respond-last").textContent).toContain("Two files.");
+  cleanup();
+  // headless（`claude -p` / pi -p 那一档）同一张表（Origin::is_handleless）。
+  setup({ origin: "headless", status: "turn_done", detail: "done" });
+  expect(screen.queryByTestId("next-input")).toBeNull();
+  expect(screen.getByTestId("respond-terminal-only")).toBeTruthy();
+});
+
 it("running rows have nothing to answer", () => {
   setup({ status: "running" });
   expect(screen.queryByTestId("respond-panel-mac:s1")).toBeNull();
