@@ -46,8 +46,13 @@ async fn extensionless_spa_fallback_is_served_as_html() {
     // `/`、`/m`（手机入口）与带 query 的深链都回 index.html；MIME 必须是 text/html，
     // 不是 octet-stream（agora-thc.5 修的正是这一格）。
     for path in ["/", "/m", "/m?session=zuan:abc"] {
-        let (status, content_type, _cache_control, body) = get(&app, path).await;
+        let (status, content_type, cache_control, body) = get(&app, path).await;
         assert_eq!(status, StatusCode::OK, "{path}");
+        // 旧 HTML 被手机缓存住 → 升级后引用已不存在的旧 assets（2026-10-07 实测）。
+        assert_eq!(
+            cache_control, "no-cache",
+            "{path} 的 index.html 必须 no-cache"
+        );
         assert!(
             content_type.starts_with("text/html"),
             "{path} 的 Content-Type 是 {content_type}（应是 text/html）"
@@ -93,6 +98,31 @@ async fn pwa_assets_are_served_with_their_types_and_no_cache() {
     assert!(
         body.contains("clients.claim"),
         "sw 要 clients.claim：{body}"
+    );
+}
+
+/// 反向的一半（2026-10-07）：带内容 hash 的构建产物可以 immutable 长缓存——文件一变 URL 就变。
+#[tokio::test]
+async fn hashed_assets_are_immutable() {
+    let fx = common::Fx::new();
+    let app = fx.app();
+    let (_, _, _, body) = get(&app, "/m").await;
+    let asset = body
+        .split("src=\"/")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("index.html 里应当有 script src")
+        .to_string();
+    assert!(asset.starts_with("assets/"), "构建产物应当带 hash：{asset}");
+    let (status, content_type, cache_control, _) = get(&app, &format!("/{asset}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        content_type.starts_with("text/javascript") || content_type.starts_with("text/css"),
+        "{asset} 的 Content-Type 是 {content_type}"
+    );
+    assert!(
+        cache_control.contains("immutable"),
+        "带 hash 的 assets 应当 immutable：{cache_control}"
     );
 }
 

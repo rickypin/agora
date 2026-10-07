@@ -45,9 +45,17 @@ pub async fn serve(uri: Uri) -> Response {
                     .to_string(),
             };
             let mut resp = ([(header::CONTENT_TYPE, mime)], file.data).into_response();
-            if served == "sw.js" || served == "manifest.webmanifest" {
+            // index.html 也要 no-cache：手机把旧 HTML 缓存住后，升级后它引用的旧 assets 在新
+            // binary 里已经不存在，表现为白屏或「点了没反应」（2026-10-07 iPhone 验收实测）。
+            // 带内容 hash 的 assets 反过来可以长缓存。
+            if served == "sw.js" || served == "manifest.webmanifest" || served == "index.html" {
                 resp.headers_mut()
                     .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            } else if served.starts_with("assets/") {
+                resp.headers_mut().insert(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=31536000, immutable"),
+                );
             }
             resp
         }
