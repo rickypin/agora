@@ -60,8 +60,9 @@ pub(super) async fn blocking<T: Send + 'static>(
 
 // ---------- 读 ----------
 
-/// `{ sessions: [...], unregistered: [...] }`：已登记的会话 + 运行时里未登记的（Unknown Agent，
-/// 可采纳；A1 列表含全部运行时会话）。
+/// `{ sessions: [...], unregistered: [...], unregistered_unreadable: [...] }`：已登记的会话 +
+/// 运行时里未登记的（Unknown Agent，可采纳；A1 列表含全部运行时会话）+ 这一次没扫成的采纳
+/// socket（`unregistered` 可能因此不完整，调用方据此说得出少在哪里；agora-ebfa）。
 ///
 /// 人看到本机行 + 并入的全部 peer 行（离线 peer 的行仍在、带 `stale: true`，不变量 8）；**peer
 /// 来拉只给本机行**——只导出本机会话、一跳防环（MISSION §3.5；docs/spec/api.md「peer 视图」；
@@ -78,7 +79,15 @@ pub async fn list(
     if matches!(principal, Principal::Human { .. }) {
         sessions.extend(state.peer_views.rows());
     }
+    // 没扫成的 socket 也要说出来（agora-ebfa）：`unregistered` 短了的时候，调用方得知道少在
+    // 哪里。空数组 = 这一次全都扫到了。
+    let unregistered_unreadable: Vec<Value> = unregistered
+        .unreadable
+        .iter()
+        .map(|f| serde_json::json!({ "socket": f.socket, "reason": f.reason }))
+        .collect();
     let unregistered: Vec<Value> = unregistered
+        .sessions
         .iter()
         .map(|u| {
             let s = &u.session;
@@ -97,6 +106,7 @@ pub async fn list(
     Ok(Json(serde_json::json!({
         "sessions": sessions,
         "unregistered": unregistered,
+        "unregistered_unreadable": unregistered_unreadable,
         // 这份快照出自本节点时钟的哪一刻（unix 秒）。行上的 `status_since` 是本节点的绝对时刻，
         // 调用方（peer）不许拿自己那只表去减它（ADR-004「不信 peer 报的时间」）；但**同一只表上
         // 两个读数的差**是相对量，两节点之间的时钟偏差在里面自己抵消掉了——并入方拿 `now` 减行上的

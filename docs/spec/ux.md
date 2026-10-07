@@ -338,7 +338,7 @@ prompt 模板（`web/src/taskPrompt.ts` 的 `taskPrompt(id, title)`，原文以�
 
 ## 未注册会话与危险操作确认（MISSION §5.5 / §8）
 
-未注册 / 未识别的会话在侧栏已登记列表之下单列一段（`UNREGISTERED n`，过滤时不显示），每项显示为：
+未注册 / 未识别的会话在侧栏已登记列表之下单列一段（`UNREGISTERED n`，过滤时不显示）。这一段上面可能有一行灰字说明："有 N 个 socket 这次没扫到（<socket 名>）——未登记列表可能不完整"（快照的 `unregistered_unreadable` 非空时，agora-ebfa；此时空态也不再说"还没有会话"——两句话自相矛盾）。每项显示为：
 
 ```
 ? emergency

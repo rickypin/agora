@@ -7,7 +7,56 @@ import {
   rowProcess,
   type SessionRow,
   type SocketLike,
+  type UnreadableSocket,
+  type UnregisteredRow,
 } from "./events";
+
+describe("unregistered snapshot", () => {
+  it("carries the sockets that were not scanned alongside the unregistered rows (agora-ebfa)", async () => {
+    const seen: [UnregisteredRow[], UnreadableSocket[]][] = [];
+    const client = new EventsClient({
+      connect: () => new FakeSocket(),
+      fetchSnapshot: async () => ({
+        sessions: [],
+        unregistered: [
+          {
+            runtime_ref: "tmux:mywork:work",
+            name: "work",
+            title: "",
+            alive: true,
+            managed: false,
+            working_directory: "/w",
+            agent_hint: null,
+            node: "n",
+          },
+        ],
+        unregistered_unreadable: [{ socket: "mywork", reason: "运行时 server 不可用: no servers found" }],
+      }),
+      coalesceMs: 300,
+      reconnectMinMs: 100,
+      onChange: () => {},
+      onUnregistered: (rows, unreadable) => seen.push([rows, unreadable]),
+    });
+    await client.refresh();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]![0]).toHaveLength(1);
+    expect(seen[0]![1]).toEqual([{ socket: "mywork", reason: "运行时 server 不可用: no servers found" }]);
+  });
+
+  it("reads a snapshot without the field as 'everything was scanned' (old nodes)", async () => {
+    const seen: [UnregisteredRow[], UnreadableSocket[]][] = [];
+    const client = new EventsClient({
+      connect: () => new FakeSocket(),
+      fetchSnapshot: async () => ({ sessions: [], unregistered: [] }),
+      coalesceMs: 300,
+      reconnectMinMs: 100,
+      onChange: () => {},
+      onUnregistered: (rows, unreadable) => seen.push([rows, unreadable]),
+    });
+    await client.refresh();
+    expect(seen[0]![1]).toEqual([]);
+  });
+});
 
 class FakeSocket implements SocketLike {
   onopen: ((ev: unknown) => void) | null = null;

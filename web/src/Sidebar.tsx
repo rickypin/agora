@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState, type PointerEvent, type RefObjec
 import type { AdoptBody, SessionApi, WriteResult } from "./api";
 import { countByStatus, isHandleless, sectionOf, type SeenSet, type Section } from "./attention";
 import { ConfirmDialog } from "./ConfirmDialog";
-import type { SessionRow, UnregisteredRow } from "./events";
+import type { SessionRow, UnregisteredRow, UnreadableSocket } from "./events";
 import { Header, type NodeStatus } from "./Header";
 import { isDesktop } from "./keys";
 import type { NewAgentInitial } from "./NewAgentDialog";
@@ -102,6 +102,8 @@ interface SidebarProps {
   total: number;
   /** 运行时里未登记的会话（Unknown Agent，MISSION §5.5）。 */
   unregistered?: UnregisteredRow[];
+  /** 未登记列表这一次没扫成的 socket（agora-ebfa）。 */
+  unreadableSockets?: UnreadableSocket[];
   onAdopt?: (body: AdoptBody) => void;
   /** 「看 diff」（agora-h1k.5）；只透传给每一行。 */
   /** 一键清理用的 DELETE metadata（agora-j4w.2）；不给就没有清理按钮。 */
@@ -200,6 +202,7 @@ export function Sidebar({
   onFilterEnter,
   total,
   unregistered = [],
+  unreadableSockets = [],
   onAdopt,
   onDeleteMetadata,
   sections: givenSections,
@@ -369,7 +372,15 @@ export function Sidebar({
           设备
         </button>
       )}
-      {total === 0 && unregistered.length === 0 && <p className="muted pad">还没有会话。</p>}
+      {total === 0 && unregistered.length === 0 && unreadableSockets.length === 0 && (
+        <p className="muted pad">还没有会话。</p>
+      )}
+      {unreadableSockets.length > 0 && !filter && (
+        <p className="muted pad" data-testid="unregistered-unreadable">
+          有 {unreadableSockets.length} 个 socket 这次没扫到（
+          {unreadableSockets.map((u) => u.socket).join("、")}）——未登记列表可能不完整
+        </p>
+      )}
       {total > 0 && rows.length === 0 && <p className="muted pad">没有匹配的会话。</p>}
       {showSections && hasAttention && (
         <div className="sidebar-head section" data-testid="section-attention">

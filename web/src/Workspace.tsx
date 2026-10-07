@@ -15,7 +15,7 @@ import { SessionSettings } from "./SessionSettings";
 import { loadMode, storeMode, visibleOrder, type SidebarMode } from "./sidebarMode";
 import { rowName, Sidebar } from "./Sidebar";
 import { FREEZE_MS, stableOrder, stableSections } from "./stableOrder";
-import { SessionStore, useSessions, useUnregistered } from "./store";
+import { SessionStore, useSessions, useUnreadableSockets, useUnregistered } from "./store";
 import { defaultDiffSocket, runtimeSessionGone, type TerminalClientOptions } from "./terminal";
 import { TerminalView, type RuntimeGoneActions } from "./TerminalView";
 
@@ -61,6 +61,8 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   const catalog = useMemo(() => givenCatalog ?? catalogApi(), [givenCatalog]);
   const rows = useSessions(store);
   const unregistered = useUnregistered(store);
+  // 未登记列表可能因为某个采纳 socket 没扫成而短一块（agora-ebfa）：侧栏据此说明，不安静少列。
+  const unreadableSockets = useUnreadableSockets(store);
   // 运行时 degraded（ADR-001 D7）：没有它，用户看到的是一屋子 UNKNOWN 却不知道是运行时失明（agora-bgr）。
   // 只在配对之后（Workspace 才挂）带 cookie 拉完整报告；未认证的门页只用公开子集。
   const health = useMemo(() => givenHealth ?? new HealthWatcher(), [givenHealth]);
@@ -511,6 +513,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         onPointerEnter={enterSidebar}
         onPointerLeave={leaveSidebar}
         unregistered={unregistered}
+        unreadableSockets={unreadableSockets}
         onAdopt={adopt}
         onDeleteMetadata={api.deleteMetadata}
         // 树视图组头「shell」直接起会话（agora-uvd.4）：成功走 pendingOpen，行进列表后自动选中。

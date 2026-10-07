@@ -119,7 +119,7 @@ async fn two_nodes_in_one_process_are_isolated() {
     assert_eq!(ids_a, vec![sa.record.id.clone()]);
     assert_eq!(ids_b, vec![sb.record.id.clone()]);
     assert!(
-        a.sessions.unregistered().unwrap().is_empty(),
+        a.sessions.unregistered().unwrap().sessions.is_empty(),
         "A 不该看到 B 的运行时会话"
     );
 
@@ -434,6 +434,7 @@ async fn invariant_7_runtime_is_the_source_of_truth_not_the_database() {
     let found = m.unregistered().unwrap();
     assert!(
         found
+            .sessions
             .iter()
             .any(|r| r.session.r#ref.0 == rref && r.session.alive),
         "会话必须从运行时重新被发现: {found:?}"

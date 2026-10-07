@@ -19,7 +19,7 @@ use super::throttle::Throttle;
 use crate::project::{ProjectIndex, ProjectInfo};
 use crate::runtime::{
     proctree, AttachSpec, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeScan,
-    RuntimeSession, RuntimeStatus, Size, TerminateSignal,
+    RuntimeSession, RuntimeStatus, Size, SocketScanFailure, TerminateSignal,
 };
 use crate::status::{
     self, AgentProcess, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation,
@@ -106,6 +106,20 @@ pub struct Unregistered {
     pub session: RuntimeSession,
     /// 从 pane 进程的后代里认出来的 adapter 名；认不出就 None。只是 hint（MISSION §5.4）。
     pub agent_hint: Option<String>,
+}
+
+/// [`SessionManager::unregistered`] 的产出：列得出的未登记会话 + 这一次没扫成的 socket。
+///
+/// 为什么要第二半（agora-ebfa）：采纳 socket 没扫成时它的可采纳会话**不在** `sessions` 里
+/// ——"没看见"和"没有"在列表形态上分不开（与 dkv3 修过的那条同构）。只把空的 / 短的列表
+/// 交出去，侧栏的 UNREGISTERED 会安静地少一块；带上 `unreadable`，调用方说得出"这个 socket
+/// 这次没看到"。整体降级（协议不匹配、超时）时这里为空：那种"没看到"是 `/api/health` 的
+/// runtime 在说，不在这份列表里重复。
+#[derive(Debug, Clone)]
+pub struct UnregisteredScan {
+    pub sessions: Vec<Unregistered>,
+    /// 与 [`crate::runtime::RuntimeScan::unreadable`] 同一批（socket 名 + 人话原因）。
+    pub unreadable: Vec<SocketScanFailure>,
 }
 
 /// 由 hook 事件带来的、agora 没起过的会话（MISSION §5.4）：`runtime_ref` 有值就是"采纳
@@ -859,17 +873,19 @@ impl SessionManager {
     }
 
     /// 运行时里有、metadata 里没有的会话（Unknown Agent，可采纳；A1 列表含全部运行时会话）。
-    /// 进程表只在真有未注册会话时才拉一次。
-    pub fn unregistered(&self) -> Result<Vec<Unregistered>, SessionError> {
+    /// 进程表只在真有未注册会话时才拉一次。只坏一个采纳 socket 时那半边的缺失由
+    /// [`UnregisteredScan::unreadable`] 显式带出，不静默少列（agora-ebfa）。
+    pub fn unregistered(&self) -> Result<UnregisteredScan, SessionError> {
         let known: HashSet<String> = self
             .all_records()?
             .into_iter()
             .filter_map(|r| r.runtime_ref)
             .collect();
-        let sessions: Vec<RuntimeSession> = self
-            .live_all()?
-            .0
-            .sessions
+        let RuntimeScan {
+            sessions,
+            unreadable,
+        } = self.live_all()?.0;
+        let sessions: Vec<RuntimeSession> = sessions
             .into_iter()
             .filter(|s| !known.contains(&s.r#ref.0))
             .collect();
@@ -878,13 +894,16 @@ impl SessionManager {
         } else {
             Vec::new()
         };
-        Ok(sessions
-            .into_iter()
-            .map(|session| Unregistered {
-                agent_hint: agent_hint(&table, &session),
-                session,
-            })
-            .collect())
+        Ok(UnregisteredScan {
+            sessions: sessions
+                .into_iter()
+                .map(|session| Unregistered {
+                    agent_hint: agent_hint(&table, &session),
+                    session,
+                })
+                .collect(),
+            unreadable,
+        })
     }
 
     /// 已登记会话里 `agent_type` + agent 自报 id 对得上的那条（hook 事件找会话的第二把钥匙）。

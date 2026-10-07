@@ -56,6 +56,29 @@ const ROWS = [
   row("n:ext2", "finished", { origin: "external", status_since: 30 }),
 ];
 
+it("says which socket was not scanned instead of silently dropping unregistered rows (agora-ebfa)", () => {
+  render(
+    <Sidebar
+      rows={[]}
+      seen={new Set()}
+      all={[]}
+      total={0}
+      active={null}
+      onOpen={() => {}}
+      filter=""
+      onFilter={() => {}}
+      unregistered={[]}
+      unreadableSockets={[{ socket: "mywork", reason: "运行时 server 不可用: no servers found" }]}
+    />,
+  );
+  const note = screen.getByTestId("unregistered-unreadable");
+  expect(note.textContent).toContain("mywork");
+  expect(note.textContent).toContain("1");
+  // 空态不再说"还没有会话"——那会与说明自相矛盾。
+  expect(screen.queryByText("还没有会话。")).toBeNull();
+  cleanup();
+});
+
 it("collapses the Finished section by default with a count, and NEEDS ATTENTION holds no external FINISHED row (A46)", () => {
   mount(ROWS);
   // 两条 external FINISHED 收起来了：NEEDS ATTENTION 里只有 waiting 与 agora 来源的 FINISHED；折叠区标题带计数。

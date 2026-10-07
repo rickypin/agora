@@ -187,6 +187,17 @@ export interface UnregisteredRow {
 export interface Snapshot {
   sessions: SessionRow[];
   unregistered: UnregisteredRow[];
+  /**
+   * 这一次没扫成的 socket（agora-ebfa）：`unregistered` 短了的时候说得出少在哪里。
+   * 老节点不发这个字段，读成"全都扫到了"。
+   */
+  unregistered_unreadable?: UnreadableSocket[];
+}
+
+/** 未登记列表这一次没看到的 socket（`GET /api/sessions` 的 `unregistered_unreadable`）。 */
+export interface UnreadableSocket {
+  socket: string;
+  reason: string;
 }
 
 export type AgoraEvent =
@@ -248,7 +259,7 @@ export interface EventsClientOptions {
   /** 挂起的决定被终端 / 超时 / 退出解除：就地回答的面板据此收起（ADR-002 D5）。 */
   onDecisionResolved?: (e: { id: string; tool_use_id: string; via: string }) => void;
   /** 未登记会话只随全量快照来（事件流不推它们）；每次 resync 后回调。 */
-  onUnregistered?: (rows: UnregisteredRow[]) => void;
+  onUnregistered?: (rows: UnregisteredRow[], unreadable: UnreadableSocket[]) => void;
   /**
    * 一个 peer 上线 / 掉线 / 换了错误类型（agora-c8h）：立刻回调，不进 300 ms 的合并批——Header 的点
    * 与侧栏行的变灰该是同一眼看到的。`peer` 原样给出，由 HealthWatcher 整形（web/src/health.ts）。
@@ -280,6 +291,8 @@ export async function defaultSnapshot(): Promise<Snapshot> {
 export class EventsClient {
   readonly sessions = new Map<string, SessionRow>();
   unregistered: UnregisteredRow[] = [];
+  /** 未登记列表这一次没扫成的 socket（与 `unregistered` 同一次快照，agora-ebfa）。 */
+  unreadableSockets: UnreadableSocket[] = [];
   private socket: SocketLike | null = null;
   private pending: AgoraEvent[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -445,7 +458,8 @@ export class EventsClient {
     this.sessions.clear();
     for (const s of snap.sessions) this.sessions.set(s.id, s);
     this.unregistered = snap.unregistered ?? [];
+    this.unreadableSockets = snap.unregistered_unreadable ?? [];
     this.opts.onChange(this.sessions);
-    this.opts.onUnregistered?.(this.unregistered);
+    this.opts.onUnregistered?.(this.unregistered, this.unreadableSockets);
   }
 }

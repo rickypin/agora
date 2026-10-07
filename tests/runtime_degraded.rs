@@ -213,6 +213,23 @@ impl Fake {
         format!("agora_session={plain}")
     }
 
+    /// 完整 GET /api/sessions 快照（要 principal）。
+    async fn sessions_snapshot(&self) -> serde_json::Value {
+        let resp = agora::api::router(self.state.clone())
+            .oneshot(
+                Request::get("/api/sessions")
+                    .header(header::HOST, HOST)
+                    .header(header::COOKIE, self.cookie())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
     /// 完整 health 报告（要 principal）。
     async fn health(&self) -> serde_json::Value {
         let resp = agora::api::router(self.state.clone())
@@ -347,6 +364,7 @@ async fn unscanned_adopt_socket_keeps_adopted_rows_unknown() {
         .sessions
         .unregistered()
         .unwrap()
+        .sessions
         .into_iter()
         .find(|u| u.session.name == "mywork")
         .expect("采纳 socket 上的会话应当可见")
@@ -440,6 +458,7 @@ async fn a_removed_socket_file_does_not_read_adopted_rows_as_finished() {
         .sessions
         .unregistered()
         .unwrap()
+        .sessions
         .into_iter()
         .find(|u| u.session.name == "mywork")
         .expect("采纳 socket 上的会话应当可见")
@@ -514,6 +533,61 @@ async fn a_removed_socket_file_does_not_read_adopted_rows_as_finished() {
 }
 
 #[tokio::test]
+async fn an_unscanned_socket_is_named_in_the_unregistered_snapshot() {
+    // agora-ebfa：采纳 socket 没扫成时它的可采纳会话不在 unregistered 里——"没看见"与"没有"
+    // 在列表形态上分不开，侧栏的 UNREGISTERED 会安静地少一块。修法：`unregistered()` 与
+    // `GET /api/sessions` 都带上这一次没扫成的 socket，调用方说得出少在哪里。
+    let adopt = isolate::socket_name("deg-unreg", isolate::nth());
+    let f = fake_with("unreg", "ok", Some(&adopt));
+    let before = f.sessions.unregistered().unwrap();
+    assert!(
+        before.sessions.iter().any(|u| u.session.name == "mywork"),
+        "起点：可采纳会话列得出来"
+    );
+    assert!(before.unreadable.is_empty(), "起点：没有没扫成的 socket");
+
+    // 用户自己的 tmux 坏了（升级后协议不匹配是现实里最常见的一种）。
+    std::fs::write(&f.adopt_fail, "1").unwrap();
+    let after = f.sessions.unregistered().unwrap();
+    assert!(
+        !after.sessions.iter().any(|u| u.session.name == "mywork"),
+        "没扫到就是列不出来——题面承认这一半；要紧的是下面那半"
+    );
+    assert_eq!(
+        after.unreadable.len(),
+        1,
+        "要显式说是哪个 socket 没看到: {after:?}"
+    );
+    assert_eq!(after.unreadable[0].socket, adopt);
+
+    // 线上形态同一句话：GET /api/sessions 带 unregistered_unreadable。
+    let body = f.sessions_snapshot().await;
+    assert_eq!(
+        body["unregistered_unreadable"][0]["socket"], adopt,
+        "快照要说得出少在哪里: {body}"
+    );
+    assert!(
+        body["unregistered_unreadable"][0]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no servers found"),
+        "原因带得上: {body}"
+    );
+
+    // 恢复：列表回来、说明清空。
+    std::fs::remove_file(&f.adopt_fail).unwrap();
+    let back = f.sessions.unregistered().unwrap();
+    assert!(back.sessions.iter().any(|u| u.session.name == "mywork"));
+    assert!(back.unreadable.is_empty());
+    let body = f.sessions_snapshot().await;
+    assert_eq!(
+        body["unregistered_unreadable"].as_array().unwrap().len(),
+        0,
+        "恢复后不再有说明: {body}"
+    );
+}
+
+#[tokio::test]
 async fn a_broken_adopt_socket_does_not_degrade_health_via_get() {
     // agora-14ys：`get()` 的单行路径把采纳 socket 的 `ServerUnavailable` 喂给 runtime_status，
     // 只坏用户的 tmux 也会让 /api/health 的 runtime 报 degraded。修法与 list / reconcile 同口径
@@ -525,6 +599,7 @@ async fn a_broken_adopt_socket_does_not_degrade_health_via_get() {
         .sessions
         .unregistered()
         .unwrap()
+        .sessions
         .into_iter()
         .find(|u| u.session.name == "mywork")
         .expect("采纳 socket 上的会话应当可见")
@@ -602,6 +677,7 @@ fn reconcile_skips_rows_on_an_unscanned_adopt_socket() {
         .sessions
         .unregistered()
         .unwrap()
+        .sessions
         .into_iter()
         .find(|u| u.session.name == "mywork")
         .expect("采纳 socket 上的会话应当可见")
