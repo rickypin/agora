@@ -241,6 +241,15 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
                 </div>
               </div>
             )}
+            {/* 空 thread（登记即空闲的 pi 行就是这样：没有 ❯ 也没有 ↳）：卡片不能只剩个壳，
+                无句柄行还得说清手机发不了（agora-sd0b）。在跑的行走下面那条 running note。 */}
+            {userText === "" && detail === "" && !running && (
+              <p className="mobile-note" data-testid="mobile-empty-thread">
+                {handleless
+                  ? "这一行没有挂起，也没有最近一轮回复；回复要到桌面终端。"
+                  : "还没有可显示的内容；回一条就会出现在这里。"}
+              </p>
+            )}
           </>
         )}
       </div>

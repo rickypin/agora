@@ -61,6 +61,23 @@ describe("thread", () => {
 });
 
 describe("composer", () => {
+  it("explains an empty thread instead of leaving the card blank", () => {
+    // 现场（2026-10-07，agora-sd0b）：pi 的 external 行 reload 后只有登记——没有 ❯ 也没有 ↳，
+    // 手机打开就是一张空卡。无句柄行要把"只能到桌面终端"说出来。
+    setup(row("zuan:aa2462", { agent_type: "pi", origin: "external", status: "idle" }));
+    const note = screen.getByTestId("mobile-empty-thread").textContent ?? "";
+    expect(note).toContain("桌面终端");
+    expect(screen.queryByTestId("mobile-bubble-user")).toBeNull();
+    expect(screen.queryByTestId("mobile-bubble-agent")).toBeNull();
+    cleanup();
+
+    // 有句柄的行同样空 thread（idle）：说"回一条就会出现在这里"，不让它误以为要去桌面。
+    setup(row("n:b", { status: "idle" }));
+    const handled = screen.getByTestId("mobile-empty-thread").textContent ?? "";
+    expect(handled).not.toContain("桌面终端");
+    expect(screen.getByTestId("mobile-next-input")).toBeTruthy();
+  });
+
   it("sends optimistically and settles to 已发送", async () => {
     const { requests } = setup(row("n:a"));
     const input = screen.getByTestId("mobile-next-input");
