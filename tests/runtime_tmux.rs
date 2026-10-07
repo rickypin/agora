@@ -92,7 +92,10 @@ impl Fixture {
         r: &agora::runtime::RuntimeRef,
         pred: impl Fn(&agora::runtime::RuntimeSession) -> bool,
     ) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // 上限用 isolate::PROC 而不是 5 s：满载 runner 上 respawn 本身就可能超过 5 s，
+        // 每次轮询都要新起 tmux client。2026-10-07 ubuntu-24.04 CI（run 37612083889）
+        // 在回应捞到 scrollback 之前就撞 5 s 上限，本机与 macOS 同 commit 全绿。
+        let deadline = Instant::now() + isolate::PROC;
         loop {
             if let Ok(s) = self.rt.inspect(r) {
                 if pred(&s) {
@@ -191,7 +194,8 @@ fn respawn_keeps_previous_scrollback() {
 }
 
 fn wait_capture(f: &Fixture, r: &agora::runtime::RuntimeRef, needles: &[&str]) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // 同上：命中就会 break，调大上限不影响正常路径的耗时。
+    let deadline = Instant::now() + isolate::PROC;
     loop {
         let text = String::from_utf8_lossy(&f.rt.capture_tail(r, 200).unwrap()).into_owned();
         if needles.iter().all(|n| text.contains(n)) {
