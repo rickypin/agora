@@ -323,12 +323,15 @@ async fn hold_named(
     let previous = receiver.pending(session);
     let r = receiver.clone();
     let task = tokio::spawn(async move { r.wake(&path).await });
-    // 这里用账本证明本条已处理；是否挂起由后面的 API 快照校验。
+    // 等两件事都到位：账本证明**本条**已处理（只看 pending 会被上一条挂起骗过），pending 证明
+    // hold 已登记。`wake` 里"ingest（账本在这里写）→ begin_wake 登记 hold"是两步，中间有个窗口：
+    // 2026-10-07 ubuntu-24.04 CI 上等账本单条件跑进了窗口里，pending 还是空的（本地快跑不出来）。
     wait_until(|| {
         receiver
             .received_for(session)
             .iter()
             .any(|r| r.delivery.envelope.received_unix_ms == ms)
+            && !receiver.pending(session).is_empty()
     })
     .await;
     assert!(!receiver.pending(session).is_empty(), "{previous:?}");
