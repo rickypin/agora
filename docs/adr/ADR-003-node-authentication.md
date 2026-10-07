@@ -106,9 +106,10 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 |---|---|---|
 | `self-signed`（默认） | 首次开 TLS 监听器时自动生成密钥 + 10 年自签证书到 `<AGORA_HOME>/tls/`；零配置 | 只被 peer 访问的节点（V1 的 zuan） |
 | `external` | 用户给 `cert_file` / `key_file`，可选 `renew_command`（到期前 `renew_before` 调用）；文件变化即热加载；SPKI 变了则日志警告"peer 需更新指纹" | 被浏览器直接打开的非 loopback 节点（V2-1 的 zuan） |
-| `self-ca` | agora 自建根 CA、签发各节点证书、一条命令导出根证书装到手机 | **未实现**；只在 `external` 不可用（无域名、无 tailscale 的私网）时评估（`agora-thc.2`） |
+| `self-ca` | agora 自建根 CA、签发各节点证书、一条命令导出根证书装到手机 | **未实现**；只在 `external` 不可用（无域名、无 tailscale 的私网）时评估（`agora-thc.2`；2026-10-07 结论：维持不预建，见下） |
 
 - **浏览器可信证书的默认路径是 `external`**。浏览器的信任库是外部约束：零安装的唯一办法是公共 CA 的证书，公共 CA 需要公共名字。当前实例的名字来自 tailnet，`tailscale cert <node>.tail6f613.ts.net` 一条命令给出 Let's Encrypt 证书（本机 `tailscale cert --help` 核对，2026-09-02），手机侧零安装；zuan 出网可达 Let's Encrypt（instance.md）。这是实例事实，不是架构偏好——换一个没有公共名字的部署，就是 `self-ca` 的评估结果说了算。
+- **2026-10-07 结论（`agora-thc.2`，人采纳）**：`self-ca` 维持上表"备选、不预建"，**不立项评估**。依据：默认路径 `external` 在 zuan 实测可用——system-CA 校验通过（`curl --resolve` 200）、iPhone 真机完成主屏 PWA 安装 / service worker / Web Push 全链路验收（agora-thc.1 / thc.7 的 👁，2026-10-07）；`tailscale cert` 免费且自动续期，无公开名字的私网是少数场景。**未做的未知项**：iOS 装用户根证书 + 完全信任后 PWA / SW / 推送是否工作，本轮没有实测（真要服务无域名私网时再评估）。Android 对用户 CA 的处理随 `agora-w9ki` 延期。
 - **agora 永远自己终止 TLS**：MISSION §8"TLS 是 agora 的事"指的是这一点；`external` 只是证书文件从哪来。**不支持 HTTP 终止型反向代理**（TCP 透传对 agora 不可见，无需支持），因此没有 `trusted_proxies`、不采信任何转发头。
 - **不内置 ACME**：任何 challenge 类型都是 `external` 的特例（lego / certbot 出文件再交给 `external`）。
 
@@ -189,7 +190,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 
 **MISSION 回写**（v0.13，2026-09-02）：不变量 11"人：TOTP"→"人：已配对设备的 session"；§3.5"也不需要 TOTP"→"也不需要远端配对"；§8 三处（拒绝启动→警告 + 两个监听器、人的凭据小节重写、签发前置条件删除）；§9.1 加 `AGORA_HOME`；§11 手机条目"TOTP 人机认证"→"远端设备配对"；A31 / A34 改写。spec：`config.md`（`server` / `tls` / `auth` 段）、`api.md`（`/api/auth/*`、401、`NeedsConfirmation`、health 公开子集）、`architecture.md` 第二行。
 
-**跟进 issue**（均 discovered-from `agora-90t.4`）：`agora-xqa.5` M1a 配对 + session + `agora open` / `agora url`；`agora-7ku.2` M2a 机器 token、自签证书 + SPKI 指纹钉住、两个监听器与启动警告、`external` 续期与热加载；`agora-thc.1` V2-1 远端配对（`agora pair` QR、Dashboard 设备列表与吊销）+ 加固头 + Origin 校验；`agora-thc.2` V2-1 `self-ca` 评估。
+**跟进 issue**（均 discovered-from `agora-90t.4`）：`agora-xqa.5` M1a 配对 + session + `agora open` / `agora url`；`agora-7ku.2` M2a 机器 token、自签证书 + SPKI 指纹钉住、两个监听器与启动警告、`external` 续期与热加载；`agora-thc.1` V2-1 远端配对（`agora pair` QR、Dashboard 设备列表与吊销）+ 加固头 + Origin 校验；`agora-thc.2` V2-1 `self-ca` 评估（2026-10-07 结论：external 实测可用，维持不预建、不立项，见 D4）。
 
 ## 参考
 
