@@ -248,7 +248,10 @@ async fn two_clients_get_independent_streams() {
     b.send(Message::Text(r#"{"type":"ping"}"#.into()))
         .await
         .unwrap();
-    let pb = next_json(&mut b, |v| v["type"] != "status").await;
+    // 只认 pong：PTY 行规程自己吐的 output（例如 "\r\n"）会抢在答案前面到，拿"第一条非
+    // status 帧"当答案会把换行读成"b 已经没了"（agora-e79e，2026-10-07 CI 实测一次假红）。
+    // b 真退出时流会关 / pong 不来，5 s 超时照样红。
+    let pb = next_json(&mut b, |v| v["type"] == "pong").await;
     assert_eq!(pb["type"], "pong", "b 应仍然活着: {pb:?}");
 }
 
