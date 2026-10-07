@@ -1,26 +1,28 @@
 /**
- * 手机交互收件箱 /m（MISSION §6.9；A37 / A52；agora-thc.5）。
+ * 手机交互收件箱 /m（MISSION §6.9；A37 / A52；agora-thc.5；会话卡 agora-thc.10）。
  *
  * 这一屏只回答一件事：**现在谁在等我**。四段与排序复用 attention.ts（与桌面同一条规则、同一个
  * 「看过」集合），但信息预算只有一行——状态 + 时长、agent 徽标、任务标签、节点、一行摘要。没有
  * 终端、创建、diff / 验收 / 改动列表，也没有消息流与历史翻页（A52；DOM 守卫在 MobileApp.test.tsx）。
  *
- * 会话卡（决策原文、回复气泡、composer、Kill / Restart）不在这个文件里：那是 agora-thc.10，接在
- * 行点击上。本任务里点行只做选中高亮——深链 `?session=<node>:<id>` 用同一格把行找出来并滚到视野内。
+ * 点一行进会话卡（MobileCard）：即时消息语法，动作走与桌面相同的节点 API。本文件只管收件箱、
+ * 深链与会话卡的进出；卡片内部的决策 / composer / Kill / Restart 在 MobileCard 里。
  */
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type CSSProperties,
-  type Ref,
 } from "react";
 import { agentBadge } from "./agentBadge";
-import { loadSeen, sectionOf, sortByAttention, statusLine, taskLabel, type Section, type SeenSet } from "./attention";
+import { sessionApi, type SessionApi } from "./api";
+import { loadSeen, sectionOf, sortByAttention, statusLine, storeSeen, taskLabel, type Section, type SeenSet } from "./attention";
 import type { SessionRow } from "./events";
 import { HealthWatcher, VersionWatcher } from "./health";
+import { MobileCard } from "./MobileCard";
 import { parseSessionTarget } from "./mobileRoute";
 import { nodeHue } from "./nodeColor";
 import { rowName, statusSymbol, str } from "./SessionRow";
@@ -35,6 +37,7 @@ const OPEN_SECTIONS: { key: Section; label: string }[] = [
 
 interface Props {
   store?: SessionStore;
+  api?: SessionApi;
   health?: HealthWatcher;
   version?: VersionWatcher;
   /** 事件流被服务端以 4401 关掉（本设备被吊销）：App 换回配对门。 */
@@ -57,8 +60,9 @@ export function mobileSummary(row: SessionRow): string {
   return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }
 
-export function MobileApp({ store: given, health: givenHealth, version: givenVersion, onRevoked, now }: Props) {
+export function MobileApp({ store: given, api: givenApi, health: givenHealth, version: givenVersion, onRevoked, now }: Props) {
   const store = useMemo(() => given ?? new SessionStore(), [given]);
+  const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
   const rows = useSessions(store);
   const health = useMemo(() => givenHealth ?? new HealthWatcher(), [givenHealth]);
   const version = useMemo(() => givenVersion ?? new VersionWatcher(), [givenVersion]);
@@ -86,8 +90,17 @@ export function MobileApp({ store: given, health: givenHealth, version: givenVer
     return () => clearInterval(timer);
   }, []);
 
-  // 「看过」只读：写它的时机是"看到结果"，那发生在会话卡里（agora-thc.10），不在这里。
-  const seen: SeenSet = useMemo(() => loadSeen(), []);
+  // 「看过」集合（每设备 localStorage，与桌面同键；写发生在会话卡打开那一刻）。
+  const [seen, setSeen] = useState<Set<string>>(() => loadSeen());
+  const markSeen = useCallback((key: string) => {
+    setSeen((prev) => {
+      if (prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.add(key);
+      storeSeen(next);
+      return next;
+    });
+  }, []);
   const sections = useMemo(() => groupSections(rows, seen), [rows, seen]);
 
   // 深链（推送点击进来）：`/m?session=<node>:<id>`。行的全局 id 就是 `<node>:<id>`
@@ -104,30 +117,31 @@ export function MobileApp({ store: given, health: givenHealth, version: givenVer
   }, [rows, target]);
   const [selected, setSelected] = useState<string | null>(null);
   const [finishedOpen, setFinishedOpen] = useState(false);
+  // 深链只自动打开一次：只用 `selected === null` 判，返回收件箱后会把同一行又弹出来。
+  const deepLinked = useRef(false);
   useEffect(() => {
-    if (targetRow && selected === null) setSelected(targetRow.id);
-  }, [targetRow, selected]);
+    if (deepLinked.current || !targetRow) return;
+    deepLinked.current = true;
+    setSelected(targetRow.id);
+  }, [targetRow]);
   useEffect(() => {
-    // 深链落在收起的已完成区：先把它打开，再滚过去——否则"定位到了"却看不见。
-    if (targetRow && sectionOf(targetRow, seen) === "finished") setFinishedOpen(true);
-  }, [targetRow, seen]);
-  const selectedRef = useRef<HTMLLIElement | null>(null);
-  useEffect(() => {
-    if (selected === null) return;
-    selectedRef.current?.scrollIntoView?.({ block: "center" });
-  }, [selected, finishedOpen]);
+    // 选中的行没了（被删 metadata）：回到收件箱。
+    if (selected !== null && !rows.some((r) => r.id === selected)) setSelected(null);
+  }, [rows, selected]);
 
   const nowSeconds = now ?? clock;
+  const selectedRow = selected === null ? undefined : rows.find((r) => r.id === selected);
+
+  if (selectedRow) {
+    return (
+      <main className="mobile" data-testid="mobile-inbox">
+        <MobileCard row={selectedRow} api={api} now={nowSeconds} onBack={() => setSelected(null)} onSeen={markSeen} />
+      </main>
+    );
+  }
+
   const renderRow = (row: SessionRow) => (
-    <MobileRow
-      key={row.id}
-      row={row}
-      now={nowSeconds}
-      selected={row.id === selected}
-      localNode={localNode}
-      onOpen={setSelected}
-      liRef={row.id === selected ? selectedRef : undefined}
-    />
+    <MobileRow key={row.id} row={row} now={nowSeconds} localNode={localNode} onOpen={setSelected} />
   );
 
   return (
@@ -175,24 +189,21 @@ export function MobileApp({ store: given, health: givenHealth, version: givenVer
 interface RowProps {
   row: SessionRow;
   now: number;
-  selected: boolean;
   /** 本机 node.id（`/api/system`）：已知后每一行标节点 chip，本机不着色（与桌面 RowIdentity 同规矩）。 */
   localNode: string | null;
   onOpen: (id: string) => void;
-  liRef?: Ref<HTMLLIElement>;
 }
 
-function MobileRow({ row, now, selected, localNode, onOpen, liRef }: RowProps) {
+function MobileRow({ row, now, localNode, onOpen }: RowProps) {
   const badge = agentBadge(String(row.agent_type ?? ""));
   const local = localNode !== null && row.node === localNode;
   const summary = mobileSummary(row);
   return (
-    <li ref={liRef}>
+    <li>
       <button
         type="button"
-        className={`mobile-row${selected ? " selected" : ""}`}
+        className="mobile-row"
         data-testid={`mobile-row-${row.id}`}
-        aria-current={selected ? "true" : undefined}
         onClick={() => onOpen(row.id)}
       >
         <span className="mobile-row-head">

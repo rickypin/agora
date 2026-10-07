@@ -343,3 +343,31 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .mobile-empty { margin: 0; padding: 0.2rem 0.3rem 0.4rem; color: var(--muted); }
 .mobile-finished-toggle { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; width: 100%; margin-bottom: 0.4rem; padding: 0.55rem 0.3rem; color: var(--muted); background: none; border-color: transparent; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 .narrow-guide a { color: var(--accent); }
+
+/* ---------- /m 会话卡（agora-thc.10）：IM 语法——最近一轮两气泡、底部 composer、乐观发送 ---------- */
+.mobile-card { display: flex; flex: 1; flex-direction: column; gap: 0.5rem; min-height: 0; overflow-y: auto; padding: 0 0.7rem; }
+.mobile-card-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.4rem; padding: calc(0.7rem + env(safe-area-inset-top)) 0 0.4rem; border-bottom: 1px solid var(--border); }
+.mobile-back { flex: none; padding: 0 0.4rem; color: var(--accent); font-size: 16px; background: none; border-color: transparent; }
+.mobile-card-task { margin: 0; color: var(--muted); }
+.mobile-thread { display: flex; flex: 1; flex-direction: column; gap: 0.5rem; padding: 0.4rem 0 0.6rem; }
+.mobile-bubble { display: flex; gap: 0.4rem; line-height: 1.45; }
+.mobile-bubble-mark { flex: none; color: var(--muted); }
+.mobile-bubble.user { justify-content: flex-end; }
+.mobile-bubble.user .mobile-bubble-mark { order: -1; color: var(--accent); }
+.mobile-bubble.user > span:not(.mobile-bubble-mark):not(.mobile-sent-state) { max-width: 85%; padding: 0.35rem 0.55rem; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; white-space: pre-wrap; word-break: break-word; }
+.mobile-bubble-body { min-width: 0; max-width: 90%; padding: 0.4rem 0.6rem; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+.mobile-sent-state { align-self: flex-end; color: var(--muted); font-size: 11px; }
+.mobile-more-line { display: block; margin-top: 0.35rem; padding: 0; color: var(--accent); background: none; border-color: transparent; }
+.mobile-decision { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.6rem; background: var(--panel); border: 1px solid var(--warn); border-radius: 10px; }
+.mobile-command { margin: 0; padding: 0.45rem 0.55rem; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+.mobile-question { margin: 0; }
+.mobile-decision-actions { display: flex; gap: 0.5rem; }
+.mobile-decision-actions button { flex: 1; padding: 0.45rem; }
+.mobile-actions { display: flex; flex-direction: column; gap: 0.4rem; }
+.mobile-more-toggle { align-self: flex-start; padding: 0; color: var(--muted); background: none; border-color: transparent; }
+.mobile-more-actions { display: flex; gap: 0.5rem; }
+.mobile-composer { position: sticky; bottom: 0; display: flex; gap: 0.4rem; padding: 0.5rem 0 calc(0.6rem + env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--border); }
+.mobile-composer input { flex: 1; padding: 0.5rem 0.6rem; }
+.mobile-composer button { padding: 0 0.9rem; }
+.mobile-note { margin: 0; color: var(--muted); font-size: 12px; }
+.mobile-error { margin: 0; color: var(--bad); }

@@ -114,13 +114,26 @@ describe("mobile inbox sections", () => {
     expect(peerChip.getAttribute("data-node")).toBe("mac");
   });
 
-  it("locates a deep-linked row even when it sits in the collapsed finished section", async () => {
+  it("locates a deep-linked row by opening its card", async () => {
     window.history.replaceState(null, "", "/m?session=zuan:n:e");
     const t = setup([row("zuan:n:a", { status: "waiting" }), row("zuan:n:e", { status: "finished", origin: "external" })]);
     await online(t);
 
-    expect(screen.getByTestId("mobile-finished-toggle").getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByTestId("mobile-row-zuan:n:e").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("mobile-card-zuan:n:e")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("mobile-back"));
+    // 回到收件箱：这一行是 external finished，在收起的已完成区里；展开后能看到它。
+    fireEvent.click(screen.getByTestId("mobile-finished-toggle"));
+    expect(screen.getByTestId("mobile-row-zuan:n:e")).toBeTruthy();
+  });
+
+  it("opens the card from a row tap and goes back to the inbox", async () => {
+    const t = setup([row("n:a", { status: "waiting" })]);
+    await online(t);
+
+    fireEvent.click(screen.getByTestId("mobile-row-n:a"));
+    expect(screen.getByTestId("mobile-card-n:a")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("mobile-back"));
+    expect(screen.getByTestId("mobile-inbox").textContent).toContain("需要我");
   });
 });
 
