@@ -73,7 +73,17 @@ fn only_read_only_subcommands_ever_reach_bd() {
             .with_timeout(FAKE_BD_TIMEOUT),
     );
 
-    let hit = index.get(dir.path(), "agora-dvh.10").unwrap();
+    // 区分失败在哪一头（agora-9zz）：`TaskIndex::fetch` 把「exec 失败 / 超时」与「没这个 issue」
+    // 都收敛成 None，直接 unwrap 只会看到 None、在错的一头排查。先确认假 bd 真的被敲到过——
+    // 脚本跑起来就会落 calls.log；不落就是 exec 那头的问题（历史上是 ETXTBSY / 超时，agora-pmm2）。
+    let hit = index.get(dir.path(), "agora-dvh.10");
+    assert!(
+        calls(dir.path())
+            .iter()
+            .any(|argv| argv.iter().any(|a| a == "agora-dvh.10")),
+        "假 bd 没被敲到（exec 失败 / 超时？）：先查这一头，再看返回值"
+    );
+    let hit = hit.unwrap();
     assert_eq!(
         (hit.title.as_str(), hit.priority),
         ("Attention Dashboard", 1)
