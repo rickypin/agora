@@ -55,7 +55,8 @@ pub async fn health(principal: Option<Principal>, State(state): State<AppState>)
         "database": database,
         // "self-signed" / "external" / null（没开 TLS 监听器）；`main.rs` 按 tls.mode 填（agora-ltb）。
         "tls": state.tls_mode,
-        "push": { "apple": false, "fcm": false },
+        // 三态、实时：PushSender 在投递时写（MISSION §10.3；agora-thc.6）。fcm 恒 null——Android 延后。
+        "push": state.push_health.snapshot(),
         // 节点名 → PeerState（src/peer/state.rs）：online / last_seen / retrying / last_error，
         // 错误按类型；配置了却还没连上的 peer 也在（agora-7ku.12）。
         "peers": state.peers.snapshot(),
@@ -70,5 +71,8 @@ pub async fn system(_principal: Principal, State(state): State<AppState>) -> Jso
         api_version: API_VERSION,
         version: env!("CARGO_PKG_VERSION").to_owned(),
         node: state.node.to_string(),
+        push: super::version::SystemPush {
+            vapid_public_key: state.vapid.as_ref().map(|v| v.public_key().to_owned()),
+        },
     })
 }

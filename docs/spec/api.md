@@ -27,7 +27,7 @@ POST   /api/auth/pair/new          # 已认证：铸造一条配对链接 → { 
 POST   /api/auth/logout            # 吊销当前设备并清 cookie → 204
 GET    /api/auth/devices           # 已配对设备列表（含已吊销的，revoked_at 非空）
 DELETE /api/auth/devices/:id       # 吊销一台设备 → 204；即时生效，含它已建立的长连接（「认证」末条）
-POST   /api/push/subscriptions     # { endpoint, keys: { p256dh, auth } } → 204；绑定当前设备、幂等（V2-1，agora-thc.6）
+POST   /api/push/subscriptions     # { endpoint, keys: { p256dh, auth } } → 201（首订）/ 200（更新）+ { endpoint }；绑定当前设备、幂等（V2-1，agora-thc.6）
 DELETE /api/push/subscriptions     # { endpoint } → 204；幂等（V2-1，agora-thc.6）
 ```
 
@@ -70,15 +70,15 @@ agora 没起过的会话经 hook 自己出现（§5.4，A16 / A22 合流）：�
 
 每条 `/api/` 请求写一行结构化日志：方法、路径、状态、耗时、principal（未认证请求该栏为空）；不记请求体（MISSION §10.2）。
 
-## Web Push（MISSION §6.6 / §10.3；A19；agora-thc.6 / thc.7；未实现）
+## Web Push（MISSION §6.6 / §10.3；A19；agora-thc.6 / thc.7；服务端已实现，客户端归 thc.7）
 
 - **只做 iPhone（Apple 推送端点）**；服务端保持标准 Web Push（RFC 8291 aes128gcm + VAPID JWT ES256），Android 延期（agora-w9ki）。
 - `GET /api/system` 多一个 `push.vapid_public_key`（PWA 用它 `pushManager.subscribe`）；未配置推送时为 null。
-- 订阅按**设备**存（`push_subscriptions`，schema v6）；`POST /api/push/subscriptions { endpoint, keys { p256dh, auth } }` 绑定当前设备、幂等；`DELETE` 按 endpoint 解绑、幂等。设备吊销（`DELETE /api/auth/devices/:id`）后不再向它的订阅发送（发送时与 `devices.revoked_at` 联查）。
+- 订阅按**设备**存（`push_subscriptions`，schema v7）；端点只收 `https://*.push.apple.com`（别的地址 400，不给浏览器拿节点当 SSRF 跳板）、`p256dh` 必须 65 字节、`auth` 16 字节；`POST /api/push/subscriptions { endpoint, keys { p256dh, auth } }` 绑定当前设备、幂等；`DELETE` 按 endpoint 解绑、幂等。设备吊销（`DELETE /api/auth/devices/:id`）后不再向它的订阅发送（发送时与 `devices.revoked_at` 联查）。
 - **发送**：承载节点订阅自己 EventBus 的 `Event::Notification`（本机与 peer 同源，`src/peer/view.rs` 已转发），对每个有效订阅发一条；**payload 只带标题与全局会话 id，不带 `body`**（body 是权限命令 / 回复原文，锁屏不显示）。通知转换沿用 MISSION §6.6 的四条。
 - **失败**：`410` / `404` 删订阅；其余按类型退避；发送不阻塞事件流与 WS。
-- **health.push**：`apple: true | false | null`（true = 最近发送成功或探测可达；false = 探测不可达 / 连续失败，原因另给；null = 还没有订阅、未评估）；`fcm: null` = Android 未启用。不可达时 PWA 打开期间仍走 WS 实时更新。
-- **兼容**：本段落地时 `api_version` 从 1.8 bump 到 1.9（minor；新增端点与 `/api/system` 新字段，老调用方不受影响）。
+- **health.push**：`apple: true | false | null` + `reason`（仅 false 时有值）；`fcm: null` = Android 未启用（agora-w9ki）。`true` = 最近一次投递拿到了应答（2xx 与 4xx 都算——到得了 Apple，拒收是另一件事）；`false` = 连不上（DNS / TCP / TLS / 超时，`reason` 给类型）；`null` = 还没发过、没评估过。状态由投递实时驱动、不主动探测端点。不可达时 PWA 打开期间仍走 WS 实时更新。
+- **兼容**：本段落地时 `api_version` 从 1.9 bump 到 1.10（minor；新增端点、`/api/system` 新字段与 health 的 push 段，老调用方不受影响）。
 
 ## api_version 兼容规则（MISSION §7.3）
 
@@ -103,6 +103,7 @@ GET /api/system
 - `1.6`（2026-09-07，agora-fna）：只增——`POST /api/sessions` 与 `POST /api/projects/worktrees` 的 body 加可选 `node`，`GET /api/projects`、`/api/projects/worktrees`、`/api/projects/tasks`、`/api/agents` 加可选 `?node=`（「在 peer 上起会话」，A45）；老节点不认识它就当没给、答本机的，新页面对老节点只是选不到 peer 而不会错读；`/api/system` 本身不变。
 - `1.7`（2026-09-19，agora-5gg.18）：只增——会话形态与事件流的 `status_changed` 加 `process`（`alive | gone | unknown` 进程三态，裁决 agora-5gg.4 选 A），`alive` 保留一版且恒等于 `process == alive`、下一版删（这就是它只算 minor 的原因：老页面读 `alive` 的结果与升级前一致，把「不知道」读成「不是活着」是旧形态本来就有的语义，不是新引入的错读）；老节点不发 `process`，新页面按「没有」处理（`web/src/events.ts` 的 `rowProcess`），不报错、不错读；`/api/system` 本身不变。
 - `1.8`（2026-09-20，agora-5gg.6）：只增——会话形态与事件流的 `status_changed` 加 `end_cause`（`{ "kind": … }`，结束的原因：`exit_code | signal | killed_by_user | host_session_end | superseded | process_gone | runtime_gone`）与 `unknown_cause`（`runtime_unavailable | hooks_silent_screen | prompt_gone | hooks_silent_no_handle | no_observation | exit_status_missing`，说不清的原因），形态见「会话形态」段。`reason` 保留为人读的一句话、语义不变（不是 major 的理由）；老节点不发这两个键，新页面读成 `null` = 「这一格没说原因」，不错读；老页面读新节点则照旧只看 `reason`，它看到的句子与升级前一模一样（本步不改写任何 `reason` 文本，只加字段）。`status` 为 FINISHED / FAILED 时 `end_cause` 非 null、UNKNOWN 时 `unknown_cause` 非 null 是新节点的承诺，老节点没有这个承诺——所以页面不得拿「end_cause 为 null」当「没结束」判断；`/api/system` 本身不变。
+- `1.10`（2026-09-22，agora-thc.6）：只增——新端点 `POST` / `DELETE /api/push/subscriptions`（Web Push 订阅登记 / 解绑，Human 设备所有，端点限 Apple）；`GET /api/system` 加 `push.vapid_public_key`（缺省 `null` = 未启用推送，老节点没有这一段、新页面按 null 处理）；`GET /api/health` 的 `push` 段从占位的 `{apple:false, fcm:false}` 改成三态 + `reason`（`apple: true|false|null`，`fcm` 恒 `null`）。老页面不认识 `push` 段里的新形态也不会错读——它本来就没读这一段；老节点不发 `push.vapid_public_key`，新页面只是拿不到公钥、不订阅推送。
 - `1.9`（2026-09-22，agora-psj0）：只增——会话形态加 `ended_at_from_missing`（bool：这一行的 `ended_at` 是"运行时列表里没有它"猜出来的，因而会在会话回到列表且 pane 还活着时被节点自己撤回；语义见「会话形态」段）。`ended_at` / `ended_at_approximate` 的语义一字不改（不是 major 的理由）：新加的这一项只把近似值里"可能是误判"的那一档单独标出来，老调用方不读它，看到的仍是原来那两个字段；老节点不发它，新页面读成 `null` = 「这一行没说这件事」，不得把缺失当 false 去推断"这个结束时刻不可撤回"。`/api/system` 本身不变。
 - `1.5`（2026-09-07）：只增——事件流加 `peer_changed`（agora-c8h：一个 peer 在本节点眼里的面貌变了，`peer` 与 `GET /api/health` peers 段的一项同形），Header 据此秒级改点、不再等 60 s 的 health 轮询；老页面不认识这个 `type` 就丢掉（`EventsClient.apply` 的 default 分支），退回轮询节奏而不会错读；`/api/system` 本身不变。
 

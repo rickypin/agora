@@ -382,6 +382,30 @@ async fn serve() -> i32 {
     agora::peer::client::spawn_all(&state);
     hooks.attach_events(state.events.clone(), state.node.clone());
     state.hooks = Some(hooks);
+    // Web Push（agora-thc.6）：VAPID 密钥存在就带上公钥、起投递任务。生成失败不是致命错误——
+    // 没有推送的节点照样能用（浏览器轮询 + WS），只是 /api/system 的 push 段为 null、health 不报。
+    match agora::push::vapid::load_or_generate(&home) {
+        Ok(vapid) => {
+            state.vapid = Some(Arc::new(vapid.clone()));
+            let subject = match settings.raw.server.public_url.as_deref() {
+                Some(url) if url.starts_with("https://") => url.to_owned(),
+                _ => "mailto:agora@localhost".to_owned(),
+            };
+            let sender = Arc::new(agora::push::PushSender::new(
+                sessions.db_handle(),
+                state.push_health.clone(),
+                vapid,
+                agora::push::SenderConfig {
+                    subject,
+                    ..Default::default()
+                },
+            ));
+            tokio::spawn(sender.run(state.events.subscribe()));
+        }
+        Err(err) => {
+            tracing::warn!(component = "push", %err, "VAPID 密钥不可用，本节点不发 Web Push")
+        }
+    }
     // 状态变化没有人来通知：轮询求差发 /api/events。
     tokio::spawn(agora::events::watch(
         sessions,

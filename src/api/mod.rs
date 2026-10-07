@@ -12,6 +12,7 @@ mod events;
 pub mod forward;
 mod health;
 mod projects;
+mod push;
 mod sessions;
 mod spa;
 mod terminal;
@@ -119,6 +120,14 @@ pub struct AppState {
     /// 长连接（events / terminal / diff WS 与转发桥）多久复查一次凭据（agora-0jt；
     /// `auth::until_revoked`）。缺省 [`REVOKE_CHECK_INTERVAL`]；测试调短。
     pub revoke_check: Duration,
+    /// Web Push 订阅（agora-thc.6）：`/api/push/subscriptions` 写，PushSender 发时读。
+    pub push_store: crate::push::PushStore,
+    /// `GET /api/health` 的 `push` 段：PushSender 在投递时写，这里只读（与 runtime 同一形状：
+    /// 结论是实时的，不在装配时定死）。
+    pub push_health: crate::push::PushHealth,
+    /// VAPID 公钥（`GET /api/system` 的 `push.vapid_public_key`）。没启用推送的进程（测试 /
+    /// 还没生成过密钥的 daemon）是 None，客户端据此知道"这个节点还没法推"。
+    pub vapid: Option<Arc<crate::push::vapid::Vapid>>,
 }
 
 /// 不可用的探测结果保留多久再重探。
@@ -147,6 +156,9 @@ impl AppState {
             registry: Arc::new(crate::peer::registry::PeerRegistry::new(node)),
             peer_views: crate::peer::view::PeerViews::new(),
             revoke_check: REVOKE_CHECK_INTERVAL,
+            push_store: crate::push::PushStore::new(sessions.db_handle()),
+            push_health: crate::push::PushHealth::new(),
+            vapid: None,
         }
     }
 
@@ -206,6 +218,8 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/auth/logout"),
     ("GET", "/api/auth/devices"),
     ("DELETE", "/api/auth/devices/{id}"),
+    ("POST", "/api/push/subscriptions"),
+    ("DELETE", "/api/push/subscriptions"),
 ];
 
 /// 未认证白名单（ADR-003 D1）。加一条就是加一个免认证端点，先改 ADR 再改这里。
@@ -247,6 +261,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/devices", get(auth::devices))
         .route("/api/auth/devices/{id}", delete(auth::revoke_device))
+        // Web Push 订阅（agora-thc.6）：POST 登记 / 更新，DELETE 按端点删（幂等）。
+        .route(
+            "/api/push/subscriptions",
+            post(push::subscribe).delete(push::unsubscribe),
+        )
         .fallback(get(spa::serve))
         .layer(middleware::from_fn(log_request))
         .layer(middleware::from_fn(renew_session_cookie))

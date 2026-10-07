@@ -112,13 +112,15 @@ CREATE TABLE peer_tokens (                         -- ADR-003 D3：按 peer 签�
     last_used_at DATETIME,
     revoked_at DATETIME
 );
-CREATE TABLE push_subscriptions (                  -- Web Push 订阅（schema v6，V2-1 iPhone；agora-thc.6）
-    endpoint TEXT PRIMARY KEY,                     -- 浏览器给的 capability URL，唯一键
-    device_id TEXT NOT NULL,                       -- devices.id；发送时联查 revoked_at，吊销即停发
-    p256dh TEXT NOT NULL,
-    auth TEXT NOT NULL,
+CREATE TABLE push_subscriptions (                  -- Web Push 订阅（schema v7，V2-1 iPhone；agora-thc.6）
+    endpoint TEXT PRIMARY KEY,                     -- 浏览器给的 capability URL，唯一键；重订即换密钥
+    device_id TEXT NOT NULL,                       -- devices.id；发送时联查 revoked_at，吊销即停发（不复制吊销状态）
+    p256dh TEXT NOT NULL,                          -- 订阅公钥（65 字节未压缩 P-256 点，base64url）；等同秘密，不进日志
+    auth TEXT NOT NULL,                            -- 16 字节 auth secret（base64url）；同上
     created_at DATETIME NOT NULL,
-    last_ok_at DATETIME
+    last_success_at DATETIME,
+    last_failure_at DATETIME,
+    failure TEXT                                   -- 最近失败的**类型**（timeout / tls / 410 …），不是错误正文
 );
 CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 ```
@@ -135,8 +137,8 @@ MVP 不需要保存大量 operational telemetry。peer 的最后视图只在内�
 ## Web Push（V2-1；agora-thc.6）
 
 - 无独立配置项：`notifications.enabled`（见上）是总闸，关掉就不产生通知、也就没有推送。
-- VAPID 密钥自动生成在 `<AGORA_HOME>/push/vapid.json`（0600，首次需要时生成；公钥随 `GET /api/system` 下发）；轮换即换文件、旧订阅全部失效需重订。
-- 订阅存 SQLite（schema v6 的 `push_subscriptions`），绑定已配对设备；吊销设备即停发（ADR-003 附录 C）。
+- VAPID 密钥在 daemon 启动时确保存在：没有 `<AGORA_HOME>/push/vapid.json` 就生成一对（目录 0700、文件 0600，`create_new` 防并发；加载时校验文件里的公钥与私钥推导值一致，坏文件报错而不静悄悄换钥）。公钥随 `GET /api/system` 的 `push.vapid_public_key` 下发（null = 密钥不可用）。换钥 = 删掉该文件重启：旧订阅绑着旧公钥、Apple 会拒，浏览器要重订（thc.7 的降级路径）。
+- 订阅存 SQLite（schema v7 的 `push_subscriptions`），绑定已配对设备；吊销设备即停发（ADR-003 附录 C）。
 - iPhone-only（Apple 端点）；Android 延期（agora-w9ki）。
 
 ## TLS 证书（`tls` 段；ADR-003 D4 / D5）

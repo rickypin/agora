@@ -33,6 +33,7 @@ pub mod hook;
 pub mod local;
 pub mod peer;
 pub mod project;
+pub mod push;
 pub mod runtime;
 pub mod session;
 pub mod status;

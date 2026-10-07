@@ -90,6 +90,19 @@ const MIGRATIONS: &[&str] = &[
     // ADR-001 D4 记下的已知假阳性），下一轮真扫到、会话还活着就要把结束时刻收回。没有这个记号就
     // 分不出该不该撤回，误判从此只有 Restart 一条出口。旧行留 FALSE：不知道来路的结束时刻不推翻。
     "ALTER TABLE sessions ADD COLUMN ended_at_from_missing BOOLEAN NOT NULL DEFAULT FALSE;",
+    // v7：Web Push 订阅（agora-thc.6）。一行 = 一台设备的一份浏览器订阅，端点是主键
+    // （重订就换密钥）。设备是属主：发送时与 devices 联查 revoked_at，吊销设备即停发，
+    // 不复制一份吊销状态过来。p256dh / auth 是端点的加密材料，等同秘密，不进日志。
+    "CREATE TABLE push_subscriptions (
+        endpoint TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        created_at DATETIME NOT NULL,
+        last_success_at DATETIME,
+        last_failure_at DATETIME,
+        failure TEXT
+    );",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

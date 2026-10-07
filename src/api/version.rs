@@ -52,7 +52,7 @@ impl fmt::Display for ApiVersion {
 
 /// 本二进制实现的 API 版本。改形态时按 api.md 的递增规则改这里，并同步
 /// `web/src/health.ts` 的 `API_VERSION`——页面按哪一版构建就按哪一版比。
-pub const API_VERSION: ApiVersion = ApiVersion::new(1, 9);
+pub const API_VERSION: ApiVersion = ApiVersion::new(1, 10);
 
 /// `GET /api/system` 的响应体。peer 客户端用同一个类型反序列化，字段名只在这里出现一次。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +61,17 @@ pub struct SystemInfo {
     /// 二进制（crate）版本，只给人看；程序不据此判断。
     pub version: String,
     pub node: String,
+    /// Web Push（agora-thc.6）。旧节点没有这段：`#[serde(default)]` 读成"没有公钥"，
+    /// 不因为一个可选字段缺失就判不兼容（api.md「api_version 兼容规则」）。
+    #[serde(default)]
+    pub push: SystemPush,
+}
+
+/// `/api/system` 的 `push` 段：浏览器订阅前要用的 VAPID 公钥。
+/// `null` = 这个节点还没启用推送（没生成过 VAPID 密钥 / 是测试进程）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SystemPush {
+    pub vapid_public_key: Option<String>,
 }
 
 /// 同 major 时的三档，只区分 minor 的高低（日志 / 提示用）。
@@ -195,6 +206,7 @@ mod tests {
             api_version: API_VERSION,
             version: "0.1.0".into(),
             node: "mac".into(),
+            push: SystemPush::default(),
         };
         let v = serde_json::to_value(&info).unwrap();
         // 用常量推导而不是写死数字：minor 每合入一批只增字段的分支就 +1（api.md「api_version 兼容规则」），
