@@ -64,6 +64,22 @@ fn block_at(body: &str, from: usize) -> &str {
     &body[start..]
 }
 
+#[test]
+fn invariant_peer_waits_use_isolate_proc() {
+    // agora-3a8：`tests/invariants_peer.rs` 的 wait_for / ws_collect_until 曾用写死的 10 s 等待，
+    // 并行满载时假红（2026-10-07 一天内两次全量门禁都撞上，单跑又绿）。等外部进程的上限用
+    // `isolate::PROC`（60 s，理由见 tests/common/isolate.rs）。只扫这一个文件：其它测试里同样的
+    // 常量尚未收口，下针太宽会把它们一起误伤（各自的 case 到期再收）。
+    let rel = "tests/invariants_peer.rs";
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !body.contains("Duration::from_secs(10)"),
+        "{rel} 又出现写死的 10 s 等待；改用 isolate::PROC（agora-3a8 的教训：满载慢机上假红，\
+         与它同形的假红在 2026-10-07 一天撞了两次）"
+    );
+}
+
 fn offenders(needle: &str) -> Vec<String> {
     test_sources()
         .into_iter()

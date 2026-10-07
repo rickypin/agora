@@ -44,8 +44,10 @@ use common::node::TmuxNode;
 
 /// 测试用的退避：5 ms 起、40 ms 顶（生产 1 s / 30 s，`BackoffPolicy::PEER`），只要"会重试"。
 const FAST: BackoffPolicy = BackoffPolicy::new(Duration::from_millis(5), Duration::from_millis(40));
-/// 等一个条件成立的上限；正常几十毫秒就到，10 s 是 CI 慢机的余量。
-const WAIT: Duration = Duration::from_secs(10);
+/// 等一个条件成立的上限：`isolate::PROC`（60 s，见 tests/common/isolate.rs 的实测理由）。
+/// 以前写死 10 s，并行满载时假红过（agora-3a8；2026-10-07 一天内两次全量门禁都撞上），而这里
+/// 测的是"最终会在线"，不是"多快在线"——上限交给随机器快慢自适应的那个常量。
+const WAIT: Duration = common::isolate::PROC;
 /// 运行时子进程（tmux）的超时。默认 5 s 在 CARGO_BUILD_JOBS=2、几个 agent 同时编译的机器上会
 /// 假阴性（第八批 agora-z62 的教训），这里显式给足。
 const EXEC_TIMEOUT: Duration = Duration::from_secs(20);
