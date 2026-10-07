@@ -160,6 +160,28 @@ async fn an_interactive_pi_session_registers_external_and_goes_turn_done() {
 }
 
 #[tokio::test]
+async fn a_registration_that_says_idle_lands_on_idle_not_starting() {
+    // /reload 之后只来了 session_start：扩展在登记里报 `ctx.isIdle()`（真值表 x14，agora-wmrq）。
+    // 没有这一条，行会停在 STARTING——"刚起"对一个跑了 N 小时的空闲会话是假话（手机按在跑分组）。
+    let (fx, receiver, home) = with_hooks();
+    let mut p = session_start("pi-6", "tui");
+    p["reason"] = json!("reload");
+    p["idle"] = json!(true);
+    let id = ingest(
+        &receiver,
+        home.path(),
+        &delivery("pi-6", p, Some(std::process::id())),
+    )
+    .unwrap();
+    let view = fx.sessions.get(&id).unwrap();
+    assert_eq!(view.assessment.status, Status::Idle);
+    assert_eq!(view.assessment.source, Source::Hook);
+    assert_eq!(view.prompt, None, "只登记、没讲话：没有 ❯");
+    assert_eq!(view.detail, None, "也没有 ↳");
+    assert!(view.record.ended_at.is_none());
+}
+
+#[tokio::test]
 async fn a_print_mode_pi_session_registers_headless_and_stays_out_of_the_inbox() {
     let (fx, receiver, home) = with_hooks();
     // 注册竞速：真 daemon 上每条事件的 hook 各自 spawn，`before_agent_start` 可能先到

@@ -569,6 +569,11 @@ impl Machine {
                 Some(hook(Status::Starting, 1.0, Some("session started")))
             }
             AgoraEvent::SessionId(_) => None,
+            // 登记即空闲（pi 在 session_start 里报 `ctx.isIdle()`，agora-wmrq）：只从 STARTING 吃。
+            // 投递件按落盘顺序应用，正常 session_start 先到；万一 before_agent_start 先到（已经
+            // RUNNING），晚到的登记不许把在干活的行降成空闲。
+            AgoraEvent::IdleReported => (self.current.status == Status::Starting)
+                .then(|| hook(Status::Idle, 0.9, Some("idle"))),
             AgoraEvent::PromptSubmitted(p) => {
                 self.pending.clear();
                 self.detail = Some(p.clone());

@@ -18,6 +18,8 @@
 //!   收进折叠区、不通知、满 24 h 删），`tui` / `rpc` 照常按 `external` 登记。
 //! - 扩展是**旁观者**：没有权限代答的能力（pi 的工具调用默认不问人），`decision_via_hook()` 为
 //!   false（ADR-002 D2「没有的能力就写没有」）；无运行时句柄，手机侧的深链与状态照常，回复要回终端。
+//! - 登记即空闲：扩展在 `session_start` 里报 `ctx.isIdle()`（/reload 或启动后停在提示符），行直接
+//!   落 IDLE 而不是 STARTING——真值表 x14、agora-wmrq。
 //!
 //! 进程号：扩展 spawn hook 时显式带 `PI_PID`（`process.pid`），信封按 `PI_` 前缀收进 `agent_env`，
 //! 本 adapter 只认它——不拿 `ppid` 兜底，免得手工敲的 `agora hook --host pi` 把 shell 当成会话本体。
@@ -215,6 +217,10 @@ impl AgentHooks for Pi {
                 if let Some(id) = hooks::session_id(payload) {
                     out.push(AgoraEvent::SessionId(id));
                 }
+                // 登记这一刻就不在跑（reload / 启动后停在提示符）：真值表 x14，agora-wmrq。
+                if payload.get("idle").and_then(Value::as_bool) == Some(true) {
+                    out.push(AgoraEvent::IdleReported);
+                }
             }
             Some("before_agent_start") => {
                 out.push(hooks::prompt_event(
@@ -278,6 +284,20 @@ mod tests {
                 AgoraEvent::SessionId("01a1180a-cdef-77db-84bf-ce5bc2c24aa9".into())
             ]
         );
+        // 登记即空闲（agora-wmrq）：idle=true 才多一条，false / 缺字段都不多。
+        let mut p = payload("session_start");
+        p["idle"] = json!(true);
+        assert_eq!(
+            PI.parse(&p),
+            vec![
+                AgoraEvent::SessionStarted,
+                AgoraEvent::SessionId("01a1180a-cdef-77db-84bf-ce5bc2c24aa9".into()),
+                AgoraEvent::IdleReported
+            ]
+        );
+        let mut p = payload("session_start");
+        p["idle"] = json!(false);
+        assert_eq!(PI.parse(&p), PI.parse(&payload("session_start")));
         let mut p = payload("before_agent_start");
         p["prompt"] = json!("把 config 迁到 yaml");
         assert_eq!(

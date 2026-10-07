@@ -47,6 +47,12 @@ pub enum AgoraEvent {
     TurnFailed(String),
     /// agent 自报空闲：TURN_DONE 的确认 / 补漏。
     Idle,
+    /// 宿主在**登记那一刻**就自报空闲（pi 扩展在 `session_start` 里报 `ctx.isIdle()`；agora-wmrq）：
+    /// 落 IDLE——STARTING 说的"刚起"对一个 reload 出来的、已经跑了 N 小时的会话是假话，TURN_DONE
+    /// 说的"等你回看一轮"这里也没有（2026-10-07 现场：reload 之后行停在 starting，手机按"在跑"
+    /// 分组、卡片打开还是空的）。机器层只从 STARTING 吃它：投递件按落盘顺序应用，晚到的登记不许把
+    /// 已经在跑的行降下来。
+    IdleReported,
     SessionEnded(Option<String>),
     /// agora 自己合成的（不是 hook 发的）：同一个 agent 进程报来了**另一个**对话 id，这一行的对话到此
     /// 为止——一个 CLI agent 进程一次只跑一个对话，Grok 的 /clear、Codex TUI 的 /new 换 id 却不发

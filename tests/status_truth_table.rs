@@ -964,6 +964,12 @@ const ROWS: &[Cell] = &[
         cell: "UNKNOWN | gone | none（`runtime session missing`，本代还在 STARTING 窗口 < 2 s）",
         why: "运行时这一 tick 还没报到它，不等于没了：不写 ended_at，下一 tick 落 a01",
     },
+    Cell {
+        id: "a24",
+        verdict: Verdict::Legal,
+        cell: "IDLE | alive | hook（登记即空闲）",
+        why: "宿主自报 `ctx.isIdle()`（pi 的 /reload、`agora create pi` 的托管行）；进程层不盖 hook 的结论",
+    },
     // ── 第 3 节：origin = external / headless（无运行时句柄）──
     Cell {
         id: "x01",
@@ -998,8 +1004,8 @@ const ROWS: &[Cell] = &[
     Cell {
         id: "x06",
         verdict: Verdict::Never,
-        cell: "IDLE | 任何 | 任何",
-        why: "无句柄行没有活动来源（没有 pane 可采输出）",
+        cell: "IDLE | 任何 | activity / text / none",
+        why: "无句柄行没有活动来源（没有 pane 可采输出）；宿主自报空闲是 x14 那一格",
     },
     Cell {
         id: "x07",
@@ -1042,6 +1048,12 @@ const ROWS: &[Cell] = &[
         verdict: Verdict::Legal,
         cell: "本节每一格 | 同 external | 同 external",
         why: "headless 与 external 同一张表：代码里一律问 Origin::is_handleless()",
+    },
+    Cell {
+        id: "x14",
+        verdict: Verdict::Legal,
+        cell: "IDLE | 任何 | hook（登记即空闲：`session_start` 自报 `ctx.isIdle()`）",
+        why: "进程在、没在跑、也不等人；只从 STARTING 吃（晚到的登记不许把在跑的行降下来）",
     },
 ];
 
@@ -1731,6 +1743,7 @@ fn a20_the_hook_layer_never_writes_unknown() {
         AgoraEvent::TurnEnded(Some("done".into())),
         AgoraEvent::TurnFailed("api_error".into()),
         AgoraEvent::Idle,
+        AgoraEvent::IdleReported,
         AgoraEvent::SessionEnded(Some("other".into())),
         AgoraEvent::Superseded,
     ];
@@ -2230,6 +2243,50 @@ fn x13_headless_shares_every_cell_of_the_handleless_table() {
     assert_eq!(Origin::parse("wsl"), None);
 }
 
+#[test]
+fn x14_a_host_reporting_idle_at_registration_lands_on_idle() {
+    // 登记即空闲（pi 在 `session_start` 里报 `ctx.isIdle()`，agora-wmrq）：reload 一个跑了 N 小时
+    // 的空闲会话，STARTING（"刚起"）与 TURN_DONE（"等你回看一轮"）都是假话。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    m.apply(&AgoraEvent::IdleReported, 1, 0);
+    let fed = tick_external(&mut m, Liveness::Alive, 1);
+    lands("x14", &fed, Status::Idle, Source::Hook, ProcessState::Alive);
+    // 进程号活着的行就停在这：沉默兜底够不着它（x03 家族）。
+    let fed = tick_external(&mut m, Liveness::Alive, 2 * 3600);
+    lands("x14", &fed, Status::Idle, Source::Hook, ProcessState::Alive);
+    // 没有进程号的（丢了号的旧检查点）：沉默满 external_silent_after 走 x10，与别的 hook 状态同命。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    m.apply(&AgoraEvent::IdleReported, 1, 0);
+    let fed = tick_external(&mut m, Liveness::Unknown, 2 * 3600);
+    lands("x10", &fed, Status::Unknown, Source::Hook, ProcessState::Unknown);
+
+    // 投递乱序的反面：已经 RUNNING 的行晚收到这条登记，不许被降成空闲（投递件按落盘顺序应用，
+    // 正常 session_start 先到；扩展侧已串行投递，机器层再兜一层）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 0);
+    m.apply(&AgoraEvent::IdleReported, 1, 0);
+    let fed = tick_external(&mut m, Liveness::Alive, 1);
+    lands("x03", &fed, Status::Running, Source::Hook, ProcessState::Alive);
+}
+
+#[test]
+fn a24_a_handle_reports_idle_at_registration_and_stays_idle() {
+    // pi 在 `agora create pi` 的托管行里也报 session_start（带 `ctx.isIdle()`）：托管行刚建好
+    // 就是空闲，STARTING（"刚起"）停 10 s 再衰减成 TURN_DONE awaiting first prompt（会弹进
+    // NEEDS ATTENTION 而其实没人等你）不如直接说空闲。进程层不盖 hook 的结论：两条 tick 都
+    // 停在 IDLE，离开这一格的证据是下一条 hook 事件（prompt / 工具 / 结束）。
+    let mut m = Machine::new(cfg(), true, 1, 0);
+    m.apply(&AgoraEvent::SessionStarted, 1, 0);
+    m.apply(&AgoraEvent::IdleReported, 1, 0);
+    let fed = tick_rt(&mut m, &pane(Some(0)), Some(3600), false, None, 1);
+    lands("a24", &fed, Status::Idle, Source::Hook, ProcessState::Alive);
+    let fed = tick_rt(&mut m, &pane(Some(0)), Some(3600), false, None, 3600);
+    lands("a24", &fed, Status::Idle, Source::Hook, ProcessState::Alive);
+}
+
 // ───────────────────────────── 表与守卫的对账 ─────────────────────────────
 
 fn repo_file(rel: &str) -> PathBuf {
@@ -2457,6 +2514,7 @@ fn hook_events() -> Vec<AgoraEvent> {
         AgoraEvent::TurnEnded(Some("done".into())),
         AgoraEvent::TurnFailed("api_error".into()),
         AgoraEvent::Idle,
+        AgoraEvent::IdleReported,
         AgoraEvent::SessionEnded(Some("other".into())),
         AgoraEvent::SessionEnded(Some("clear".into())),
         AgoraEvent::Superseded,

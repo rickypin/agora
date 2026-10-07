@@ -55,6 +55,7 @@
 | a21 | WAITING | alive | text（agent 无 hook）| ✓ | 答它：这一行没有 hook 可回，只能打开终端（`respond_via = terminal`）。与 a07 是同一层在两种行上的两种命运 | `…::a21_text_raises_waiting_only_on_a_row_without_hooks` |
 | a22 | UNKNOWN | gone | process（`process exited, exit status not yet collected`）| ◐ | 只许停一个 tick：退出码到了落 a12 / a15，永远补不上就是会话连同 pane 没了，落 a13。不猜 FINISHED 也不猜 FAILED | `…::a22_a_missing_exit_status_is_unknown_not_a_guess` |
 | a23 | UNKNOWN | gone | none（`runtime session missing`，本代还在 STARTING 窗口 < 2 s）| ◐ | 运行时这一 tick 还没报到它，不等于"没了"：绝不写 `ended_at`（守卫 `tests/session_manager.rs::starting_window_exempts_a_row_that_is_still_starting`），下一 tick 落 a01 | `…::a23_a_row_the_runtime_has_not_reported_yet_is_not_gone` |
+| a24 | IDLE | alive | hook（登记即空闲）| ✓ | 宿主在 `session_start` 里自报 `ctx.isIdle()`（pi 的 `/reload`、以及 `agora create pi` 的托管行）：进程层不盖 hook 的结论，停到下一条事件为止 | `…::a24_a_handle_reports_idle_at_registration_and_stays_idle` |
 
 ## 3. origin = external / headless（无运行时句柄）
 
@@ -67,7 +68,7 @@
 | x03 | RUNNING / WAITING / TURN_DONE | alive | hook | ✓ | 同 §2；WAITING 经挂起的 hook 可答（`respond_via = hook`）| `…::x03_hook_states_stay_put_while_the_handle_is_alive` |
 | x04 | RUNNING / WAITING / TURN_DONE | unknown | hook | ✓ | 同上，但 agora 说不上进程在不在（Codex Desktop）；沉默满 `hooks.external_silent_after` 退到 x10 | `…::x04_hook_states_stay_put_without_a_handle` |
 | x05 | RUNNING / WAITING / TURN_DONE | gone | 任何 | ✗ | 进程号探不到了就是结束，落在 x07（没有退出码，所以只有 FINISHED 一种结束）| `…::x05_a_gone_handle_ends_the_row_it_cannot_leave_it_working` |
-| x06 | IDLE | 任何 | 任何 | ✗ | 无句柄行没有活动来源（没有 pane 可采输出）| `…::x06_no_activity_layer_means_no_idle` |
+| x06 | IDLE | 任何 | activity / text / none | ✗ | 无句柄行没有活动来源（没有 pane 可采输出）；宿主自报空闲是 x14 那一格 | `…::x06_no_activity_layer_means_no_idle` |
 | x07 | FINISHED | gone | process（`process_gone`）| ✓ | 一个事件都没来、进程消失：崩溃、关窗口、机器重启；通知一次（`src/events.rs`）| `…::x07_a_silent_row_ends_when_its_process_goes` |
 | x08 | FINISHED | gone | hook（`host_session_end{clear\|resume\|logout\|exit\|other}` / `superseded`）| ✓ | 人自己结束的、或同一进程换到了新对话：不通知（MISSION §4.6 证据 ②）；`process` 一律 gone，哪怕那个号还在跑新对话（Q4）| `…::x08_a_row_ended_by_its_host_or_by_a_new_conversation_reports_gone` |
 | x09 | FAILED | 任何 | 任何 | ✗ | 没有退出码可拿，分不出两种退法：结束只有 FINISHED（x07 / x08）| `…::x09_no_exit_code_means_no_failed` |
@@ -75,6 +76,7 @@
 | x11 | UNKNOWN | alive 或 gone | hook / text / process | ✗ | 行上说过话、或探到了进程事实，就不该"说不清"：沉默兜底只对无句柄且无进程号的那一格开 | `…::x11_a_handle_or_a_spoken_hook_rules_out_unknown` |
 | x12 | UNKNOWN | 任何 | none（`no observation yet` / `external session: … hook only`）| ◐ | 只允许在检查点恢复 / 重放完成前的瞬间，第一条 hook 事件一到就走；持续出现 = 检查点丢了，属 bug | `…::x12_no_observation_yet_leaves_as_soon_as_a_hook_speaks` |
 | x13 | 本节每一格 | 同 external | 同 external | ✓ | `origin = headless` 与 external 同一张表：同样 `runtime_ref` NULL、同样只有 hook 看得见（代码里一律问 `Origin::is_handleless()`）；三处不同见第 5 节 | `…::x13_headless_shares_every_cell_of_the_handleless_table` |
+| x14 | IDLE | 任何 | hook（登记即空闲：`session_start` 自报 `ctx.isIdle()`）| ✓ | 进程在、没在跑、也不等人（reload / 启动后停在提示符）；只从 STARTING 吃，晚到的登记不许把在跑的行降下来（agora-wmrq）| `…::x14_a_host_reporting_idle_at_registration_lands_on_idle` |
 
 ## 4. 贯穿两档的三条规则
 

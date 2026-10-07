@@ -7,6 +7,9 @@
  *
  * 原则与其它宿主的 hook 一样：**永远不拖累 pi**。投递是旁路——spawn 失败、agora 不在、daemon
  * 不在，全部静默；事件落了投递箱就有，daemon 下次扫描照样能收（agora hook 自己负责落盘）。
+ * 投递**串行**（等上一件 `agora hook` 退出再发下一件）：投递件按落盘顺序应用，顺序就是语义，
+ * 各件独立 spawn 会乱序（2026-10-07 实测：`pi -p` 的 before_agent_start 抢在 session_start 前
+ * 落盘，行按 prompt 先应用）；一件最多等 5 s，超时杀掉继续。
  *
  * 只发本文件里列的这几个事件与字段，不把 pi 的原始事件整包转出去（`agent_end.messages` 里带着
  * 整段系统提示与转录）。字段名与 `src/adapter/pi.rs` 的 `parse` 一一对应。
@@ -67,32 +70,74 @@ export default function (pi: ExtensionAPI) {
     };
   };
 
+  /** 登记这一刻 agent 在不在跑（pi 的 `ExtensionContext.isIdle`；没有这个方法就不报）。 */
+  const idleOf = (ctx: unknown): boolean | undefined => {
+    try {
+      const f = (ctx as { isIdle?: unknown })?.isIdle;
+      return typeof f === "function" ? (f as () => unknown).call(ctx) === true : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  let queue: Promise<void> = Promise.resolve();
+
+  /** 投递一件：等到子进程退出（投递箱落盘完成）、最多 5 s，出错也 resolve。 */
+  const send = (payload: Record<string, unknown>): Promise<void> =>
+    new Promise((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      try {
+        const child = spawn(AGORA, ["hook", "--host", "pi", "--home", AGORA_HOME], {
+          stdio: ["pipe", "ignore", "ignore"],
+          detached: true,
+          env: {
+            ...process.env,
+            // pi 给 shell 工具的那一族变量（docs/environment-variables.md）；信封据此认出宿主，
+            // PI_PID 是无运行时句柄的行探活的进程号。
+            PI_SESSION_ID: String(payload.session_id ?? ""),
+            PI_SESSION_FILE: String(payload.session_file ?? ""),
+            PI_PID: String(process.pid),
+          },
+        });
+        timer = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            /* 已经退了 */
+          }
+          done();
+        }, 5000);
+        timer.unref?.();
+        child.on("error", done);
+        child.on("exit", done);
+        child.stdin?.on("error", () => {});
+        child.stdin?.end(JSON.stringify(payload));
+        child.unref();
+      } catch {
+        done();
+      }
+    });
+
   const emit = (event: string, extra: Record<string, unknown>, ctx: unknown) => {
     try {
       const payload: Record<string, unknown> = { hook_event_name: event, ...session(ctx), ...extra };
       for (const k of Object.keys(payload)) if (payload[k] === undefined) delete payload[k];
-      const child = spawn(AGORA, ["hook", "--host", "pi", "--home", AGORA_HOME], {
-        stdio: ["pipe", "ignore", "ignore"],
-        detached: true,
-        env: {
-          ...process.env,
-          // pi 给 shell 工具的那一族变量（docs/environment-variables.md）；信封据此认出宿主，
-          // PI_PID 是无运行时句柄的行探活的进程号。
-          PI_SESSION_ID: String(payload.session_id ?? ""),
-          PI_SESSION_FILE: String(payload.session_file ?? ""),
-          PI_PID: String(process.pid),
-        },
-      });
-      child.on("error", () => {});
-      child.stdin?.on("error", () => {});
-      child.stdin?.end(JSON.stringify(payload));
-      child.unref();
+      queue = queue.then(() => send(payload)).catch(() => {});
     } catch {
       /* 投递是旁路，永不打断 pi */
     }
   };
 
-  pi.on("session_start", (e, ctx) => emit("session_start", { reason: e.reason }, ctx));
+  pi.on("session_start", (e, ctx) =>
+    emit("session_start", { reason: e.reason, idle: idleOf(ctx) }, ctx),
+  );
   pi.on("before_agent_start", (e, ctx) => emit("before_agent_start", { prompt: e.prompt ?? "" }, ctx));
   pi.on("tool_execution_start", (e, ctx) => emit("tool_execution_start", { tool_name: e.toolName ?? "tool" }, ctx));
   // agent_settled = pi 不会再自动继续（重试 / 压缩 / 排队都做完了）——这就是 TURN_DONE 的边界；

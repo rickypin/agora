@@ -271,9 +271,10 @@ pi 没有"往 JSON 里拼 hook 条目"的配置：挂点是**扩展**（`~/.pi/a
 | 5 | 进程号 | 扩展 spawn hook 时带 `PI_PID=process.pid`，信封按 `PI_` 前缀收进 `agent_env`（`PI_SESSION_ID` / `PI_SESSION_FILE` 同传）。pi 自己的 `PI_*` 只注入 shell 工具，不注入扩展，所以不能等环境；也不拿 `ppid` 兜底（手工敲的 hook 的父进程是 shell） |
 | 6 | 退出 | 提示符退出发 `session_shutdown(reason=quit)`；tmux `kill-session` 的 SIGHUP 也让 pi 走到它（实测行以 `session ended (hook)` 收尾，不是探活）。**`reload` / `new` / `resume` / `fork` 也 fire 同一事件**：只有 `quit` 算结束，换会话交给 supersede / 进程探活——否则 `/reload` 会把行顺手做掉 |
 | 7 | 权限代答 | **没有**：pi 的工具调用默认不问人；`tool_call` 事件能 block，但"先问 agora 再放行"要先有一套 pi 侧政策层。`decision_via_hook = false`（D2「没有的能力就写没有」）——这些行在手机上标"需要到桌面" |
-| 8 | 实链路（隔离 daemon + 真 TUI） | 行 `pi / external / turn_done`（`detail` = 最后回复、`pid` = `PI_PID`）；同一 daemon 上 `pi -p` 行 `headless / finished`（`session ended (hook)`）；`kill-session` 后 TUI 行也 `finished`。守卫 `tests/hooks_pi.rs`（四条：external 全链路、print/rpc 分档、reload/换会话不结束、线上形态） |
+| 8 | 实链路（隔离 daemon + 真 TUI） | 行 `pi / external / turn_done`（`detail` = 最后回复、`pid` = `PI_PID`）；同一 daemon 上 `pi -p` 行 `headless / finished`（`session ended (hook)`）；`kill-session` 后 TUI 行也 `finished`。守卫 `tests/hooks_pi.rs`（五条：external 全链路、登记即空闲、print/rpc 分档、reload/换会话不结束、线上形态） |
 | 9 | 未做 | 七个交互场景 fixture + 冒烟（agora-c3i.3；`headless_args` 在那之前故意不实现）。`permission_terminal` / `permission_dashboard` 两个场景在 pi 上**不存在**（无审批），补录时按"无 hold 的工具轮"如实记 |
 | 10 | 安装形态 | 不是 JSON 条目：`agora hooks install pi` 走文件式安装（`Loader` 的 `FileInstall` 路径），只删带标记的文件、拒绝覆盖用户的同名文件；`installed_state` 按标记认（`hooks_unheard` 的分档照常） |
+| 11 | 登记即空闲与投递顺序 | `ctx.isIdle()`（= `!agentRunActive && !compacting`，`dist/core/agent-session.js`）在 `session_start` 里随登记报回：`/reload`、启动、`agora create pi` 的托管行刚落时落 `idle`（真值表 x14 / a24，agora-wmrq）——STARTING 是"刚起"的假话（reload 出来的会话跑到 N 小时了，手机还把它分进"在跑"）、TURN_DONE 是"等你回看一轮"的假话（没有这一轮）。投递**串行**（等 `agora hook` 退出再发下一件，一件上限 5 s）：投递件按落盘顺序应用、顺序就是语义，独立 spawn 会乱序（2026-10-07 `pi -p` 抢先落盘已见）；串行后顺序在源头就定，adapter 的按载荷判据（第 4 行）仍是二道防线——升级前装的旧扩展还在跑 |
 
 ## 附录 B：事故记录
 
