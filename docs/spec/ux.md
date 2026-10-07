@@ -216,6 +216,50 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 
 装了 hook 却一条事件都没收到过的会话（`hooks_unheard` 非空，`docs/spec/api.md`；Codex 未在 `/hooks` 信任是最常见的一种，agora-dvh.15）在预览下面多一行黄色 `⚠ hook 没接上：…`，全文放在 title 里；服务端判定，第一条事件到达就撤。
 
+## 移动端交互收件箱 /m（MISSION §6.9；A37 / A52）
+
+手机不是桌面 Dashboard 的窄版，也不是终端：它是「看谁在等我 + 当场处置」的交互收件箱（PWA 的 `start_url` = `/m`）。四屏：
+
+```
+1 门                             2 收件箱（默认）
+┌──────────────────────┐         ┌──────────────────────────────┐
+│ agora                │         │ 需要我 2                      │
+│ 承载节点 zuan ●      │         │  ⚠ frontend ✦ Claude @ zuan │
+│ [添加到主屏幕引导]   │         │    把 sidebar 换成…… waiting 3m│
+│ [粘贴配对链接] [配对]│         │  ↳ Bash: git push …          │
+└──────────────────────┘         │ 在跑 4   已完成 12（折叠）   │
+                                  └──────────────────────────────┘
+3 会话卡（即时消息语法）          4 设置
+┌────────────────────────────────┐   ┌──────────────────────────┐
+│ ⚠ frontend ✦ Claude @ zuan     │   │ 推送 [开]                 │
+│ 任务 agora-5gg · turn done 5m  │   │ 权限：已允许 / 原因       │
+│                                │   │ 订阅：正常 / 已重订       │
+│              ╭───────────────╮ │   │ 本设备：frontend-iPhone   │
+│              │ ❯ 加一个菜单   │ │   │ [吊销本设备]              │
+│              ╰───────────────╯ │   └──────────────────────────┘
+│ ╭────────────────────────────╮ │
+│ │ ↳ 加好了，144 个 e2e 全绿、 │ │
+│ │   要不要 push？    [展开]   │ │
+│ ╰────────────────────────────╯ │
+│ [Restart] [Kill]（更多 ▾）     │
+│ ┌────────────────────────┐     │
+│ │ 下一条指令…        [发送]│    │
+│ └────────────────────────┘     │
+└────────────────────────────────┘
+```
+
+WAITING 的变体：决策原文（等宽逐字、不过 markdown）作为一张内联卡片画在 composer 上方，其下是 [Allow] [Deny]；`respond_via = terminal` 时这两个按钮换成「需要到桌面」，composer 不出现。
+
+信息预算（「手机不显示细节」的执行口径，A52）：
+
+- 收件箱行：状态 + 等待时长、agent 徽标、任务标签、节点、一行摘要（≤ 80 字）；没有树视图、仓库/分支行、source / confidence。
+- 会话卡：任务标题；**最近一轮用两个气泡**——`❯` 你最后一句（`prompt`，首行）+ `↳` agent 最后回复（`detail`，与桌面同一 markdown 子集，默认折 6 行、**仅最后一条可展开一次**，不做更早消息的翻页）；WAITING 时决策原文（等宽逐字、不过 markdown）作为内联卡片画在 composer 上方；Restart / Kill 收进「更多」（确认框，确认逻辑在所属节点）。
+- composer 与发送：固定在底部（拇指区）。**状态门**：只对 turn_done / idle 开放文本；waiting 只给决定按钮；running / starting 置灰并说明「它还在跑」；无句柄行（external / headless）没有 composer。发送是**乐观的**：气泡先以「发送中」出现，`POST /api/sessions/:id/input` 成功后转「已发送」，失败保留文本并给重试。
+- 不做：终端（xterm 不加载）、New Agent、diff / 验收 / 改动列表、命令面板与快捷键、多节点切换（只配一个承载节点）、消息流与完整对话历史（Conversation indexing 见 §11，承接 `agora-ghl3`）。
+- `respond_via = terminal`（Grok 权限、AskUserQuestion）显示「需要到桌面」，不提供「打开终端」；不注入键击（MISSION §1.2）。
+
+行为：推送点击进 `/m?session=<node>:<id>` 并定位该行（PWA 已开则聚焦；可发送的行把焦点放进 composer）；「看过」沿用每设备 localStorage（与桌面不共享，v1 接受）；承载节点离线时门页显示不可达与上次同步时间，不做离线动作队列。守卫：web/src/Mobile*.test.tsx（新建）与 A52 的 DOM 断言（不含终端 / 创建 / diff / 验收 / 改动列表的 testid）。
+
 ## 浏览器通知（MISSION §6.6；A18）
 
 `web/src/notify.ts`（agora-dvh.11）。该不该发是服务端的事（`notification` 事件只在 RUNNING 或 IDLE → WAITING / TURN_DONE / FINISHED / FAILED 上来，`docs/spec/api.md`）；前端只管权限、弹、点击：

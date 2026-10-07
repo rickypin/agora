@@ -20,13 +20,15 @@ GET    /api/projects/worktrees     # ?path=<repo>&node=：该仓库现有 worktr
 POST   /api/projects/worktrees     # { node?, path, name, base? }：git worktree add -b <name> <worktree_root>/<name> <base> → 201，形态同 GET 的一项（§6.4 只管"生"，A44）；冲突 409 worktree_exists / branch_exists / path_exists，名字不合法 400 bad_request，git 失败 502 git
 GET    /api/projects/tasks         # ?path=<repo>&node=：该仓库 bd ready --json 里可起会话的任务（epic 滤掉），只读（§6.4，A43）→ 永远 200 { tasks: [{ id, title, priority, type }], reason: null | "no_bd" | "no_beads" | "timeout" | "bad_output" }；path 不是已知项目 → 400 bad_request（文末「从就绪任务起会话」）
 GET    /api/agents                 # ?node=：New Agent 对话框的 Agent 下拉：[{ name, command, prompt }]，来自 Adapter 启动侧 + agents.<name>.command 覆盖（§5.2）；prompt: bool = 接不接受首条 prompt（A43）
-GET    /api/system                 # { api_version, version, node }
+GET    /api/system                 # { api_version, version, node, push: { vapid_public_key } }（vapid 为空 = 推送未配置；V2-1，agora-thc.6）
 GET    /api/health                 # 未认证只返回 { "status": "ok" }；带 principal 是下文的完整形态
 POST   /api/auth/pair              # { token } → Set-Cookie agora_session + { device }；唯一的未认证写端点
-POST   /api/auth/pair/new          # 已认证：铸造一条配对链接 → { url }（origin 取自 Host；Dashboard "配对新设备"的 UI 在 V2-1）
+POST   /api/auth/pair/new          # 已认证：铸造一条配对链接 → { url }（origin 取 server.public_url，缺失回落 Host 并日志说明；Dashboard "配对新设备"的 UI 与 `agora pair` QR 归 agora-thc.1）
 POST   /api/auth/logout            # 吊销当前设备并清 cookie → 204
 GET    /api/auth/devices           # 已配对设备列表（含已吊销的，revoked_at 非空）
 DELETE /api/auth/devices/:id       # 吊销一台设备 → 204；即时生效，含它已建立的长连接（「认证」末条）
+POST   /api/push/subscriptions     # { endpoint, keys: { p256dh, auth } } → 204；绑定当前设备、幂等（V2-1，agora-thc.6）
+DELETE /api/push/subscriptions     # { endpoint } → 204；幂等（V2-1，agora-thc.6）
 ```
 
 错误应答统一为 `{ "error": "<type>", "message": "..." }`，`type` 是 snake_case，调用方按它分支、不做字符串匹配（§2.3 规则 10）：`unauthenticated`（401）、`bearer_requires_tls`（401）、`pair_invalid`（401，未知 / 已用 / 过期不区分）、`cross_origin`（403）、`peer_forbidden`（403，Peer 调 `/api/auth/*` 里 logout 以外的端点）、`pair_pending_limit`（429）、`device_not_found`（404）；会话端点：`not_found`（404）、`node_unknown`（404，id 的节点前缀既不是本机也不是已配置的 peer；或请求来自 peer 而前缀不是本机——一跳）、`needs_confirmation`（409）、`still_alive`（409）、`no_runtime`（409，external 会话没有运行时句柄）、`no_command`（409，采纳的会话没记下启动命令，Restart 不知道重跑什么；前端对这类行禁用 Restart）、`already_registered`（409）、`read_only`（409，采纳 socket 上的会话拒绝写操作）、`bad_request`（400）、`runtime`（502）、`git`（502，`/api/projects/worktrees` 的 git 调用失败）、`no_directory`（409，`WS /api/sessions/:id/diff` 的会话没有工作目录）、`database`（500）；一跳转发（本节点自己产生的，细节见「一跳转发」）：`peer_unreachable`（502）、`peer_fingerprint_mismatch`（502）、`peer_config`（502）、`peer_rejected`（所属节点拒绝终端 WS 升级时的原状态码）；新建 worktree：`worktree_exists`（409，同名 worktree 已登记）、`branch_exists`（409）、`path_exists`（409，目录已存在但不是 worktree）。`NoPendingDecision` 随 M1b 落地为 `no_pending_decision`。
@@ -55,7 +57,7 @@ agora 没起过的会话经 hook 自己出现（§5.4，A16 / A22 合流）：�
 ## 认证（ADR-003）
 
 - 每个请求先解析出一个 principal：`Human { device }`（cookie `agora_session`）或 `Peer { name }`（`Authorization: Bearer apt_<name>_…`）；两者互斥，Bearer 优先解析。未认证白名单只有 SPA 静态资源、`GET /api/health` 的公开子集、`POST /api/auth/pair`；其余一律 401 `unauthenticated`。**没有 loopback 例外**。
-- 配对链接 `<origin>/#pair=<token>` 由 `agora open` / `agora url` / `agora pair`（经 unix socket）或已认证的 `POST /api/auth/pair/new` 铸造；256 位、单次、5 分钟。前端读 fragment 后 `POST /api/auth/pair`，再清掉 fragment。
+- 配对链接 `<origin>/#pair=<token>` 由 `agora open` / `agora url` / `agora pair`（经 unix socket）或已认证的 `POST /api/auth/pair/new` 铸造；256 位、单次、5 分钟。前端读 fragment 后 `POST /api/auth/pair`，再清掉 fragment。远端 / 手机用的链接 origin 取 `server.public_url`（缺失时回落 `Host` 并日志说明；接线归 agora-thc.1）。
 - cookie `agora_session` 带 `Max-Age`，取值是 `auth.session_idle`（缺省 30 天）；服务端每次刷新 `last_seen_at`（每小时至多一次）时随响应重发一遍该 cookie，让浏览器侧的窗口跟着服务端一起滑动（ADR-003 D2）。
 - Bearer 只在 TLS 监听器上被接受，明文监听器回 401 `bearer_requires_tls`——只要带了 `Authorization` 头就拒，连 scheme 都不看。实现是结构而不是检查：TLS 监听器给自己的 router 盖 `api::TlsListener` 请求扩展（`router(state).layer(Extension(TlsListener))`），明文监听器用裸 router 永远盖不上；扩展不是 HTTP 头，线上任何字节都变不成它（与进程内 fake 的 `InProcessPeer` 同一机制）。
 - Bearer 的校验（ADR-003 D3；`src/auth/peer_token.rs`）：scheme 须为 `Bearer`（大小写不敏感）→ token 形态 `apt_<name>_<43 字符>` → 按 `<name>` 查 `peer_tokens` 一行 → 整串 SHA-256 常量时间比对 → 未吊销 → `Peer { name }`。任何一步失败对外都是 401 `unauthenticated`，不区分"没签过 / 不匹配 / 已吊销"，原因只进日志（已吊销的 token 再出现记 warn）。没有签发过任何 token 的节点因此拒绝一切 Bearer（A31）；吊销即时——每次请求查库，不缓存。`last_used_at` 每小时至多写一次。peer 不是浏览器：不做 cookie 续期，也不做下一条的 CSRF 同源校验。守卫 `tests/peer_token.rs::no_token_issued_rejects_all_bearer`、`::bearer_rejected_on_plaintext_listener`、`::revoked_token_rejected_immediately`、`::plaintext_never_stored`、`::rotate_invalidates_old_token`。签发 / 吊销 / 轮换的 CLI 与 `token_file` 见 `docs/spec/config.md`「机器 token 文件」。
@@ -67,6 +69,16 @@ agora 没起过的会话经 hook 自己出现（§5.4，A16 / A22 合流）：�
 会话 id 一律 `<node>:<id>`；`GET /api/sessions` 同列本机与 peer 会话，每条带 `node` 字段，对 peer 会话的写操作与终端流经一跳转发（原则与调用方、API 版本、DELETE ≠ kill 见 MISSION §7.3）。路径里的 `:id` 接受全局 id，也接受裸的本机 id（curl 手敲时少打一段）；节点前缀是已配置的 peer → 读从并入视图来（「peer 视图」）、写操作与终端流经一跳转发（「一跳转发」）；既不是本机也不是 peer → `node_unknown`。
 
 每条 `/api/` 请求写一行结构化日志：方法、路径、状态、耗时、principal（未认证请求该栏为空）；不记请求体（MISSION §10.2）。
+
+## Web Push（MISSION §6.6 / §10.3；A19；agora-thc.6 / thc.7；未实现）
+
+- **只做 iPhone（Apple 推送端点）**；服务端保持标准 Web Push（RFC 8291 aes128gcm + VAPID JWT ES256），Android 延期（agora-w9ki）。
+- `GET /api/system` 多一个 `push.vapid_public_key`（PWA 用它 `pushManager.subscribe`）；未配置推送时为 null。
+- 订阅按**设备**存（`push_subscriptions`，schema v6）；`POST /api/push/subscriptions { endpoint, keys { p256dh, auth } }` 绑定当前设备、幂等；`DELETE` 按 endpoint 解绑、幂等。设备吊销（`DELETE /api/auth/devices/:id`）后不再向它的订阅发送（发送时与 `devices.revoked_at` 联查）。
+- **发送**：承载节点订阅自己 EventBus 的 `Event::Notification`（本机与 peer 同源，`src/peer/view.rs` 已转发），对每个有效订阅发一条；**payload 只带标题与全局会话 id，不带 `body`**（body 是权限命令 / 回复原文，锁屏不显示）。通知转换沿用 MISSION §6.6 的四条。
+- **失败**：`410` / `404` 删订阅；其余按类型退避；发送不阻塞事件流与 WS。
+- **health.push**：`apple: true | false | null`（true = 最近发送成功或探测可达；false = 探测不可达 / 连续失败，原因另给；null = 还没有订阅、未评估）；`fcm: null` = Android 未启用。不可达时 PWA 打开期间仍走 WS 实时更新。
+- **兼容**：本段落地时 `api_version` 从 1.8 bump 到 1.9（minor；新增端点与 `/api/system` 新字段，老调用方不受影响）。
 
 ## api_version 兼容规则（MISSION §7.3）
 
@@ -152,7 +164,7 @@ GET /api/health
     "runtime": { "status": "ok" | "degraded", "reason": null, "path_source": "shell" | "daemon" },   // ADR-001 D7；status/reason 每次请求现算，运行时恢复后自动转回 ok
     "database": true,
     "tls": "self-signed" | "external" | null,   // 证书来源 tls.mode（ADR-003 D4）；没开 server.tls_listen → null
-    "push": { "apple": true, "fcm": false },
+    "push": { "apple": true, "fcm": null },   // iPhone 阶段：apple 三态（null = 未评估 / 未配置）、fcm = null（Android 延期，agora-w9ki）；agora-thc.6
     "peers": { "mac": { "online": false, "last_seen": "2026-09-02T23:10:00Z", "retrying": true, "last_error": "fingerprint_mismatch" } } }
 ```
 

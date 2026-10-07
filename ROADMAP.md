@@ -2,7 +2,7 @@
 
 > **由 `scripts/roadmap-view.sh` 生成，不要手改。** 真相源是 beads：阶段 = epic，阶段门 = epic 之间的 `blocks` 依赖，验收标准 = epic 的 `--acceptance`，演示剧本 = epic 的 `--design`（下方"演示剧本"一节）。
 > 本文件不放任务 checkbox（避免 devcenter 式双轨，见 `docs/analysis/beads/README.md` §6.3 / §8.2）。任务级细节：`bd ready`、`bd dep tree <epic>`。
-> 生成时间：2026-09-22
+> 生成时间：2026-10-07
 
 | 阶段 | epic | 目标 | 阶段门（被谁阻塞） | 验收要点 | 状态 / 进度 |
 |---|---|---|---|---|---|
@@ -17,7 +17,7 @@
 | M4a | `agora-uvd` | 侧栏树视图（节点 / 仓库 / worktree）、视图切换与行身份 | `agora-j4w` | MISSION §12：A47、A48、A49。 | closed  |
 | M4b | `agora-4yr` | 回答区进主区（就地 respond / 验收 / 改动在主区渲染）与「需要我」视图的重排稳定 | `agora-j4w` | MISSION §12：A50、A51。 | closed  |
 | T1 | `agora-bvs` | 执行代理 plugin（handoff）：Claude 编排、Claude / Grok / Codex 可插拔执行，一 issue 一 worktree 一契约 | — | 由人关闭（MISSION §1.5）：(1) ~/code/handoff 含 CLAUDE.md、plugin.json、skills/run、agents（runner / verifier / integrator）、workflows、workers、bin、schemas、hooks、tests，npm test 绿且含独立性检查与版本对齐检查；(2) 两次端到端试跑各用骨架关闭了一个真实 agora issue（一次 worker=claude、一次 worker=grok），close reason 含契约字段（outcome、tests、commit、复核 verdict；Grok 那次含 session_id 与 cost_usd），close 发生在 ff 合入之后；(3) bd 垫片、CLI deny、事后审计的拒绝 / 见红各有一次原文证据；(4) agora 仓库只多 .claude/handoff.json 与 AGENTS.md 一行，doc-lint 绿；(5) 符号链接安装后不带 --plugin-dir 的会话里 /handoff:run、/handoff:batch 与三个代理可见，args 能到达脚本，改源码后生效方式有实测表；(6) bd memories handoff 有 Grok 校准结论；(7) 演示剧本 👁 第 7 步由人看。 | closed  |
-| V2-1 | `agora-thc` | 手机客户端与 PWA（iOS / Android） | `agora-7ku`, `agora-s4r` | MISSION §11 手机条目：A13、A19、A28、A35、A37。 | open 0/8 |
+| V2-1 | `agora-thc` | iPhone 交互收件箱与 PWA（iOS） | `agora-7ku`, `agora-s4r` | MISSION §11 手机条目（iPhone）：A13、A19、A28、A35、A37、A52。三档验收： 【机械】doc-lint 绿；web 单测覆盖 /m 收件箱与卡片（A52 的 DOM 守卫：无终端 / 无创建 / 无 diff / 无验收）、SW push 与 notificationclick、订阅开关；push 服务端测试（RFC 8291 向量、VAPID 验签、订阅按设备增删与吊销联动、假端点 410 删订阅、health.push 三态、body 不含命令原文）；spa 层测试（manifest 与 sw.js 的 Content-Type 与 no-cache、无扩展名回退 text/html）；auth 测试（pair 链路）。CI 三平台绿。 【代检】agent-browser 390×844 视口完成「看收件箱 → 答 WAITING → 确认 Kill」并断言 DOM 文本、API 响应与 capture-pane；断掉推送端点后 health 降级、PWA 打开期间仍实时更新；跨节点经 zuan 一跳回答 Mac 的 WAITING、Kill / Restart。 【人眼 👁】(a) iPhone 主屏 PWA 完全关闭后收到推送、点开落到该行就地回答（真机推送到达）；(b) 安装弹层与主屏存储回收后仍免登录（或重新配对路径可用）；(c) 锁屏通知不含命令原文的观感、可见客户端时抑制系统通知的策略是否被 iOS 允许。 | open 0/10 |
 | 会话状态厘清：每一行 origin × status × alive × source 自洽、可解释，UNKNOWN / STARTING 不再是没有出口的筐（2026-09-18 Mac + zuan 盘点） | `agora-5gg` | 会话状态厘清：每一行 origin × status × alive × source 自洽、可解释，UNKNOWN / STARTING 不再是没有出口的筐（2026-09-18 Mac + zuan 盘点） | — | 按 MISSION §1.5 三档。 【机械】CI 绿，且下列守卫全部存在并通过（测试名即验收点，缺一条 epic 不关）： ① tests/status_truth_table.rs——docs/spec 里的状态真值表（origin × status × process × source，随 5gg.17 从分析文档搬入）逐条有测试，标为「不可能」的组合各有一条反向断言（5gg.16）； ② tests/hooks_inbox.rs::events_landing_during_replay_are_consumed_without_restart（5gg.1）； ③ tests/state_machine.rs::handleless_external_starting_decays_to_turn_done 与 tests/hook_recovery.rs 的无句柄 SessionStart 衰减 + 检查点恢复后衰减（rkl）； ④ tests/state_machine.rs::handleless_silence_is_measured_from_event_time 与 hook_recovery 重放 3 h 前事件不再等 2 h（5gg.2）； ⑤ 运行时列表里找不到的行 → FINISHED reason 含 runtime session gone / runtime server gone 且首次观察即写 ended_at(approximate)，ServerUnavailable 仍 UNKNOWN runtime unavailable，运行中 RUNNING → 该 FINISHED 发通知、重启第一轮不发，web TerminalView 对该行不画 reconnect（u5p）； ⑥ tests/hooks_external.rs：SessionEnd / superseded / process gone 三种结束各写 ended_at 且等于事件时刻，重放登记的 external 行 created_at 等于信封时刻；tests/external_expiry.rs 按 ended_at（5gg.3）； ⑦ tests/api_sessions.rs：每行 process ∈ {alive,gone,unknown}、alive == (process == alive)、FINISHED/FAILED 行 process == gone、无进程号行 unknown（5gg.18）；无句柄 external 行 pid 等于信封报的进程号（5gg.5）； ⑧ 每个 FINISHED / FAILED / UNKNOWN 行带封闭枚举 end_cause / unknown_cause，events.rs 通知按枚举分支（5gg.6）； ⑨ tests/external_expiry.rs：无句柄 UNKNOWN 超过 ttl 删行并发 session_removed，ttl=0 关闭（e08）； ⑩ tests/hooks_external.rs：SessionStart(startup) + SessionEnd(resume) 且无 prompt 不留行（29n）； ⑪ headless：Claude headless fixture 判 headless、interactive 不判；登记为 origin=headless、不通知、24 h 删、进折叠区（5gg.20）； ⑫ web/src/attention.test.ts：turn_done 看过即离开 attention 段、新回合回来；turn_done 段内新完成在前（5gg.21）；unknown 行落 unclear 段、running/starting/idle 落 working 段、Alt+N 序号跨段连续（5gg.11）； ⑬ web/src/sidebarTreeModel.test.ts：同进程 superseded 旧行折在当前行下（5gg.19）； ⑭ tests/peer_view.rs：本机重启后 peer 行等待时长不小于 peer 报的相对时长（5gg.12）； ⑮ src/adapter/codex.rs / grok.rs 单测：宿主包装 prompt → PromptInjected，尾标记去尾（5gg.13）； ⑯ sweep 清掉无行的检查点、有行的不动（5gg.14）； ⑰ tests/install_script.rs：macOS 分支写 launchd 单元（5gg.15）； ⑱ scripts/doc-lint.sh 绿，MISSION §4.2 / §4.3 / §4.6 / §6.3、ADR-001 D4、ADR-002 D1 / D7、docs/spec/api.md / config.md / ux.md 回写带日期与本 epic id，MISSION §4.3 的 UNKNOWN 行列出每一种原因及其出口（5gg.17）。 【代检】实施 agent 按 --design 剧本 1、2a、2b、3、5 用隔离 daemon + fake-agent + curl + agent-browser 操作并断言（先 bd memories agent-browser），在 close --reason 里写命令、观察到的输出与工具版本。 【人眼 👁】只有这三条由人关，理由各写明： (a) 剧本 4「Mac 上 Codex Desktop 子对话不再以普通行出现」——需要真的 Codex Desktop 起子代理，fake-agent 造不出它的载荷； (b) 两台节点升级到含本 epic 的版本后打开 Dashboard：RUNNING / WORKING 段里没有一行 ? 或 … 超过 10 分钟，NEEDS ATTENTION 顶部是最近一次未看过的完成，zuan 的 ef0e50 / a3a2a0 显示 turn done——现场脏数据（8 天 STARTING、tmux 没了的行、62 h 的 created_at 偏差）只在真 daemon 的库与检查点里，隔离 daemon 复现不了升级路径； (c) Mac 上 install.sh 装好 launchd 单元后杀掉 daemon 能自动拉起——需要真 Mac 的 launchd。 【关闭】所有子任务关闭（决策 5gg.4 / 7 / 8 / 9 / 10 已于 2026-09-18 拍板关闭）后由人关 epic。 | open 24/25 |
 
 ## 演示剧本（epic 的 design 字段；agent 先代检，人只看 👁 步骤与代检报告后关闭 epic，MISSION §1.5）
@@ -156,16 +156,19 @@ T1 演示剧本（agent 代检为主；👁 一步；人看完代检报告后关
 ### V2-1 `agora-thc`
 
 V2-1 演示剧本（agent 先代检，人只看 👁 步骤与代检报告后关闭 epic，MISSION §1.5）
-前置：M2a、M2b 剧本通过（zuan 装好并自启，Mac ↔ zuan 互为 peer，一跳转发可用）；zuan 与 iPhone 在 tailnet（tail5fb9b.ts.net），Android 已加入 tailnet；zuan 出网可达 Let's Encrypt 与 FCM。
+场景：MISSION §1「一天的形态」第 4 步——离开后在 iPhone 上打开 zuan 的 PWA，看「谁在等我」，回答或审批。
+前置：M2a、M2b 剧本通过（zuan 装好并自启，Mac ↔ zuan 互为 peer，一跳转发可用）；iPhone 在 tailnet（tail5fb9b.ts.net）；zuan 出网可达 Apple 推送服务；zuan 的 HTTPS 用 tailscale cert（thc.3）。
 1. zuan：tls.mode external + tailscale cert，public_url 设为 https://zuan.tail5fb9b.ts.net:7681；Mac 上不带 -k 的 curl 得 200、证书链到 ISRG Root；到期前 renew_command 被调用并热加载；health 的 tls 字段为 external（A35 证书半边；agora-thc.3、agora-7ku.10、agora-ltb）。
-2. zuan 上 agora pair 打印 QR → 手机扫码 → 进 Dashboard；Mac 的 Dashboard「配对新设备」也能出 QR；设备列表里出现手机，从 Mac 吊销手机后手机下一次请求 401（A37 凭据半边；agora-thc.1）。👁 一次：扫码后彻底退出 Safari / 关掉 PWA 再打开仍免登录——iOS 站点存储回收策略在桌面不等效。
-3. 手机浏览器「添加到主屏幕」/「安装应用」→ 从主屏打开直接进 Dashboard、无地址栏；SW 只在安全上下文注册，明文 127.0.0.1 上不注册；升级 agora 后 PWA 里是新 bundle（A35 可安装半边、A37；agora-thc.4）。👁：安装 UI 是系统弹层，agent-browser 到不了。
-4. 手机上（或桌面 390×844 视口）：侧栏是 drawer，Dashboard 里 WAITING 行展开就地回答，Kill 出确认框且按得到，终端能键入有回显、软键盘弹出后 pane 重排（A37 界面半边；agora-thc.5）。👁 一次：真机用手指走完「看 Dashboard → 回答 WAITING → 确认 Kill」。
-5. Mac 开 tls_listen 成为 zuan 的 peer；手机在 zuan 的 Dashboard 看到 node=mac 的行，回答 Mac 上的 WAITING → Mac 上文件被创建；attach Mac 会话终端键入有回显；Mac 关掉标签再从手机打开同一会话 scrollback 还在（A28、A13；agora-thc.8，机械在 agora-7ku.5 / 7ku.7）。👁 两条：真手机走一遍；Mac 合盖 60 s 再唤醒，手机上 mac 从「上次见到」恢复在线。
-6. 手机 PWA 里开启推送 → 订阅只注册在 zuan；让任一节点的会话 RUNNING → WAITING → 手机在 PWA 完全关闭时收到推送，点开落到该行就地回答；把 zuan 到 FCM 的路断掉（或 Android 不可达 FCM 时）→ health.push.fcm=false 带原因、Dashboard 显示「推送不可达」且 PWA 打开期间仍实时更新（A19；agora-thc.6 服务端、agora-thc.7 客户端）。👁 两条：iPhone 与 Android 各收到一次推送——到达真机只能在真机上看。
-7. 仅当第 1 步的 external 路径在目标部署走不通：按 agora-thc.2 评估 self-ca，结论回填 ADR-003 D4（由人采纳）。
-8. CI 绿；tests/push.rs 的加密向量、订阅与吊销联动、降级守卫逐条关掉变红；api_version 按 §7.3 bump 并写进兼容规则。
-全程不做：手机终端 ergonomics（软键盘 Ctrl / Esc、手势、剪贴板、文件上传）、TOTP / 登录限流（ADR-003 已否决）、多跳转发、peer 历史。
+2. zuan 上 agora pair 打印 QR → iPhone 配对成功；Mac Dashboard「配对新设备」也能出 QR；设备列表里出现手机，从 Mac 吊销手机后手机下一次请求 401（A37 凭据半边；agora-thc.1）。👁 一次：在 Safari 或主屏 PWA 里配对后彻底退出再打开仍免登录——iOS 站点存储回收策略在桌面不等效；PWA 内可粘贴配对链接重新配对。
+3. iPhone Safari「添加到主屏幕」→ 从主屏打开直接进 /m、无地址栏；SW 只在安全上下文注册，明文 127.0.0.1 上不注册；升级 agora 后 PWA 里是新 bundle（A35 可安装半边、A37；agora-thc.4）。👁：安装 UI 是系统弹层，agent-browser 到不了。
+4. 手机收件箱（/m）：zuan 与 mac 的行同列，每行只有状态 + 时长、agent、任务标签、节点、一行摘要；没有终端、没有创建、没有 diff / 验收 / 改动列表（A52；agora-thc.5）。推送深链落到指定行。
+5. mac 上一个 Claude 会话进 WAITING → iPhone（PWA 完全关闭）收到推送，正文不含命令原文；点开落到该会话卡 → Allow → Mac 上文件被创建、手机与 Mac 状态同步（A19 / A28 / A13；agora-thc.6 / thc.7 / thc.8）。同一屏另找一条 turn done 的行，在底部 composer 回一句 → 气泡先「发送中」再「已发送」、行转 RUNNING（A52；agora-thc.10 的 IM 语法：最近一轮两气泡、仅最后一条可展开一次）。
+6. terminal-only 的问题（Grok 权限、AskUserQuestion）在手机上显示「需要到桌面」，不提供打开终端（A52；agora-thc.10）。
+7. Kill / Restart 带确认；确认逻辑在所属节点（A37；agora-thc.10 / thc.8）。
+8. 把 zuan 到推送端点的路断掉 → health.push.apple=false 带原因、PWA 打开期间仍实时更新（A19；agora-thc.6 / thc.7）。
+9. 仅当第 1 步的 external 路径在目标部署走不通：按 agora-thc.2 评估 self-ca，结论回填 ADR-003 D4（由人采纳）。
+10. CI 绿；doc-lint 绿；push 服务端加密向量、订阅与吊销联动、/m 的 A52 DOM 守卫、spa 回退 MIME 守卫逐条关掉变红；api_version 按 §7.3 bump 并写进兼容规则。
+全程不做：Android（agora-w9ki 延期）、手机终端与 ergonomics（MISSION §11）、New Agent、diff / 验收 / 改动列表、离线动作、TOTP / 登录限流（ADR-003 已否决）、多跳转发、peer 历史。
 
 ### 会话状态厘清：每一行 origin × status × alive × source 自洽、可解释，UNKNOWN / STARTING 不再是没有出口的筐（2026-09-18 Mac + zuan 盘点） `agora-5gg`
 

@@ -6,7 +6,7 @@
 |---|---|
 | 版本 | v0.17（2026-09-06）；变更历史见 beads `agora-90t.1` 注记 |
 | 项目类型 | Self-hosted Web Application |
-| 目标平台 | 节点：macOS / Ubuntu Linux / Windows 主机（Windows V1 延期，§11）；客户端：macOS 笔记本、iOS、Android 设备上的现代浏览器（V1 只验收 macOS 笔记本） |
+| 目标平台 | 节点：macOS / Ubuntu Linux / Windows 主机（Windows V1 延期，§11）；客户端：macOS 笔记本、iPhone 与 Android 设备上的现代浏览器（V1 只验收 macOS 笔记本；V2 首批验收 iPhone，Android 延期见 §11，承接 agora-w9ki） |
 | 主要用户 | 单用户 |
 | 核心场景 | 在任意客户端设备上通过浏览器管理任意数量节点上运行的多个 CLI coding agent session（当前实例见 §0.2） |
 
@@ -26,7 +26,7 @@
 |---|---|---|
 | 节点类型 | 三类主机：**macOS**、**Ubuntu Linux**、**Windows**（用于只支持 Windows 的项目） | macOS + Linux；Windows 延期（§11），但运行时抽象**不得排除它**【ADR-001】 |
 | 节点数量 | 任意；新增节点不改变架构（节点互为 peer，§3.5） | 2 |
-| 客户端类型 | 三类设备：**macOS 笔记本**、**iOS 设备**、**Android 设备**；都是同一个 Web 客户端，功能集相同（不变量 9），差别只在显示与交互的优化 | macOS 笔记本；iOS / Android 为 V2 首批（§11） |
+| 客户端类型 | 三类设备：**macOS 笔记本**、**iPhone**、**Android 设备**；都是同一个 Web 客户端，**能力同源**（同一套节点 API、无客户端后门），**界面按设备形态分级**：桌面是全功能工作台，手机是交互收件箱（无终端、无创建、无详情，§6.9，不变量 9） | macOS 笔记本；**iPhone** 为 V2 首批（§11）；Android 延期（承接 agora-w9ki） |
 | agent 类型 | 任何 CLI coding agent，经 Adapter 接入（§5.2）；有 hook 的走 hook，没有的走文本兜底（§5.1） | 一等：Claude Code、Codex、Grok Build；pi 备选一等 |
 | 人 | 单人；多用户是 Non-Goal，认证按 principal 留口（ADR-003）。同一主机可有多个用户各跑各的实例，互为陌生人（`node.id` 只需在自己的 peer 网内唯一） | 单人 |
 | 网络 | 无关：只要求客户端能到达节点，认证与 TLS 由 agora 自己保证（§8）；**网络可达 ≠ 授权** | 当前用 tailnet，只是部署选择 |
@@ -143,7 +143,7 @@ MVP 的完成定义不是"可以在浏览器里打开终端"，而是：
 | 6 | UI state is disposable. Agent state is persistent. |
 | 7 | 运行时是 Agent persistence 的 Source of Truth；SQLite 只保存 metadata / preferences / mapping，不是 process existence 的 Source of Truth【ADR-001】 |
 | 8 | One broken node must not affect another node；peer 离线在视图里表现为 stale（保留最后视图与时间），绝不静默消失 |
-| 9 | 客户端零特权：一切功能经节点 API 完成，任何设备、任何客户端形态的功能集相同 |
+| 9 | 客户端零特权：一切功能经节点 API 完成，没有客户端专用后门；界面呈现按设备形态分级——桌面是全功能工作台，手机是交互子集（无终端、无创建、无详情，§6.9，A52）。能力同源：设备能做什么由节点决定，不由客户端形态决定 |
 | 10 | 状态来源分层：hook / 结构化事件 > 进程状态 > 屏幕文本；每个状态值带来源与置信度（§5，ADR-002） |
 | 11 | 节点互不信任：每个节点独立认证 principal（人：已配对设备的 session；节点作为 peer 客户端：机器 token + 证书指纹）；网络可达（局域网 / tailnet / 公网）≠ 授权（§8，ADR-003） |
 | 12 | 任务真相在仓库里（beads / git）：agora 只存 session ↔ 任务的关联，永不复制任务的内容、状态、依赖 |
@@ -464,7 +464,7 @@ FAILED 100   WAITING 90   TURN_DONE 85   FINISHED 80   UNKNOWN 40   IDLE 30   ST
 
 **看结果**（A50）：选中 TURN_DONE / FINISHED 的行，主区回答面板之下是**结果面板**——该 worktree 的改动文件列表（`git status --short`），旁边是任务的验收标准（读自 beads，不复制）供对照，两段各自可折叠、默认展开；"看 diff"在会话所在 worktree 开一个只读终端跑 `git --no-pager diff`——复用现有终端，不做 diff 组件（§11）；diff 视图下回答面板隐藏、结果面板留着与 diff 并排对照。git 写操作是 Git GUI（唯一例外见 §1.4）。
 
-**就地 respond**（A50）：选中行之后，主区 crumb 之下、终端之上是**回答面板**——WAITING 显示问题（hook 的文本，兜底为最后几行 pane）与选项按钮 / 输入框；TURN_DONE 的"下一条指令"输入框**在面板最上面**，不必滚过整段回复才够得着，其下才是最后一条回复。回复与问题文本按自写的 **markdown 子集**排版，默认只渲染前 12 行、超过给一个单向的「展开全文」按钮（**例外**：`reason = permission` 那条 summary 是一行命令，逐字符原样、等宽、不过 markdown——人照着它批准）。提交即 `POST /api/sessions/:id/input`（§7.3）。侧栏行不再展开，只剩行本身。这是手机上的主路径；终端是逃生口。**重排时机**：「需要我」视图在人看 / 操作侧栏时不重排，按 A51 的冻结规则落位。
+**就地 respond**（A50）：选中行之后，主区 crumb 之下、终端之上是**回答面板**——WAITING 显示问题（hook 的文本，兜底为最后几行 pane）与选项按钮 / 输入框；TURN_DONE 的"下一条指令"输入框**在面板最上面**，不必滚过整段回复才够得着，其下才是最后一条回复。回复与问题文本按自写的 **markdown 子集**排版，默认只渲染前 12 行、超过给一个单向的「展开全文」按钮（**例外**：`reason = permission` 那条 summary 是一行命令，逐字符原样、等宽、不过 markdown——人照着它批准）。提交即 `POST /api/sessions/:id/input`（§7.3）。侧栏行不再展开，只剩行本身。这是桌面与手机共同的主路径——手机上没有终端这一层逃生口，`respond_via = terminal` 的问题在手机上标注「需要到桌面」（§6.9、A52）。**重排时机**：「需要我」视图在人看 / 操作侧栏时不重排，按 A51 的冻结规则落位。
 
 **「按项目」视图**（A47 / A48；2026-09-08 用户反馈"行随状态自己换位置，人跟不上"）：上面的排序原则只属于「需要我」视图；同一批会话的另一种摆法是**不排序、只分组**的树。分组键固定三层，不自适应：节点（本机第一）→ 仓库 → worktree（主 worktree 第一，组头带分支），组内会话行**按创建顺序**，位置只随创建 / 删除变、不随状态变——一行进 WAITING 只换状态符号，要按紧急程度看它就切回「需要我」。不在任何 git 仓库里的会话归该节点下的「其它目录」组。组可折叠且记住，**折叠只是不画不是不数**：序号仍按树的顺序数（与 A46 的 Finished 区同一条规则，§6.5），折叠的组头显示组内需要关注的行数。**FINISHED 行不搬家**——留在原组原位淡显，这个视图里没有 Finished 折叠区；但 header 的一键清理与视图无关，清理对象始终是折叠区的那批行（§4.6「看过」）。worktree 组头可以就地起会话（§6.4）：树本身就是那份"最近用过的仓库与 worktree"清单。线框与规则见 `docs/spec/ux.md`。
 
@@ -495,7 +495,7 @@ Project 列表**不靠手写配置**：从 `project_roots`（§9.1）扫描 git 
 
 点击 notification 直接导航至对应会话——落到该行，并把焦点放进主区回答面板（TURN_DONE 是输入框、WAITING 是第一个按钮；A50），不是把人扔进终端。V1 桌面用浏览器通知（A18）。人自己干的不通知：Kill、以及 `external` 行在终端里自己结束的（SessionEnd / `/clear`，§4.6 证据 ②）；external 行只有进程消失（崩溃、关窗口）才弹 "finished"。
 
-手机阶段（§11）：通知要在浏览器关闭时也能到达，因此 PWA 需要 Web Push（iOS 需加到主屏）。**推送由承载 PWA 的那个节点发出**（它经 peer 链路看得见全部事件），推送订阅只注册在那一个节点；节点到不了推送端点（如 FCM）时降级为"PWA 打开期间实时更新"，并在 health（§10.3）显示原因；不做经其它节点的推送中转。
+手机阶段（§11，V2 首批为 iPhone）：通知要在浏览器关闭时也能到达，因此 PWA 需要 Web Push（iOS 必须已加到主屏）。**推送由承载 PWA 的那个节点发出**（它经 peer 链路看得见全部事件），推送订阅只注册在那一个节点、并绑定已配对设备（吊销设备即停发）；**载荷只带标题与全局会话 id，不带正文**——正文是权限命令 / 回复原文，锁屏不显示，点开面板再看（A19）；节点到不了推送端点时降级为"PWA 打开期间实时更新"，并在 health（§10.3）显示原因；不做经其它节点的推送中转。Android 见 §11（承接 agora-w9ki）。
 
 ### 6.7 Terminal Preview
 
@@ -507,9 +507,15 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 
 网络切换（WiFi → 5G）时 agent 不受影响：WebSocket 断开只关闭 PTY attachment，运行时中的 agent 继续；恢复后 new WebSocket → new PTY → attach。
 
-### 6.9 Responsive
+### 6.9 Responsive 与客户端形态
 
-**所有设备功能集相同**（不变量 9）；手机 / iPad 优先优化 Dashboard、就地回答与确认（§6.3）；桌面优先优化终端与创建。Desktop breakpoint 显示 sidebar；窄屏用 sidebar drawer。手机 drawer 选中行后收起，主区即回答面板 + 终端（A50 同一个面板，没有第二套；agora-thc.5）。V1 只做桌面断点（§0.1）；窄屏与手机优化随手机阶段，届时手机终端可用但不做完整 ergonomics（§11）。
+**能力同源、呈现分级**（不变量 9）：所有客户端经同一套节点 API，没有客户端专用后门（守卫见 A36 的 `tests/arch_boundary.rs`）；界面按设备形态分档。
+
+- **桌面（全功能工作台）**：终端、创建、详情与树视图、快捷键（§6.1–§6.5）；桌面优先优化终端与创建。
+- **手机（交互收件箱，V2 首批为 iPhone）**：只做「看谁在等我 + 当场处置」——收件箱、会话卡（状态、任务标签、最近一轮的两个气泡、决策原文、底部 composer）、allow / deny、Kill / Restart（确认）、推送深链。交互语法沿用即时消息的熟悉形态（固定 composer、气泡、乐观发送），但**不做消息流与完整对话历史**（§11 的 Conversation indexing，承接 agora-ghl3）；**没有终端、没有 New Agent、没有 diff / 验收 / 改动列表、没有命令面板与快捷键**（A52）。手机不是节点：不装 daemon / tmux / hooks、不跑 agent，只配对一个承载节点（通常是常开的 zuan），经 peer 一跳看与操作全部节点（§3.5、§6.6）。
+- **`respond_via = terminal` 的问题**（Grok 权限、AskUserQuestion 类）在手机上显示「需要到桌面」，不提供"打开终端"、不注入键击（§1.2）。
+- **桌面窄屏**（< 700 px）不再叠出第二套全功能布局：给「用手机面板打开」的引导；iPad 等中间形态走桌面。
+- 推送入口与载荷策略见 §6.6；Android 与手机终端 ergonomics 见 §11（承接 agora-w9ki）。
 
 ### 6.10 视觉方向
 
@@ -559,7 +565,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 
 ### 人的凭据：设备配对【ADR-003】
 
-- **loopback 不是安全边界**（§0.1 多用户主机）：本机浏览器也要认证，代码里没有 loopback 例外。人的凭据只有一种：**配对**——一次性链接（256 位、单次、5 分钟）换取按设备的 session（距最近使用 30 天滑动、距配对 365 天上限、可按设备吊销）。本机 `agora open` 经 unix socket（仅属主可访问 + 对端 uid 校验，即 OS 身份）铸造链接并打开浏览器；远端 `agora pair` 打印 QR，或在已认证的 Dashboard 里"配对新设备"（V2-1）。
+- **loopback 不是安全边界**（§0.1 多用户主机）：本机浏览器也要认证，代码里没有 loopback 例外。人的凭据只有一种：**配对**——一次性链接（256 位、单次、5 分钟）换取按设备的 session（距最近使用 30 天滑动、距配对 365 天上限、可按设备吊销）。本机 `agora open` 经 unix socket（仅属主可访问 + 对端 uid 校验，即 OS 身份）铸造链接并打开浏览器；远端 `agora pair` 打印 QR，或在已认证的 Dashboard 里"配对新设备"（V2-1）。推送订阅属于设备凭据的一部分：随设备一起吊销（ADR-003 附录 C）。
 - 没有 TOTP、没有登录限流、没有可信代理：可猜的凭据不存在，为它付的账也不存在（ADR-003 备选项）。代价：所有已配对设备都失效时只能回节点本机或 ssh 上 `agora pair`。
 - **人的**请求（含 loopback 的浏览器与 WS 握手）必须携带 session cookie；hook 投递不经 HTTP（§7.3）。cookie 属性、响应头、WS 与 CSRF 的同源校验：ADR-003 D2 / D7。
 
@@ -619,7 +625,7 @@ YAML 与 schema 见 `docs/spec/config.md`。
 
 ### 10.3 Health Check
 
-`GET /api/health` 未认证只返回 `{ "status": "ok" }`（ADR-003 D1）；已认证时报告：runtime / database 可用性、TLS 模式、推送端点可达性、每个 peer 的在线状态与 last_seen（JSON 见 `docs/spec/api.md`）。Header 对本机与每个 peer 显示状态（在线 / 异常原因 / 上次见到）；推送端点不可达时显示原因。
+`GET /api/health` 未认证只返回 `{ "status": "ok" }`（ADR-003 D1）；已认证时报告：runtime / database 可用性、TLS 模式、推送端点可达性（iPhone 阶段 `push.apple` 三态、`push.fcm` 为 null——未启用不说谎，形状见 `docs/spec/api.md`）、每个 peer 的在线状态与 last_seen。Header 对本机与每个 peer 显示状态（在线 / 异常原因 / 上次见到）；推送端点不可达时显示原因。
 
 ---
 
@@ -637,6 +643,8 @@ RBAC                         Teams                        Cloud service
 
 （Git integration 与 Diff visualization 的**只读观察形态**——改动列表、canned `git diff` 终端——已进基线（§6.3、§12）；留在这里的是 git 写操作、diff 组件、Token / Cost、LLM summary。）
 
+**Conversation indexing（会话时间线）**：手机端不做消息流与历史翻页（§6.9、A52）；transcript 索引的触发条件与设计承接在 `agora-ghl3`（P4 评估），结论回填本节。
+
 **Artifact Viewer（文件路径变体）**：渲染 session 自己指名的那**一个**文件 / 页面。界线：≠ File Explorer——不列目录、不树形导航、不编辑、不提供自由路径输入；URL 抓取路径是 Non-Goal（§1.4）。
 
 **Archive**：从默认 Dashboard 隐藏、保留运行时会话（§6.3 的表）；V1 没有它，FINISHED 行靠 Delete metadata 与 cleanup 收。
@@ -645,23 +653,24 @@ RBAC                         Teams                        Cloud service
 
 **Windows 节点**：在范围边界内（§0.1），V1 延期；ADR-001 的运行时抽象必须为它留位，安装脚本与 PTY 层的 Windows 实现在此兑现。它实质上是**第二个运行时实现**；容器 / 云沙箱 / SDK 运行时同归此处。
 
-**手机客户端（iOS / Android，V2 首批）**：PWA 安装、Web Push（推送端点不可达时降级 + health 显示，§6.6）、远端设备配对（`agora pair` QR、设备列表与吊销）、承载 PWA 的节点的浏览器可信证书（§8）、窄屏布局（§6.9）。验收（编号全局唯一，自 §12 移入）：
+**手机客户端（iPhone，V2 首批）**：交互收件箱（§6.9）——PWA 安装、Web Push（载荷只带标题不带正文；推送端点不可达时降级 + health 显示，§6.6）、远端设备配对（`agora pair` QR、设备列表与吊销）、承载 PWA 的节点的浏览器可信证书（§8）。手机不是节点、没有终端（§6.9）。验收（编号全局唯一，自 §12 移入）：
 
-- [ ] **A13** 可以从 Mac detach，在手机上 reconnect（反之亦然）
-- [ ] **A19** iPhone PWA 收到推送；Android 在节点可达 FCM 时收到推送、不可达时 health 显示原因
-- [ ] **A28** 从手机经 zuan 回答 Mac 上的 WAITING、attach 到 Mac 上的会话终端并交互（一跳转发）
-- [ ] **A35** 节点以 HTTPS 提供服务，手机可安装 PWA（ADR-003 证书路径至少一条走通）
-- [ ] **A37** iPhone 与 Android 浏览器能看 Dashboard、回答 WAITING、确认危险操作；可安装为 PWA
+- [ ] **A13** 同一会话在 Mac 与 iPhone 上都可见并继续处理：Mac 上看到的行，手机上能看到、能回答；反过来亦然
+- [ ] **A19** iPhone 主屏 PWA 在完全关闭时收到 Web Push（只带标题、不带命令 / 回复原文）；节点到不了推送端点时 health 显示原因、PWA 打开期间仍实时更新
+- [ ] **A28** 从 iPhone 经 zuan 回答 Mac 上的 WAITING、Kill / Restart，并看到行状态同步（一跳转发）；不 attach 终端
+- [ ] **A35** 节点以 HTTPS 提供服务，iPhone 可安装 PWA（ADR-003 证书路径至少一条走通）
+- [ ] **A37** iPhone 浏览器能看收件箱、回答 WAITING、确认危险操作；可安装为 PWA
+- [ ] **A52** 手机面板是无终端的交互子集：独立入口、DOM 不含终端 / 创建 / diff / 验收 / 改动列表，也不含消息流与历史翻页；动作全部走与桌面相同的节点 API（有守卫）
 
 **TUI 桌面客户端**：同一套节点 API 的第二种客户端形态，桌面专用。V1 只有浏览器——它是三类设备唯一共有的运行环境（§0.1）。
 
-**手机终端 ergonomics**：软键盘 Ctrl / Esc、手势，以及对远程节点的剪贴板与文件上传。V1 手机终端可用不优化（§6.9）。
+**Android 客户端与手机终端 ergonomics**：Android 的 Web Push（FCM 可达性）、安装提示、通知按钮，以及软键盘 Ctrl / Esc、手势、剪贴板、文件上传——Android 整体延期（承接 agora-w9ki），手机终端不做（§6.9）。
 
 ---
 
 ## 12. MVP Acceptance Criteria
 
-MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终端底座 → M1b Agent 感知 → M2a peer 核心 / M2b 安装运维与收口**（两者阶段门同为 M1b，M2b 的收口任务以任务级依赖等 M2a；2026-09-05 由 M2 拆出，为的是更早到人眼验收点）；**M3 产出与起会话增强** 在 M1b 之后、与 M2a / M2b 并行；**M2c 在 peer 上起会话** 在 M2a / M2b 之后（2026-09-07 补，A45）；**M4a 侧栏树视图与行身份 / M4b 回答区进主区** 在 M3b 之后、二者并行（2026-09-08 用户反馈拆出，A47–A51）；手机是 V2 首批（§11）。阶段门用 blocks 表达，每个 epic 的 `--acceptance` **引用下列编号**而不复制文本；每个 epic 的演示剧本写在 design 字段（§1.5），在把该 epic 拆成任务时一并写好——拆分是前一阶段的收尾任务（M0 的 `agora-90t.5` 拆 M1a / M1b，M1b 收尾拆 M2 / M3）。
+MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终端底座 → M1b Agent 感知 → M2a peer 核心 / M2b 安装运维与收口**（两者阶段门同为 M1b，M2b 的收口任务以任务级依赖等 M2a；2026-09-05 由 M2 拆出，为的是更早到人眼验收点）；**M3 产出与起会话增强** 在 M1b 之后、与 M2a / M2b 并行；**M2c 在 peer 上起会话** 在 M2a / M2b 之后（2026-09-07 补，A45）；**M4a 侧栏树视图与行身份 / M4b 回答区进主区** 在 M3b 之后、二者并行（2026-09-08 用户反馈拆出，A47–A51）；iPhone 是 V2 首批（§11；Android 延期见 §11 的 Android 条目）。阶段门用 blocks 表达，每个 epic 的 `--acceptance` **引用下列编号**而不复制文本；每个 epic 的演示剧本写在 design 字段（§1.5），在把该 epic 拆成任务时一并写好——拆分是前一阶段的收尾任务（M0 的 `agora-90t.5` 拆 M1a / M1b，M1b 收尾拆 M2 / M3）。
 
 - [ ] **A1** 可以通过浏览器查看所有运行时中的 agent session
 - [ ] **A2** 可以创建 Claude Code session
@@ -707,9 +716,9 @@ MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终�
 - [ ] **A47** 侧栏有两种视图可切换：「需要我」（§6.3 的 attention 排序）与「按项目」（节点 → 仓库 → worktree → 会话的树）；切换控件在侧栏头部，命令面板与 Alt/Option+G 也能切，选择存浏览器、刷新后保持；过滤在两种视图下都可用；两种视图下 Alt/Option+N 跳的第 N 条都等于眼睛看到的第 N 条（折叠只是不画不是不数，与 A46 同一条规则）（§6.1、§6.3、§6.5；§1 第 1、2 步。2026-09-08 用户反馈：行随状态自己换位置，人跟不上）（守卫：`web/src/Sidebar.test.tsx`「the mode switch toggles aria-pressed and calls onMode」「tree mode renders SidebarTree and no section headings」、`web/src/Workspace.test.tsx`「the sidebar mode survives a remount via localStorage」、`web/src/keyboard.test.tsx`「Alt/Option+G toggles the sidebar mode, also while the terminal has focus」「Alt/Option+N in tree mode follows DFS order across groups」、`web/src/sidebarMode.test.ts`「visibleOrder in tree mode is creation order and filter only removes rows」、`web/src/sidebarTreeModel.test.ts`「collapsed groups hide rows but ordinals keep counting」）
 - [ ] **A48** 「按项目」树：节点组（在线 / stale 点）→ 仓库组 → worktree 组（分支 chip、主 worktree 标记）→ 会话行按创建顺序、位置只随创建 / 删除变、不随状态变；不在任何 git 仓库里的会话归该节点下的「其它目录」组；组可折叠且记住；折叠的组头显示组内需要关注的行数；worktree 组头可就地「+ 在此起 agent」（对话框预填节点 / 仓库 / worktree）与「开 shell」，节点组头的「+」预填节点（§6.1、§6.4；§1 第 2、3 步）（守卫：`web/src/sidebarTreeModel.test.ts`「order never changes when status or status_since changes」——逐元素断言、「groups by node, repo, worktree and orders rows by created_at」「rows without a project go to an 其它目录 group after all repos」「the local node comes first, peers follow the nodes order」、`web/src/SidebarTree.test.tsx`「group headers show branch, main marker and attention count when collapsed」「a finished row stays in place with the done class」、`web/src/Sidebar.test.tsx`「the Finished clear count is the same in both modes」；组头就地起会话的守卫随 agora-uvd.4 落地）
 - [ ] **A49** 每行明示三件身份：agent 品牌（每个 adapter 一个可辨的徽标与颜色，shell / custom 与 agent 区分）、节点（本机也标，颜色按节点；反转 agora-7ku.5「本机不标」的决定）、仓库与分支（服务端会话行新增只读 `project` 字段：仓库根 / 名字 / worktree 路径 / 分支，异步补齐、TTL 重查，git 只读——`tests/arch_boundary.rs` 白名单守卫）；两种视图同源同字段（§6.1、§4.2；§1 第 1 步。2026-09-08 用户反馈：在哪个项目 / worktree、本机还是 zuan、哪家 agent 都看不清）（守卫：`tests/session_project.rs`「main_worktree_session_reports_repo_branch_and_main_true」「linked_worktree_session_points_repo_to_main_worktree_and_main_false」「detached_head_yields_branch_null」「project_is_not_stored_in_sqlite」、`tests/arch_boundary.rs`「git_subprocesses_are_read_only_or_worktree_add」、`web/src/agentBadge.test.ts`「known adapters get distinct glyphs and hues; shell and unknown are uncolored」、`web/src/nodeColor.test.ts`「hue is stable for a name and differs for mac vs zuan」、`web/src/SessionRow.test.tsx`「labels the node on every row, local ones uncolored」「shows a repo ⎇ branch line in attention mode, with worktree name when not main」「detached HEAD shows ⎇ detached」）
-- [ ] **A50** 就地 respond 搬进主区：主区结构是 crumb → 回答面板 → 终端；WAITING 的问题与 Allow / Deny / 打开终端、TURN_DONE 的最后一条回复（按 markdown 排版：标题 / 列表 / 代码块 / 表格，不渲染 HTML）与「下一条指令」输入框（在面板顶部、不用滚到底）、验收标准与改动列表都在这个面板里，可折叠、有高度上限；侧栏行不再展开，只剩行本身；手机 drawer（§6.9）下同一面板（§6.2、§6.3；§1 第 2 步。agora-03k：窄列里塞几百行 markdown 读不了）（守卫：`web/src/Workspace.test.tsx`「clicking a turn_done row shows the respond panel in the main area between crumb and pane, and the sidebar row has no respond- testid (A50; agora-03k)」「a turn_done row with a task shows respond, acceptance and changes panels in that order above the terminal (A50)」、`web/src/RespondPanel.test.tsx`「the next-command input renders above the last reply (A50)」「a long reply is folded to 12 lines with an expand button; a short one has no button (A50)」、`web/src/Sidebar.test.tsx`「the sidebar DOM never contains respond-, acceptance- or changes- testids in either mode (A50)」）
+- [ ] **A50** 就地 respond 搬进主区：主区结构是 crumb → 回答面板 → 终端；WAITING 的问题与 Allow / Deny / 打开终端、TURN_DONE 的最后一条回复（按 markdown 排版：标题 / 列表 / 代码块 / 表格，不渲染 HTML）与「下一条指令」输入框（在面板顶部、不用滚到底）、验收标准与改动列表都在这个面板里，可折叠、有高度上限；侧栏行不再展开，只剩行本身；手机阶段用它的交互子集（A52、§6.9），A50 只约束桌面（§6.2、§6.3；§1 第 2 步。agora-03k：窄列里塞几百行 markdown 读不了）（守卫：`web/src/Workspace.test.tsx`「clicking a turn_done row shows the respond panel in the main area between crumb and pane, and the sidebar row has no respond- testid (A50; agora-03k)」「a turn_done row with a task shows respond, acceptance and changes panels in that order above the terminal (A50)」、`web/src/RespondPanel.test.tsx`「the next-command input renders above the last reply (A50)」「a long reply is folded to 12 lines with an expand button; a short one has no button (A50)」、`web/src/Sidebar.test.tsx`「the sidebar DOM never contains respond-, acceptance- or changes- testids in either mode (A50)」）
 - [ ] **A51** 「需要我」视图的重排让人跟得上：指针在侧栏内或最近一次侧栏交互后的短暂窗口内不重排（新行仍插入、状态符号照变），窗口过后再按 attention 顺序落位，换了位置的行短暂高亮；Alt/Option+N 按冻结期间眼睛看到的顺序跳（§6.3、§6.5；§1 第 1 步）（守卫：`web/src/Workspace.test.tsx`「while the pointer is over the sidebar a status change does not reorder rows but updates the symbol (A51)」「after leaving the sidebar and 3 s (fake timers) the row moves and carries the moved class (A51)」「Alt/Option+2 during a freeze jumps to the second row as displayed (A51)」、`web/src/stableOrder.test.ts`「frozen freezes the section of every row and keeps the three sections contiguous (A51)」）
 
-编号全局唯一、不复用：A13 / A19 / A28 / A35 / A37 在 §11 手机条目。
+编号全局唯一、不复用：A13 / A19 / A28 / A35 / A37 / A52 在 §11 手机条目。
 
 开发阶段划分、里程碑与测试策略见 `ROADMAP.md`（由 beads 生成）。

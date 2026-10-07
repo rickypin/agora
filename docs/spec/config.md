@@ -8,7 +8,7 @@
 server:                       # ADR-003 D5：两个监听器
   listen: "127.0.0.1:7680"    # 明文监听器：只允许 loopback 地址，配置校验拒绝其它
   tls_listen: null            # TLS 监听器：非 loopback、永远 TLS；被 peer 或手机访问时才开，例 "0.0.0.0:7681"（端口须不同于 listen）
-  public_url: null            # 远端配对链接与 QR 用的对外地址，例 "https://zuan.tail6f613.ts.net:7681"；不自动猜
+  public_url: null            # 远端配对链接与 QR 用的对外地址，例 "https://zuan.tail6f613.ts.net:7681"；不自动猜。消费点：POST /api/auth/pair/new 与 agora pair 的 QR（接线归 agora-thc.1）
 node:
   id: "mac"                   # §3.5：全局会话 id `<node>:<id>` 的前缀，安装脚本写短主机名（文末「安装」），改名需迁移；没有 config.yaml 时默认 "local"
 peers: []                     # §3.5：默认空。每项 { name, url, token_file, cert_fingerprint: "sha256:<SPKI hex>" }（ADR-003 D3 / D4）；
@@ -111,6 +111,14 @@ CREATE TABLE peer_tokens (                         -- ADR-003 D3：按 peer 签�
     last_used_at DATETIME,
     revoked_at DATETIME
 );
+CREATE TABLE push_subscriptions (                  -- Web Push 订阅（schema v6，V2-1 iPhone；agora-thc.6）
+    endpoint TEXT PRIMARY KEY,                     -- 浏览器给的 capability URL，唯一键
+    device_id TEXT NOT NULL,                       -- devices.id；发送时联查 revoked_at，吊销即停发
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at DATETIME NOT NULL,
+    last_ok_at DATETIME
+);
 CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 ```
 
@@ -122,6 +130,13 @@ MVP 不需要保存大量 operational telemetry。peer 的最后视图只在内�
 - 形态 `apt_<name>_<base64url(32 字节随机)>`（一行，随机段恰好 43 字符）：前缀让日志与 secret scanner 认得出它，`<name>` 是被访问节点眼里这个 peer 的名字（字符集与 `node.id` 相同：字母、数字、`-`、`_`，最长 64）。name 与随机段都可能含 `_`，解析按尾部定长 43 切，不按 `_` 切（`src/auth/peer_token.rs`）。
 - 由被访问的节点签发：`agora peer token create <name>`——stdout **只有 token 一行**（`> mac.token` 直接就是 token_file），提示走 stderr；明文只输出这一次，该节点的 `peer_tokens` 表（schema v4）只存整串的 SHA-256。已有有效 token 的 name 再 `create` 拒绝（退出 1），加 `--rotate` 才换新——同一行换哈希，旧 token 立即失效；已吊销的 name 直接重签、不需要 `--rotate`。`agora peer token list` 列出 name / 签发时刻 / 最近使用 / active|revoked（不显示哈希，更没有明文）；`agora peer token revoke <name>` 即时生效（daemon 每次请求查库、不缓存；已建立的 `/api/events` 订阅等长连接由 daemon 在 5 s 内主动以 `4401 revoked` 关掉，`--rotate` 换掉的旧 token 同样——`docs/spec/api.md`「认证」末条，agora-0jt）。三条命令直接操作 `AGORA_HOME/agora.db`，不需要 daemon 在跑（ADR-003 D6）；库文件若由 CLI 首次创建也只属主可读。签发没有前置条件（ADR-003 D3）；token 只在 TLS 监听器上被接受（`docs/spec/api.md`「认证」）。
 - 持有方写入 `peers[].token_file`：明文、`0600`、不进 git、不进日志（MISSION §8）。读它（`peer_token::load_token_file`）先查权限再读内容：文件必须属于当前 uid、group / other 不得有任何位（与 `AGORA_HOME` 自检同一尺度）、内容去掉首尾空白后必须是上面的形态——任何一条不满足都是**配置错误**（`TokenFileError`），该 peer 应显示为「配置错误」而不是"离线"或"未授权"，也不进退避重试（重试改不了文件权限）。守卫 `tests/peer_token.rs::token_file_too_open_is_config_error`。 peer 客户端每次请求时读它、不缓存（换文件即生效）；配置错误时一个字节都不会发出去。
+
+## Web Push（V2-1；agora-thc.6）
+
+- 无独立配置项：`notifications.enabled`（见上）是总闸，关掉就不产生通知、也就没有推送。
+- VAPID 密钥自动生成在 `<AGORA_HOME>/push/vapid.json`（0600，首次需要时生成；公钥随 `GET /api/system` 下发）；轮换即换文件、旧订阅全部失效需重订。
+- 订阅存 SQLite（schema v6 的 `push_subscriptions`），绑定已配对设备；吊销设备即停发（ADR-003 附录 C）。
+- iPhone-only（Apple 端点）；Android 延期（agora-w9ki）。
 
 ## TLS 证书（`tls` 段；ADR-003 D4 / D5）
 

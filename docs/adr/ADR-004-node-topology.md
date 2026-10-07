@@ -88,3 +88,7 @@ STARTING 已经 8 天。peer 那侧什么都没变，变的是本机。
 a_local_restart_does_not_reset_a_peer_rows_wait`（真客户端循环，peer 报 8 天）、
 `::peer_timestamps_use_local_clock`（绝对时刻仍然不信）；`web/src/attention.test.ts` 的 peer 行时长
 文案。形态变更见 `docs/spec/api.md`「peer 视图」。
+
+## 附录：手机不是节点，只配一个承载节点（V2-1，2026-10-06）
+
+手机端是人的浏览器（PWA），不是 peer、不是节点：不安装 daemon / 运行时、不持有机器 token，唯一的凭据是设备配对（ADR-003 D2）。它只配对一个**承载节点**（当前实例是 zuan），经该节点已存在的 peer 并入视图与一跳转发看 / 操作全部节点（不变量 8、MISSION §3.5）。推理由承载节点发出——它的 EventBus 上本机与 peer 的通知同源（`src/peer/view.rs` 转发 peer 的 notification），订阅只注册在这一个节点，不做经其它节点的推送中转（MISSION §6.6）。这没有新增拓扑组件：承载节点的角色仍是「节点的一种配置」（本文档的核心论点），手机只是它的一个客户端。

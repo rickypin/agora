@@ -210,3 +210,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 ## 附录 B：事故记录
 
 （上线后追加）
+
+## 附录 C：推送订阅与设备凭据（V2-1，2026-10-06）
+
+Web Push 的订阅是浏览器给的一份 capability URL（endpoint + p256dh / auth 密钥），必须存在节点侧才能在浏览器关闭后发送。归属：**订阅依附于已配对设备**（`push_subscriptions.device_id` → `devices.id`），不是新的凭据类型、不扩展 principal 模型（D1 不变）；`DELETE /api/auth/devices/:id` 吊销设备后不再向它的订阅发送（发送时联查 `revoked_at`）。VAPID 私钥在 `<AGORA_HOME>/push/`（0600，与机器 token / hook 材料同一档），不进日志、不进 git。载荷只带标题与全局会话 id（不带权限命令 / 回复原文），锁屏可见性由客户端通知策略决定。iPhone-only（Android 延期，agora-w9ki）；协议保持标准 Web Push，未来 Android 是加法。
