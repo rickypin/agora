@@ -107,6 +107,27 @@ describe("composer", () => {
     expect(screen.getByTestId("mobile-sent-state").textContent).toBe("已发送");
   });
 
+  it("host text channel: a handleless pi row can be answered from the phone", async () => {
+    // ADR-002 D11 / agora-t5kf.3：无句柄但宿主收文本（pi 的扩展自报 input_channel → text_via=host）
+    // → 手机能发，走 daemon 的 input/ 队列；只有 text_via=none 的才说"到桌面"。
+    const { requests } = setup(
+      row("zuan:aa2462", { agent_type: "pi", origin: "external", status: "turn_done", text_via: "host", prompt: "问", detail: "答" }),
+    );
+    expect(screen.queryByTestId("mobile-terminal-only")).toBeNull();
+    fireEvent.change(screen.getByTestId("mobile-next-input"), { target: { value: "从手机发一条" } });
+    fireEvent.click(screen.getByTestId("mobile-send"));
+    await act(async () => {});
+    expect(requests[0].body).toBe(JSON.stringify({ kind: "text", data: "从手机发一条\n" }));
+    expect(screen.getByTestId("mobile-sent-state").textContent).toBe("已发送");
+
+    // 在跑：状态门与有句柄行一致（不发），但说明是"等它跑完"，不是"只能到桌面"。
+    cleanup();
+    setup(row("zuan:bb", { agent_type: "pi", origin: "external", status: "running", text_via: "host", detail: "bash" }));
+    expect(screen.getByTestId("mobile-host-running-note").textContent).toContain("跑完");
+    expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+    expect(screen.queryByTestId("mobile-terminal-only")).toBeNull();
+  });
+
   it("gates on status: running is disabled with a note, handleless has no composer", () => {
     setup(row("n:a", { status: "running", detail: "在跑" }));
     expect(screen.queryByTestId("mobile-next-input")).toBeNull();

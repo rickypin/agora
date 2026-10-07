@@ -148,7 +148,7 @@ WORKING
 
 折叠按**源文本的行数**：最后一条回复默认只渲染前 **12 行**，超过时下面一个「展开全文（N 行）」按钮（`respond-last-more`），点开显示全文、按钮随之消失（不提供「收起」——回复是看结果的东西，看完就该给上面的输入框下一条指令）；12 行以内不出按钮。折叠态**不持久化**：换一行、同一行来了新回复、刷新页面都回到折叠。按行数截而不是 CSS 限高，是因为限高会随字号 / 表格 / 代码块飘，同一段回复在不同机器上折叠位置不一样。截断落在围栏中间时，未闭合的代码块一路渲染到结尾（不退回原文）；落在表头与分隔线之间时，表头行退回成一行普通文字。`.respond-last` 那条 40vh 限高与折叠是两件事：折叠管默认露多少，40vh 管展开之后最多占多高。守卫 `web/src/markdown.test.ts`、`web/src/RespondPanel.test.tsx`。
 
-状态既不是 WAITING 也不是 TURN_DONE 时面板一格都不占；看 diff 时不画（那一格在看结果，不在回答；同时**留着**的看结果面板见下一段）。「打开终端」在主区里的意思是**把焦点交给下面的终端**（面板与终端本来就上下相邻，不再是切标签页）；external 会话没有终端可交（MISSION §5.5），这个按钮不画，经 hook 的 Allow / Deny 照旧。「下一条指令」输入框同样不画（MISSION §5.5：external 没有文本输入，画了只会 409 `no_runtime`），面板只留 `↳` 看结果（agora-71p2）。输入框里按 Escape 同样把焦点还给终端。终端焦点规则（agora-p29 / agora-vcc）不变：点行仍然聚焦终端，面板只在 Alt/Option+R 与通知点击两条路径上拿焦点。守卫 `web/src/RespondPanel.test.tsx`、`web/src/Workspace.test.tsx`（crumb → 面板 → pane 的 DOM 顺序、diff 视图只藏这一个面板、通知点击与 Alt/Option+R 的落点）、`web/src/Sidebar.test.tsx`（侧栏一个 `respond-` testid 都没有）、`web/src/keys.test.ts`（Alt+R 认 code）。
+状态既不是 WAITING 也不是 TURN_DONE 时面板一格都不占；看 diff 时不画（那一格在看结果，不在回答；同时**留着**的看结果面板见下一段）。「打开终端」在主区里的意思是**把焦点交给下面的终端**（面板与终端本来就上下相邻，不再是切标签页）；external 会话没有终端可交（MISSION §5.5），这个按钮不画，经 hook 的 Allow / Deny 照旧。「下一条指令」输入框按 `textVia(row)` 分（MISSION §5.5、ADR-002 D11）：`runtime` 与 `host` 都画，`none`（旧扩展 / 老节点 / 本就只读的宿主）不画——70p2 当时拿掉输入是因为 external 一律 409 `no_runtime`，宿主自报输入通道后这条理由在 `host` 行上不成立了（agora-t5kf.3）；不画的那些只留 `↳` 看结果与 `respond-terminal-only` 说明。输入框里按 Escape：有终端的把焦点还给终端，宿主通道的行没有终端可还，就让它失焦。终端焦点规则（agora-p29 / agora-vcc）不变：点行仍然聚焦终端，面板只在 Alt/Option+R 与通知点击两条路径上拿焦点。守卫 `web/src/RespondPanel.test.tsx`、`web/src/Workspace.test.tsx`（crumb → 面板 → pane 的 DOM 顺序、diff 视图只藏这一个面板、通知点击与 Alt/Option+R 的落点）、`web/src/Sidebar.test.tsx`（侧栏一个 `respond-` testid 都没有）、`web/src/keys.test.ts`（Alt+R 认 code）。
 
 ```
 agora-03k 侧栏展开区可读性差 / claude @ mac        [Settings] [关闭]
@@ -254,7 +254,7 @@ WAITING 的变体：决策原文（等宽逐字、不过 markdown）作为一张
 
 - 收件箱行：状态 + 等待时长、agent 徽标、任务标签、节点、一行摘要（≤ 80 字）；没有树视图、仓库/分支行、source / confidence。
 - 会话卡：任务标题；**最近一轮用两个气泡**——`❯` 你最后一句（`prompt`，首行）+ `↳` agent 最后回复（`detail`，与桌面同一 markdown 子集，默认折 6 行、**仅最后一条可展开一次**，不做更早消息的翻页）；WAITING 时决策原文（等宽逐字、不过 markdown）作为内联卡片画在 composer 上方；Restart / Kill 收进「更多」（确认框，确认逻辑在所属节点）。
-- composer 与发送：固定在底部（拇指区）。**状态门**：只对 turn_done / idle 开放文本；waiting 只给决定按钮；running / starting 置灰并说明「它还在跑」；无句柄行（external / headless）没有 composer，并给一句说明（`mobile-terminal-only`：在跑时说“它还在跑；只能在桌面终端里回复”、其余说“没有可写的运行时” ——agora-71p2，不能让它看着像输入框没画出来）。发送是**乐观的**：气泡先以「发送中」出现，`POST /api/sessions/:id/input` 成功后转「已发送」，失败保留文本并给重试。
+- composer 与发送：固定在底部（拇指区）。**状态门**：只对 turn_done / idle 开放文本；waiting 只给决定按钮；running / starting 置灰并说明「它还在跑」。**能不能发看 `textVia(row)` 而不是有没有句柄**（agora-t5kf.3，ADR-002 D11）：`runtime`（有 PTY）与 `host`（无句柄但宿主收文本，目前是 pi 的扩展）都给 composer；`none`（Claude / Codex / Grok、旧扩展、老节点）没有 composer，并给一句说明（`mobile-terminal-only`：在跑时说“它还在跑；只能在桌面终端里回复”、其余说“没有可写的运行时”——agora-71p2，不能让它看着像输入框没画出来）。host 行在跑时是 `mobile-host-running-note`“它还在跑；等它跑完这一轮再发（会经 pi 的扩展交进去）”——发得出去，只是与状态门同一个口径。发送是**乐观的**：气泡先以「发送中」出现，`POST /api/sessions/:id/input` 成功后转「已发送」，失败保留文本并给重试；host 行 504 `host_timeout`（宿主没来取件）由服务端那句话直接显示。
 - 不做：终端（xterm 不加载）、New Agent、diff / 验收 / 改动列表、命令面板与快捷键、多节点切换（只配一个承载节点）、消息流与完整对话历史（Conversation indexing 见 §11，承接 `agora-ghl3`）。
 - `respond_via = terminal`（Grok 权限、AskUserQuestion）显示「需要到桌面」，不提供「打开终端」；不注入键击（MISSION §1.2）。
 

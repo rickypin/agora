@@ -93,6 +93,22 @@ it("turn_done on a handleless row has no one to write to: the input is gone, the
   expect(screen.getByTestId("respond-terminal-only")).toBeTruthy();
 });
 
+it("a handleless row with a host text channel keeps the next-instruction input", async () => {
+  // agora-t5kf.3（ADR-002 D11）：71p2 把无句柄行的输入拿掉了（发出去必 409）；宿主自报通道后
+  // 输入回来——走 input/ 队列由宿主自己执行，不经 PTY。没有通道的（旧扩展）仍是说明文字。
+  const { requests } = setup({ origin: "external", status: "turn_done", text_via: "host", detail: "Two files." });
+  expect(screen.queryByTestId("respond-terminal-only")).toBeNull();
+  fireEvent.change(screen.getByTestId("next-input"), { target: { value: "继续" } });
+  fireEvent.click(screen.getByTestId("next-send"));
+  await waitFor(() => expect(requests.length).toBe(1));
+  expect(JSON.parse(requests[0].body!)).toEqual({ kind: "text", data: "继续\n" });
+  cleanup();
+  // text_via=none 与老节点（字段缺省，按 runtime_ref 退）都保持 71p2 的只读口径。
+  setup({ origin: "external", status: "turn_done", text_via: "none", detail: "x" });
+  expect(screen.queryByTestId("next-input")).toBeNull();
+  expect(screen.getByTestId("respond-terminal-only")).toBeTruthy();
+});
+
 it("running rows have nothing to answer", () => {
   setup({ status: "running" });
   expect(screen.queryByTestId("respond-panel-mac:s1")).toBeNull();

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { SessionApi } from "./api";
+import { textVia } from "./events";
 import { isHandleless } from "./attention";
 import type { SessionRow } from "./events";
 import { MarkdownView } from "./MarkdownView";
@@ -104,6 +105,9 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
   // external / headless 会话没有运行时句柄（MISSION §5.5）：主区那一格是"没有终端"的说明文字，
   // 把焦点交给它没有意义，按钮直接不画。它们仍然能经 hook 回答（Allow / Deny 照旧）。
   const hasTerminal = !isHandleless(row);
+  // 无句柄但宿主收文本通道的（pi 的扩展）：能像有终端一样发下一条，只是不经 PTY
+  // （ADR-002 D11；MISSION §5.5 的"没有文本输入"指的是 `none` 的那些）。
+  const canText = hasTerminal || textVia(row) === "host";
   const lastLines = detail === null ? [] : detail.split("\n");
   // 展开是单向的：展开后按钮消失，不变「收起」。回复是"看结果"的东西，看完就该给下一条指令
   // （输入框在面板最上面），再折回去没有用；40vh 的限高保证展开也不会把终端挤没。
@@ -175,16 +179,16 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
           )}
         </div>
       )}
-      {turnDone && !hasTerminal && (
-        // external / headless 行没有可写的运行时（MISSION §5.5「没有终端与文本输入」）：
-        // 画了输入框发出去也只会 409 no_runtime（现场 agora-71p2），这里给说明、只留看结果。
+      {turnDone && !canText && (
+        // 既没有可写的运行时、宿主也不收文本（Claude / Codex / Grok、旧扩展，MISSION §5.5）：
+        // 画了输入框发出去只会 409 no_runtime（现场 agora-71p2），这里给说明、只留看结果。
         <p className="respond-note muted" data-testid="respond-terminal-only">
           这一行没有可写的运行时；在它自己的终端里回复（这里只能看结果）。
         </p>
       )}
       {turnDone && (
         <>
-          {hasTerminal && (
+          {canText && (
             <form
               className="respond-next"
               onSubmit={(e) => {
@@ -205,7 +209,9 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
                   // 点行仍然聚焦终端，面板只在 Alt/Option+R 与通知点击两条路径上抢焦点）。
                   if (e.key !== "Escape") return;
                   e.preventDefault();
-                  onOpenTerminal(row.id);
+                  // 终端是 Esc 唯一的去处；宿主通道的行没有终端可回，把键盘放开就是了。
+                  if (hasTerminal) onOpenTerminal(row.id);
+                  else (e.target as HTMLInputElement).blur();
                 }}
               />
               <button type="submit" disabled={busy || !text.trim()} data-testid="next-send">

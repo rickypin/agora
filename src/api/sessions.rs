@@ -657,7 +657,9 @@ pub async fn input(
                         });
                     };
                     let sid = id.clone();
-                    let queued_data = data.clone();
+                    // 前端给 PTY 路径发的是 `文本\n`（尾换行就是那边的一次回车）。队列这条路上
+                    // 它没有意义：宿主把整串当 prompt，多一个换行就是消息里多一个空行。
+                    let queued_data = data.trim_end_matches(['\r', '\n']).to_owned();
                     let dir_q = dir.clone();
                     let qid = tokio::task::spawn_blocking(move || {
                         crate::hook::input::enqueue(&dir_q, &sid, &queued_data)

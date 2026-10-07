@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { agentBadge } from "./agentBadge";
 import type { SessionApi } from "./api";
 import { isHandleless, seenKey, seenRelevant, statusLine, taskLabel } from "./attention";
+import { textVia } from "./events";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow } from "./events";
 import { MarkdownView } from "./MarkdownView";
@@ -82,10 +83,13 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
   const waiting = row.status === "waiting";
   const running = row.status === "running" || row.status === "starting";
   const handleless = isHandleless(row);
+  // 无句柄、但宿主自己收文本的（pi 的扩展，ADR-002 D11）：手机上照旧能给下一条；
+  // 真正的只读是 `textVia == "none"` 那些（MISSION §5.5）。
+  const hostText = textVia(row) === "host";
   const decision = row.pending_decision;
   const canDecide = waiting && row.respond_via === "hook" && row.reason === "permission" && !!decision;
   const within = typeof row.respond_within_secs === "number" ? row.respond_within_secs : null;
-  const canCompose = (row.status === "turn_done" || row.status === "idle") && !handleless;
+  const canCompose = (row.status === "turn_done" || row.status === "idle") && (!handleless || hostText);
   // 推送点击进来：可发送的行把焦点直接放进 composer（ux.md「行为」；焦点只在打开那一下要，之后别抢）。
   useEffect(() => {
     if (focusComposer && canCompose) composerRef.current?.focus();
@@ -241,10 +245,10 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
                 </div>
               </div>
             )}
-            {/* 无句柄行没有可写的运行时（MISSION §5.5「没有终端与文本输入」）：手机上永远发不了，
-                说明必须显式给（agora-71p2；空 thread 的用例见 agora-sd0b）。有句柄在跑的行走
-                下面那条 running note。 */}
-            {handleless && (
+            {/* 无句柄、且宿主也不收文本（Claude / Codex / Grok、旧扩展）：手机上永远发不了，
+                说明必须显式给（agora-71p2；空 thread 的用例见 agora-sd0b）。带宿主通道的
+                行走下面那条 host-running note，有句柄在跑的是更下面那条 running note。 */}
+            {handleless && !hostText && (
               <p className="mobile-note" data-testid="mobile-terminal-only">
                 {running
                   ? "它还在跑；这一行只能在桌面终端里回复。"
@@ -304,6 +308,11 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
             发送
           </button>
         </form>
+      )}
+      {running && handleless && hostText && (
+        <p className="mobile-note" data-testid="mobile-host-running-note">
+          它还在跑；等它跑完这一轮再发（会经 pi 的扩展交进去）。
+        </p>
       )}
       {running && !handleless && (
         <p className="mobile-note" data-testid="mobile-running-note">
