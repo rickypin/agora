@@ -642,7 +642,7 @@ describe("Workspace", () => {
     await settle();
     expect(order()).toEqual(["section-attention", "row-n:wait", "section-working", "row-n:run", "section-finished"]);
     expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 2");
-    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:own@"]);
+    expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:own@finished"]);
     // Alt/Option+N 的序号跟着三段拼接走：折叠区收着时第 3 条仍是 ext（wait, run, ext, own）。
     fireEvent.keyDown(window, { code: "Digit3", altKey: true });
     expect(screen.getByTestId("no-terminal")).toBeTruthy();

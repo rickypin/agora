@@ -59,11 +59,12 @@ describe("attention", () => {
     expect(finishedCollapsed(own, seen)).toBe(true);
     expect(needsAttention(adopted, seen)).toBe(true);
     // 记号跟着这一次完成走（agora-23h）：同一行、新的 status_since 就是新结果，旧记号不算。
-    expect(seenKey(own)).toBe("own@");
+    // 没有 status_since 的退化键带状态（agora-no5）：bare `own@` 会让同 id 的 FINISHED / TURN_DONE 撞键。
+    expect(seenKey(own)).toBe("own@finished");
     expect(seenKey(row("own", "finished", { status_since: 7 }))).toBe("own@7");
     expect(finishedCollapsed(row("own", "finished", { origin: "agora", status_since: 7 }), seen)).toBe(false);
     // 看过只对 FINISHED 有意义：WAITING 行在集合里也照样"等你"，RUNNING 行也不会因此进 Finished 区。
-    expect(needsAttention(row("w", "waiting"), new Set(["w@"]))).toBe(true);
+    expect(needsAttention(row("w", "waiting"), new Set(["w@waiting"]))).toBe(true);
     expect(finishedCollapsed(row("r", "running", { origin: "external" }))).toBe(false);
     expect(sectionOf(ext)).toBe("finished");
     expect(sectionOf(own, none)).toBe("attention");
@@ -350,5 +351,33 @@ describe("attention", () => {
   it("counts by status for the header", () => {
     const c = countByStatus([row("a", "running"), row("b", "starting"), row("c", "waiting"), row("d", "turn_done"), row("e", "weird")]);
     expect(c).toEqual({ running: 2, needsInput: 1, turnDone: 1, finished: 0, failed: 0, idle: 0, unknown: 1 });
+  });
+});
+
+// agora-no5：没有 status_since 的行（旧节点 / 测试桩）退化为 `<id>@` 时，同一行的 FINISHED 记号与
+// TURN_DONE 记号会撞同一个键、互相顶用。退化键必须带上状态，两种记号各认各的（真实 daemon 的行总带
+// status_since，本条只服务于退化行）。
+describe("seenKey without status_since (agora-no5)", () => {
+  const fin = row("same", "finished", { origin: "agora" });
+  const done = row("same", "turn_done", { origin: "agora" });
+
+  it("keeps FINISHED and TURN_DONE marks apart", () => {
+    expect(seenKey(fin)).toBe("same@finished");
+    expect(seenKey(done)).toBe("same@turn_done");
+    const seenFin = new Set([seenKey(fin)]);
+    expect(needsAttention(done, seenFin)).toBe(true);
+    expect(finishedCollapsed(fin, seenFin)).toBe(true);
+    const seenDone = new Set([seenKey(done)]);
+    expect(finishedCollapsed(fin, seenDone)).toBe(false);
+    expect(needsAttention(done, seenDone)).toBe(false);
+  });
+
+  it("still expires the mark when the row carries status_since", () => {
+    // 反向不变量：带锚的行换了 status_since 就是新一次完成，退化路径不得把它一起钉死。
+    const first = row("same", "turn_done", { origin: "agora", status_since: 10 });
+    const second = row("same", "turn_done", { origin: "agora", status_since: 40 });
+    const seen = new Set([seenKey(first)]);
+    expect(seen.has(seenKey(second))).toBe(false);
+    expect(needsAttention(second, seen)).toBe(true);
   });
 });

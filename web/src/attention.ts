@@ -56,9 +56,11 @@ export type SeenSet = ReadonlySet<string>;
 
 const NO_SEEN: SeenSet = new Set();
 
-/** 「看过」集合的键：这一行的这一次完成。没有 status_since 的行（旧节点 / 测试桩）退化为 `<id>@`。 */
-export function seenKey(row: { id: string; status_since?: unknown }): string {
-  return `${row.id}@${typeof row.status_since === "number" ? row.status_since : ""}`;
+/** 「看过」集合的键：这一行的这一次完成。没有 status_since 的行（旧节点 / 测试桩）退化为
+ * `<id>@<status>`——不带状态的话，同一行的 FINISHED 与 TURN_DONE 记号会撞同一个键、互相顶用（agora-no5）；
+ * 真实 daemon 的行总带 status_since，带数字那条路径一字未动（老浏览器已存的记号不失效）。 */
+export function seenKey(row: { id: string; status: string; status_since?: unknown }): string {
+  return typeof row.status_since === "number" ? `${row.id}@${row.status_since}` : `${row.id}@${row.status}`;
 }
 
 /**

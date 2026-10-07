@@ -154,6 +154,6 @@ describe("information budget (A52)", () => {
   it("marks a turn_done row as seen when the card opens", () => {
     const onSeen = vi.fn();
     setup(row("n:a", { status: "turn_done", status_since: 500 }), true, onSeen);
-    expect(onSeen).toHaveBeenCalledWith(seenKey({ id: "n:a", status_since: 500 }));
+    expect(onSeen).toHaveBeenCalledWith(seenKey({ id: "n:a", status: "turn_done", status_since: 500 }));
   });
 });
