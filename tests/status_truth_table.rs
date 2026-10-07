@@ -2260,7 +2260,13 @@ fn x14_a_host_reporting_idle_at_registration_lands_on_idle() {
     m.apply(&AgoraEvent::SessionStarted, 1, 0);
     m.apply(&AgoraEvent::IdleReported, 1, 0);
     let fed = tick_external(&mut m, Liveness::Unknown, 2 * 3600);
-    lands("x10", &fed, Status::Unknown, Source::Hook, ProcessState::Unknown);
+    lands(
+        "x10",
+        &fed,
+        Status::Unknown,
+        Source::Hook,
+        ProcessState::Unknown,
+    );
 
     // 投递乱序的反面：已经 RUNNING 的行晚收到这条登记，不许被降成空闲（投递件按落盘顺序应用，
     // 正常 session_start 先到；扩展侧已串行投递，机器层再兜一层）。
@@ -2269,7 +2275,13 @@ fn x14_a_host_reporting_idle_at_registration_lands_on_idle() {
     m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 0);
     m.apply(&AgoraEvent::IdleReported, 1, 0);
     let fed = tick_external(&mut m, Liveness::Alive, 1);
-    lands("x03", &fed, Status::Running, Source::Hook, ProcessState::Alive);
+    lands(
+        "x03",
+        &fed,
+        Status::Running,
+        Source::Hook,
+        ProcessState::Alive,
+    );
 }
 
 #[test]
