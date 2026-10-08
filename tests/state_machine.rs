@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use agora::runtime::{Exit, RuntimeRef, RuntimeSession, Size};
 use agora::status::{
-    AgoraEvent, Assessment, DetectionResult, Liveness, Machine, MachineConfig, Observation, Source,
-    Status,
+    AgoraEvent, Assessment, DetectionResult, EndCause, HostEndReason, Liveness, Machine,
+    MachineConfig, Observation, RuntimeGone, Source, Status, UnknownCause,
 };
 
 fn cfg() -> MachineConfig {
@@ -219,8 +219,9 @@ fn silent_hooks_become_unknown() {
         Some(text(Status::Waiting, "permission prompt")),
     );
     assert_eq!((a.status, a.source), (Status::Unknown, Source::Text));
-    assert!(
-        a.reason.as_deref().unwrap().contains("hooks silent"),
+    assert_eq!(
+        a.unknown_cause,
+        Some(UnknownCause::HooksSilentScreen),
         "{a:?}"
     );
     assert!(a.confidence < 0.8);
@@ -285,7 +286,7 @@ fn process_exit_overrides_hooks_and_later_events_are_metadata_only() {
         at: None,
     });
     assert_eq!(a.status, Status::Finished);
-    assert!(a.reason.unwrap().contains("killed by user"));
+    assert_eq!(a.end_cause, Some(EndCause::KilledByUser), "{a:?}");
     m.apply(&AgoraEvent::TurnEnded(None), 1, 2);
     assert_eq!(m.current().status, Status::Finished);
 }
@@ -627,7 +628,11 @@ fn hook_starting_decays_to_turn_done_awaiting_first_prompt() {
     assert_eq!(tick(&mut m, 20, &r, None).status, Status::TurnDone);
     let a = tick(&mut m, 700, &r, Some(text(Status::Idle, "prompt")));
     assert_eq!(a.status, Status::Unknown);
-    assert!(a.reason.as_deref().unwrap().contains("hooks silent"));
+    assert_eq!(
+        a.unknown_cause,
+        Some(UnknownCause::HooksSilentScreen),
+        "{a:?}"
+    );
 }
 
 #[test]
@@ -676,16 +681,27 @@ fn external_session_ended_by_hook_is_finished_not_unknown() {
             (Status::Finished, Source::Hook),
             "{a:?}"
         );
-        assert!(a.reason.as_deref().unwrap().contains("hook"), "{a:?}");
+        assert_eq!(
+            a.end_cause,
+            Some(EndCause::HostSessionEnd(HostEndReason::Other)),
+            "{a:?}"
+        );
         assert!(a.confidence < 1.0, "进程事实到了要能以 1.0 盖过它：{a:?}");
     }
     assert_eq!(m.status_since(), 3, "结束的起点是 SessionEnd 那一刻");
-    // 没有 reason 的 SessionEnd 同样算结束；Grok 的 shutdown 也是。
-    for reason in [None, Some("shutdown".to_owned())] {
+    // 没有 reason 的 SessionEnd 同样算结束；Grok 的 shutdown 也是（归一到 exit）。
+    for (reason, cause) in [
+        (None, EndCause::HostSessionEnd(HostEndReason::Other)),
+        (
+            Some("shutdown".to_owned()),
+            EndCause::HostSessionEnd(HostEndReason::Exit),
+        ),
+    ] {
         let mut m = Machine::new(cfg(), true, 1, 0);
         m.apply(&AgoraEvent::TurnEnded(None), 1, 1);
         m.apply(&AgoraEvent::SessionEnded(reason.clone()), 1, 2);
         assert_eq!(m.current().status, Status::Finished, "reason={reason:?}");
+        assert_eq!(m.current().end_cause, Some(cause), "reason={reason:?}");
     }
 }
 
@@ -913,6 +929,7 @@ fn silent_hooks_unknown_reason_is_stable_across_ticks() {
         first.reason.as_deref(),
         Some("hooks silent; screen: permission prompt")
     );
+    assert_eq!(first.unknown_cause, Some(UnknownCause::HooksSilentScreen));
     assert_eq!(m.status_since(), 603);
     for now in [605, 607, 609, 611] {
         let a = tick(
@@ -954,8 +971,9 @@ fn idle_notification_after_silent_hooks_unknown_lands_on_turn_done() {
         Some(text(Status::Waiting, "permission prompt")),
     );
     assert_eq!((a.status, a.source), (Status::Unknown, Source::Text));
-    assert!(
-        a.reason.as_deref().unwrap().contains("hooks silent"),
+    assert_eq!(
+        a.unknown_cause,
+        Some(UnknownCause::HooksSilentScreen),
         "{a:?}"
     );
     let at = 604;
@@ -1008,7 +1026,7 @@ fn handleless_external_silence_falls_to_unknown() {
         (Status::Unknown, Source::Hook),
         "{a:?}"
     );
-    assert_eq!(a.reason.as_deref(), Some("hooks silent; no process handle"));
+    assert_eq!(a.unknown_cause, Some(UnknownCause::HooksSilentNoHandle));
     let since = m.status_since();
     for now in [7202, 7300, 90000] {
         let mut obs = external(Liveness::Unknown);
@@ -1076,7 +1094,7 @@ fn handleless_silence_is_measured_from_event_time() {
         (Status::Unknown, Source::Hook),
         "沉默按事件时刻已 3 h ≥ 2 h，不需要再等一个 2 h：{a:?}"
     );
-    assert_eq!(a.reason.as_deref(), Some("hooks silent; no process handle"));
+    assert_eq!(a.unknown_cause, Some(UnknownCause::HooksSilentNoHandle));
     assert_eq!(
         m.status_since(),
         at + 2 * 3600,
@@ -1148,14 +1166,9 @@ fn process_gone_does_not_overwrite_the_hook_session_end() {
     // 起点仍是 SessionEnd 那一刻；对照：从没收到 SessionEnd 的行 reason 是 `external process gone`；
     // agora 起的会话进程层带退出码（conf 1.0）照旧覆盖，FAILED 也照旧覆盖。
     // 关掉 observe 第 1 步的 process_fact_is_no_better 判断 → 第一段 source / reason 断言红。
-    let gone = || {
-        Assessment::new(
-            Status::Finished,
-            Source::Process,
-            0.8,
-            Some("external process gone (no exit status)"),
-        )
-    };
+    // 进程层真实的那条事实（带 end_cause ProcessGone；以前这里手搓 Assessment 会让枚举是 None，
+    // 断言不到线上形态）。
+    let gone = || agora::status::external_process_gone();
     let dead = |process, now| Observation {
         process,
         liveness: Liveness::Dead,
@@ -1191,7 +1204,11 @@ fn process_gone_does_not_overwrite_the_hook_session_end() {
             (Status::Finished, Source::Hook),
             "{a:?}"
         );
-        assert_eq!(a.reason.as_deref(), Some("session ended (hook)"), "{a:?}");
+        assert_eq!(
+            a.end_cause,
+            Some(EndCause::HostSessionEnd(HostEndReason::Exit)),
+            "{a:?}"
+        );
         assert_eq!(m.status_since(), 10, "结束的起点仍是 SessionEnd 那一刻");
     }
 
@@ -1204,10 +1221,7 @@ fn process_gone_does_not_overwrite_the_hook_session_end() {
         (Status::Finished, Source::Process),
         "{a:?}"
     );
-    assert_eq!(
-        a.reason.as_deref(),
-        Some("external process gone (no exit status)")
-    );
+    assert_eq!(a.end_cause, Some(EndCause::ProcessGone), "{a:?}");
     assert_eq!(m.status_since(), 11);
 
     // agora 起的会话：进程层带退出码、conf 1.0，SessionEnd 之后照旧被它覆盖（"进程退出压倒一切"不变）。
@@ -1334,7 +1348,7 @@ fn handleless_external_starting_decays_to_turn_done() {
         (Status::Unknown, Source::Hook),
         "{a:?}"
     );
-    assert_eq!(a.reason.as_deref(), Some("hooks silent; no process handle"));
+    assert_eq!(a.unknown_cause, Some(UnknownCause::HooksSilentNoHandle));
 
     // 进程没了：不衰减，进程层说结束（"进程退出压倒一切"不分 origin）。
     let mut m = Machine::new(cfg(), true, 1, 0);
@@ -1395,8 +1409,8 @@ fn runtime_session_gone_finishes_the_row_instead_of_pin_it_at_unknown() {
         "{a:?}"
     );
     assert_eq!(
-        a.reason.as_deref(),
-        Some("runtime session gone (session gone; no exit status)"),
+        a.end_cause,
+        Some(EndCause::RuntimeGone(RuntimeGone::Session)),
         "{a:?}"
     );
 
@@ -1408,8 +1422,8 @@ fn runtime_session_gone_finishes_the_row_instead_of_pin_it_at_unknown() {
         5,
     ));
     assert_eq!(
-        a.reason.as_deref(),
-        Some("runtime session gone (server gone; no exit status)"),
+        a.end_cause,
+        Some(EndCause::RuntimeGone(RuntimeGone::Server)),
         "{a:?}"
     );
 
@@ -1420,11 +1434,7 @@ fn runtime_session_gone_finishes_the_row_instead_of_pin_it_at_unknown() {
         agora::status::runtime_gone(agora::status::RuntimeGone::Server, true),
         5,
     ));
-    let reason = a.reason.as_deref().unwrap_or_default();
-    assert!(
-        reason.starts_with("killed by user") && reason.contains("runtime session gone"),
-        "{reason}"
-    );
+    assert_eq!(a.end_cause, Some(EndCause::KilledByUser), "{a:?}");
 
     // hook 先说了结束：同状态同分的进程事实不盖（agora-rzh 同一条理由，0.8 就是为它留的）。
     let mut m = Machine::new(cfg(), true, 1, 0);
@@ -1438,7 +1448,11 @@ fn runtime_session_gone_finishes_the_row_instead_of_pin_it_at_unknown() {
         (Status::Finished, Source::Hook),
         "{a:?}"
     );
-    assert_eq!(a.reason.as_deref(), Some("session ended (hook)"));
+    assert_eq!(
+        a.end_cause,
+        Some(EndCause::HostSessionEnd(HostEndReason::Logout)),
+        "{a:?}"
+    );
     assert_eq!(m.status_since(), 10, "结束的起点仍是 SessionEnd 那一刻");
 
     // 对照：运行时整体降级不是"会话没了"。那一臂交给状态机的是 Source::None 的 UNKNOWN，
