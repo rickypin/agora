@@ -775,6 +775,7 @@ mod tests {
                 runtime: Some(rt),
                 epoch: 1,
                 now,
+                at: None,
             })
         };
         tick(&mut m, &rt, 0);

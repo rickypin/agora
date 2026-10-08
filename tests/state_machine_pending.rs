@@ -64,6 +64,7 @@ fn tick(m: &mut Machine, now: i64, rt: &RuntimeSession, t: Option<DetectionResul
         runtime: Some(rt),
         epoch: 1,
         now,
+        at: None,
     })
 }
 

@@ -62,7 +62,43 @@ fn tick(m: &mut Machine, now: i64, rt: &RuntimeSession, t: Option<DetectionResul
         runtime: Some(rt),
         epoch: 1,
         now,
+        at: None,
     })
+}
+
+/// 旧事实的新观测：起点记"事实成为事实的时刻"，不是"看见它的时刻"（agora-9q1x，2026-10-08 zuan 现场）。
+///
+/// daemon 重启时进程层会重新观测到"运行时早就没了"。那时 `Machine` 是新建的（检查点里没有这条
+/// 进程事实），`set()` 会把这当成一次新迁移；用 `now` 当起点就撒两个谎：① 9 月 20 日结束的行在
+/// 10 月 8 日重启后 `status_since` 变成重启那一刻，TURN_DONE/FINISHED 段按完成时刻倒序时它跳到
+/// 「需要我」顶部；② 「看过」的键是 `<id>@<status_since>`（MISSION §4.6 证据 ①），假时刻让已经看过、
+/// 已经收进 Finished 区的行重新冒回需要我——用户报的正是"我明明没有操作，但自动跳到需要我的状态"。
+#[test]
+fn a_reenacted_process_fact_keeps_the_time_it_became_true() {
+    let gone = |t: i64, at: Option<i64>| {
+        let mut m = Machine::new(cfg(), false, 1, 0);
+        m.observe(Observation {
+            process: agora::status::runtime_gone(agora::status::RuntimeGone::Server, false),
+            liveness: Liveness::Dead,
+            text: None,
+            runtime: None,
+            epoch: 1,
+            now: t,
+            at,
+        });
+        m
+    };
+    // 库里早有 ended_at（1_600_000_000 = 2020-09-13）：起点就是它，不是现在。
+    let old = gone(1_700_000_000, Some(1_600_000_000));
+    assert_eq!(old.current().status, Status::Finished);
+    assert_eq!(
+        old.status_since(),
+        1_600_000_000,
+        "旧事实的新观测：起点记事实时刻"
+    );
+    // 对照：真·刚死掉的会话没有 ended_at，起点就是观测时刻。
+    let fresh = gone(1_700_000_000, None);
+    assert_eq!(fresh.status_since(), 1_700_000_000);
 }
 
 #[test]
@@ -116,6 +152,7 @@ fn every_status_has_a_producer() {
             runtime: Some(&dead),
             epoch: 1,
             now: 5,
+            at: None,
         });
         assert_eq!(
             (got.status, got.source, got.confidence),
@@ -219,6 +256,7 @@ fn stale_epoch_dropped() {
         runtime: Some(&r),
         epoch: 4,
         now: 4,
+        at: None,
     });
     assert_eq!((a.status, a.source), (Status::Running, Source::Process));
 }
@@ -244,6 +282,7 @@ fn process_exit_overrides_hooks_and_later_events_are_metadata_only() {
         runtime: Some(&dead),
         epoch: 1,
         now: 1,
+        at: None,
     });
     assert_eq!(a.status, Status::Finished);
     assert!(a.reason.unwrap().contains("killed by user"));
@@ -343,6 +382,7 @@ fn lower_layer_does_not_override_higher_within_hold() {
         runtime: Some(&r),
         epoch: 1,
         now: 0,
+        at: None,
     });
     // 文本层连续两 tick 说 WAITING，但 STARTING 是 30 s 内高层写的：不覆盖。
     for now in [2, 4] {
@@ -353,6 +393,7 @@ fn lower_layer_does_not_override_higher_within_hold() {
             runtime: Some(&r),
             epoch: 1,
             now,
+            at: None,
         });
         assert_eq!(a.status, Status::Starting, "t={now}");
     }
@@ -363,6 +404,7 @@ fn lower_layer_does_not_override_higher_within_hold() {
         runtime: Some(&r),
         epoch: 1,
         now: 31,
+        at: None,
     });
     assert_eq!(a.status, Status::Waiting);
     // 进程层的 RUNNING 是默认值，不享受驻留：文本可以立刻（满两 tick 后）覆盖。
@@ -385,6 +427,7 @@ fn external_session_follows_hooks_only() {
         runtime: None,
         epoch: 1,
         now: 1,
+        at: None,
     };
     assert_eq!(m.observe(unknown()).status, Status::Unknown);
     m.apply(&AgoraEvent::TurnEnded(None), 1, 1);
@@ -508,6 +551,7 @@ fn hooks_never_heard_after_terminal_activity_is_flagged_but_not_at_startup() {
         runtime: Some(&rt(false, Some(30))),
         epoch: 1,
         now: 201,
+        at: None,
     });
     assert_eq!(m.hooks_unheard(202), None);
 }
@@ -619,6 +663,7 @@ fn external_session_ended_by_hook_is_finished_not_unknown() {
         runtime: None,
         epoch: 1,
         now,
+        at: None,
     };
     assert_eq!(m.observe(obs(Liveness::Unknown, 1)).status, Status::Unknown);
     assert_eq!(m.observe(obs(Liveness::Alive, 2)).status, Status::Unknown);
@@ -948,6 +993,7 @@ fn handleless_external_silence_falls_to_unknown() {
         runtime: None,
         epoch: 1,
         now: 0,
+        at: None,
     };
     let mut m = Machine::new(cfg(), true, 1, 0);
     m.apply(&AgoraEvent::TurnEnded(Some("done".into())), 1, 0);
@@ -1011,6 +1057,7 @@ fn handleless_silence_is_measured_from_event_time() {
         runtime: None,
         epoch: 1,
         now: tick,
+        at: None,
     };
 
     // ① 无句柄 + 事件已老：重启后的第一个 tick 就说"看不清"。
@@ -1114,6 +1161,7 @@ fn process_gone_does_not_overwrite_the_hook_session_end() {
         runtime: None,
         epoch: 1,
         now,
+        at: None,
     };
     let alive = |now| Observation {
         process: Assessment::unknown("external session: process alive, hook only"),
@@ -1122,6 +1170,7 @@ fn process_gone_does_not_overwrite_the_hook_session_end() {
         runtime: None,
         epoch: 1,
         now,
+        at: None,
     };
 
     // 人在提示符上两次 Ctrl+C：Claude 发 SessionEnd(prompt_input_exit)，紧接着进程退出。
@@ -1170,6 +1219,7 @@ fn process_gone_does_not_overwrite_the_hook_session_end() {
         runtime: Some(&exited),
         epoch: 1,
         now: 11,
+        at: None,
     });
     assert_eq!(
         (a.status, a.source, a.confidence),
@@ -1207,6 +1257,7 @@ fn handleless_external_starting_decays_to_turn_done() {
         runtime: None,
         epoch: 1,
         now,
+        at: None,
     };
 
     // 无句柄（Codex Desktop、丢了进程号的旧检查点）：宽限内钉住，宽限一到就降。
@@ -1299,6 +1350,7 @@ fn handleless_external_starting_decays_to_turn_done() {
         runtime: None,
         epoch: 1,
         now: 60,
+        at: None,
     });
     assert_eq!(
         (a.status, a.source),
@@ -1323,6 +1375,7 @@ fn runtime_session_gone_finishes_the_row_instead_of_pin_it_at_unknown() {
         runtime: None,
         epoch: 1,
         now,
+        at: None,
     };
     let running = |m: &mut Machine, now| {
         m.apply(&AgoraEvent::PromptSubmitted("do x".into()), 1, now);

@@ -1341,6 +1341,9 @@ impl SessionManager {
                 runtime: rt,
                 epoch: rec.epoch,
                 now,
+                // 结束时刻库里早有（`ended_at`）：重启后重新观测到"运行时没了"是旧事实的新观测，
+                // 状态起点要记事实时刻，否则旧行会跳到「需要我」顶部、看过记号失效（agora-9q1x）。
+                at: rec.ended_at.as_deref().and_then(clock::parse_utc_secs),
             });
             (
                 a,

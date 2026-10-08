@@ -40,6 +40,7 @@ fn external(liveness: Liveness, now: i64) -> Observation<'static> {
         runtime: None,
         epoch: 1,
         now,
+        at: None,
     }
 }
 
@@ -145,6 +146,7 @@ fn external_starting_is_never_a_dead_end() {
         runtime: None,
         epoch: 1,
         now: 3600,
+        at: None,
     });
     assert_eq!(
         (a.status, a.source),
@@ -216,6 +218,7 @@ fn runtime_session_gone_is_a_fact_with_an_exit_not_a_dead_end() {
             runtime: None,
             epoch: 1,
             now: 30,
+            at: None,
         });
         let a = m.observe(Observation {
             process: row.given.clone(),
@@ -224,6 +227,7 @@ fn runtime_session_gone_is_a_fact_with_an_exit_not_a_dead_end() {
             runtime: None,
             epoch: 1,
             now: 60,
+            at: None,
         });
         assert_eq!(
             (a.status, a.source),
@@ -252,6 +256,7 @@ fn runtime_session_gone_does_not_outvote_a_hook_that_spoke_first() {
         runtime: None,
         epoch: 1,
         now: 30,
+        at: None,
     });
     m.apply(&AgoraEvent::SessionEnded(Some("other".into())), 1, 40);
     let a = m.observe(Observation {
@@ -261,6 +266,7 @@ fn runtime_session_gone_does_not_outvote_a_hook_that_spoke_first() {
         runtime: None,
         epoch: 1,
         now: 60,
+        at: None,
     });
     assert_eq!(a.status, Status::Finished, "{a:?}");
     assert_eq!(a.source, Source::Hook, "{a:?}");
@@ -399,6 +405,7 @@ fn after_running(fact: Assessment) -> Assessment {
         runtime: None,
         epoch: 1,
         now: 10,
+        at: None,
     });
     m.observe(Observation {
         process: fact,
@@ -407,6 +414,7 @@ fn after_running(fact: Assessment) -> Assessment {
         runtime: None,
         epoch: 1,
         now: 20,
+        at: None,
     })
 }
 
@@ -561,6 +569,7 @@ fn a_hook_that_spoke_first_keeps_its_end_cause_when_the_process_agrees() {
         runtime: None,
         epoch: 1,
         now: 5,
+        at: None,
     });
     assert_eq!(a.status, Status::Finished, "{a:?}");
     assert_eq!(a.source, Source::Hook, "{a:?}");
@@ -606,6 +615,7 @@ fn unknown_rows() -> Vec<UnknownRow> {
                 runtime: Some(&session),
                 epoch: 1,
                 now,
+                at: None,
             })
         };
         let a = obs(&mut m, 601);
@@ -650,6 +660,7 @@ fn unknown_rows() -> Vec<UnknownRow> {
                 runtime: Some(&session),
                 epoch: 1,
                 now,
+                at: None,
             })
         };
         obs(&mut m, 3, true);
@@ -1144,6 +1155,7 @@ fn tick_rt(
         runtime: Some(rt),
         epoch: 1,
         now,
+        at: None,
     });
     Fed {
         a,
@@ -1169,6 +1181,7 @@ fn tick_external(m: &mut Machine, liveness: Liveness, now: i64) -> Fed {
         runtime: None,
         epoch: 1,
         now,
+        at: None,
     });
     Fed {
         a,
@@ -1196,6 +1209,7 @@ fn running_then_fact(
         runtime: None,
         epoch: 1,
         now: 60,
+        at: None,
     });
     Fed {
         a,
@@ -1636,6 +1650,7 @@ fn a17_an_unreadable_runtime_is_unknown_not_gone() {
         runtime: None,
         epoch: 1,
         now: 60,
+        at: None,
     });
     let fed = Fed {
         a,
@@ -1707,6 +1722,7 @@ fn a19_a_missing_runtime_session_is_not_unknown() {
         runtime: None,
         epoch: 1,
         now: 60,
+        at: None,
     });
     let fed = Fed::new(a, Liveness::Dead);
     forbid(
@@ -1863,6 +1879,7 @@ fn a23_a_row_the_runtime_has_not_reported_yet_is_not_gone() {
             runtime: None,
             epoch: 1,
             now: 1,
+            at: None,
         }),
         Liveness::Dead,
     );
@@ -2638,6 +2655,7 @@ fn probe_handle_rows(v: &mut Vec<Fed>) {
                     runtime: None,
                     epoch: 1,
                     now: 60,
+                    at: None,
                 });
                 v.push(Fed {
                     a,

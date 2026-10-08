@@ -119,6 +119,15 @@ pub struct Observation<'a> {
     /// 库里的当前 epoch；比状态机记的大就是 Restart 过了。
     pub epoch: i64,
     pub now: i64,
+    /// **这条进程事实成为事实的时刻**（已知的话；库里的 `ended_at`），不是"我们看见它的时刻"。
+    ///
+    /// 为什么需要：daemon 重启时进程层会重新观测到"运行时早就没了"——那是**旧事实的新观测**。
+    /// 拿 `now` 当状态起点会撒两个谎（2026-10-08 zuan 现场，agora-9q1x）：① 9 月 20 日就结束的行
+    /// 在 10 月 8 日重启后 `status_since` 变成重启那一刻，于是 TURN_DONE/FINISHED 段按完成时刻倒序
+    /// 时它**跳到「需要我」顶部**；② 「看过」的键是 `<id>@<status_since>`（MISSION §4.6 证据 ①），
+    /// 假时刻让已经看过、已经收进 Finished 区的行**重新冒回需要我**。用户的原话是"我明明没有操作，
+    /// 但自动跳到需要我的状态"。真事实（刚死掉的会话）没有 `ended_at`，仍然用 `now`。
+    pub at: Option<i64>,
 }
 
 /// 预览只要一行：取第一个非空行，去首尾空白。
@@ -807,7 +816,8 @@ impl Machine {
             // 压倒一切"对它们不变。不能改成"hook 的 FINISHED 一律不盖"：那会把 FAILED（退出码非零）
             // 也吞掉——status 不同就该换。
             if !self.process_fact_is_no_better(&obs.process) {
-                self.set(obs.process, now);
+                // 起点用"事实成为事实的时刻"而不是"看见它的时刻"（见 `Observation::at`）。
+                self.set(obs.process, obs.at.unwrap_or(now));
             }
             return self.current.clone();
         }

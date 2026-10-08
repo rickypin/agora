@@ -403,6 +403,46 @@ fn missing_runtime_session_finishes_the_row_and_writes_ended_at_once() {
     assert_eq!(again.assessment.reason, after.assessment.reason);
 }
 
+#[test]
+fn a_restart_rediscovering_a_long_dead_row_keeps_its_end_as_status_since() {
+    // agora-9q1x（2026-10-08 zuan 现场，用户报"我明明没有操作，但自动跳到需要我的状态"）：
+    // 进程层在 daemon 重启后重新观测到"运行时早就没了"——那是**旧事实的新观测**，状态机是新建的
+    // （检查点里没有这条进程事实），`set()` 于是把它当成一次新迁移。起点若记成观测时刻：① 9 月 20 日
+    // 结束的行在 10 月 8 日重启后 `status_since` 变成重启那一刻，TURN_DONE/FINISHED 段按完成时刻倒序
+    // 时它跳到「需要我」顶部；② 「看过」的键是 `<id>@<status_since>`（MISSION §4.6 证据 ①），假时刻
+    // 让已经看过、已经收进 Finished 区的行重新冒回需要我。现场两行：`zuan:b4027c`/`zuan:799dc4`
+    // （`ended_at` = 09-20T08:30:30Z，重启后 `since` = 10-08T03:50:57）。修法：起点用库里的
+    // `ended_at`（`Observation::at`）。
+    let (m, rt, db) = mgr();
+    let v = m.create(&new_session("old")).unwrap();
+    backdate_spawn(&db, &v.record.id);
+    let r = v.record.runtime_ref.clone().unwrap();
+    rt.kill_session(&r);
+    let first = m.get(&v.record.id).unwrap();
+    assert_eq!(first.assessment.status, Status::Finished);
+
+    // 把 ended_at 挪到很久以前（这一行早就结束了），再像一个重启那样新建 SessionManager：
+    // 状态机重建、库里的事实还在——这正是现场的形状。
+    db.conn()
+        .execute(
+            "UPDATE sessions SET ended_at = '2020-09-13T12:26:40Z' WHERE id = ?1",
+            [&v.record.id],
+        )
+        .unwrap();
+    let m2 = SessionManager::new(Arc::clone(&db), rt.clone() as Arc<dyn Runtime>);
+    let after = m2.get(&v.record.id).unwrap();
+    assert_eq!(after.assessment.status, Status::Finished);
+    assert_eq!(
+        after.status_since, 1_600_000_000,
+        "起点必须是库里记的结束时刻（2020-09-13T12:26:40Z），不是这次观测的时刻"
+    );
+    assert_eq!(
+        after.record.ended_at.as_deref(),
+        Some("2020-09-13T12:26:40Z"),
+        "ended_at 也照旧是它自己"
+    );
+}
+
 /// 一次 tick 的全部行，按 id 取。
 fn by_id(m: &SessionManager) -> HashMap<String, agora::session::SessionView> {
     m.list()
