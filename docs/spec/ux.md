@@ -335,6 +335,21 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 「其中 N 行是 agora 起的会话」也只从实际会删的行里数。守卫 `web/src/MobileApp.test.tsx`（入口只在
 有行时出现 / 逐行 DELETE / 跳过 stale / 确认框计数 / 没看过的行清不到）。
 
+### 运行中排队发送（agora-shze，2026-10-08）
+
+「它正跑着、我在外面想说一句」是最常见的一刻：`text_via = host`（目前只有 pi 的扩展）的行在
+`running` / `starting` 时也**留 composer**，发送照走 `POST /api/sessions/:id/input`（daemon 收下就
+回 200、扩展取件后写 `.done`），卡片落与 host-idle 路径同一套乐观态「已发送」。它下面那句
+`mobile-host-running-note` 是「它还在跑；发出去会排队，等它跑完这一轮就交进去」——**「这一轮」是
+pi 的 followUp 语义，不是"一个工具批次"**：pi 只在 agent 不再有工具调用、这一轮跑完之后才把排队的
+消息交进去（`steer` 才是"当前 assistant turn 的工具批次之后"），中途不会有 `agent_settled`，也不会
+再发一条 `before_agent_start`；若写成「等它做完这一步」，说的其实是 `steer` 的时机，与本实现不符
+（ADR-002 D11，2026-10-08 两次真 TUI 实测 + pi 1.0.4 的 SDK 注释）。`runtime`（PTY）的行**不动**：
+PTY 没有队列，键击直接落进 TUI 的输入区，各家对「跑着的时候打字」解释不同（Claude 会排队、别的可能
+当快捷键），继续是 `mobile-running-note`「它还在跑，等它停下来或回完这一轮再发」；`waiting` 也沿用
+状态门（只给决定按钮，不给排队）。守卫 `web/src/MobileCard.test.tsx`（host+running 开 composer 且
+文案说「排队…跑完这一轮」；runtime+running 仍禁用且原文案；host+running 发送后落「已发送」）。
+
 ### 按钮上的 flex 必须自己写 align-items（agora-x70t，2026-10-08）
 
 手机端收件箱的每一行是一个 `<button class="mobile-row">`，里面是列方向的 flex（第一行名字+状态、
@@ -378,7 +393,7 @@ WAITING 的变体：决策原文（等宽逐字、不过 markdown）作为一张
 
 - 收件箱行：状态 + 等待时长、agent 徽标、任务标签、节点、一行摘要（≤ 80 字）；没有树视图、仓库/分支行、source / confidence。
 - 会话卡：任务标题；**最近一轮用两个气泡**——`❯` 你最后一句（`prompt`，首行）+ `↳` agent 最后回复（`detail`，与桌面同一 markdown 子集，默认折 6 行、**仅最后一条可展开一次**，不做更早消息的翻页）；WAITING 时决策原文（等宽逐字、不过 markdown）作为内联卡片画在 composer 上方；Restart / Kill 收进「更多」（确认框，确认逻辑在所属节点）。
-- composer 与发送：固定在底部（拇指区）。**状态门**：只对 turn_done / idle 开放文本；waiting 只给决定按钮；running / starting 置灰并说明「它还在跑」。**能不能发看 `textVia(row)` 而不是有没有句柄**（agora-t5kf.3，ADR-002 D11）：`runtime`（有 PTY）与 `host`（无句柄但宿主收文本，目前是 pi 的扩展）都给 composer；`none`（Claude / Codex / Grok、旧扩展、老节点）没有 composer，并给一句说明（`mobile-terminal-only`：在跑时说“它还在跑；只能在桌面终端里回复”、其余说“没有可写的运行时”——agora-71p2，不能让它看着像输入框没画出来）。host 行在跑时是 `mobile-host-running-note`“它还在跑；等它跑完这一轮再发（会经 pi 的扩展交进去）”——发得出去，只是与状态门同一个口径。发送是**乐观的**：气泡先以「发送中」出现，`POST /api/sessions/:id/input` 成功后转「已发送」，失败保留文本并给重试；host 行 504 `host_timeout`（宿主没来取件）由服务端那句话直接显示。
+- composer 与发送：固定在底部（拇指区）。**状态门**：turn_done / idle 开放文本；waiting 只给决定按钮；running / starting 上 `host` 通道**可排队**（见「运行中排队发送」），`runtime` 置灰并说明「它还在跑」。**能不能发看 `textVia(row)` 而不是有没有句柄**（agora-t5kf.3，ADR-002 D11）：`runtime`（有 PTY）与 `host`（无句柄但宿主收文本，目前是 pi 的扩展）都给 composer；`none`（Claude / Codex / Grok、旧扩展、老节点）没有 composer，并给一句说明（`mobile-terminal-only`：在跑时说“它还在跑；只能在桌面终端里回复”、其余说“没有可写的运行时”——agora-71p2，不能让它看着像输入框没画出来）。host 行在跑时 composer 仍在，其下是 `mobile-host-running-note`“它还在跑；发出去会排队，等它跑完这一轮就交进去”——排的是 pi 的 followUp，语义与实测见「运行中排队发送」。发送是**乐观的**：气泡先以「发送中」出现，`POST /api/sessions/:id/input` 成功后转「已发送」，失败保留文本并给重试；host 行 504 `host_timeout`（宿主没来取件）由服务端那句话直接显示。
 - 排版与自适应（agora-x70t，2026-10-08 在 iPhone 16 Pro 上按计算样式与几何量测定的牙）：手机壳用**一套 `--m-fs` 令牌**（`web/src/index.css` 的 `.mobile` / `.gate-mobile`），字号、间距（`--m-1..--m-5`）、触控下限（`--m-tap`）都由它派生——换一档字，行距与留白跟着变，否则字号一大人就觉得挤。基准 **17px**（Apple HIG 的 body；桌面壳仍是 13px 的 dense 工作台，两套不互相牵连），设置屏有四档 **小 15 / 标准 17 / 大 19 / 特大 22**，存 localStorage（键 `agora.mobile-text`，`data-text` 是与 CSS 的接口）；默认档就是 17px，因为"整体偏小"正是这一轮要修的。两条**平台下限是绝对的**、不跟档位缩：输入框 ≥16px（低于它 iOS 一聚焦就整页放大——"点输入框页面就放大"的根因）、可点目标 ≥44pt（Apple 触控下限）。长词与 URL 到处可折（`overflow-wrap: anywhere`；无空格长串以前会画出卡片外，量测 `.mobile-card-task` scrollWidth 2210 / clientWidth 384），收件箱行的单行省略号保留（那是设计）。**引擎差异要有硬夹断兜底**：WebKit（iOS 上唯一的引擎）对没有 `overflow`/`min-width: 0` 的 flex 项不给收缩——80 字符无空格的行名在那里盒子 1138px 直接顶出卡片框，而 Chromium 会换行、量不出来（2026-10-08，agora-c03z：Playwright WebKit 复现）；所以 `.mobile-row` 有 `overflow: hidden`、`.mobile-card` 有 `overflow-x: hidden`、行头子项有 `min-width: 0`，名字/状态再叠 `overflow-wrap: anywhere`。视口：`100dvh`（Safari 工具栏不把 composer 顶出屏幕）、四向 `env(safe-area-inset-*)`（横屏刘海）、`interactive-widget=resizes-content`（Chromium 系键盘缩内容）、`-webkit-text-size-adjust: 100%`（横屏不放大文字），composer 聚焦后 `scrollIntoView({block:"nearest"})` 兜住 iOS 键盘。守卫：`web/src/mobileCss.test.ts`（把 CSS 当数据钉上述不变式）、`mobileText.test.ts`、`MobileSettings.test.tsx` / `MobileApp.test.tsx`（档位读写与 `data-text`）、`MobileCard.test.tsx`（聚焦滚动）。
 - 不做：终端（xterm 不加载）、New Agent 自由表单（「新建」= 预设一屏，见上）、diff / 验收 / 改动列表、命令面板与快捷键、多节点切换（只配一个承载节点）、消息流与完整对话历史（Conversation indexing 见 §11，承接 `agora-ghl3`）。
 - `respond_via = terminal`（Grok 权限、AskUserQuestion）显示「需要到桌面」，不提供「打开终端」；不注入键击（MISSION §1.2）。
