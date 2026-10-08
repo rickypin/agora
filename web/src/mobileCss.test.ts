@@ -123,6 +123,17 @@ describe("手机端视口 / 键盘 / 安全区（agora-x70t.ten0）", () => {
     expect(has(".mobile", /100dvh/), "100dvh").toBe(true);
   });
 
+  it("行必须自己声明 align-items: stretch（iOS 的 UA 给 <button> 塞了 flex-start）", () => {
+    // 2026-10-08 iPhone 18.5 实测（用户在设置页「显示边框」看到每行黄框、报告里 row.w=377 而
+    // row.sw=405/1123/1229、子元素宽度=各自内容宽度）：WebKit 的 UA 样式对 button 有
+    // `align-items: flex-start`，我们只写了 display: flex 没写 align-items，于是 UA 值生效——
+    // 列方向下每个子元素按内容自适应宽度，"最长的那句话"把整行内容撑到 1100+，再被行的
+    // overflow: hidden 裁掉，表现为"文本被卡片外框盖住"。Playwright 的 WebKit 该 UA 值是 normal，
+    // 所以本地怎么量都干净；修复就是把 stretch 显式写出来，UA 再也盖不住。
+    const row = css.slice(css.indexOf(".mobile-row {"), css.indexOf("}", css.indexOf(".mobile-row {")));
+    expect(row, ".mobile-row 的 align-items").toContain("align-items: stretch");
+  });
+
   it("上下让位走 --safe-top/--safe-bottom（JS 自适应），env() 作为 :root 默认", () => {
     // 为什么要变量：同一台 iPhone 上，主屏 PWA 全屏时 env(safe-area-inset-top)=62 该照加；视口比
     // 屏幕矮时（浏览器 chrome 在）这 62px 系统已经让出去了、再加就是凭空多一条空白（2026-10-08

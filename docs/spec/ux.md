@@ -248,6 +248,26 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 └────────────────────────────────┘
 ```
 
+### 按钮上的 flex 必须自己写 align-items（agora-x70t，2026-10-08）
+
+手机端收件箱的每一行是一个 `<button class="mobile-row">`，里面是列方向的 flex（第一行名字+状态、
+第二行发信人+内容、第三行摘要）。**WebKit 的 UA 样式给 `<button>` 塞了 `align-items: flex-start`**，
+而我们只写了 `display: flex; flex-direction: column` —— UA 的值生效后，列方向下每个子元素变成
+"按内容自适应宽度"，一行里最长的那句话（`✦ Claude@zuan /goal 打算大幅改进…`）把整行的内容宽度撑到
+1100+ 像素，再被行自己的 `overflow: hidden` 裁掉。用户看到的就是「文本被卡片外框盖住」，在设置页
+打开「显示边框」则整屏黄框（被裁）；现场报告里是 `row.w = 377` 而 `row.sw = 405 / 1123 / 1229`、
+子元素宽度等于各自内容宽度。
+
+**为什么我在本地量不出来**：Playwright 的 WebKit 对同一元素的 `align-items` 计算值是 `normal`
+（Chromium 也是），只有 iOS Safari 的 `<button>` 拿到 UA 的 `flex-start` —— 同一份 CSS 在两个 WebKit
+上表现不同，所以"本地过一遍 WebKit"并不足以证明手机是对的（agora-c03z 那轮教训的加强版）。
+复现方式：在任意 WebKit 页面上给该元素加 `align-items: flex-start`，数字立刻对上；改回 `stretch` 即恢复。
+
+修法是显式写出 `align-items: stretch`（让 UA 值没有机会生效），并加**通用守卫**：任何一个用在
+`<button className="…">` 上的类，只要有一条 CSS 规则给它 `display: flex`，那条规则必须自己写
+`align-items`（`web/src/buttonFlex.test.ts`；桌面侧栏的 `.row` 早就写了 `align-items: flex-start`——它
+是横排、本意如此）。同类坑以后在提交前就会红，而不是等手机上截图。
+
 ### 前端构建号与硬刷新（agora-xu12）
 
 设置页底部那行 `前端 <构建号> · [重新加载]` 是**给"手机上跑的是不是最新界面"的一个确定答案**，

@@ -413,7 +413,7 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 /* overflow: hidden 是**硬夹断**：行里任何元素万一没收缩住（WebKit 对 flex 项的处理与
    Chromium 不同，2026-10-08 实测 80 字符无空格名字在 WebKit 里盒子 1138px、顶出卡片框，
    Chromium 里换行所以看不见），也绝不许画出行的圆角外框。 */
-.mobile-row { display: flex; flex-direction: column; gap: var(--m-1); width: 100%; padding: var(--m-2) var(--m-3); text-align: left; background: var(--panel); border-radius: var(--m-2); overflow: hidden; }
+.mobile-row { display: flex; flex-direction: column; align-items: stretch; gap: var(--m-1); width: 100%; padding: var(--m-2) var(--m-3); text-align: left; background: var(--panel); border-radius: var(--m-2); overflow: hidden; }
 .mobile-row.selected { background: var(--sel); border-color: var(--accent); }
 /* 行头（agora-nzbu）：第一行只有两个锚点 + 一个会椭圆的项，优先级**结构性**成立，不靠 flex-shrink
    比例的巧合：

@@ -50,11 +50,18 @@ function box(el: Element | null): Box | null {
   };
 }
 
-/** 内容超出自己的裁剪盒（横向或纵向）——"被裁"的判据。 */
+/**
+ * 内容超出自己的裁剪盒（横向或纵向）——"被裁"的判据。
+ *
+ * 只算 `hidden` / `clip`：`auto` / `scroll` 的溢出是**滚动**，是设计意图（收件箱、终端、diff 都靠它），
+ * 报出来只会把现场淹掉——2026-10-08 用户那份报告里 `div.mobile-inbox` 就以"被裁"混进了嫌疑列表，
+ * 而真正有问题的是每行（`overflow: hidden`）。
+ */
 function isClipped(el: Element): boolean {
   const cs = getComputedStyle(el);
-  const clipX = ["hidden", "clip", "auto", "scroll"].includes(cs.overflowX) && el.scrollWidth > el.clientWidth + 1;
-  const clipY = ["hidden", "clip", "auto", "scroll"].includes(cs.overflowY) && el.scrollHeight > el.clientHeight + 1;
+  const hard = (v: string) => v === "hidden" || v === "clip";
+  const clipX = hard(cs.overflowX) && el.scrollWidth > el.clientWidth + 1;
+  const clipY = hard(cs.overflowY) && el.scrollHeight > el.clientHeight + 1;
   return clipX || clipY;
 }
 
