@@ -940,6 +940,90 @@ fn deliveries_from_a_clock_rollback_window_are_consumed_without_duplicates() {
     assert_eq!(v.prompt.as_deref(), Some("still rolling"));
 }
 
+/// 从一段 Rust 源码里抽出 `["version"], N` 里的 N（检查点版本硬断言）。
+/// 模式写成转义串，所以本文件里这行代码自己不会命中自己。
+fn version_expectations(src: &str) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut rest = src;
+    const NEEDLE: &str = "[\"version\"], ";
+    while let Some(i) = rest.find(NEEDLE) {
+        rest = &rest[i + NEEDLE.len()..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(n) = digits.parse() {
+            out.push(n);
+        }
+    }
+    out
+}
+
+#[test]
+fn hook_snapshot_version_field_table_matches_the_struct_and_the_hardcoded_expectations() {
+    // agora-dvzf：HOOK_SNAPSHOT_VERSION 没有机器可查的「版本 ↔ 字段」守卫——纯增字段不升号
+    // （5gg.2 的 decisions[0]）这条纪律，与 tests 里 5 处 `cp["version"] == 3` 的硬断言，都
+    // 靠人记得同步。三件事一起查（改坏法就是往这三件事里注入）：
+    //   ① 真检查点落盘的 JSON 键集合 == machine.rs 的 HOOK_SNAPSHOT_FIELDS；
+    //      （删掉表里一行 / 给结构体加一个不在表里的字段 → 红）
+    //   ② 字段表里的最高版本 == HOOK_SNAPSHOT_VERSION；
+    //      （把某字段改成版本 4 而不升号、或升号而不指字段 → 红）
+    //   ③ tests/hook_recovery.rs 与 tests/hooks_external.rs 里的版本硬断言 == 常量。
+    //      （抄错 / 漏改一处 → 红）
+    let fields = agora::status::machine::HOOK_SNAPSHOT_FIELDS;
+
+    // ① 走一遍真投递链路，读落盘检查点的键。
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let rt = Arc::new(common::FakeRuntime::default());
+    let s = Arc::new(SessionManager::new(db, rt));
+    let id = create(&s, "claude");
+    let r = Receiver::new(home.path(), s.clone());
+    let inbox = Inbox::new(home.path());
+    r.ingest(
+        &inbox
+            .write(&delivery(&id, 1, 1, json!({"hook_event_name":"Stop"})))
+            .unwrap(),
+    )
+    .unwrap();
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(checkpoint_path(home.path(), &id)).unwrap()).unwrap();
+    let mut on_disk: Vec<String> = saved.as_object().unwrap().keys().cloned().collect();
+    on_disk.sort();
+    let mut table: Vec<String> = fields.iter().map(|(name, _)| (*name).to_owned()).collect();
+    table.sort();
+    assert_eq!(
+        on_disk, table,
+        "检查点字段与 HOOK_SNAPSHOT_FIELDS 不同步：增删字段都要在表里记一笔（agora-dvzf）"
+    );
+
+    // ② 版本号 = 字段表里最高的那个：改解释必须升号，升号必须指一个字段。
+    let max = fields
+        .iter()
+        .map(|(_, version)| *version)
+        .max()
+        .expect("字段表不能是空的");
+    assert_eq!(
+        max,
+        agora::status::HOOK_SNAPSHOT_VERSION,
+        "字段表的最高版本与 HOOK_SNAPSHOT_VERSION 不一致：改字段解释要同时改两处，\
+         纯增字段记当前版本、不升号"
+    );
+
+    // ③ 两处测试源里的硬断言逐条等于常量。
+    let mut expected = version_expectations(include_str!("hook_recovery.rs"));
+    expected.extend(version_expectations(include_str!("hooks_external.rs")));
+    assert_eq!(
+        expected.len(),
+        5,
+        "版本硬断言的条数变了（带 `[\"version\"], N` 的断言）：表与 docs/spec/api.md 一起改"
+    );
+    for v in expected {
+        assert_eq!(
+            v,
+            agora::status::HOOK_SNAPSHOT_VERSION,
+            "硬断言里的版本与 HOOK_SNAPSHOT_VERSION 不一致"
+        );
+    }
+}
+
 #[test]
 fn external_agent_pid_survives_daemon_restart_and_guards_pid_reuse() {
     // agora-tql（2026-09-08 现场）：external 行的存活靠 hook 报来的进程号，原来只在内存里，daemon 一

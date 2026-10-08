@@ -201,6 +201,36 @@ const HOOK_SNAPSHOT_WITH_AGENT_PROCESS: u32 = 2;
 /// 从这个版本起 `agent_process.seen_at` 是毫秒；v2 是秒，加载时 ×1000。
 const HOOK_SNAPSHOT_SEEN_AT_MS: u32 = 3;
 
+/// 检查点字段 ↔ 版本表（agora-dvzf）：字段名 → **引入 / 最近一次改变它解释的版本**。
+///
+/// 纪律（与 [`HOOK_SNAPSHOT_VERSION`] 的注释同一句话说）：纯增加一个 `#[serde(default)]` 字段
+/// 记**当前版本**，它不把最高版本抬上去，所以不升号（5gg.2 的 decisions[0]）；改动一个字段的
+/// 解释（比如 `agent_process` 的 `seen_at` 从秒变毫秒）就改成**新版本**，最高版本随之变高——
+/// 那就必须把 [`HOOK_SNAPSHOT_VERSION`] 一起升，否则守卫红。
+///
+/// 守卫 `tests/hook_recovery.rs::hook_snapshot_version_field_table_matches_the_struct_and_the_hardcoded_expectations`
+/// 钉三件事：① 真检查点落盘 JSON 的键集合 == 本表（增删字段不同步表 → 红）；② 本表最高版本
+/// == `HOOK_SNAPSHOT_VERSION`（改解释不升号、或升号不指字段 → 红）；③ `tests/hook_recovery.rs`
+/// 与 `tests/hooks_external.rs` 里的 `["version"], N` 硬断言 == 常量（抄错 / 漏改一处 → 红）。
+/// `agent_process` 记 3 而不是 2：字段从 v2 起有，但**今天这个写法**（`seen_at` 毫秒）要 v3
+/// 读法，v2 会把毫秒当秒（那个升级由 [`HOOK_SNAPSHOT_SEEN_AT_MS`] 执行）。
+pub const HOOK_SNAPSHOT_FIELDS: &[(&str, u32)] = &[
+    ("version", 1),
+    ("epoch", 1),
+    ("last_delivery", 1),
+    ("agent_process", 3),
+    ("current", 1),
+    ("set_at", 1),
+    ("last_hook_at", 1),
+    ("last_event_at", 3),
+    ("input_channel", 3),
+    ("deliveries", 3),
+    ("detail", 1),
+    ("prompt", 1),
+    ("progress", 1),
+    ("pending", 1),
+];
+
 /// 仅保存 hook 观测（含信封里的 agent 进程号），不保存进程存活、退出码或活动采样；恢复后仍由运行时裁决。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookSnapshot {
