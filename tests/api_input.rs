@@ -747,6 +747,51 @@ async fn host_text_channel_times_out_when_the_extension_does_not_take_it() {
 }
 
 #[tokio::test]
+async fn text_to_an_adopted_row_is_rejected_read_only() {
+    // agora-prdg.2：采纳 socket 上的会话写操作一律 ReadOnly（ADR-001 D3；真 tmux 的
+    // `send_input` 第一步就是 `require_managed`）。这条同时钉住"行不再谎报可写"：view 的
+    // `text_via = none`、`managed = false`，手机据此不画 composer / Kill。
+    let fx = Fx::new();
+    let cookie = fx.cookie();
+    fx.rt.insert("fake:default:manual", true, None, false);
+    let (status, body) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        "/api/sessions/adopt",
+        Some(json!({ "runtime_ref": "fake:default:manual", "agent_type": "shell" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let gid = body["id"].as_str().unwrap();
+    let (_, row) = call(
+        &fx,
+        &cookie,
+        Method::GET,
+        &format!("/api/sessions/{gid}"),
+        None,
+    )
+    .await;
+    assert_eq!(row["text_via"], "none", "{row}");
+    assert_eq!(row["managed"], false, "{row}");
+
+    let (status, body) = call(
+        &fx,
+        &cookie,
+        Method::POST,
+        &format!("/api/sessions/{gid}/input"),
+        Some(json!({ "kind": "text", "data": "go\n" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "read_only");
+    assert!(
+        fx.rt.inputs.lock().unwrap().is_empty(),
+        "只读行不该有任何 PTY 写入"
+    );
+}
+
+#[tokio::test]
 async fn a_handleless_row_without_an_input_channel_still_says_no_runtime() {
     // Claude / Codex / Grok 没有宿主注入能力（旧扩展也一样）：维持 MISSION §5.5 的只读口径。
     let (fx, receiver, home) = with_hooks(Duration::from_secs(30));

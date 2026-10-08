@@ -227,6 +227,12 @@ impl Runtime for FakeRuntime {
             .map(RuntimeRef))
     }
     fn send_input(&self, r: &RuntimeRef, data: &str) -> Result<(), RuntimeError> {
+        // 与 terminate / signal 同一条纪律（真 tmux 的 `send_input` 第一步就是
+        // `require_managed`）：非 agora socket 上的会话只读。FakeRuntime 以前这里放行，
+        // API 对采纳行的 409 `read_only` 就测不出来（agora-prdg.2，2026-10-08）。
+        if Self::socket_of(&r.0) != "agora" {
+            return Err(RuntimeError::ReadOnly(r.clone()));
+        }
         self.inspect(r)?;
         self.inputs
             .lock()
