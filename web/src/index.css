@@ -453,6 +453,12 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .mobile-row-summary { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .mobile-empty { margin: 0; padding: var(--m-1) var(--m-1) var(--m-2); color: var(--muted); }
 .mobile-finished-toggle { display: flex; align-items: baseline; justify-content: space-between; gap: var(--m-2); width: 100%; margin-bottom: var(--m-2); padding: var(--m-2) var(--m-1); color: var(--muted); background: none; border-color: transparent; font-size: var(--m-fs-mini); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+/* 「已完成」段头 + 清理入口（agora-off0）：折叠时也要能一眼看到并点到清理，所以与 ▸ 同一行；
+   报的是实际会删的行数（去掉 stale），数字与确认框一致。 */
+.mobile-finished-head { display: flex; align-items: baseline; gap: var(--m-2); margin-bottom: var(--m-2); }
+.mobile-finished-head .mobile-finished-toggle { flex: 1; min-width: 0; margin-bottom: 0; }
+.mobile-finished-clear { flex: none; min-height: var(--m-tap); padding: 0 var(--m-1); color: var(--accent); background: none; border-color: transparent; font-size: var(--m-fs-mini); white-space: nowrap; }
+.mobile-finished-clear:disabled { color: var(--muted); }
 .narrow-guide a { color: var(--accent); }
 
 /* ---------- /m 会话卡（agora-thc.10）：IM 语法——最近一轮两气泡、底部 composer、乐观发送 ---------- */

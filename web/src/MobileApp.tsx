@@ -5,8 +5,9 @@
  * 「看过」集合），但信息预算只有一行——状态 + 时长、agent 徽标、任务标签、节点、一行摘要。没有
  * 终端、创建、diff / 验收 / 改动列表，也没有消息流与历史翻页（A52；DOM 守卫在 MobileApp.test.tsx）。
  *
- * 点一行进会话卡（MobileCard）：即时消息语法，动作走与桌面相同的节点 API。本文件只管收件箱、
- * 深链与会话卡的进出；卡片内部的决策 / composer / Kill / Restart 在 MobileCard 里。
+ * 点一行进会话卡（MobileCard）：即时消息语法，动作走与桌面相同的节点 API。本文件管收件箱、
+ * 深链、会话卡的进出，以及「已完成」段的清理入口（与桌面同一删除名单、逐行 DELETE、跳过 stale）；
+ * 卡片内部的决策 / composer / Kill / Restart 在 MobileCard 里。
  */
 import {
   useCallback,
@@ -19,7 +20,8 @@ import {
 } from "react";
 import { agentBadge } from "./agentBadge";
 import { sessionApi, type SessionApi } from "./api";
-import { loadSeen, sectionOf, sortByAttention, statusLine, storeSeen, taskLabel, type Section, type SeenSet } from "./attention";
+import { isHandleless, loadSeen, sectionOf, sortByAttention, statusLine, storeSeen, taskLabel, type Section, type SeenSet } from "./attention";
+import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow } from "./events";
 import { HealthWatcher, VersionWatcher } from "./health";
 import { MobileCard } from "./MobileCard";
@@ -65,6 +67,14 @@ export function mobileSummary(row: SessionRow): string {
   const raw = str(row.progress) || str(row.detail) || str(row.reason);
   const line = raw.split("\n").find((l) => l.trim() !== "")?.trim() ?? "";
   return line.length > 80 ? `${line.slice(0, 79)}…` : line;
+}
+
+/** 清理跑完的一句话（与桌面 `Sidebar.clearSummary` 同一句文案；手机面板不依赖桌面组件，所以就地一份）。 */
+function clearSummary(r: { removed: number; skipped: number; failed: number }): string {
+  const parts = [`已清理 ${r.removed} 行`];
+  if (r.skipped > 0) parts.push(`跳过 ${r.skipped} 行（节点离线）`);
+  if (r.failed > 0) parts.push(`失败 ${r.failed} 行`);
+  return parts.join("，");
 }
 
 export function MobileApp({ store: given, api: givenApi, health: givenHealth, version: givenVersion, onRevoked, now, pushEnv: givenPushEnv }: Props) {
@@ -148,6 +158,38 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   }, [rows, target]);
   const [selected, setSelected] = useState<string | null>(null);
   const [finishedOpen, setFinishedOpen] = useState(false);
+  // 手机版的一键清理（agora-off0）：与桌面同一条链——对象是「已完成」段里的全部行（`sectionOf === "finished"`，
+  // 与 Sidebar.tsx 的 clearable 同一判据）、逐行 DELETE /api/sessions/:id（MISSION §11 不引入批量端点）、
+  // 跳过 peer stale 的行（一跳转发到不了）。文案与桌面有意差一处（2026-10-08 口径修正时定）：手机报
+  // **实际会删的行数**（去掉 stale），桌面确认框报的是 clearable.length（含 stale，属已知小瑕）；
+  // 「其中 N 行是 agora 起的会话」也只从实际会删的行里数——stale 的行根本不会被删，不该被算进去。
+  const clearable = sections.finished;
+  const deletable = clearable.filter((r) => !r.stale);
+  const ownClearable = deletable.filter((r) => !isHandleless(r)).length;
+  const [clearAsk, setClearAsk] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearNote, setClearNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (clearNote === null) return;
+    const t = setTimeout(() => setClearNote(null), 8000);
+    return () => clearTimeout(t);
+  }, [clearNote]);
+  async function clearFinished() {
+    setClearAsk(false);
+    setClearing(true);
+    const result = { removed: 0, skipped: 0, failed: 0 };
+    for (const r of clearable) {
+      if (r.stale) {
+        result.skipped += 1;
+        continue;
+      }
+      const w = await api.deleteMetadata(r.id);
+      if (w.ok) result.removed += 1;
+      else result.failed += 1;
+    }
+    setClearing(false);
+    setClearNote(clearSummary(result));
+  }
   const [settingsOpen, setSettingsOpen] = useState(false);
   // 字号档位（agora-x70t.xsgz）：存 localStorage，`data-text` 是它与 CSS 的接口（--m-fs 一族）。
   const [textSize, setTextSize] = useState<MobileTextSize>(() => loadMobileTextSize());
@@ -228,6 +270,12 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
         </button>
       </header>
       <div className="mobile-inbox">
+        {/* 清理结果（含跳过 / 失败）画在收件箱顶上：行全删完时「已完成」段整个消失，画在段里就跟着没了。 */}
+        {clearNote !== null && (
+          <p className="mobile-note" data-testid="mobile-clear-note" role="status">
+            {clearNote}
+          </p>
+        )}
         {OPEN_SECTIONS.map(({ key, label }) => (
           <section key={key} className="mobile-section" data-testid={`mobile-section-${key}`} aria-label={label}>
             <h2>
@@ -241,22 +289,48 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
         ))}
         {sections.finished.length > 0 && (
           <section className="mobile-section" data-testid="mobile-section-finished" aria-label="已完成">
-            <button
-              type="button"
-              className="mobile-finished-toggle"
-              data-testid="mobile-finished-toggle"
-              aria-expanded={finishedOpen}
-              onClick={() => setFinishedOpen((v) => !v)}
-            >
-              <span>已完成</span>
-              <span>
-                {sections.finished.length} {finishedOpen ? "▾" : "▸"}
-              </span>
-            </button>
+            <div className="mobile-finished-head">
+              <button
+                type="button"
+                className="mobile-finished-toggle"
+                data-testid="mobile-finished-toggle"
+                aria-expanded={finishedOpen}
+                onClick={() => setFinishedOpen((v) => !v)}
+              >
+                <span>已完成</span>
+                <span>
+                  {sections.finished.length} {finishedOpen ? "▾" : "▸"}
+                </span>
+              </button>
+              {/* 入口只在有「已完成」行时出现，与段一起；报的数 = 实际会删的行数（去掉 stale）。 */}
+              <button
+                type="button"
+                className="mobile-finished-clear"
+                data-testid="mobile-clear-finished"
+                disabled={deletable.length === 0 || clearing}
+                title={
+                  deletable.length === 0
+                    ? "这些行都在离线的节点上，现在删不了（等节点上线再来）"
+                    : "删掉「已完成」里的记录，不 kill 进程"
+                }
+                onClick={() => setClearAsk(true)}
+              >
+                {clearing ? "清理中…" : `清理 ${deletable.length} 行`}
+              </button>
+            </div>
             {finishedOpen && <ul>{sections.finished.map(renderRow)}</ul>}
           </section>
         )}
       </div>
+      {clearAsk && (
+        <ConfirmDialog
+          title="清理「已完成」里的行？"
+          body={`将删除「已完成」区里 ${deletable.length} 行的记录${ownClearable > 0 ? `（其中 ${ownClearable} 行是 agora 起的会话，它们已退出的运行时会话与输出会一并清掉）` : ""}。只删记录、不 kill；「需要我」里的行不动。不可撤销。`}
+          confirmLabel={`删除 ${deletable.length} 行`}
+          onConfirm={() => void clearFinished()}
+          onCancel={() => setClearAsk(false)}
+        />
+      )}
     </main>
   );
 }

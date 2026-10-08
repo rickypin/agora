@@ -8,6 +8,8 @@
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { sessionApi, type FetchLike } from "./api";
+import { SEEN_STORAGE_KEY, seenKey } from "./attention";
 import type { SessionRow, SocketLike } from "./events";
 import { HealthWatcher, VersionWatcher } from "./health";
 import { MobileApp, mobileSummary } from "./MobileApp";
@@ -35,7 +37,7 @@ function row(id: string, patch: Partial<SessionRow> = {}): SessionRow {
   };
 }
 
-function setup(rows: SessionRow[]) {
+function setup(rows: SessionRow[], fetchImpl?: FetchLike) {
   const sock = new FakeSocket();
   const store = new SessionStore({
     connect: () => sock,
@@ -44,7 +46,9 @@ function setup(rows: SessionRow[]) {
   });
   const health = new HealthWatcher({ fetchHealth: async () => ({ status: "ok" }) });
   const version = new VersionWatcher({ fetchSystem: async () => ({ node: "zuan", api_version: { major: 1, minor: 9 } }) });
-  const ui = render(<MobileApp store={store} health={health} version={version} now={1000} />);
+  const ui = render(
+    <MobileApp store={store} health={health} version={version} now={1000} api={fetchImpl ? sessionApi(fetchImpl) : undefined} />,
+  );
   return { ui, store, sock };
 }
 
@@ -262,5 +266,111 @@ describe("mobile push entry (agora-thc.7)", () => {
     expect(await screen.findByTestId("mobile-settings")).toBeTruthy();
     fireEvent.click(screen.getByTestId("mobile-settings-back"));
     expect(screen.queryByTestId("mobile-settings")).toBeNull();
+  });
+});
+
+describe("手机端清理「已完成」（agora-off0）", () => {
+  /** FINISHED 且还在新鲜度窗口内：没看过的 agora 行才可能留在「需要我」（agora-82x7）。 */
+  const freshSince = () => Math.floor(Date.now() / 1000) - 60;
+
+  /** `origin = external` 的 FINISHED 不看「看过」，直接进「已完成」段。 */
+  function external(id: string, patch: Partial<SessionRow> = {}): SessionRow {
+    return row(id, { status: "finished", status_since: freshSince(), origin: "external", ...patch });
+  }
+
+  /** 已看过的 agora FINISHED 行：给 localStorage 种上 seenKey，才落进「已完成」段（与桌面同一条「看过」）。 */
+  function seenAgora(id: string, patch: Partial<SessionRow> = {}): SessionRow {
+    const r = row(id, { status: "finished", status_since: freshSince(), origin: "agora", ...patch });
+    localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify([seenKey(r)]));
+    return r;
+  }
+
+  /** 记录写端点：删除走真实的 `api.deleteMetadata`（enc 出的路径与桌面逐行 DELETE 同一条）。 */
+  function recordingFetch(requests: { url: string; method: string }[]): FetchLike {
+    return async (url, init) => {
+      const method = init.method ?? "GET";
+      requests.push({ url, method });
+      return method === "DELETE"
+        ? new Response(null, { status: 204 })
+        : new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    };
+  }
+
+  const deletes = (requests: { url: string; method: string }[]) =>
+    requests.filter((r) => r.method === "DELETE").map((r) => r.url).sort();
+
+  async function confirm(name: string) {
+    fireEvent.click(screen.getByRole("button", { name }));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  }
+
+  it("①清理入口只在「已完成」段有行时出现（判据同 sectionOf(r, seen)）", async () => {
+    // 没看过的 agora FINISHED（且在新鲜度窗口内）留在「需要我」，不在「已完成」段 → 不出入口。
+    const t = setup([row("n:run", { status: "running" }), row("n:own", { status: "finished", status_since: freshSince(), origin: "agora" })]);
+    await online(t);
+    expect(screen.getByTestId("mobile-section-attention").textContent).toContain("n:own");
+    expect(screen.queryByTestId("mobile-clear-finished")).toBeNull();
+    cleanup();
+
+    const t2 = setup([row("n:run", { status: "running" }), external("n:ext")]);
+    await online(t2);
+    // 段默认收起：行不画但计数照数（与桌面同一条），入口与段一起出现。
+    expect(screen.getByTestId("mobile-finished-toggle").textContent).toContain("1");
+    expect(screen.getByTestId("mobile-clear-finished")).toBeTruthy();
+  });
+
+  it("②确认后对「已完成」段每一行逐行发 DELETE /api/sessions/:id（没有批量端点）", async () => {
+    const requests: { url: string; method: string }[] = [];
+    const t = setup([external("n:ext1"), external("n:ext2"), seenAgora("n:own")], recordingFetch(requests));
+    await online(t);
+
+    fireEvent.click(screen.getByTestId("mobile-clear-finished"));
+    await confirm("删除 3 行");
+    expect(deletes(requests)).toEqual(["/api/sessions/n%3Aext1", "/api/sessions/n%3Aext2", "/api/sessions/n%3Aown"]);
+    expect(screen.getByTestId("mobile-clear-note").textContent).toBe("已清理 3 行");
+  });
+
+  it("③跳过 stale 的 peer 行并计入 skipped", async () => {
+    const requests: { url: string; method: string }[] = [];
+    const t = setup([external("n:ext"), external("z:peer", { node: "z", stale: true })], recordingFetch(requests));
+    await online(t);
+
+    // 确认框与入口都只数实际会删的行：stale 的一跳转发到不了，不算。
+    fireEvent.click(screen.getByTestId("mobile-clear-finished"));
+    expect(screen.getByRole("dialog").textContent).toContain("1 行");
+    await confirm("删除 1 行");
+    expect(deletes(requests)).toEqual(["/api/sessions/n%3Aext"]);
+    expect(screen.getByTestId("mobile-clear-note").textContent).toBe("已清理 1 行，跳过 1 行（节点离线）");
+  });
+
+  it("④确认框报实际会删的行数（去掉 stale）并提示其中多少行是 agora 起的会话", async () => {
+    const t = setup(
+      [external("n:ext"), seenAgora("n:own"), row("n:hd", { status: "running", origin: "headless" }), external("z:peer", { node: "z", stale: true })],
+      recordingFetch([]),
+    );
+    await online(t);
+
+    // 4 行在「已完成」里，实际会删 3 行；headless / external 没有运行时会话，不算「agora 起的会话」。
+    expect(screen.getByTestId("mobile-clear-finished").textContent).toBe("清理 3 行");
+    fireEvent.click(screen.getByTestId("mobile-clear-finished"));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toContain("将删除「已完成」区里 3 行的记录");
+    expect(dialog.textContent).toContain("其中 1 行是 agora 起的会话");
+  });
+
+  it("⑤没看过的 FINISHED 行不在该段、因此清不到", async () => {
+    const requests: { url: string; method: string }[] = [];
+    const unseen = row("n:own", { status: "finished", status_since: freshSince(), origin: "agora" });
+    const t = setup([unseen, external("n:ext")], recordingFetch(requests));
+    await online(t);
+    expect(screen.getByTestId("mobile-section-attention").textContent).toContain("n:own");
+
+    fireEvent.click(screen.getByTestId("mobile-clear-finished"));
+    await confirm("删除 1 行");
+    expect(deletes(requests)).toEqual(["/api/sessions/n%3Aext"]);
+    // 清完之后没看过的那一行还在「需要我」，行数也没变。
+    expect(screen.getByTestId("mobile-section-attention").textContent).toContain("n:own");
   });
 });
