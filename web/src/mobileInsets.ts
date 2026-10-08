@@ -3,11 +3,12 @@
  *
  * 为什么需要：`viewport-fit=cover` + `black-translucent` 时（主屏 PWA 全屏），页面确实铺到刘海下面，
  * CSS 里的 `env(safe-area-inset-top)`（iPhone 16 Pro 上是 62px）必须照加；但同一台手机上如果视口比
- * 屏幕矮（Safari 的浏览器 chrome 在，或状态栏样式不是 translucent），**这 62px 系统已经让出去了**，
+ * 屏幕小（Safari 的浏览器 chrome 在，或状态栏样式不是 translucent），**这 62px 系统已经让出去了**，
  * 再加一遍就是顶部凭空多一条空白。实测证据（2026-10-08，同一台 iPhone 18.5）：
  *   03:03 的报告 inner=[402,812] screen=[402,874]，safeArea.top=62 —— 差值正好是状态栏那 62px。
- * 判据取"视口高度是否覆盖整屏"（差 > 4px 就算没覆盖），不猜 display-mode：它在浏览器与 PWA 里都可能
- * 是一样的。四条都算出来写进 `--safe-top` / `--safe-bottom`（CSS 只用这两个变量，不再直接用 env()）。
+ * 判据取"视口是否覆盖整块屏幕"（两个维度都比，差 > 4px 就算没覆盖），不猜 display-mode：它在浏览器与
+ * PWA 里都可能是一样的。算出来的值写进 `--safe-top` / `--safe-bottom`（CSS 只用这两个变量，
+ * 左右两侧仍直接用 env()——横屏刘海在侧边，但那两格没有"系统已经让出"的问题）。
  */
 export interface Insets {
   /** 实际有效的上/下让位（px）。 */
@@ -33,9 +34,25 @@ export function envInsets(): { top: number; bottom: number } {
   return out;
 }
 
-/** 算当前该用的让位（纯函数，好单测）。 */
-export function resolveInsets(inner: number, screen: number, env: { top: number; bottom: number }): Insets {
-  const fullscreen = screen <= 0 || inner >= screen - 4;
+export interface Viewport {
+  w: number;
+  h: number;
+}
+
+/**
+ * 算当前该用的让位（纯函数，好单测）。
+ *
+ * **两个维度都要比**，而且按"长短边"比：只看高度的话横屏必然误判——横屏时 `innerHeight` 是 402，
+ * 而 `screen.height` 在 iOS 上仍是竖屏的 874（`screen` 两维是否随旋转交换，各浏览器口径不一），
+ * 于是判定"非全屏"、把横屏底部那 21px 的 home indicator 让位丢掉（2026-10-08 自查发现）。
+ * 按排序后的长短边比就两种口径都对：视口盖住整块屏幕 ⇔ 长短边分别相等。
+ */
+export function resolveInsets(inner: Viewport, screen: Viewport, env: { top: number; bottom: number }): Insets {
+  const same = (a: number, b: number) => Math.abs(a - b) <= 4;
+  const innerSides = [Math.min(inner.w, inner.h), Math.max(inner.w, inner.h)];
+  const screenSides = [Math.min(screen.w, screen.h), Math.max(screen.w, screen.h)];
+  const known = screen.w > 0 && screen.h > 0;
+  const fullscreen = !known || (same(innerSides[0], screenSides[0]) && same(innerSides[1], screenSides[1]));
   return {
     top: fullscreen ? env.top : 0,
     bottom: fullscreen ? env.bottom : 0,
@@ -54,7 +71,11 @@ export function applyInsets(insets: Insets, root: Element | null = document.docu
 }
 
 export function currentInsets(): Insets {
-  return resolveInsets(window.innerHeight, window.screen?.height ?? 0, envInsets());
+  return resolveInsets(
+    { w: window.innerWidth, h: window.innerHeight },
+    { w: window.screen?.width ?? 0, h: window.screen?.height ?? 0 },
+    envInsets(),
+  );
 }
 
 let installed = false;
@@ -66,7 +87,7 @@ export function installSafeInsets(): Insets {
     try {
       return currentInsets();
     } catch {
-      return resolveInsets(0, 0, { top: 0, bottom: 0 });
+      return resolveInsets({ w: 0, h: 0 }, { w: 0, h: 0 }, { top: 0, bottom: 0 });
     }
   })();
   applyInsets(insets);

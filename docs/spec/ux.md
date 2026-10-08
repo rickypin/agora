@@ -248,6 +248,24 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 └────────────────────────────────┘
 ```
 
+### 横屏用满宽度（agora-x70t，2026-10-08）
+
+`/m` 的手机壳有一条 `max-width: 44rem`：它是给"桌面误开 /m"用的（居中成一条手机宽的栏、两侧各一条
+边框），但同一条规则在**手机横屏**下变成了枷锁——iPhone 16 Pro 横屏是 874×402，而 44rem 的 rem 基准
+是 13px（`:root` 的 `--fs-3`），于是内容被钉在 572px 居中、两侧各留 150px 空带，用户报的正是
+「横屏后没有自适应横屏宽度」。规则改成：
+
+```css
+@media (orientation: landscape) and (max-height: 520px) { .mobile { max-width: none; border: 0; } }
+```
+
+判据用"矮视口"而不是单纯 `orientation`：桌面窗口也可以是横向的，而高度 ≤ 520px 基本只有手机横屏成立
+（1200×800 的桌面窗口仍走 44rem 的手机列，实测 574px 居中 ✓）。横屏时安全区左右是刘海（`env()` 直接
+用在左右 padding 上），上下由 `--safe-top`/`--safe-bottom` 给——判"是否全屏"时**两个维度都要比**：
+横屏下 `innerHeight` 是 402 而 `screen.height` 在 iOS 上仍是竖屏的 874，只看高度必然误判成"非全屏"、
+把横屏底部 21px 的 home indicator 让位丢掉（`web/src/mobileInsets.ts`，按排序后的长短边比，
+两种 `screen` 口径都成立）。
+
 ### 按钮上的 flex 必须自己写 align-items（agora-x70t，2026-10-08）
 
 手机端收件箱的每一行是一个 `<button class="mobile-row">`，里面是列方向的 flex（第一行名字+状态、

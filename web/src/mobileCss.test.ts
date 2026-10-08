@@ -123,6 +123,18 @@ describe("手机端视口 / 键盘 / 安全区（agora-x70t.ten0）", () => {
     expect(has(".mobile", /100dvh/), "100dvh").toBe(true);
   });
 
+  it("横屏（矮视口）吃满宽度：去掉 44rem 的手机列上限与两侧边框", () => {
+    // 2026-10-08 iPhone 16 Pro 横屏实测：874×402 里 44rem（rem 基准 13px）= 572px 居中，两侧各
+    // 留 150px 空带 = "没有自适应横屏宽度"。判据用"矮视口"而不是 orientation（桌面窗口也能是横向），
+    // 并把桌面那两条"居中一条栏"的边框去掉。
+    const m = css.match(/@media \(orientation: landscape\) and \(max-height: 520px\) \{([\s\S]*?)\n\}/);
+    expect(m, "横屏媒体查询").toBeTruthy();
+    const block = m?.[1] ?? "";
+    expect(block).toContain("max-width: none");
+    expect(block).toContain("border-left: none");
+    expect(block).toContain("border-right: none");
+  });
+
   it("行必须自己声明 align-items: stretch（iOS 的 UA 给 <button> 塞了 flex-start）", () => {
     // 2026-10-08 iPhone 18.5 实测（用户在设置页「显示边框」看到每行黄框、报告里 row.w=377 而
     // row.sw=405/1123/1229、子元素宽度=各自内容宽度）：WebKit 的 UA 样式对 button 有

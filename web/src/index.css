@@ -390,6 +390,18 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .mobile[data-text="l"], .gate-mobile[data-text="l"] { --m-fs: 19px; }
 .mobile[data-text="xl"], .gate-mobile[data-text="xl"] { --m-fs: 22px; }
 @media (min-width: 700px) { .mobile { border-left: 1px solid var(--border); border-right: 1px solid var(--border); } }
+/* 横屏（手机）要吃满宽度（agora-x70t，2026-10-08 用户在 iPhone 16 Pro 上实测）：上面那条 44rem 的
+   "手机列"上限是给桌面误开 /m 时用的，而横屏 874×402 里 44rem（rem 基准 13px）= 572px，会把内容钉在
+   中间、两侧各留 150px 空带——横屏的价值恰恰是那多出来的宽度（行里能放下完整的名字 + 状态 + 任务）。
+   判据用"矮视口"而不是 orientation：桌面窗口也可以是横向的，而高度 ≤ 520px 基本只有手机横屏成立；
+   同时把两侧的边框去掉——它本来是给"居中一条栏"用的，吃满宽度后贴着屏幕边没有意义。 */
+@media (orientation: landscape) and (max-height: 520px) {
+  .mobile {
+    max-width: none;
+    border-left: none;
+    border-right: none;
+  }
+}
 /* black-translucent 的状态栏会压住页面（index.html 的 apple-mobile-web-app-status-bar-style）：
    /m 的两端把 safe-area 让出来，刘海机与全面屏下标题不会被状态栏盖住（agora-thc.4）；左右两侧
    也要让——横屏时刘海在侧边（agora-x70t.ten0）。 */
