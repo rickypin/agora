@@ -14,6 +14,7 @@
  * 盒子数字、class 名与**行上已经显示出来的那点文字**（本来就是屏幕上可见的东西）。
  */
 const OUTLINE_ATTR = "data-outline";
+const OUTLINE_KEY = "agora.mobile-outline";
 const CLIP_ATTR = "data-clip";
 const OVERFLOW_ATTR = "data-overflow";
 
@@ -72,10 +73,11 @@ function selectorOf(el: Element): string {
   return `${el.tagName.toLowerCase()}${cls ? "." + cls : ""}`;
 }
 
-/** 可疑元素：出框 / 被裁（带类名与盒子，够我定位到 CSS 规则）。 */
+/** 可疑元素：出框 / 被裁（带类名与盒子，够我定位到 CSS 规则）。诊断自己的元素不算。 */
 function suspects(): Array<{ el: string; kind: string; box: Box }> {
   const out: Array<{ el: string; kind: string; box: Box }> = [];
-  for (const el of document.querySelectorAll(".mobile *, body *")) {
+  for (const el of document.querySelectorAll(".mobile *")) {
+    if (el.closest(".mobile-diag-actions, .mobile-diag-report")) continue;
     const cs = getComputedStyle(el);
     if (cs.display === "none" || cs.visibility === "hidden") continue;
     const r = el.getBoundingClientRect();
@@ -106,6 +108,39 @@ function safeAreas(): Record<string, number> {
   };
   probe.remove();
   return out;
+}
+
+let inboxSnapshot: string | null = null;
+
+/** 抓一份当前屏的布局（收件箱挂载/行变化时调；开销是几百个元素的盒子读取，手机上 <1ms）。 */
+export function rememberLayout(): void {
+  try {
+    inboxSnapshot = layoutReport();
+  } catch {
+    // 诊断本身永远不该把页面搞挂
+  }
+}
+
+/** 上一次收件箱的布局快照（设置屏 / 会话卡里复制报告时，问题现场还是收件箱）。 */
+export function lastLayout(): string | null {
+  return inboxSnapshot;
+}
+
+/** 复制用的完整报告：当前屏 + 最近一次收件箱快照。 */
+export function clipboardReport(): string {
+  let current: unknown = null;
+  try {
+    current = JSON.parse(layoutReport());
+  } catch {
+    current = { error: "report failed" };
+  }
+  let inbox: unknown = null;
+  try {
+    inbox = inboxSnapshot ? JSON.parse(inboxSnapshot) : null;
+  } catch {
+    inbox = null;
+  }
+  return JSON.stringify({ current, inbox }, null, 1);
 }
 
 export function layoutReport(): string {
@@ -161,24 +196,48 @@ export function layoutReport(): string {
   return JSON.stringify(report, null, 1);
 }
 
-/** 描边开关：红=出框、黄=被裁；同时把嫌疑元素打上属性，便于说明"屏幕上红框的那块"。 */
+/** 描边开着吗（存起来：设置屏里开的，回收件箱要还在——问题现场就是收件箱）。 */
+export function outlineEnabled(): boolean {
+  try {
+    return localStorage.getItem(OUTLINE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 描边开关：红=出框、黄=被裁。状态存 localStorage，并在**每一屏**挂载时重新标记——
+ * /m 的收件箱与设置屏是两个不同的 <main>，只在一个屏上设属性，切屏就丢了（用户没法拿它看收件箱）。
+ */
 export function toggleOutline(): boolean {
-  const root = document.querySelector(".mobile") ?? document.documentElement;
-  const on = !root.hasAttribute(OUTLINE_ATTR);
-  if (!on) {
+  const on = !outlineEnabled();
+  try {
+    if (on) localStorage.setItem(OUTLINE_KEY, "1");
+    else localStorage.removeItem(OUTLINE_KEY);
+  } catch {
+    // 存不下就只在当前屏生效
+  }
+  applyOutline();
+  return on;
+}
+
+/** 把当前屏的元素按 出框/被裁 打上属性（描边关着时清掉）。 */
+export function applyOutline(root: Element | null = document.querySelector(".mobile")): void {
+  if (!root) return;
+  if (!outlineEnabled()) {
     root.removeAttribute(OUTLINE_ATTR);
     for (const el of document.querySelectorAll(`[${CLIP_ATTR}],[${OVERFLOW_ATTR}]`)) {
       el.removeAttribute(CLIP_ATTR);
       el.removeAttribute(OVERFLOW_ATTR);
     }
-    return false;
+    return;
   }
   root.setAttribute(OUTLINE_ATTR, "1");
-  for (const el of document.querySelectorAll(".mobile *")) {
+  for (const el of root.querySelectorAll("*")) {
+    if (el.closest(".mobile-diag-actions, .mobile-diag-report")) continue;
     if (isOutOfParent(el)) el.setAttribute(OVERFLOW_ATTR, "1");
     if (isClipped(el)) el.setAttribute(CLIP_ATTR, "1");
   }
-  return true;
 }
 
 /** 复制到剪贴板；iOS 主屏 PWA 里 clipboard 可能被拒，返回 false 让界面退到 textarea。 */

@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { InstallHint, iosWithoutStandalone } from "./InstallHint";
-import { copyText, layoutReport, toggleOutline } from "./mobileDebug";
+import { applyOutline, clipboardReport, copyText, outlineEnabled, toggleOutline } from "./mobileDebug";
 import { apiFetch } from "./net";
 import { browserPushEnv, disablePush, enablePush, selfCheckPush, type PushEnv, type PushReport } from "./push";
 import {
@@ -63,7 +63,7 @@ export function MobileSettings({ onClose, onRevoked, env, probe, textSize: given
   const [degrade, setDegrade] = useState<{ apple: boolean | null; reason: string | null } | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState(false);
   // 现场取证（agora-x70t）：手机是唯一跑真 Safari 的机器，"哪块出框 / 被裁"做成能看见、能复制的。
-  const [outlined, setOutlined] = useState(false);
+  const [outlined, setOutlined] = useState(() => outlineEnabled());
   const [diagReport, setDiagReport] = useState<string | null>(null);
   const [diagNote, setDiagNote] = useState<string | null>(null);
   const [textSize, setTextSize] = useState<MobileTextSize>(() => givenText ?? loadMobileTextSize());
@@ -79,6 +79,11 @@ export function MobileSettings({ onClose, onRevoked, env, probe, textSize: given
     void selfCheckPush(pushEnv).then(setReport);
     void probeFn().then(setDegrade);
   }, [pushEnv, probeFn]);
+  useEffect(() => {
+    // 描边状态在屏间是共享的（存 localStorage）：本屏挂载时按它标记一次。
+    applyOutline();
+    setOutlined(outlineEnabled());
+  }, []);
 
   async function toggle() {
     setBusy(true);
@@ -177,7 +182,11 @@ export function MobileSettings({ onClose, onRevoked, env, probe, textSize: given
             type="button"
             data-testid="mobile-diag-outline"
             aria-pressed={outlined}
-            onClick={() => setOutlined(toggleOutline())}
+            onClick={() => {
+              const on = !outlined;
+              setOutlined(on);
+              toggleOutline();
+            }}
           >
             {outlined ? "隐藏边框" : "显示边框"}
           </button>
@@ -185,7 +194,7 @@ export function MobileSettings({ onClose, onRevoked, env, probe, textSize: given
             type="button"
             data-testid="mobile-diag-report"
             onClick={() => {
-              const text = layoutReport();
+              const text = clipboardReport();
               setDiagReport(text);
               void copyText(text).then((ok) => setDiagNote(ok ? "已复制，粘给我就行" : "复制被拒——长按下面的文字全选复制"));
             }}

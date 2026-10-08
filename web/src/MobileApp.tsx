@@ -24,6 +24,7 @@ import type { SessionRow } from "./events";
 import { HealthWatcher, VersionWatcher } from "./health";
 import { MobileCard } from "./MobileCard";
 import { MobileSettings } from "./MobileSettings";
+import { applyOutline, rememberLayout } from "./mobileDebug";
 import { parseSessionTarget } from "./mobileRoute";
 import { loadMobileTextSize, storeMobileTextSize, type MobileTextSize } from "./mobileText";
 import { browserPushEnv, selfCheckPush, type PushEnv } from "./push";
@@ -168,9 +169,16 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     // 选中的行没了（被删 metadata）：回到收件箱。
     if (selected !== null && !rows.some((r) => r.id === selected)) setSelected(null);
   }, [rows, selected]);
-
   const nowSeconds = now ?? clock;
   const selectedRow = selected === null ? undefined : rows.find((r) => r.id === selected);
+
+  // 收件箱是"问题现场"，而设置屏会把它卸载掉：挂载 / 行变化时抓一份布局快照，设置页里复制的
+  // 报告因此带着收件箱的盒子数字（agora-xu12 第二轮）。描边状态也在这里按存储值应用。
+  useEffect(() => {
+    if (selectedRow || settingsOpen) return;
+    rememberLayout();
+    applyOutline();
+  }, [rows, selectedRow, settingsOpen]);
 
   if (selectedRow) {
     return (

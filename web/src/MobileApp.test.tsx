@@ -234,6 +234,27 @@ describe("mobile push entry (agora-thc.7)", () => {
     expect(screen.queryByTestId("mobile-next-input")).toBeNull();
   });
 
+  it("布局诊断：描边状态跟着存储走，且报告里带着收件箱快照（agora-xu12）", async () => {
+    // 收件箱才是问题现场，而设置屏把它卸载掉——所以 (a) 描边开关存起来、切屏后还在，
+    // (b) 进收件箱时抓一份布局快照，设置页里复制的报告同时带着收件箱与当前屏的盒子数字。
+    const t = setup([row("n:a")]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("mobile-settings-open"));
+    const outline = await screen.findByTestId("mobile-diag-outline");
+    fireEvent.click(outline);
+    expect(outline.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByTestId("mobile-settings-back"));
+    expect(await screen.findByTestId("mobile-inbox").then(() => document.querySelector(".mobile")?.getAttribute("data-outline"))).toBe("1");
+
+    fireEvent.click(screen.getByTestId("mobile-settings-open"));
+    fireEvent.click(await screen.findByTestId("mobile-diag-report"));
+    const text = await screen.findByTestId("mobile-diag-text");
+    const parsed = JSON.parse((text as HTMLTextAreaElement).value);
+    expect(parsed.inbox.rows.length).toBeGreaterThan(0);
+    expect(parsed.inbox.viewport.inner).toHaveLength(2);
+    expect(parsed.current).toBeTruthy();
+  });
+
   it("the gear opens settings", async () => {
     const t = setup([row("n:a")]);
     await online(t);
