@@ -8,7 +8,7 @@
 //! 查库、不缓存，所以定义 / 修改即时生效——config.yaml 没有热重载（只有 TLS 证书被 watch），
 //! 放配置就得重启才生效。
 //!
-//! `args` 是**原样字符串**：与人在终端里敲的完全一致（`--model opus`、`--continue`、`-c` …），
+//! `args` 是**原样字符串**：与人在终端里敲的完全一致（`--model opus`、`-c`、`--resume <id>` …），
 //! 起会话时经 shell 追加在裸命令名之后。会话行把它的一份快照复制进 `sessions.launch_args`
 //! （[`crate::session::manager::SessionManager::create_with_prompt`]）：预设之后被改 / 删，
 //! Restart 仍按当时的样子重放。

@@ -7,7 +7,7 @@
 //!
 //! `--args` 是**原样字符串**（与你在终端里敲的完全一致，经 shell，见 `session::preset` 头注释）；
 //! `--dir` 必须存在（别让手机点了才失败），存进库的是 canonicalize 过的绝对路径——预设可能在别的
-//! 工作目录下被 daemon 使用，相对路径没有意义。`--prompt` 对不吃首句的 agent（grok / shell）
+//! 工作目录下被 daemon 使用，相对路径没有意义。`--prompt` 对不吃首句的 agent（如 shell）
 //! **警告并保留**（不算错：将来这个 agent 接了就自动生效）。
 //!
 //! 退出码与 `agora hooks` / `agora peer token` 一致：0 成功、1 操作失败（未知 agent、目录不存在、
@@ -20,11 +20,15 @@ use crate::local;
 use crate::session::preset;
 use crate::session::Db;
 
-const USAGE: &str = "\
-用法: agora preset add <name> --agent <claude|codex|grok|pi|shell> --dir <path> [--args \"…\"] [--prompt \"…\"]
-      agora preset list
-      agora preset show <name>
-      agora preset rm <name>";
+/// 第一条用法（`--agent` 的合法取值）。agent 名字只从 ADAPTERS 里取——核心层不得写出
+/// 任何具体 agent 的名字（ADR-002 D2，`tests/arch_boundary.rs::agent_specific_code_only_in_adapter`）。
+fn add_usage() -> String {
+    let known: Vec<&str> = adapter::ADAPTERS.iter().map(|a| a.name()).collect();
+    format!(
+        "用法: agora preset add <name> --agent <{}> --dir <path> [--args \"…\"] [--prompt \"…\"]",
+        known.join("|")
+    )
+}
 
 /// 退出码：0 成功、1 操作失败、2 用法错误（与 `agora hooks` 一致）。
 pub fn run(args: &[&str]) -> i32 {
@@ -38,7 +42,10 @@ pub fn run(args: &[&str]) -> i32 {
 }
 
 fn usage() -> i32 {
-    eprintln!("{USAGE}");
+    eprintln!("{}", add_usage());
+    eprintln!("      agora preset list");
+    eprintln!("      agora preset show <name>");
+    eprintln!("      agora preset rm <name>");
     2
 }
 
@@ -139,7 +146,7 @@ fn add(argv: &[&str]) -> i32 {
         }
     };
     // 不吃首句的 agent 也保留 prompt：这里只是预设的定义，起会话时按 agent 当时的能力用
-    // （现在 grok / shell 用不上，将来接了就生效）——警告而不拒绝。
+    // （现在用不上，将来接了就生效）——警告而不拒绝。
     if parsed
         .prompt
         .as_deref()
@@ -162,7 +169,10 @@ fn add(argv: &[&str]) -> i32 {
 fn list(db: &Db) -> Result<(), String> {
     let rows = preset::list(db).map_err(|e| e.to_string())?;
     if rows.is_empty() {
-        println!("还没有预设；`agora preset add <name> --agent claude --dir <目录>` 加一条");
+        println!(
+            "还没有预设；`agora preset add <name> --agent {} --dir <目录>` 加一条",
+            adapter::ADAPTERS[0].name()
+        );
         return Ok(());
     }
     let row = |a: &str, b: &str, c: &str, d: &str, e: &str, f: &str| {
