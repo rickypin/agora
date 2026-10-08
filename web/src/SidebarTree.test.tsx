@@ -164,6 +164,35 @@ it("tree rows draw no project line: the group header already says repo and branc
   expect(screen.getByTestId("row-mac:a")).toBeTruthy();
 });
 
+it("an unknown row keeps its reason and exit line in the tree: no status grouping needed (agora-trvm)", () => {
+  // 审查定稿：树按项目导航（MISSION §6.3、A48），不在树里再插一层状态分组——不分组不等于信息缺。
+  // unknown 行复用 SidebarRow：服务端 reason + 按 origin 的出口（`unclear-<id>`，agora-5gg.11）与
+  // 「需要我」视图是同一行实现，状态符号也是同一个 statusSymbol + 同一个 .st-unknown 配色类
+  // （agora-7vu0）。这条钉住「信息不缺」，不钉分组；要按「说不清」找行就切回「需要我」的 UNCLEAR 段。
+  const ROWS3 = [
+    row("mac:u", "mac", "2026-09-18T12:00:01Z", main, { status: "unknown", origin: "agora", reason: "hooks silent; no process handle" }),
+    row("mac:a", "mac", "2026-09-18T12:00:02Z", main),
+  ];
+  mount({}, ROWS3);
+  // 行自己带全「为什么说不清 + 出口」；长 reason 的省略号由 .row .preview 的 title 兜底（SessionRow 的守卫）。
+  const hint = screen.getByTestId("unclear-mac:u");
+  expect(hint.textContent).toBe("hooks silent; no process handle · 选中它，打开它的终端看一眼");
+  expect(hint.getAttribute("title")).toContain("hooks silent; no process handle");
+  // 符号与「需要我」视图同源：同一个 statusSymbol（?）+ 同一个配色类，不是树自己的一套。
+  const dot = screen.getByTestId("row-mac:u").querySelector(".dot");
+  expect(dot?.textContent).toBe("?");
+  expect(dot?.className).toBe("dot st-unknown");
+  // 位置仍守 A48 的第一条硬规则（只随创建 / 删除变）：它没有被搬进任何「说不清」段，
+  // 就与同 worktree 的另一行同组、按创建序排（跑起来的 mac:a 在后面）。
+  expect(order()).toEqual([
+    "tree-group-node:mac",
+    `tree-group-repo:mac:${AGORA}`,
+    `tree-group-wt:mac:${AGORA}`,
+    "row-mac:u",
+    "row-mac:a",
+  ]);
+});
+
 it("superseded rows fold under the current row behind a 历史对话 button (agora-5gg.19)", () => {
   // 决策 agora-5gg.8 选 A：一个 agent 进程在侧栏占一行，它换掉的旧对话挂在当前行下面。
   const ROWS2 = [
