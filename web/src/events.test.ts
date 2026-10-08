@@ -5,6 +5,7 @@ import {
   isProcessState,
   rowEndCause,
   rowProcess,
+  type EventsClientOptions,
   type SessionRow,
   type SocketLike,
   type UnreadableSocket,
@@ -64,11 +65,20 @@ class FakeSocket implements SocketLike {
   onclose: ((ev: unknown) => void) | null = null;
   onerror: ((ev: unknown) => void) | null = null;
   closed = false;
+  /** 客户端发出去的帧（心跳断言用）。 */
+  sent: string[] = [];
   close(): void {
     this.closed = true;
   }
+  send(data: string): void {
+    this.sent.push(data);
+  }
   serverOpen(): void {
     this.onopen?.({});
+  }
+  /** 服务端回一帧 pong：单对象帧，不是事件数组（src/api/events.rs）。 */
+  serverPong(): void {
+    this.onmessage?.({ data: JSON.stringify({ type: "pong" }) });
   }
   serverSend(events: unknown[]): void {
     this.onmessage?.({ data: JSON.stringify(events) });
@@ -337,6 +347,148 @@ describe("EventsClient", () => {
     expect(onRevoked).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(sockets.length).toBe(first + 2);
+  });
+});
+
+describe("回到前台的重拉与心跳看门狗（agora-f068）", () => {
+  const sockets: FakeSocket[] = [];
+  let snapshot: SessionRow[];
+  let client: EventsClient | null = null;
+
+  function start(extra: { dom?: EventsClientOptions["dom"] } = {}): EventsClient {
+    snapshot = [row("n:a")];
+    client = new EventsClient({
+      connect: () => {
+        const s = new FakeSocket();
+        sockets.push(s);
+        return s;
+      },
+      fetchSnapshot: async () => ({ sessions: snapshot, unregistered: [] }),
+      reconnectMinMs: 100,
+      onChange: () => {},
+      ...extra,
+    });
+    client.start();
+    return client;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    sockets.length = 0;
+    client = null;
+  });
+  afterEach(() => {
+    client?.stop();
+    vi.useRealTimers();
+  });
+
+  it("心跳稳住活链路；服务端装死（不回 pong）时主动断开、重连并重拉快照", async () => {
+    start();
+    sockets[0].serverOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client!.snapshots).toBe(1);
+
+    // 20 s 一发：帧就是服务端认的 {"type":"ping"}（客户端过去从没发过，agora-f068）。
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(sockets[0].sent).toEqual([JSON.stringify({ type: "ping" })]);
+
+    // pong 到了：5 s 的未决阈值不触发，链路留住、不重拉。
+    sockets[0].serverPong();
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(sockets[0].closed).toBe(false);
+    expect(sockets.length).toBe(1);
+    expect(client!.snapshots).toBe(1);
+
+    // 下一条 ping 起服务端不再回话（半死但也不 close）：5 s 内判死，退避重连，重连成功重拉。
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(sockets[0].sent).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sockets[0].closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sockets.length).toBe(2);
+    sockets[1].serverOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client!.snapshots).toBe(2);
+  });
+
+  it("半死链路永远不发 close 事件：未决 ping 的阈值内照样换掉它", async () => {
+    start();
+    sockets[0].serverOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(sockets[0].sent).toHaveLength(1);
+
+    // 假 socket 的 close() 只有看门狗会调；它自己不会 onclose。阈值前不动它。
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(sockets[0].closed).toBe(false);
+    expect(sockets.length).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets[0].closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sockets.length).toBe(2);
+  });
+
+  /** window / document 的结构替身：node 环境没有 DOM，事件挂载点必须可注入。 */
+  function fakeTarget() {
+    const listeners = new Map<string, Set<() => void>>();
+    return {
+      visibilityState: "visible" as string | undefined,
+      addEventListener(type: string, fn: () => void) {
+        const set = listeners.get(type) ?? new Set<() => void>();
+        set.add(fn);
+        listeners.set(type, set);
+      },
+      removeEventListener(type: string, fn: () => void) {
+        listeners.get(type)?.delete(fn);
+      },
+      dispatch(type: string) {
+        for (const fn of [...(listeners.get(type) ?? [])]) fn();
+      },
+    };
+  }
+
+  it("visibilitychange / pageshow / focus 都触发重拉，同一秒的抖动被限流", async () => {
+    const doc = fakeTarget();
+    const win = fakeTarget();
+    start({ dom: { window: win, document: doc } });
+    sockets[0].serverOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client!.snapshots).toBe(1);
+
+    // 还在后台的 visibilitychange 不算「回到前台」：不白拉。
+    doc.visibilityState = "hidden";
+    doc.dispatch("visibilitychange");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client!.snapshots).toBe(1);
+
+    // 回到前台：先到的那一个拉全量。
+    doc.visibilityState = "visible";
+    doc.dispatch("visibilitychange");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client!.snapshots).toBe(2);
+
+    // iOS 恢复时 visibilitychange / pageshow / focus 常在一串里连发：同一秒只拉一次。
+    win.dispatch("pageshow");
+    win.dispatch("focus");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client!.snapshots).toBe(2);
+
+    // 过了限流窗：pageshow 与 focus 各自都能拉。
+    await vi.advanceTimersByTimeAsync(1_000);
+    win.dispatch("pageshow");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client!.snapshots).toBe(3);
+    await vi.advanceTimersByTimeAsync(1_000);
+    win.dispatch("focus");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client!.snapshots).toBe(4);
+
+    // stop 之后监听要拆掉（组件卸载 / 换 store 不泄漏）。
+    client!.stop();
+    doc.dispatch("visibilitychange");
+    win.dispatch("pageshow");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client!.snapshots).toBe(4);
   });
 });
 

@@ -144,7 +144,7 @@ WS /api/events                   # 全局事件：status change / session create
 
 MVP 用 JSON / Text WebSocket 足够；binary terminal frames 放到 V2。
 
-客户端消费 `/api/events` 的纪律：就地 patch、合并突发（~300 ms 重同步）、内容相等不重渲染；不得每事件全量刷新，不得回退为轮询；断流重连后拉全量快照对齐（与 peer 链路同一"快照 + 增量"模式，MISSION §3.5）。
+客户端消费 `/api/events` 的纪律：就地 patch、合并突发（~300 ms 重同步）、内容相等不重渲染；不得每事件全量刷新，不得回退为轮询；断流重连后拉全量快照对齐；回到前台（`visibilitychange` → visible、`pageshow`、`focus`，同一秒只拉一次）也重拉一次对齐——iOS 熄屏 / 挂起会冻结 JS 定时器，回到前台靠这三条事件而不是心跳；连接空闲时每 20 s 发一帧 `{ "type": "ping" }`，5 s 内没等到 `pong`（或 30 s 一条 pong 都没有）就主动断开、走同一套退避重连——半死链路（socket 不 close、事件再也不来，切网 / NAT 超时）只能靠它发现（与 peer 链路同一"快照 + 增量"模式，MISSION §3.5；agora-f068）。
 
 ## respond 的两种语义（MISSION §7.3）
 

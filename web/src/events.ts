@@ -4,7 +4,8 @@
  * - 合并突发：事件先进缓冲，~300 ms 后一次性应用；
  * - 断流重连 / 收到 `resync` → 重拉全量对齐；绝不回退为轮询。
  *
- * 与 DOM 无关（vitest 在 node 环境里跑）：WebSocket 与快照拉取通过参数注入。
+ * WebSocket 与快照拉取通过参数注入（vitest 在 node 环境里跑核心逻辑）；DOM 只在可用时挂
+ * 「回到前台重拉」的三个监听（`dom` 可注入假目标，node 环境不挂）。
  */
 
 import type { PeerHealth } from "./health";
@@ -260,6 +261,31 @@ export interface SocketLike {
   close(): void;
 }
 
+/** 可见性事件的目标（`window` / `document` 的结构子集；node 测试可注入假对象）。 */
+export interface ResyncEventTarget {
+  addEventListener(type: string, listener: () => void): void;
+  removeEventListener(type: string, listener: () => void): void;
+}
+
+/** document 的那一小半：多了 `visibilityState`（hidden 的那次 visibilitychange 不算回到前台）。 */
+export interface VisibilityEventTarget extends ResyncEventTarget {
+  visibilityState?: string;
+}
+
+/** 真 WebSocket 有 `send`；假对象可以没有（心跳自动跳过，老守卫不用改）。 */
+function canSend(sock: SocketLike | null): sock is SocketLike & { send(data: string): void } {
+  return sock !== null && typeof (sock as { send?: unknown }).send === "function";
+}
+
+/** 心跳与看门狗的默认数字（agora-f068；20 s 与终端流 / peer 链路的 keepalive 同一套）。 */
+const HEARTBEAT_MS = 20_000;
+/** 发出的 ping 超过这么久没等到 pong：链路半死，主动断开重连。 */
+const PONG_TIMEOUT_MS = 5_000;
+/** 连续这么久一条 pong 都没有：同样当半死（send 静默失败 / 服务端只收不回）。 */
+const PONG_SILENCE_MS = 30_000;
+/** 回到前台的重拉限流窗：同一秒只拉一次（iOS 恢复时一串事件连发）。 */
+const RESYNC_THROTTLE_MS = 1_000;
+
 export interface EventsClientOptions {
   /** 建 WS 连接；默认 `new WebSocket(<同源>/api/events)`。 */
   connect?: () => SocketLike;
@@ -287,6 +313,23 @@ export interface EventsClientOptions {
    * 挂这里（agora-7ku.4）：升级节点必然重启 daemon、WS 必然断一次，所以换代总能在这一刻被看见。
    */
   onOpen?: () => void;
+  /**
+   * 「回到前台」重拉的事件目标（agora-f068）。默认挂全局 `window` 的 `pageshow` / `focus` 与
+   * `document` 的 `visibilitychange`（node 环境没有 DOM 就不挂）；测试可注入假目标。
+   * **为什么是这三条**：iOS 熄屏 / 挂起会冻结 JS 定时器——心跳在挂起期间根本不会跑，回到前台
+   * 全靠可见性事件补拉（2026-10-08 实测口径）。三条各有漏网场景，所以都要挂：只挂 focus 漏
+   * bfcache 恢复（页面没换焦点）、只挂 visibilitychange 漏窗口级前后台切换。
+   * 传 `{ window: null, document: null }` 可整个关掉。
+   */
+  dom?: { window?: ResyncEventTarget | null; document?: VisibilityEventTarget | null };
+  /** 心跳间隔（ms）；默认 20 s，与终端流 / peer 链路同一套数字。<= 0 关掉心跳。 */
+  heartbeatMs?: number;
+  /** 一条 ping 发出后这么久没有 pong 就当链路半死（默认 5 s）。 */
+  pongTimeoutMs?: number;
+  /** 连续这么久没有任何 pong 也当半死（默认 30 s）。 */
+  pongSilenceMs?: number;
+  /** 回到前台重拉的限流窗（默认 1 s；iOS 恢复时一串事件连发，别每次都全量拉）。 */
+  resyncThrottleMs?: number;
   /**
    * 服务端以 4401 关掉了这条流：本设备被吊销（agora-0jt）。之后不再重连——重连只会吃 401，
    * 页面该回到配对门。
@@ -316,6 +359,17 @@ export class EventsClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoff: number;
   private stopped = false;
+  /** 心跳定时器（连上才起，断开 / 停止即清）。 */
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  /** 当前这条 ping 的 pong 截止定时器（收到 pong 即清）。 */
+  private pongTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingPing = false;
+  /** 最近一次收到 pong 的时刻；一条都没有时是 null。 */
+  private lastPongAt: number | null = null;
+  /** 回到前台监听的拆除函数（start 装、stop 拆）。 */
+  private detachDom: (() => void) | null = null;
+  /** 最近一次回到前台重拉的时刻（限流用；与重连 / resync 的重拉分开记）。 */
+  private lastForegroundResyncAt: number | null = null;
   /** 统计：重拉全量的次数（测试断言用）。 */
   snapshots = 0;
 
@@ -325,13 +379,18 @@ export class EventsClient {
 
   start(): void {
     this.stopped = false;
+    this.installForegroundResync();
     this.open();
   }
 
   stop(): void {
     this.stopped = true;
+    this.detachDom?.();
+    this.detachDom = null;
+    this.clearHeartbeat();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.reconnectTimer = null;
     this.socket?.close();
     this.socket = null;
   }
@@ -340,22 +399,33 @@ export class EventsClient {
     const sock = (this.opts.connect ?? defaultSocket)();
     this.socket = sock;
     sock.onopen = () => {
+      if (sock !== this.socket) return; // 已被看门狗 / stop 换掉的旧 socket
       this.backoff = this.opts.reconnectMinMs ?? 1000;
+      this.lastPongAt = null;
       this.opts.onOpen?.();
+      this.startHeartbeat();
       // 连上（含重连）先对齐全量：断流期间丢掉的事件不可能补回来。
       void this.resync();
     };
     sock.onmessage = (ev) => {
-      let batch: AgoraEvent[];
+      if (sock !== this.socket) return;
+      let parsed: AgoraEvent[] | { type?: unknown } | null;
       try {
-        const parsed = JSON.parse(ev.data) as AgoraEvent[] | { type: string };
-        batch = Array.isArray(parsed) ? parsed : [];
+        parsed = JSON.parse(ev.data) as AgoraEvent[] | { type?: unknown } | null;
       } catch {
         return;
       }
-      for (const e of batch) this.enqueue(e);
+      if (!Array.isArray(parsed)) {
+        // 心跳回帧是单对象 `{"type":"pong"}`，不是事件数组（src/api/events.rs）。
+        if (parsed !== null && parsed.type === "pong") this.notePong();
+        return;
+      }
+      for (const e of parsed) this.enqueue(e);
     };
     sock.onclose = (ev) => {
+      if (sock !== this.socket) return;
+      this.socket = null;
+      this.clearHeartbeat();
       if ((ev as { code?: unknown } | null)?.code === REVOKED_CLOSE_CODE) {
         this.stop();
         this.opts.onRevoked?.();
@@ -370,9 +440,120 @@ export class EventsClient {
 
   private scheduleReconnect(): void {
     if (this.stopped) return;
+    if (this.reconnectTimer) return; // 已经排了一次，别叠
     const delay = this.backoff;
     this.backoff = Math.min(this.backoff * 2, this.opts.reconnectMaxMs ?? 30_000);
-    this.reconnectTimer = setTimeout(() => this.open(), delay);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.open();
+    }, delay);
+  }
+
+  /**
+   * 心跳（agora-f068）：服务端支持客户端 `ping` → `pong`（`src/api/events.rs`），客户端过去
+   * 从没发过——没有 pong 就永远发现不了半死的连接（切网 / NAT 超时：socket 还“开着”，
+   * 事件却永远不来）。空闲也发：pong 就是唯一能让看门狗说话的东西。
+   */
+  private startHeartbeat(): void {
+    this.clearHeartbeat();
+    const every = this.opts.heartbeatMs ?? HEARTBEAT_MS;
+    if (every <= 0 || !canSend(this.socket)) return;
+    this.heartbeatTimer = setInterval(() => this.heartbeat(), every);
+  }
+
+  private heartbeat(): void {
+    if (this.stopped) return;
+    const silence = this.opts.pongSilenceMs ?? PONG_SILENCE_MS;
+    if (this.lastPongAt !== null && Date.now() - this.lastPongAt >= silence) {
+      this.dropHalfDead();
+      return;
+    }
+    this.sendPing();
+  }
+
+  private sendPing(): void {
+    const sock = this.socket;
+    if (this.stopped || !canSend(sock)) return;
+    // 上一条还没回 pong：心跳已经断了一拍，不必再等下一拍。
+    if (this.pendingPing) {
+      this.dropHalfDead();
+      return;
+    }
+    this.pendingPing = true;
+    try {
+      sock.send(JSON.stringify({ type: "ping" }));
+    } catch {
+      this.dropHalfDead();
+      return;
+    }
+    this.pongTimer = setTimeout(() => this.dropHalfDead(), this.opts.pongTimeoutMs ?? PONG_TIMEOUT_MS);
+  }
+
+  private notePong(): void {
+    this.pendingPing = false;
+    this.lastPongAt = Date.now();
+    if (this.pongTimer) clearTimeout(this.pongTimer);
+    this.pongTimer = null;
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+    if (this.pongTimer) clearTimeout(this.pongTimer);
+    this.pongTimer = null;
+    this.pendingPing = false;
+  }
+
+  /**
+   * 半死链路：socket 看着还开着、却不再回 pong（切网 / NAT 超时）。
+   * 主动 close 走与断流同一条退避重连；重连成功照旧 resync。
+   */
+  private dropHalfDead(): void {
+    if (this.stopped || !this.socket) return;
+    this.clearHeartbeat();
+    const sock = this.socket;
+    this.socket = null;
+    try {
+      sock.close();
+    } catch {
+      /* 关不掉也当它断了 */
+    }
+    this.scheduleReconnect();
+  }
+
+  /**
+   * 「回到前台」重拉（agora-f068）：iOS 熄屏 / 挂起会冻结 JS 定时器——心跳在挂起期间根本不会
+   * 跑，回到前台必须靠这三条事件补拉（2026-10-08 实测口径；心跳只管“页面活着但 socket 半死”）。
+   * 限流：同一秒只拉一次，iOS 恢复时 visibilitychange / pageshow / focus 常在一串里连发。
+   */
+  private installForegroundResync(): void {
+    if (this.detachDom) return;
+    const win = this.opts.dom ? (this.opts.dom.window ?? null) : typeof window !== "undefined" ? window : null;
+    const doc = this.opts.dom ? (this.opts.dom.document ?? null) : typeof document !== "undefined" ? document : null;
+    const onForeground = () => {
+      // 只有 visibilitychange 带状态：hidden 的那一半不算回到前台（往后台切时不用拉）。
+      // pageshow / focus 出现即拉——它们的漏网场景（bfcache 恢复、窗口级前后台）发生在可见之后。
+      if (doc && doc.visibilityState !== undefined && doc.visibilityState !== "visible") return;
+      this.requestResync();
+    };
+    win?.addEventListener("pageshow", onForeground);
+    win?.addEventListener("focus", onForeground);
+    doc?.addEventListener("visibilitychange", onForeground);
+    this.detachDom = () => {
+      win?.removeEventListener("pageshow", onForeground);
+      win?.removeEventListener("focus", onForeground);
+      doc?.removeEventListener("visibilitychange", onForeground);
+    };
+  }
+
+  /** 回到前台重拉的入口（限流在这里，不散到组件）。 */
+  private requestResync(): void {
+    if (this.stopped) return;
+    const now = Date.now();
+    const throttle = this.opts.resyncThrottleMs ?? RESYNC_THROTTLE_MS;
+    if (throttle > 0 && this.lastForegroundResyncAt !== null && now - this.lastForegroundResyncAt < throttle) return;
+    this.lastForegroundResyncAt = now;
+    void this.resync();
   }
 
   private enqueue(e: AgoraEvent): void {
