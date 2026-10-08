@@ -1317,9 +1317,10 @@ fn the_identity_lookup_follows_local_registration_order_not_the_hook_clock() {
 
 #[tokio::test]
 async fn a_resume_handoff_before_the_first_prompt_leaves_no_row() {
-    // agora-29n（2026-09-18 zuan 现场 e3cd17，盘点 §3.4）：`claude --resume` 先以**新 id** 发
-    // SessionStart(source=startup)，locate_external 查不到就登记出一行；12 s 后 SessionEnd(reason=resume)
-    // 落到这一行上。它没有 prompt、没有输出，旧代码把它钉成一行谁也没起过的 FINISHED——无句柄 external
+    // agora-29n（2026-09-18 zuan 现场 e3cd17，盘点 §3.4）：宿主换对话时，先有一个已登记的当场会话
+    // （还没见过人话）收到 SessionEnd(reason=resume)。2026-10-08 claude 2.1.291 真录（agora-7d1j、
+    // agora-m0uc）修正了因果归属：这一步来自活着的 TUI 里 /resume <目标 id>，而 CLI `claude --resume`
+    // 是原 id 唤醒原行、不发这个 SessionEnd。它没有 prompt、没有输出，旧代码把它钉成一行谁也没起过的 FINISHED——无句柄 external
     // 行的身份就是 agent id，换 id 之后这个新行注定是空壳（`clear` 早在 s3r 有了出口，`resume` 漏了）。
     // 守卫：第一条 PromptSubmitted 之前的 SessionEnd(resume|clear) 是身份交接 → 删行（检查点一起删、
     // 求差器下一 tick 发 session_removed、重启后 done/ 里那两条不再把它建回来）。
