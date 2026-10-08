@@ -85,6 +85,9 @@ pub struct Receiver {
     sessions: Arc<SessionManager>,
     holds: Mutex<HashMap<(String, String), Hold>>,
     ledger: Mutex<Vec<Received>>,
+    record_limit: usize,
+    cancelled: AtomicBool,
+    recovery_cutoff: std::sync::atomic::AtomicU64,
     hold_timeout: Duration,
     /// `/api/events` 的 `decision_resolved` 从这里发；没接总线就不发。
     events: Mutex<Option<(EventBus, Arc<str>)>>,
@@ -164,6 +167,9 @@ impl Receiver {
             sessions,
             holds: Mutex::new(HashMap::new()),
             ledger: Mutex::new(Vec::new()),
+            record_limit: 0,
+            cancelled: AtomicBool::new(false),
+            recovery_cutoff: std::sync::atomic::AtomicU64::new(0),
             hold_timeout: HOLD_TIMEOUT,
             events: Mutex::new(None),
             done_retention: DONE_RETENTION,
@@ -219,6 +225,42 @@ impl Receiver {
         }
     }
 
+    /// Startup keeps local operations gated until both the initial snapshot and its tail
+    /// have been consumed. A failed delivery keeps the node visibly failed, never ready.
+    pub fn replay_startup(&self) -> Result<usize, HookError> {
+        let mut count = self.replay()?;
+        loop {
+            let pending = self.inbox.pending()?;
+            if pending.is_empty() {
+                return Ok(count);
+            }
+            for path in pending {
+                self.check_cancelled()?;
+                if self.ingest(&path)?.is_some() {
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    pub fn cancel_recovery(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    fn check_cancelled(&self) -> Result<(), HookError> {
+        if self.cancelled.load(Ordering::Acquire) {
+            Err(HookError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn finish_startup(&self) {
+        self.recovery_cutoff
+            .store(super::inbox::now_unix_ms(), Ordering::Release);
+        self.sessions.finish_recovery(true);
+    }
+
     pub fn inbox(&self) -> &Inbox {
         &self.inbox
     }
@@ -236,6 +278,7 @@ impl Receiver {
         self.restore_archive()?;
         let mut n = 0;
         for path in self.inbox.pending()? {
+            self.check_cancelled()?;
             match self.ingest(&path) {
                 Ok(Some(_)) => n += 1,
                 Ok(None) => {}
@@ -363,6 +406,7 @@ impl Receiver {
     fn restore_archive(&self) -> Result<(), HookError> {
         let mut restore = HashMap::new();
         for path in self.inbox.completed()? {
+            self.check_cancelled()?;
             let delivery = match self.inbox.read(&path) {
                 Ok(d) => d,
                 Err(err) => {
@@ -552,10 +596,13 @@ impl Receiver {
             event: event_name(&delivery.payload),
             delivery,
         };
-        self.ledger
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(received.clone());
+        if self.record_limit > 0 {
+            let mut ledger = self.ledger.lock().unwrap_or_else(|p| p.into_inner());
+            if ledger.len() == self.record_limit {
+                ledger.remove(0);
+            }
+            ledger.push(received.clone());
+        }
         Ok(Some(received))
     }
 
@@ -668,6 +715,12 @@ impl Receiver {
 
     /// 文件 I/O 与运行时查询在 blocking 线程，挂起等待留在 async 侧。
     pub async fn wake(self: &Arc<Self>, path: &Path) -> Response {
+        if !self.sessions.recovery_complete() {
+            // Leave the durable delivery for ordered recovery; never recreate an old approval.
+            return Response::Error {
+                message: "hook recovery in progress".to_owned(),
+            };
+        }
         let me = self.clone();
         let path = path.to_owned();
         let held = match tokio::task::spawn_blocking(move || me.begin_wake(&path)).await {
@@ -699,6 +752,35 @@ impl Receiver {
     fn begin_wake(&self, path: &Path) -> Result<HeldWake, Response> {
         // 2026-09-05：应用事件与登记挂起不可被解除事件插入；锁不跨 await。
         let _guard = self.processing.lock().unwrap_or_else(|p| p.into_inner());
+        // Drain older deliveries from this conversation before advancing its watermark.
+        // 2026-10-09: a live wake after startup could otherwise skip the recovery tail.
+        if self.inbox.contains(path) {
+            if let Some(parent) = path.parent() {
+                let mut older: Vec<_> = std::fs::read_dir(parent)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.extension().is_some_and(|e| e == "json")
+                            && p.file_name() < path.file_name()
+                            && p.file_name()
+                                .and_then(|n| n.to_str())
+                                .and_then(|n| n.split('-').next())
+                                .and_then(|n| n.parse::<u64>().ok())
+                                .is_some_and(|ms| {
+                                    ms <= self.recovery_cutoff.load(Ordering::Acquire)
+                                })
+                    })
+                    .collect();
+                older.sort();
+                for p in older {
+                    self.ingest_inner(&p).map_err(|err| Response::Error {
+                        message: err.to_string(),
+                    })?;
+                }
+            }
+        }
         let none = || Response::Hook {
             decision: Decision::None,
         };
@@ -1055,7 +1137,14 @@ impl Receiver {
         }
     }
 
-    /// 已应用的事件（测试与 agora-dvh.4 之前的排障用）。
+    /// Explicit bounded observation for tests; production retains no payload history.
+    /// 2026-10-09: unbounded recording retained all 82,933 startup deliveries (agora-8ehp).
+    pub fn with_recording(mut self, limit: usize) -> Self {
+        self.record_limit = limit;
+        self
+    }
+
+    /// 已应用的事件（只在显式启用有界观测时保留）。
     pub fn received(&self) -> Vec<Received> {
         self.ledger
             .lock()

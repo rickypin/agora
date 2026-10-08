@@ -207,7 +207,7 @@ agora daemon 重启不得影响任何 agent：agent 生命周期挂在运行时�
 discover 运行时中的 session → read SQLite metadata → reconcile → rebuild runtime state → 重放投递箱里的 hook 事件
 ```
 
-**hook 事件在 daemon 不在时不得丢失**：投递箱落盘、重启后重放（ADR-002）。这是 §5.1 "有 hook 的 agent 的 WAITING 只来自 hook"能成立的前提。
+**hook 事件在 daemon 不在时不得静默丢失**：投递箱落盘、重启后重放（ADR-002）。磁盘或投递箱预算耗尽时，宿主仍可继续运行，但必须持久标记观测缺口并在健康报告与界面告警；不得把信息不完整报成完整恢复（agora-qf23）。这是 §5.1 "有 hook 的 agent 的 WAITING 只来自 hook"能成立的前提。
 
 ### 3.5 多节点：peer 模型【ADR-004】
 

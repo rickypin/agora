@@ -185,3 +185,30 @@ async fn health_peers_section_reports_each_peer_state_by_type() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json, serde_json::json!({ "status": "ok" }));
 }
+
+#[tokio::test]
+async fn authenticated_health_reports_sticky_observation_gap() {
+    let mut fx = common::Fx::new();
+    let home = tempfile::tempdir().unwrap();
+    let hooks = std::sync::Arc::new(agora::hook::Receiver::new(
+        home.path(),
+        fx.state.sessions.clone(),
+    ));
+    hooks.inbox().note_gap("inbox_capacity");
+    fx.state.hooks = Some(hooks);
+    let response = fx
+        .app()
+        .oneshot(
+            Request::get("/api/health")
+                .header(header::HOST, common::HOST)
+                .header(header::COOKIE, fx.cookie())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["recovery"], "ready");
+    assert_eq!(body["observation_gap"]["reason"], "inbox_capacity");
+}

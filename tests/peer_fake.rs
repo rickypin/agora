@@ -236,3 +236,90 @@ async fn app_state_carries_a_registry_keyed_by_local_node() {
     assert!(matches!(state.registry.route("b"), Route::Peer(_)));
     assert!(matches!(state.registry.route("c"), Route::Unknown));
 }
+
+#[tokio::test]
+async fn local_recovery_keeps_peer_views_and_forwarded_operations_available() {
+    let mut a = Node::new("a");
+    let b = Node::new("b");
+    let local = a.create_session("on-a").await;
+    let remote = b.create_session("on-b").await;
+    let mut registry = PeerRegistry::new("a");
+    registry.insert(peer(&b, &a)).unwrap();
+    a.state.registry = Arc::new(registry);
+    // Use the peer's real exported snapshot, not a fabricated row.
+    let transport = peer(&b, &a);
+    let snapshot = json(transport.request(get_sessions()).await.unwrap()).await;
+    a.state
+        .peer_views
+        .replace("b", snapshot["sessions"].as_array().unwrap().clone(), None);
+    a.state.sessions.begin_recovery();
+    let to_a = peer(&a, &b);
+    let response = to_a.request(get_sessions()).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "recovering peer must not replace its old snapshot with an empty success"
+    );
+    let cookie = a.cookie();
+    let req = |method: &str, path: &str, body: Value| {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, common::HOST)
+            .header(header::ORIGIN, format!("http://{}", common::HOST))
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let response = a
+        .router()
+        .oneshot(req("GET", "/api/health", Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(json(response).await["recovery"], "recovering");
+    let response = a
+        .router()
+        .oneshot(req("GET", "/api/sessions", Value::Null))
+        .await
+        .unwrap();
+    let rows = json(response).await;
+    assert_eq!(rows["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(rows["sessions"][0]["node"], "b");
+    for (method, suffix, body) in [
+        ("GET", "", Value::Null),
+        ("PATCH", "", json!({"display_name":"forbidden"})),
+        ("POST", "/kill", json!({"confirmed":true})),
+        ("POST", "/input", json!({"kind":"text", "data":"forbidden"})),
+        ("DELETE", "", Value::Null),
+    ] {
+        let path = format!("/api/sessions/{}{}", local["id"].as_str().unwrap(), suffix);
+        let response = a.router().oneshot(req(method, &path, body)).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{method} {path}"
+        );
+    }
+    let path = format!("/api/sessions/{}", remote["id"].as_str().unwrap());
+    let response = a
+        .router()
+        .oneshot(req(
+            "PATCH",
+            &path,
+            json!({"display_name":"renamed remotely"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    a.state.sessions.finish_recovery(true);
+    let response = a
+        .router()
+        .oneshot(req("GET", "/api/sessions", Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(
+        json(response).await["sessions"].as_array().unwrap().len(),
+        2
+    );
+}

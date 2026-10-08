@@ -86,6 +86,10 @@ daemon 侧：启动时先恢复 `hooks/state/` 的每会话 hook 观测检查点
 
 为什么不选 devcenter 的 `--settings` 注入：它只覆盖 agora 起的会话，看不见 Terminal.app 里起的（A16）；而 §5.1 已定 hook 装进用户配置。为什么不选 HTTP hook（Claude / Grok 都支持 `type: http`）：daemon 不在就丢事件，正是 §3.4 禁止的。
 
+**恢复与资源边界（2026-10-09，agora-o1tm / agora-8ehp / agora-qf23）**：本机曾积压 82,933 件、约 668 MB，启动等待 17 分 55 秒；全量历史不应挡住 HTTP 与 peer。恢复放后台，本地会话列表在恢复中只向人返回 peer 行并带 `recovery`；peer 客户端来取本机快照则返回 503，保留其已有 stale 快照；本机会话操作返回 503 `recovering`，健康报告区分 `recovering / ready / failed`。socket 在恢复期间对 hook fail-open，文件仍留在投递箱；恢复消费初始快照与期间新增的尾部，实时唤醒先处理同会话的恢复尾部，不能越过水位。恢复完成才启动本地状态求差与通知，旧审批连接不重建。生产 Receiver 默认不保存事件账本，测试只能显式启用有界观测。
+
+投递不承诺无限磁盘：CLI 写入前即将 adapter 不读取的 `tool_response / toolResult` 截到 8 KB，状态相关字段不截。原始 stdin 上限 16 MiB、单件序列化后上限 1 MiB、待处理箱上限 8192 文件 / 64 MiB；跨进程 admission 锁串行核算（竞争最多等 250 ms），消费只减少用量。旧版本已有的超额积压照常恢复，但不继续增大；空会话目录在 admission 时回收。**这只是无关结果字段的压缩，不是“只留最后一个事件”或跨事件状态合并**：并行挂起键、prompt、epoch、会话身份与事件时钟全部保留；在预算内与原始事件应用等价。压缩仍放不下或写盘失败时不挤掉已接收事件，拒绝新件并 fail-open，尽力原子持久化 `hooks/observation-gap.json`（不含 payload）；磁盘完全写不了时仍打印 stderr。健康报告 `observation_gap` 与桌面/手机横幅持续告警，不因队列清空自动抹掉缺口。恢复容量后应核实受影响会话、等待新的可信 hook 或重新开启对话，再由操作人确认移除该标记；清标记不能恢复丢失事实。此处明确收紧“不得丢失”为“不得静默丢失”，避免以无限占盘拖累宿主。更进一步的跨事件语义合并须先证明与完整重放等价，不能拿丢掉中间事件当压缩。
+
 ### D4 安装：装进用户配置，幂等、可卸载、装前 diff、宿主自认
 
 - `agora hooks install <agent>`：Claude Code 写 `~/.claude/settings.json`（user 作用域）的 `hooks`，Grok 写 `~/.grok/hooks/agora.json`，Codex 写 `~/.codex/hooks.json`（**Codex 的非托管 hook 必须由用户在 TUI 里 `/hooks` 审阅、按内容哈希信任，改动即失效**——所以 command 里的 agora 路径必须是升级不变的稳定路径，否则每次升级都要重新信任；agora 不用 `--dangerously-bypass-hook-trust`）；装前显示 diff，只增不删别人的条目（hooks 是拼接不是替换，文档确认）；条目里 command 含 agora 二进制路径，是识别自己条目的标记——重复安装不重复，卸载只删自己的。Claude Code 与 Grok 都热加载配置文件（文档：file watcher / Hooks tab reload），装完不用重启 agent。

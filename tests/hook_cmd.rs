@@ -108,7 +108,8 @@ fn inbox_files(home: &Path) -> Vec<PathBuf> {
             }
         }
     }
-    walk(&home.join("hooks"), &mut v);
+    // Admission metadata lives beside inbox; only deliveries count as queued events.
+    walk(&home.join("hooks/inbox"), &mut v);
     v
 }
 
@@ -352,4 +353,22 @@ fn hold_cap() {
     let (code, out, _) = other.wait_within(Duration::from_secs(5));
     assert_eq!((code, out.as_str()), (0, ""));
     let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn over_budget_delivery_fails_open_and_leaves_a_visible_gap() {
+    let home = home();
+    let payload = serde_json::json!({
+        "hook_event_name":"UserPromptSubmit", "session_id":"over-budget",
+        "prompt":"p".repeat(agora::hook::budget::MAX_DELIVERY_BYTES + 1)
+    })
+    .to_string();
+    let (code, out, err) = Hook::spawn(&home, "claude", &payload, &[]).wait();
+    assert_eq!(code, 0, "capacity exhaustion must not break the host");
+    assert!(out.is_empty());
+    assert!(err.contains("capacity"));
+    let inbox = agora::hook::Inbox::new(&home);
+    assert!(inbox.pending().unwrap().is_empty());
+    assert_eq!(inbox.observation_gap().unwrap()["reason"], "inbox_capacity");
+    let _ = std::fs::remove_dir_all(home);
 }

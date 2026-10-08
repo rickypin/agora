@@ -109,7 +109,9 @@ fn with_hooks() -> (Fx, Arc<Receiver>, tempfile::TempDir) {
     let mut fx = Fx::new();
     let home = tempfile::tempdir().unwrap();
     let receiver = Arc::new(
-        Receiver::new(home.path(), fx.sessions.clone()).with_hold_timeout(Duration::from_secs(30)),
+        Receiver::new(home.path(), fx.sessions.clone())
+            .with_recording(16)
+            .with_hold_timeout(Duration::from_secs(30)),
     );
     receiver.attach_events(fx.state.events.clone(), fx.state.node.clone());
     fx.state.hooks = Some(receiver.clone());

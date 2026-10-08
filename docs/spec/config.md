@@ -290,3 +290,7 @@ scripts/install.sh --binary <path> [--home <dir>] [--node-id <id>] [--listen <ad
 已知盲点（2026-09-06）：pid 文件那一支用 `kill(pid, 0)` 判活，僵尸也算活着——旧 daemon 的父进程不收尸时会等满 10 s 再报错；launchd / systemd / 交互 shell / sshd 都立刻收尸，`tests/upgrade.rs` 起的 daemon 由测试自己另起线程 wait。
 
 守卫：`tests/upgrade.rs::daemon_restart_keeps_agents_sessions_and_metadata`（十个 fake-agent 会话，换二进制路径 + 重启：链接真路径 == `versions/<sha12>/agora`、新 pid ≠ 旧 pid、同样十行 id / name / status 仍 running、pane pid 一个没变）、`::bin_link_repointed_and_hooks_still_deliver`（升级后经链接跑 `hook`，SessionStart 让 external 行出现在 `GET /api/sessions`）、`::migration_versioned_and_older_daemon_refuses`（库的 `user_version` == 程序自报的 `schema_version`；一个只认识 schema 1 的假"新版本"被拒：退出 2、链接与 daemon 不动、`versions/` 里不留它）。前两条还各自钉住**单元隔离**（`assert_restart_went_through_the_pid_file`，agora-t90q）：stderr 含「已停掉 pid」而不含「已 systemctl --user restart」/「已 launchctl kickstart」、替身被问过 `is-active` 也被问过 `show -p ExecStart`（只看了 active 就红）、argv 里没有 restart / kickstart，而宿主单元的状态指纹（`MainPID` + `ActiveEnterTimestamp`）前后逐字不变。
+
+### Hook 恢复与投递箱预算
+
+`agora-o1tm / agora-8ehp / agora-qf23`：恢复为后台任务，状态见 `/api/health` 的 `recovery`。默认生产进程不保留完整事件内存账本。CLI 投递预算是固定安全边界：stdin 16 MiB、单件 1 MiB、inbox 8192 文件或 64 MiB；adapter 不读取的两个结果字段在写入前压到各 8 KB。上限只约束新件，已有历史不强删；锁竞争上限 250 ms。预算内不丢状态字段，超限/写失败 fail-open 并记录 `hooks/observation-gap.json`，健康报告与界面提示状态信息不完整。处理完积压不会自动清缺口：确认受影响会话已由可信新事件重新建立状态后，操作人方可删除该标记。预算与过载语义的决定见 [ADR-002 D3](../adr/ADR-002-state-source-layering.md)。

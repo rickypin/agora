@@ -53,6 +53,8 @@ pub async fn health(principal: Option<Principal>, State(state): State<AppState>)
         "status": "ok",
         "runtime": runtime,
         "database": database,
+        "recovery": state.sessions.recovery_status(),
+        "observation_gap": state.hooks.as_ref().and_then(|h| h.inbox().observation_gap()),
         // "self-signed" / "external" / null（没开 TLS 监听器）；`main.rs` 按 tls.mode 填（agora-ltb）。
         "tls": state.tls_mode,
         // 三态、实时：PushSender 在投递时写（MISSION §10.3；agora-thc.6）。fcm 恒 null——Android 延后。

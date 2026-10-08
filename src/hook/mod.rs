@@ -16,6 +16,7 @@
 //! 本模块只知道"一个宿主、一坨 JSON"；宿主名、payload 键、哪些事件挂起与解除、决定写回的
 //! 形态都问宿主的 `adapter::AgentHooks`（ADR-002 规则 5）；映射成的事件交给状态机（dvh.4）。
 
+pub mod budget;
 pub mod cmd;
 pub mod inbox;
 pub mod input;
@@ -31,6 +32,10 @@ pub use receiver::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum HookError {
+    #[error("hook recovery cancelled")]
+    Cancelled,
+    #[error("hook inbox capacity exhausted; observations may be incomplete")]
+    Capacity,
     #[error("投递箱 {path}: {source}")]
     Io {
         path: String,

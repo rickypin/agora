@@ -1386,7 +1386,7 @@ fn a_big_tool_result_is_truncated_in_the_archive_but_reaches_the_state_machine_w
     let s = Arc::new(SessionManager::new(db, rt));
     let id = create(&s, "claude");
     let inbox = Inbox::new(home.path());
-    let r = Receiver::new(home.path(), s.clone());
+    let r = Receiver::new(home.path(), s.clone()).with_recording(256);
 
     // 现场的形状：结果是对象不是字符串（claude 4511 条里 4173 条如此），所以按紧凑 JSON 的字节数算。
     let big = "x".repeat(60 * 1024);
@@ -1569,4 +1569,142 @@ fn a_deleted_row_gets_no_checkpoint_from_an_event_that_was_already_in_flight() {
         "行已经没了，apply 不该再写出检查点（agora-bmng）"
     );
     assert!(!applied, "行没了，事件不算应用");
+}
+
+#[test]
+fn production_receiver_does_not_retain_payload_history() {
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let s = Arc::new(SessionManager::new(
+        db,
+        Arc::new(common::FakeRuntime::default()),
+    ));
+    let id = create(&s, "claude");
+    let r = Receiver::new(home.path(), s.clone());
+    let bounded = Receiver::new(home.path(), s.clone()).with_recording(2);
+    let inbox = Inbox::new(home.path());
+    for n in 1..=32 {
+        let path = inbox
+            .write(&delivery(
+                &id,
+                1,
+                n,
+                json!({
+                    "hook_event_name":"Stop", "last_assistant_message":"done",
+                    "tool_response":"x".repeat(256 * 1024)
+                }),
+            ))
+            .unwrap();
+        if n <= 16 {
+            r.ingest(&path).unwrap();
+        } else {
+            bounded.ingest(&path).unwrap();
+        }
+    }
+    assert!(
+        r.received().is_empty(),
+        "production must not retain any payloads"
+    );
+    assert_eq!(bounded.received().len(), 2);
+    assert_eq!(bounded.received()[0].delivery.envelope.received_unix_ms, 31);
+    inbox.prune_done(Duration::ZERO);
+    Receiver::new(home.path(), s.clone()).replay().unwrap();
+    assert_eq!(s.get(&id).unwrap().assessment.status, Status::TurnDone);
+}
+
+#[tokio::test]
+async fn recovery_tail_precedes_live_wake_without_recreating_approvals() {
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let s = Arc::new(SessionManager::new(
+        db,
+        Arc::new(common::FakeRuntime::default()),
+    ));
+    let id = create(&s, "claude");
+    let r = Arc::new(Receiver::new(home.path(), s.clone()).with_recording(8));
+    let inbox = Inbox::new(home.path());
+    s.begin_recovery();
+    let old = inbox
+        .write(&delivery(
+            &id,
+            1,
+            1,
+            json!({
+                "hook_event_name":"UserPromptSubmit", "prompt":"first task"
+            }),
+        ))
+        .unwrap();
+    r.wake(&old).await;
+    assert!(
+        old.exists(),
+        "recovering wake must leave the durable event queued"
+    );
+    r.replay_startup().unwrap();
+    let tail = inbox
+        .write(&delivery(
+            &id,
+            1,
+            2,
+            json!({
+                "hook_event_name":"PermissionRequest", "tool_name":"Write"
+            }),
+        ))
+        .unwrap();
+    r.finish_startup();
+    let live = inbox
+        .write(&delivery(
+            &id,
+            1,
+            3,
+            json!({
+                "hook_event_name":"Stop", "last_assistant_message":"completed"
+            }),
+        ))
+        .unwrap();
+    r.wake(&live).await;
+    assert!(!tail.exists());
+    assert_eq!(
+        r.received()
+            .iter()
+            .map(|x| x.delivery.envelope.received_unix_ms)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert!(r.pending(&id).is_empty());
+    assert_eq!(s.get(&id).unwrap().assessment.status, Status::TurnDone);
+    assert_eq!(
+        s.record(&id).unwrap().task_ref.as_deref(),
+        Some("first task")
+    );
+}
+
+#[test]
+fn cancelled_recovery_preserves_pending_deliveries_for_the_next_start() {
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let s = Arc::new(SessionManager::new(
+        db,
+        Arc::new(common::FakeRuntime::default()),
+    ));
+    let id = create(&s, "claude");
+    let inbox = Inbox::new(home.path());
+    inbox
+        .write(&delivery(
+            &id,
+            1,
+            1,
+            json!({"hook_event_name":"Stop", "last_assistant_message":"done"}),
+        ))
+        .unwrap();
+    let r = Receiver::new(home.path(), s.clone());
+    r.cancel_recovery();
+    assert!(matches!(
+        r.replay_startup(),
+        Err(agora::hook::HookError::Cancelled)
+    ));
+    assert_eq!(inbox.pending().unwrap().len(), 1);
+    Receiver::new(home.path(), s.clone())
+        .replay_startup()
+        .unwrap();
+    assert_eq!(s.get(&id).unwrap().assessment.status, Status::TurnDone);
 }

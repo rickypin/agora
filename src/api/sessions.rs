@@ -25,8 +25,20 @@ use crate::events::{export, global_id, Event};
 use crate::runtime::Size;
 use crate::session::{AdoptSession, NewSession, SessionError, SessionManager, SessionView};
 
+pub(super) fn require_ready(s: &SessionManager) -> Result<(), ApiError> {
+    if !s.recovery_complete() {
+        return Err(ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            kind: "recovering",
+            message: "本机会话正在恢复或恢复失败；请查看节点健康状态".to_owned(),
+        });
+    }
+    Ok(())
+}
+
 /// `<node>:<id>` → 本机 id；节点不对就报错。
 pub(super) fn local_id(state: &AppState, gid: &str) -> Result<String, ApiError> {
+    require_ready(&state.sessions)?;
     match gid.split_once(':') {
         Some((node, id)) if node == &*state.node => Ok(id.to_owned()),
         Some((node, _)) => Err(ApiError {
@@ -47,6 +59,7 @@ pub(super) async fn blocking<T: Send + 'static>(
     sessions: &Arc<SessionManager>,
     f: impl FnOnce(&SessionManager) -> Result<T, SessionError> + Send + 'static,
 ) -> Result<T, ApiError> {
+    require_ready(sessions)?;
     let s = sessions.clone();
     match tokio::task::spawn_blocking(move || f(&s)).await {
         Ok(r) => r.map_err(ApiError::from),
@@ -72,6 +85,20 @@ pub async fn list(
     principal: Principal,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, ApiError> {
+    if !state.sessions.recovery_complete() {
+        // A peer must retain its last snapshot as stale; an empty success would delete it.
+        if matches!(principal, Principal::Peer { .. }) {
+            require_ready(&state.sessions)?;
+        }
+        return Ok(Json(serde_json::json!({
+            "sessions": if matches!(principal, Principal::Human { .. }) {
+                state.peer_views.rows()
+            } else { Vec::<Value>::new() },
+            "unregistered": [], "unregistered_unreadable": [],
+            "recovery": state.sessions.recovery_status(),
+            "now": crate::clock::now_secs(),
+        })));
+    }
     let node = state.node.clone();
     let (views, unregistered) =
         blocking(&state.sessions, |s| Ok((s.list()?, s.unregistered()?))).await?;

@@ -247,8 +247,8 @@ impl Inbox {
     }
 
     /// 应用完移到 `done/`，保持 `<host>/<session>/<file>` 的相对路径。挪的时候顺手把大结果字段
-    /// 截到 `ARCHIVE_FIELD_LIMIT`。截断放在**这一步**而不是 hook 进程写 inbox 那一步：状态机要读
-    /// 完整 payload 才判得了 hold，此刻它已经消费过了，往后只剩排障要看（agora-t36）。读不动或
+    /// 截到 `ARCHIVE_FIELD_LIMIT`。兼容旧版本投递：新 CLI 已在 admission 时缩减这两个
+    /// adapter 不读取的字段，状态相关字段始终不截（agora-qf23）。读不动或
     /// 解析不了就原样挪走——半截的排障文件不值得让归档卡住。
     pub fn done(&self, path: &Path) -> Result<(), HookError> {
         let rel = path
@@ -281,25 +281,7 @@ impl Inbox {
     /// 读出来截一遍：没有超限的字段（或读不动、序列化不了）返回 `None`，调用方直接 rename。
     fn truncated_archive_body(&self, path: &Path) -> Option<Vec<u8>> {
         let mut delivery = self.read(path).ok()?;
-        let obj = delivery.payload.as_object_mut()?;
-        let mut cut_any = false;
-        for key in ARCHIVE_TRUNCATED_KEYS {
-            let Some(value) = obj.get_mut(key) else {
-                continue;
-            };
-            // 这两个键多数时候是对象而不是字符串（2026-09-10 现场：某宿主 4511 条里 4173 条是
-            // 对象），所以按紧凑 JSON 的字节数量，超了整个换成带标记的开头文本——类型从对象变
-            // 字符串，归档只给人看，parse 侧不读它们（见 `ARCHIVE_TRUNCATED_KEYS`）。
-            let compact = serde_json::to_string(value).ok()?;
-            if compact.len() <= ARCHIVE_FIELD_LIMIT {
-                continue;
-            }
-            let keep = floor_char_boundary(&compact, ARCHIVE_FIELD_LIMIT);
-            let dropped = compact.len() - keep;
-            *value = Value::String(format!("{}…[truncated {dropped} bytes]", &compact[..keep]));
-            cut_any = true;
-        }
-        cut_any.then(|| serde_json::to_vec(&delivery).ok())?
+        trim_unused_results(&mut delivery).then(|| serde_json::to_vec(&delivery).ok())?
     }
 
     /// 删掉 `done/` 里超过保留期的文件；空目录随手删。返回删了几个、哪个失败，并留一行 info
@@ -482,6 +464,31 @@ pub fn local_time_string() -> String {
         off / 3600,
         (off % 3600) / 60
     )
+}
+
+/// Only fields that adapters never consume; preserve all state-bearing input.
+pub(crate) fn trim_unused_results(delivery: &mut Delivery) -> bool {
+    let Some(obj) = delivery.payload.as_object_mut() else {
+        return false;
+    };
+    let mut cut_any = false;
+    for key in ARCHIVE_TRUNCATED_KEYS {
+        let Some(value) = obj.get_mut(key) else {
+            continue;
+        };
+        // 这两个键多数时候是对象而不是字符串（2026-09-10 现场：某宿主 4511 条里 4173 条是
+        // 对象），所以按紧凑 JSON 的字节数量，超了整个换成带标记的开头文本——类型从对象变
+        // 字符串，归档只给人看，parse 侧不读它们（见 `ARCHIVE_TRUNCATED_KEYS`）。
+        let compact = serde_json::to_string(value).unwrap_or_default();
+        if compact.len() <= ARCHIVE_FIELD_LIMIT {
+            continue;
+        }
+        let keep = floor_char_boundary(&compact, ARCHIVE_FIELD_LIMIT);
+        let dropped = compact.len() - keep;
+        *value = Value::String(format!("{}…[truncated {dropped} bytes]", &compact[..keep]));
+        cut_any = true;
+    }
+    cut_any
 }
 
 #[cfg(test)]

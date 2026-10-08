@@ -39,6 +39,8 @@ export interface PeerHealth {
 export interface FullHealth extends PublicHealth {
   runtime?: RuntimeHealth;
   database?: boolean;
+  recovery?: "ready" | "recovering" | "failed";
+  observation_gap?: { reason: string } | null;
   peers?: Record<string, PeerHealth>;
 }
 
@@ -85,6 +87,10 @@ export async function fetchHealth(): Promise<boolean> {
  */
 export function runtimeDegraded(h: unknown): string | null {
   if (typeof h !== "object" || h === null) return null;
+  const recovery = (h as FullHealth).recovery;
+  if (recovery === "recovering") return "本机会话恢复中，远端节点仍可使用";
+  if (recovery === "failed") return "本机会话恢复失败，请检查服务日志";
+  if ((h as FullHealth).observation_gap) return "本机状态信息不完整：部分事件未能保存，请检查服务日志与投递箱容量";
   const rt = (h as FullHealth).runtime;
   if (typeof rt !== "object" || rt === null || rt.status !== "degraded") return null;
   const reason = typeof rt.reason === "string" ? rt.reason.trim() : "";
@@ -222,7 +228,7 @@ export interface ApiVersion {
  * Rust 单测 `page_is_built_against_the_same_api_version` 读这一行钉住两边一致，
  * 所以这行的写法（`{ major: N, minor: M }` 字面量）别改成别的形态。
  */
-export const API_VERSION: ApiVersion = { major: 1, minor: 16 };
+export const API_VERSION: ApiVersion = { major: 1, minor: 17 };
 
 /**
  * 版本比对的结论，按类型分类（MISSION §2.3 规则 10）：

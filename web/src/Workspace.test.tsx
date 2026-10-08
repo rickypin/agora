@@ -923,7 +923,7 @@ describe("Workspace", () => {
     const t = setup([{ ...row("n:a", "unknown"), alive: false }], [], undefined, health);
     await online(t);
     const banner = screen.getByTestId("runtime-degraded");
-    expect(banner.textContent).toBe(`⚠ 运行时 degraded：${reason}。会话状态暂不可知，进程没有被杀。`);
+    expect(banner.textContent).toBe(`⚠ 节点状态：${reason}`);
     expect(banner.getAttribute("title")).toBe(reason);
     // 运行时恢复（server 换代 / 升级完成）：下一次重拉转回 ok，横幅自己消失，不用刷新页面。
     report = { status: "ok", runtime: { status: "ok", reason: null, path_source: "shell" } };

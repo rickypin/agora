@@ -325,3 +325,10 @@ describe("VersionWatcher", () => {
     expect(w.checks).toBe(5);
   });
 });
+
+it("reports recovery and observation gaps without hiding them behind healthy runtime", () => {
+  expect(runtimeDegraded({ recovery: "recovering", runtime: { status: "ok" } })).toContain("恢复中");
+  expect(runtimeDegraded({ recovery: "failed", runtime: { status: "ok" } })).toContain("恢复失败");
+  expect(runtimeDegraded({ recovery: "ready", observation_gap: { reason: "inbox_capacity" } })).toContain("不完整");
+  expect(runtimeDegraded({ recovery: "ready", observation_gap: null, runtime: { status: "ok" } })).toBeNull();
+});

@@ -96,7 +96,7 @@ async fn events_survive_daemon_restart() {
     assert_eq!(inbox.pending().unwrap().len(), 3);
 
     // daemon 重启：新的 Receiver 重放。
-    let receiver = Receiver::new(&node.home, node.sessions.clone());
+    let receiver = Receiver::new(&node.home, node.sessions.clone()).with_recording(256);
     assert_eq!(receiver.replay().unwrap(), 2);
     let got: Vec<_> = receiver
         .received_for(&id)
@@ -176,7 +176,7 @@ fn rejects_wrong_permissions() {
         Arc::new(Db::open_in_memory().unwrap()),
         Arc::new(FakeRuntime::default()),
     ));
-    let receiver = Receiver::new(dir.path(), sessions);
+    let receiver = Receiver::new(dir.path(), sessions).with_recording(256);
     let session_dir = dir.path().join("hooks/inbox/claude/agent-1");
     std::fs::set_permissions(&session_dir, std::fs::Permissions::from_mode(0o750)).unwrap();
     let err = receiver.replay().unwrap_err();
@@ -199,7 +199,7 @@ fn replay_orders_by_time_across_sessions() {
         Arc::new(Db::open_in_memory().unwrap()),
         Arc::new(FakeRuntime::default()),
     ));
-    let receiver = Receiver::new(dir.path(), sessions);
+    let receiver = Receiver::new(dir.path(), sessions).with_recording(256);
     assert_eq!(receiver.replay().unwrap(), 3);
     let order: Vec<_> = receiver
         .received()
@@ -258,8 +258,9 @@ fn events_landing_during_replay_are_consumed_without_restart() {
     let id = session_row(&sessions);
     // 宽限期由下一条单独守；这条要验的是"一个 sweep 周期之内"，所以拿掉它（生产默认 30 s，
     // 见 `PENDING_REPLAY_AGE`）。
-    let receiver =
-        Receiver::new(dir.path(), sessions.clone()).with_pending_sweep_age(Duration::ZERO);
+    let receiver = Receiver::new(dir.path(), sessions.clone())
+        .with_recording(256)
+        .with_pending_sweep_age(Duration::ZERO);
 
     // 启动重放：此刻投递箱里只有开局那两条，快照扫完 `replay` 就返回了。
     inbox.write(&delivery(&id, 1, "SessionStart", 10)).unwrap();
@@ -388,8 +389,9 @@ fn stale_replay_checks_the_hooks_root_too() {
         Arc::new(FakeRuntime::default()),
     ));
     let id = session_row(&sessions);
-    let receiver =
-        Receiver::new(dir.path(), sessions.clone()).with_pending_sweep_age(Duration::ZERO);
+    let receiver = Receiver::new(dir.path(), sessions.clone())
+        .with_recording(256)
+        .with_pending_sweep_age(Duration::ZERO);
     inbox.write(&delivery(&id, 1, "SessionStart", 10)).unwrap();
     assert_eq!(receiver.replay().unwrap(), 1);
 

@@ -119,8 +119,11 @@ fn external_delivery(host: &str, agent_session: &str, payload: Value) -> Deliver
 fn with_hooks(hold_timeout: Duration) -> (Fx, Arc<Receiver>, tempfile::TempDir) {
     let mut fx = Fx::new();
     let home = tempfile::tempdir().unwrap();
-    let receiver =
-        Arc::new(Receiver::new(home.path(), fx.sessions.clone()).with_hold_timeout(hold_timeout));
+    let receiver = Arc::new(
+        Receiver::new(home.path(), fx.sessions.clone())
+            .with_recording(256)
+            .with_hold_timeout(hold_timeout),
+    );
     receiver.attach_events(fx.state.events.clone(), fx.state.node.clone());
     fx.state.hooks = Some(receiver.clone());
     (fx, receiver, home)

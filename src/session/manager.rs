@@ -250,7 +250,16 @@ pub struct ReconcileReport {
 /// 不缓存就会每 tick 每会话 stat + 解析一次 JSON。装 / 卸载之后最多晚 30 s 反映到文案上。
 const HOOKS_INSTALLED_TTL_SECS: i64 = 30;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryStatus {
+    Ready,
+    Recovering,
+    Failed,
+}
+
 pub struct SessionManager {
+    recovery: std::sync::atomic::AtomicU8,
     db: Arc<Db>,
     runtime: Arc<dyn Runtime>,
     prefix: String,
@@ -299,6 +308,7 @@ impl SessionManager {
             runtime_status: Arc::new(RuntimeStatus::default()),
             machines: Mutex::new(HashMap::new()),
             hook_state_dir: Mutex::new(None),
+            recovery: std::sync::atomic::AtomicU8::new(0),
             input_dir: Mutex::new(None),
             hook_install_homes: Mutex::new(None),
             hook_installed_cache: Mutex::new(HashMap::new()),
@@ -758,6 +768,30 @@ impl SessionManager {
     /// `/api/health` 与 daemon 启动流程共用的那一个实时结论。
     pub fn runtime(&self) -> &Arc<dyn Runtime> {
         &self.runtime
+    }
+
+    /// Startup recovery gates local API operations, never peer access (agora-o1tm).
+    pub fn recovery_status(&self) -> RecoveryStatus {
+        match self.recovery.load(std::sync::atomic::Ordering::Acquire) {
+            0 => RecoveryStatus::Ready,
+            1 => RecoveryStatus::Recovering,
+            _ => RecoveryStatus::Failed,
+        }
+    }
+
+    pub fn recovery_complete(&self) -> bool {
+        self.recovery_status() == RecoveryStatus::Ready
+    }
+
+    pub fn begin_recovery(&self) {
+        self.recovery.store(1, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn finish_recovery(&self, success: bool) {
+        self.recovery.store(
+            if success { 0 } else { 2 },
+            std::sync::atomic::Ordering::Release,
+        );
     }
 
     pub fn runtime_status(&self) -> &Arc<RuntimeStatus> {

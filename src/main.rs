@@ -255,16 +255,7 @@ async fn serve() -> i32 {
         agora::hook::Receiver::new(&home, sessions.clone())
             .with_pruning(settings.hook_inbox_retention, settings.hook_prune_interval),
     );
-    let replay_hooks = hooks.clone();
-    match tokio::task::spawn_blocking(move || replay_hooks.replay()).await {
-        Ok(Ok(n)) if n > 0 => tracing::info!(component = "hook", replayed = n, "投递箱重放完成"),
-        Ok(Ok(_)) => {}
-        Ok(Err(err)) => {
-            tracing::error!(component = "hook", %err, "投递箱不可用，hook 事件不会被读取")
-        }
-        Err(err) => tracing::error!(component = "hook", %err, "投递箱重放任务失败"),
-    }
-    tokio::spawn(hooks.clone().run_sweeper(std::time::Duration::from_secs(5)));
+    sessions.begin_recovery();
 
     // 零凭据警告的两个计数（ADR-003 D5）：已配对设备与未吊销的机器 token。只签了 token、还没配对
     // 过设备的节点（被 peer 访问的典型初始状态）不该被说成"没有人能连进来"（agora-y9v）。
@@ -341,25 +332,6 @@ async fn serve() -> i32 {
     });
     let socket_task = tokio::spawn(sock.serve(handler));
 
-    // socket 已经在 accept 了，回头再扫一遍投递箱：bind 在最前（agora-apr），上面那次 `replay()`
-    // 只看得到它跑的那一刻的快照，而 bind 与 accept 之间到达的 hook 只能指望内核 backlog——
-    // 没排上队的投递件就再没人读（2026-09-18 Mac：replay 跑了 172 s，窗口里落下的 6 个
-    // Pre/PostToolUse 一直躺到下次重启；MISSION §5.1）。之后每 5 s 的 sweep 里还有同一条
-    // （`Receiver::replay_stale_pending`）当长期兜底；放 blocking 线程、不 await：积压可能很大
-    // （那次是 14026 件），不该拖住后面的 HTTP 监听器起来。
-    let drain_hooks = hooks.clone();
-    tokio::spawn(async move {
-        match tokio::task::spawn_blocking(move || drain_hooks.replay_stale_pending()).await {
-            Ok(0) => {}
-            Ok(n) => tracing::info!(
-                component = "hook",
-                replayed = n,
-                "socket 起来后补投了窗口里落下的投递件"
-            ),
-            Err(err) => tracing::warn!(component = "hook", %err, "补投投递件的任务失败"),
-        }
-    });
-
     let mut state = AppState::new(auth, sessions.clone(), &settings.node_id);
     state.agents = Arc::new(settings.raw.agents.clone());
     state.projects = Arc::new(
@@ -394,7 +366,7 @@ async fn serve() -> i32 {
     // 视图与状态都写进 state 里的共享把手，这里 clone 出去的 state 看到的是同一份。
     agora::peer::client::spawn_all(&state);
     hooks.attach_events(state.events.clone(), state.node.clone());
-    state.hooks = Some(hooks);
+    state.hooks = Some(hooks.clone());
     // Web Push（agora-thc.6）：VAPID 密钥存在就带上公钥、起投递任务。生成失败不是致命错误——
     // 没有推送的节点照样能用（浏览器轮询 + WS），只是 /api/system 的 push 段为 null、health 不报。
     match agora::push::vapid::load_or_generate(&home) {
@@ -419,14 +391,39 @@ async fn serve() -> i32 {
             tracing::warn!(component = "push", %err, "VAPID 密钥不可用，本节点不发 Web Push")
         }
     }
-    // 状态变化没有人来通知：轮询求差发 /api/events。
-    tokio::spawn(agora::events::watch(
-        sessions,
-        state.events.clone(),
-        state.node.clone(),
-        settings.detector_interval,
-        settings.raw.notifications.enabled,
-    ));
+    // 2026-10-09: 82,933 offline deliveries blocked HTTP and peers for 18 minutes.
+    // Keep local APIs gated while replaying; peers, pairing and health are independent.
+    let recovery_control = hooks.clone();
+    let recovery_sessions = sessions.clone();
+    let recovery_events = state.events.clone();
+    let recovery_node = state.node.clone();
+    let detector_interval = settings.detector_interval;
+    let notifications = settings.raw.notifications.enabled;
+    tokio::spawn(async move {
+        let replay_hooks = hooks.clone();
+        let result = tokio::task::spawn_blocking(move || replay_hooks.replay_startup()).await;
+        match result {
+            Ok(Ok(n)) => {
+                tracing::info!(component = "hook", replayed = n, "投递箱重放完成");
+                // Deliveries arriving during replay stay durable and are drained by the sweeper.
+                hooks.finish_startup();
+                recovery_events.publish(agora::events::Event::Resync);
+                tokio::spawn(hooks.run_sweeper(std::time::Duration::from_secs(5)));
+                agora::events::watch(
+                    recovery_sessions,
+                    recovery_events,
+                    recovery_node,
+                    detector_interval,
+                    notifications,
+                )
+                .await;
+            }
+            other => {
+                tracing::error!(component = "hook", error = ?other, "恢复失败，本机会话保持不可操作");
+                recovery_sessions.finish_recovery(false);
+            }
+        }
+    });
     // 两个 listening 都已打出，这一行才算数（agora-apr 的验收看日志顺序）。
     tracing::info!(component = "main", node = %settings.node_id, "daemon 就绪");
 
@@ -439,6 +436,7 @@ async fn serve() -> i32 {
             Err(e) => Err(e.to_string()),
         },
     };
+    recovery_control.cancel_recovery();
     // 只删自己绑的那个 socket 文件；路径上若已是别的实例的文件则不动（agora-apr）。
     drop(socket_cleanup);
     match served {

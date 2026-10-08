@@ -95,6 +95,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   const version = useMemo(() => givenVersion ?? new VersionWatcher(), [givenVersion]);
   const localNode = useSyncExternalStore(version.subscribe, version.nodeSnapshot, version.nodeSnapshot);
   const nodes = useSyncExternalStore(health.subscribeNodes, health.nodesSnapshot, health.nodesSnapshot);
+  const nodeWarning = useSyncExternalStore(health.subscribe, health.snapshot, health.snapshot);
   const [clock, setClock] = useState(() => Math.floor(Date.now() / 1000));
 
   useEffect(() => {
@@ -439,6 +440,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
         </span>
       </header>
       <div className="mobile-inbox mobile-home-inbox" ref={inboxRef}>
+        {nodeWarning && <p className="mobile-note warning" role="status" data-testid="mobile-node-warning">{nodeWarning}</p>}
         <section className="mobile-overview" aria-label="会话概览">
           <span className="mobile-eyebrow">你的移动工作台</span>
           <h2>{sections.attention.length > 0 ? <>有 <strong>{sections.attention.length}</strong> 件事需要你</> : "暂时没有待办"}</h2>

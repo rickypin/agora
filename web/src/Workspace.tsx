@@ -526,7 +526,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
       <section className="main">
         {degraded !== null && (
           <div className="runtime-degraded" data-testid="runtime-degraded" role="status" title={degraded}>
-            ⚠ 运行时 degraded：{degraded}。会话状态暂不可知，进程没有被杀。
+            ⚠ 节点状态：{degraded}
           </div>
         )}
         {notifyPerm === "default" && (

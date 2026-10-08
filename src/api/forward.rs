@@ -44,6 +44,7 @@ pub(super) enum Hop {
 pub(super) fn hop(state: &AppState, principal: &Principal, gid: &str) -> Result<Hop, ApiError> {
     // 裸 id 视为本机：curl 手敲时少打一段（与 `sessions::local_id` 同一约定）。
     let Some((node, id)) = gid.split_once(':') else {
+        super::sessions::require_ready(&state.sessions)?;
         return Ok(Hop::Local(gid.to_owned()));
     };
     Ok(match node_hop(state, principal, Some(node))? {
@@ -62,10 +63,14 @@ pub(super) fn node_hop(
     node: Option<&str>,
 ) -> Result<Option<Arc<dyn PeerTransport>>, ApiError> {
     let Some(node) = node.filter(|n| !n.is_empty()) else {
+        super::sessions::require_ready(&state.sessions)?;
         return Ok(None);
     };
     match state.registry.route(node) {
-        Route::Local => Ok(None),
+        Route::Local => {
+            super::sessions::require_ready(&state.sessions)?;
+            Ok(None)
+        }
         Route::Peer(t) => match principal {
             // 一跳：来自 peer 的请求只能落在本机上。
             Principal::Peer { name } => Err(second_hop(state, node, name)),

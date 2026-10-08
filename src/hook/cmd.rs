@@ -79,7 +79,18 @@ pub async fn run(argv: &[&str]) -> i32 {
         return 0;
     }
     let mut raw = Vec::new();
-    if std::io::stdin().read_to_end(&mut raw).is_err() {
+    if std::io::stdin()
+        .take(super::budget::MAX_STDIN_BYTES + 1)
+        .read_to_end(&mut raw)
+        .is_err()
+    {
+        Inbox::new(&args.home).note_gap("payload_read_failed");
+        eprintln!("agora hook: payload read failed; observations may be incomplete");
+        return 0;
+    }
+    if raw.len() as u64 > super::budget::MAX_STDIN_BYTES {
+        Inbox::new(&args.home).note_gap("payload_too_large");
+        eprintln!("agora hook: payload exceeds input budget; observations may be incomplete");
         return 0;
     }
     let payload = serde_json::from_slice(&raw)
@@ -95,7 +106,7 @@ pub async fn run(argv: &[&str]) -> i32 {
         envelope: envelope(hooks, &payload, now_ms),
         payload,
     };
-    let path = match Inbox::new(&args.home).write(&delivery) {
+    let path = match Inbox::new(&args.home).write_bounded(&delivery) {
         Ok(p) => p,
         Err(err) => {
             eprintln!("agora hook: {err}");
