@@ -142,6 +142,17 @@ fn first_line(text: &str) -> String {
         .to_owned()
 }
 
+/// 投递件文件名里的时刻（unix **毫秒**）：`{:013}-{pid}.json` 的前缀。解析不出（手写的、
+/// 别的来源）返回 None——调用方按"读不出时刻"处理。
+fn delivery_name_ms(name: &str) -> Option<i64> {
+    name.split('-').next()?.parse().ok()
+}
+
+/// 回拨窗口里记名的上限（见 [`Machine::note_delivery`]）：检查点每次事件都重写一遍，
+/// 一个几小时的回拨不能让一个会话把检查点撑到几百 KB。512 个名字 ≈ 10 KB，远超任何
+/// 现实回拨窗口里的事件数（窗口里的名字只记不删的话才会溢，溢了按名字顺序丢最老的）。
+const DELIVERIES_MAX: usize = 512;
+
 /// 来源的层级：只用来比"谁能覆盖谁"。
 fn layer(source: Source) -> u8 {
     match source {
@@ -178,12 +189,12 @@ pub struct AgentProcess {
 /// 检查点格式版本。1 = 不带 `agent_process`（2026-09-08 之前）；2 = 带，`seen_at` 是秒；
 /// 3 = `seen_at` 是毫秒（2026-09-09 agora-2nh）。
 ///
-/// 版本号只用来**解释已有字段**（v2 的秒要 ×1000）；纯增加一个 `#[serde(default)]` 字段不升号：
-/// 3 → 4 没有升的必要，因为 `last_event_at`（agora-5gg.2）在旧 v3 检查点里缺席就是「没记过」，
-/// 读出来 `None` 落到 [`Machine::handleless_quiet_since`] 的回退链上＝修复前的行为（按收到时刻算），
-/// 而那是那些检查点唯一正确的读法——它们本来就没记事件时刻。不升号也省掉一次跨版本迁移：
-/// 真升到 4 会让旧 daemon 读新检查点时把 `version` 认成未知而丢掉整行观测（`restore_hook` 的
-/// `1..=HOOK_SNAPSHOT_VERSION` 门），降级路径反而变脆（2026-09-19 核对）。
+/// 版本号只用来**解释已有字段**（v2 的秒要 ×1000）；纯增加一个 `#[serde(default)]` 字段不升号，
+/// 因为它在旧检查点里缺席就是「没记过」，读出来 `None` / 空集合落到修复前的行为，而那是那些
+/// 检查点唯一正确的读法。已经按这条纪律加过 `last_event_at`（agora-5gg.2）与 `deliveries`
+/// （agora-do8）。不升号也省掉一次跨版本迁移：真升到 4 会让旧 daemon 读新检查点时把 `version`
+/// 认成未知而丢掉整行观测（`restore_hook` 的 `1..=HOOK_SNAPSHOT_VERSION` 门），降级路径反而变脆
+/// （2026-09-19 核对）。「版本 ↔ 字段」的机器守卫见 `HOOK_SNAPSHOT_FIELDS`。
 pub const HOOK_SNAPSHOT_VERSION: u32 = 3;
 /// 从这个版本起检查点带 `agent_process`；更早的是 v1（不带进程号，且可能写于 agora-s3r 之前）。
 const HOOK_SNAPSHOT_WITH_AGENT_PROCESS: u32 = 2;
@@ -197,6 +208,11 @@ pub struct HookSnapshot {
     pub epoch: i64,
     #[serde(default)]
     last_delivery: Option<String>,
+    /// 回拨窗口里收下的投递名集合（agora-do8）：水位（`last_delivery`）比 daemon 现在的钟还晚时，
+    /// `accepts_delivery` 按这个集合去重放行；水位正常时它为空，去重仍由水位负责。纯增字段，
+    /// `#[serde(default)]`，旧检查点读成空集即修复前的水位口径（不升 [`HOOK_SNAPSHOT_VERSION`]）。
+    #[serde(default)]
+    deliveries: BTreeSet<String>,
     #[serde(default)]
     agent_process: Option<AgentProcess>,
     current: Assessment,
@@ -301,13 +317,32 @@ impl Machine {
         }
     }
 
-    pub fn accepts_delivery(&self, name: &str, epoch: i64) -> bool {
-        self.epoch != epoch
-            || self
-                .snapshot
-                .as_ref()
-                .and_then(|s| s.last_delivery.as_deref())
-                .is_none_or(|last| name > last)
+    pub fn accepts_delivery(&self, name: &str, epoch: i64, now: i64) -> bool {
+        if self.epoch != epoch {
+            return true;
+        }
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return true;
+        };
+        let Some(last) = snapshot.last_delivery.as_deref() else {
+            return true;
+        };
+        // 同名是重复（水位那一条已经被消费过）；比水位新就正常放行。
+        if name == last {
+            return false;
+        }
+        if name > last {
+            return true;
+        }
+        // 名字比水位旧：两种可能，只有回拨窗口那一档能收。
+        // - 正常情况（水位没超前）：这是迟到的旧件 / 归档重放，不能覆盖更新的状态，拒绝；
+        // - 时钟回拨窗口：水位来自 hook 进程的墙钟，比 daemon 现在的钟还晚 → 回拨后的新
+        //   事件名必然落在水位之前。按集合去重放行（收下时 `note_delivery` 记名）；
+        //   1 s 的余量把"同秒内的正常先后"挡在外面，不会把刚消费过的那一秒当时钟回拨。
+        if snapshot.deliveries.contains(name) {
+            return false;
+        }
+        delivery_name_ms(last).is_some_and(|ms| ms / 1000 > now + 1)
     }
 
     /// 宿主自报的输入通道版本（0 = 没有）。view 用它算 `text_via`，见 `crate::hook::input`。
@@ -325,7 +360,22 @@ impl Machine {
 
     pub fn note_delivery(&mut self, name: &str) {
         if let Some(snapshot) = &mut self.snapshot {
-            snapshot.last_delivery = Some(name.to_owned());
+            match snapshot.last_delivery.as_deref() {
+                // 正常前进：水位上移，水位以下的集合不再需要了（那些名字已经由水位挡住）。
+                Some(last) if name > last => {
+                    snapshot.last_delivery = Some(name.to_owned());
+                    snapshot.deliveries.clear();
+                }
+                // 回拨窗口里补收的：记名防重复；集合有上限，检查点每次事件都要重写一遍，
+                // 一个几小时的回拨不能让一个会话把检查点撑到几百 KB。
+                Some(_) => {
+                    snapshot.deliveries.insert(name.to_owned());
+                    while snapshot.deliveries.len() > DELIVERIES_MAX {
+                        snapshot.deliveries.pop_first();
+                    }
+                }
+                None => snapshot.last_delivery = Some(name.to_owned()),
+            }
         }
     }
 
@@ -749,6 +799,11 @@ impl Machine {
                 version: HOOK_SNAPSHOT_VERSION,
                 epoch: self.epoch,
                 last_delivery: self.snapshot.as_ref().and_then(|s| s.last_delivery.clone()),
+                deliveries: self
+                    .snapshot
+                    .as_ref()
+                    .map(|s| s.deliveries.clone())
+                    .unwrap_or_default(),
                 agent_process: self.agent_process.clone(),
                 current: self.current.clone(),
                 set_at: self.set_at,

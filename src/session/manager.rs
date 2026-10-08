@@ -455,8 +455,10 @@ impl SessionManager {
                 )
             });
             // 先更新副本，落盘失败不能推进去重水位，否则重试会把未保存事件当作已消费。
+            // `now` 交给去重判据：水位比 daemon 现在的钟还晚 = 时钟回拨过，回拨窗口里的新件
+            // 按检查点里的名字集合去重放行（agora-do8）。
             let mut m = stored.clone();
-            if delivery.is_some_and(|name| !m.accepts_delivery(name, epoch)) {
+            if delivery.is_some_and(|name| !m.accepts_delivery(name, epoch, now)) {
                 return Ok(false);
             }
             // 信封里的 agent 进程随这条事件一起进检查点（agora-tql）。

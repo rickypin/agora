@@ -829,6 +829,118 @@ fn checkpoint_path(home: &std::path::Path, id: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn deliveries_from_a_clock_rollback_window_are_consumed_without_duplicates() {
+    // agora-do8：检查点的去重是文件名水位（`name > last_delivery`），而文件名里的时刻来自 hook
+    // 进程的墙钟：时钟回拨之后新写下的事件名比水位小，旧口径把它们当"迟到的旧件"静默拒掉，
+    // 事件永远不进状态机。守卫：水位比 daemon 现在的钟还晚（回拨窗口）时，按检查点里的名字
+    // 集合去重放行；集合随检查点落盘，重启后同一批件不会被应用第二遍，窗口里新来的件照样被消费。
+    // 改坏：`accepts_delivery` 去掉回拨窗口那一支（只看 `name > last`）→ 第一段的 Running 与
+    // 第二段的新件都红；`note_delivery` 不记集合 → 重启后重放同一批件会把行从 TURN_DONE 打回
+    // RUNNING，重复那一段红。
+    let home = tempfile::tempdir().unwrap();
+    let rt = Arc::new(common::FakeRuntime::default());
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    // 回拨前的最后一条：水位落在 1 h 后（现实中是回拨前那一刻写下的件）。
+    let pre_rollback_ms = now_ms + 3600 * 1000;
+    let prompt_a = json!({"hook_event_name":"UserPromptSubmit","prompt":"after rollback"});
+    let stop_b = json!({"hook_event_name":"Stop","last_assistant_message":"done"});
+    let id = {
+        let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+        let s = Arc::new(SessionManager::new(db, rt.clone()));
+        let r = Receiver::new(home.path(), s.clone());
+        let inbox = Inbox::new(home.path());
+        let id = create(&s, "claude");
+        r.ingest(
+            &inbox
+                .write(&delivery(
+                    &id,
+                    1,
+                    pre_rollback_ms,
+                    json!({"hook_event_name":"Stop","last_assistant_message":"before rollback"}),
+                ))
+                .unwrap(),
+        )
+        .unwrap();
+        // 回拨之后新写的事件 A：名字在水位之前、在现在之后。
+        let path_a = inbox
+            .write(&delivery(&id, 1, now_ms - 1000, prompt_a.clone()))
+            .unwrap();
+        assert!(
+            r.ingest(&path_a).unwrap().is_some(),
+            "回拨窗口里新写的事件必须被消费（旧口径静默拒掉，agora-do8）"
+        );
+        let v = s.get(&id).unwrap();
+        assert_eq!(v.assessment.status, Status::Running, "{:?}", v.assessment);
+        assert_eq!(v.prompt.as_deref(), Some("after rollback"));
+        // B：同一窗口里的下一条，名字比 A 新、仍在水位之前。
+        let path_b = inbox
+            .write(&delivery(&id, 1, now_ms - 500, stop_b.clone()))
+            .unwrap();
+        assert!(r.ingest(&path_b).unwrap().is_some());
+        assert_eq!(s.get(&id).unwrap().assessment.status, Status::TurnDone);
+        // 同名重放（归档重建 / 迟到重放）：集合门挡下，不许把行从 TURN_DONE 打回 RUNNING。
+        let again = inbox
+            .write(&delivery(&id, 1, now_ms - 1000, prompt_a.clone()))
+            .unwrap();
+        assert_eq!(again, path_a, "同一个时刻落同一个文件名");
+        assert!(
+            r.ingest(&again).unwrap().is_none(),
+            "同一个文件名不许应用第二遍"
+        );
+        let v = s.get(&id).unwrap();
+        assert_eq!(
+            v.assessment.status,
+            Status::TurnDone,
+            "重复件不许把行打回去：{:?}",
+            v.assessment
+        );
+        assert_eq!(v.prompt.as_deref(), Some("after rollback"));
+        // 归档清掉：重启后的结论只能来自检查点。
+        inbox.prune_done(Duration::ZERO);
+        assert!(inbox.pending().unwrap().is_empty());
+        id
+    };
+
+    // 重启：集合从检查点恢复。把同一批件再摆回 pending（模拟 done/ 重建 / 迟到重放），
+    // 全部拒绝；窗口还没关，真正新来的件必须被消费。
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let s = Arc::new(SessionManager::new(db, rt));
+    s.reconcile().unwrap();
+    let r = Receiver::new(home.path(), s.clone());
+    let inbox = Inbox::new(home.path());
+    inbox
+        .write(&delivery(&id, 1, now_ms - 1000, prompt_a.clone()))
+        .unwrap();
+    inbox
+        .write(&delivery(&id, 1, now_ms - 500, stop_b.clone()))
+        .unwrap();
+    assert_eq!(
+        r.replay().unwrap(),
+        0,
+        "重启后同一批件不许被应用第二遍（集合随检查点落盘）"
+    );
+    assert_eq!(s.get(&id).unwrap().assessment.status, Status::TurnDone);
+    let fresh = inbox
+        .write(&delivery(
+            &id,
+            1,
+            now_ms + 100,
+            json!({"hook_event_name":"UserPromptSubmit","prompt":"still rolling"}),
+        ))
+        .unwrap();
+    assert!(
+        r.ingest(&fresh).unwrap().is_some(),
+        "回拨窗口里新来的件仍要被消费"
+    );
+    let v = s.get(&id).unwrap();
+    assert_eq!(v.assessment.status, Status::Running, "{:?}", v.assessment);
+    assert_eq!(v.prompt.as_deref(), Some("still rolling"));
+}
+
+#[test]
 fn external_agent_pid_survives_daemon_restart_and_guards_pid_reuse() {
     // agora-tql（2026-09-08 现场）：external 行的存活靠 hook 报来的进程号，原来只在内存里，daemon 一
     // 重启就丢，agent 早退了的行永远钉在 TURN_DONE。守卫：进程号随检查点落盘，重启后 alive 仍可判、
