@@ -108,8 +108,29 @@ describe("attention", () => {
     // 分段拼接：无头行永远排到最后，与分数无关（它的分数比 running 高）。
     const rows = [row("r", "running"), row("h", "waiting", { origin: "headless" }), row("w", "waiting")];
     expect(partitionByAttention(sortByAttention(rows), none, NOW).map((r) => r.id)).toEqual(["w", "r", "h"]);
-    // header 那一行仍按状态数：无头行照数（它确实在跑 / 确实做完了），折叠只是不画。
-    expect(countByStatus(rows).needsInput).toBe(2);
+    // 计数跟着显示走（agora-2x3z）：无头行不论什么状态都收在 FINISHED 区，所以只进 Finished，
+    // 不再进 Running / Needs Input / …——否则 `Running N` 里有一行在侧栏哪一段都找不到。
+    const counts = countByStatus(rows);
+    expect(counts.needsInput).toBe(1);
+    expect(counts.finished).toBe(1);
+  });
+
+  // agora-2x3z（与 agora-l4r3 同一处口径）：计数的 Finished 跟着无头行被显示的那一段走，
+  // 状态是 `running` 的无头行不进 Running。守卫的原例：在跑的 headless 会话不进 Running。
+  it("counts a running headless row under Finished where it is drawn, never under Running (agora-2x3z)", () => {
+    const rows = [
+      row("run", "running"),
+      row("h-run", "running", { origin: "headless" }),
+      row("h-done", "turn_done", { origin: "headless" }),
+      row("done", "turn_done", { origin: "agora", status_since: NOW - 60 }),
+    ];
+    const c = countByStatus(rows);
+    expect(c.running).toBe(1);
+    expect(c.turnDone).toBe(1);
+    expect(c.finished).toBe(2);
+    // 它们不是消失了：无头行仍然画在 Finished 折叠区里（分段与计数同源）。
+    expect(sectionOf(rows[1], undefined, NOW)).toBe("finished");
+    expect(sectionOf(rows[2], undefined, NOW)).toBe("finished");
   });
 
   it("a seen TURN_DONE row drops to the WORKING segment, never into the Finished folding (agora-5gg.21)", () => {
@@ -359,7 +380,7 @@ describe("attention", () => {
     expect(isPeerRow(row("zuan:1", "waiting", { node: "zuan", stale: false }))).toBe(true);
   });
 
-  it("counts by status for the header", () => {
+  it("counts by status for the header (headless rows are the one override, agora-2x3z)", () => {
     const c = countByStatus([row("a", "running"), row("b", "starting"), row("c", "waiting"), row("d", "turn_done"), row("e", "weird")]);
     expect(c).toEqual({ running: 2, needsInput: 1, turnDone: 1, finished: 0, failed: 0, idle: 0, unknown: 1 });
   });

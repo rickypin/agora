@@ -380,10 +380,24 @@ export interface Counts {
   unknown: number;
 }
 
-/** header 的一行计数（docs/spec/ux.md 线框）。 */
+/**
+ * header 的一行计数（docs/spec/ux.md 线框）：**状态清单**——Running / Needs Input / Turn Done /
+ * Finished / Failed / Idle / Unknown，回答"这些状态各有多少行"；四段（NEEDS ATTENTION / UNCLEAR /
+ * WORKING / FINISHED）回答"现在该看哪一段"，两者本就不该相等（agora-l4r3）。
+ *
+ * 唯一跟着显示走的是 `origin = headless` 的行（agora-2x3z）：它在侧栏永远收进 FINISHED 折叠区
+ * （[`finishedCollapsed`] 对 headless **不看状态**），所以不论停在 running / turn_done / unknown，
+ * 计数都只进 `Finished`，不再进 Running / Turn Done 等——否则 `Running N` 里有一行在侧栏哪一段都找不到。
+ * Finished 计数因此可能大于折叠区一键清理的人数：还没看过的 agora / adopted FINISHED 行是
+ * `finished` 状态、进这一格，但留在 NEEDS ATTENTION，不在清理名单里（按钮 title 写的是名单人数）。
+ */
 export function countByStatus(rows: SessionRow[]): Counts {
   const c: Counts = { running: 0, needsInput: 0, turnDone: 0, finished: 0, failed: 0, idle: 0, unknown: 0 };
   for (const r of rows) {
+    if (isHeadless(r)) {
+      c.finished += 1;
+      continue;
+    }
     switch (r.status) {
       case "running":
       case "starting":

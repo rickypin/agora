@@ -27,9 +27,11 @@ function useNowSeconds(periodMs = 30_000): number {
 }
 
 /**
- * header 的计数行（docs/spec/ux.md 线框：Running 5 · Needs Input 2 · …）。`Finished N` 仍按状态数，但折叠区
- * 里有行时它是按钮——一键清理（A46，agora-j4w.2）：点了弹确认框，确认后对折叠区里的每一行各发一次
- * DELETE metadata。没有可清理的行就是普通文字。
+ * header 的计数行（docs/spec/ux.md 线框：Running 5 · Needs Input 2 · …）。它是**状态清单**
+ * （`countByStatus`），不追求与四段数字相等；唯一的例外是无头行——它永远收在 FINISHED 折叠区，
+ * 计数也只进 `Finished`（agora-2x3z）。`Finished N` 在折叠区里有行时是按钮——一键清理
+ * （A46，agora-j4w.2）：点了弹确认框，确认后对折叠区里的每一行各发一次 DELETE metadata；
+ * 没看过的 agora / adopted FINISHED 行进 `Finished` 计数、但不在清理名单里，所以按钮 title 单独写名单人数。
  */
 function CountsLine({ rows, clearable, onClear }: { rows: SessionRow[]; clearable: number; onClear?: () => void }) {
   const c = countByStatus(rows);

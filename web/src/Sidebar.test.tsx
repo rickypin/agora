@@ -105,6 +105,18 @@ it("collapses the Finished section by default with a count, and NEEDS ATTENTION 
   expect(screen.getByTestId("counts").textContent).toBe("Running 1 · Needs Input 1 · Finished 3");
 });
 
+// agora-2x3z：计数与侧栏可见性同源——在跑的 origin=headless 行画在 FINISHED 折叠区里，计数也只进
+// Finished、不进 Running，否则 `Running N` 里有一行在侧栏哪一段都找不到。四段是动作分段、计数是
+// 状态清单，两者不追求相等（agora-l4r3），唯一的例外就是无头行。
+it("counts a running headless row as Finished, where the row is actually drawn (agora-2x3z)", () => {
+  mount([row("n:run", "running"), row("n:hl", "running", { origin: "headless" })]);
+  expect(screen.getByTestId("counts").textContent).toBe("Running 1 · Finished 1");
+  // 计数说的 Finished 那一段里确实有它：折叠区标题在，展开后这一行画出来。
+  expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
+  fireEvent.click(screen.getByTestId("section-finished"));
+  expect(screen.getByTestId("row-n:hl")).toBeTruthy();
+});
+
 it("expands the Finished section on click; rows keep attention order, stay selectable and keep their ordinals", () => {
   const { onOpen, visible } = mount(ROWS);
   fireEvent.click(screen.getByTestId("section-finished"));
