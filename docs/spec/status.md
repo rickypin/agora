@@ -39,7 +39,7 @@
 | a05 | RUNNING | alive | hook | ✓ | 在干活，不用管 | `…::a05_running_from_a_hook` |
 | a06 | WAITING | alive | hook | ✓ | 答它（能经 hook 答的按 `respond_via = hook`，否则打开终端）| `…::a06_waiting_from_a_hook` |
 | a07 | WAITING | alive | text，agent 有 hook | ✗ | ADR-002 D1：文本抬不起 WAITING，行留在 hook 说的那一格 | `…::a07_text_cannot_raise_a_hooked_row_to_waiting` |
-| a08 | TURN_DONE | alive | hook | ✓ | 看结果、给下一条 | `…::a08_turn_done_from_a_hook` |
+| a08 | TURN_DONE | alive | hook | ✓ | 看结果、给下一条。**含宿主自报的 `TurnFailed` / `api_error`**（这轮报错，等你）——FAILED 只从进程层来（a15），结束行分不出两种退法时按 x09 | `…::a08_turn_done_from_a_hook` |
 | a09 | TURN_DONE | alive | text 或 activity | ✗ | D1：「一轮做完」只有宿主自己说得出来（Stop / idle 通知）| `…::a09_neither_text_nor_activity_can_produce_turn_done` |
 | a10 | IDLE | alive | activity（无 hook 的行）| ✓ | 安静了一阵，没人说为什么 | `…::a10_idle_from_activity_when_no_hook_ever_spoke` |
 | a11 | IDLE | alive | activity，agent 有 hook | ✗ | D1：活动层不产 IDLE——hook 活着而它不说话，是说不清（a18）而不是空闲 | `…::a11_activity_never_produces_idle_for_a_hooked_row` |
