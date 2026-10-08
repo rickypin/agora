@@ -9,6 +9,8 @@
  * 动作全部走与桌面相同的节点 API（allow/deny 带 pending_decision.request_id、text 经 PTY、
  * Kill / Restart 先不带 confirmed 发、节点说要杀才弹框——MISSION §8）。发送失败时草稿回填回
  * 输入框、原因按错误码说人话、重试留在失败气泡上（agora-jidm；文案表见 [`sendFailureText`]）。
+ * 只读行（采纳 socket / 死 pane）不给 composer 与「更多」：可写性看 `writableRuntime`
+ * （agora-prdg.2）。
  */
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { agentBadge } from "./agentBadge";
@@ -123,6 +125,11 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
   // 无句柄、但宿主自己收文本的（pi 的扩展，ADR-002 D11）：手机上照旧能给下一条；
   // 真正的只读是 `textVia == "none"` 那些（MISSION §5.5）。
   const hostText = textVia(row) === "host";
+  // 可写的运行时（agora-prdg.2）：服务端只把"活着的、由 agora 管的运行时"报成 `runtime`
+  // ——采纳行（只读 socket，写操作 409 read_only）与死 pane 的托管行都是 `none`、没有可写的
+  // PTY，两种都不能给 composer / Kill。`row.managed === false` 是否决旧 peer 的谎报：修前的
+  // 服务端把采纳行报成 runtime，而 wire 上的 managed 一直是对的；缺键（老节点 / 测试桩）不否决。
+  const writableRuntime = !handleless && textVia(row) === "runtime" && row.managed !== false;
   const decision = row.pending_decision;
   const canDecide = waiting && row.respond_via === "hook" && row.reason === "permission" && !!decision;
   const within = typeof row.respond_within_secs === "number" ? row.respond_within_secs : null;
@@ -140,12 +147,12 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
   // 仍禁用（键击直接落进 TUI 的输入区，各家解释不同）；waiting 也沿用状态门（pi 没有权限问句，
   // 但别的宿主将来会有，不给排队）。
   const queueWhileRunning = hostText && running;
-  const canCompose = (idleOrDone && (!handleless || hostText)) || queueWhileRunning;
+  const canCompose = (idleOrDone && (writableRuntime || hostText)) || queueWhileRunning;
   // 推送点击进来：可发送的行把焦点直接放进 composer（ux.md「行为」；焦点只在打开那一下要，之后别抢）。
   useEffect(() => {
     if (focusComposer && canCompose) composerRef.current?.focus();
   }, [focusComposer, canCompose]);
-  const canRestart = !handleless && typeof row.command === "string" && row.command.trim() !== "";
+  const canRestart = writableRuntime && typeof row.command === "string" && row.command.trim() !== "";
   const detail = str(row.detail);
   const prompt = str(row.prompt).split("\n")[0] ?? "";
   const userText = sent?.text ?? prompt;
@@ -308,17 +315,18 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
                 </div>
               </div>
             )}
-            {/* 无句柄、且宿主也不收文本（Claude / Codex / Grok、旧扩展）：手机上永远发不了，
-                说明必须显式给（agora-71p2；空 thread 的用例见 agora-sd0b）。带宿主通道的
-                行走下面那条 host-running note，有句柄在跑的是更下面那条 running note。 */}
-            {handleless && !hostText && (
+            {/* 发不了的行（无句柄且宿主也不收文本：Claude / Codex / Grok、旧扩展；或句柄在而写
+                不了：采纳 socket、死 pane——agora-prdg.2）：说明必须显式给（agora-71p2；空
+                thread 的用例见 agora-sd0b）。带宿主通道的行走下面那条 host-running note，有
+                可写运行时又在中途的走更下面那条 running note。 */}
+            {!writableRuntime && !hostText && (
               <p className="mobile-note" data-testid="mobile-terminal-only">
                 {running
                   ? "它还在跑；这一行只能在桌面终端里回复。"
                   : "这一行没有可写的运行时；回复要到桌面终端。"}
               </p>
             )}
-            {!handleless && userText === "" && detail === "" && !running && (
+            {writableRuntime && userText === "" && detail === "" && !running && (
               <p className="mobile-note" data-testid="mobile-empty-thread">
                 还没有可显示的内容；回一条就会出现在这里。
               </p>
@@ -330,7 +338,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
       {note && <p className="mobile-note" data-testid="mobile-card-note">{note}</p>}
       {error && <p className="mobile-error" data-testid="mobile-card-error">{error}</p>}
 
-      {!handleless && (
+      {writableRuntime && (
         <div className="mobile-actions">
           <button className="mobile-more-toggle" data-testid="mobile-more" aria-expanded={more} onClick={() => setMore((v) => !v)}>
             更多 {more ? "▾" : "▸"}
@@ -378,7 +386,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
           它还在跑；发出去会排队，等它跑完这一轮就交进去。
         </p>
       )}
-      {running && !hostText && !handleless && (
+      {running && !hostText && writableRuntime && (
         <p className="mobile-note" data-testid="mobile-running-note">
           它还在跑，等它停下来或回完这一轮再发。
         </p>

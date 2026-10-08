@@ -20,6 +20,11 @@ function row(id: string, patch: Partial<SessionRow> = {}): SessionRow {
     agent_type: "claude",
     reason: null,
     respond_via: "hook",
+    // 默认是一条服务端的普通行：活着、由 agora 管的运行时（agora-prdg.2 起只有这一种是
+    // `text_via = runtime`；采纳 / 死 pane 的行是 none，见 "read-only rows" 那组用例）。
+    runtime_ref: `tmux:agora:${id}`,
+    text_via: "runtime",
+    managed: true,
     ...patch,
   };
 }
@@ -211,6 +216,63 @@ describe("composer", () => {
 
     setup(row("n:b", { status: "turn_done", origin: "external" }));
     expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+  });
+});
+
+describe("read-only rows (agora-prdg.2)", () => {
+  // 采纳行：服务端把 `text_via` 修成 `none`（只读 socket 不再谎报可写）；手机这边只给一句
+  // 「到桌面」，不画 composer / 「更多」。
+  it("an adopted row says 到桌面 instead of drawing a composer or 更多", () => {
+    const { ui } = setup(
+      row("zuan:adopt", {
+        origin: "adopted",
+        status: "turn_done",
+        runtime_ref: "tmux:other:x",
+        text_via: "none",
+        managed: false,
+        command: "claude",
+        prompt: "手工起的",
+        detail: "答",
+      }),
+    );
+    expect(screen.getByTestId("mobile-terminal-only").textContent).toContain("桌面终端");
+    expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+    // 「更多」整块收掉：没有切换按钮，也不留一个占位的空壳。
+    expect(screen.queryByTestId("mobile-more")).toBeNull();
+    expect(ui.container.querySelector(".mobile-actions")).toBeNull();
+  });
+
+  it("a managed row with a dead pane also loses composer and 更多", () => {
+    // 死 pane 的句柄还在列表里（scrollback 保留），但没有可写的 PTY：与采纳行同一档。
+    setup(
+      row("zuan:dead", {
+        status: "finished",
+        runtime_ref: "tmux:agora:dead",
+        text_via: "none",
+        managed: true,
+        command: "claude",
+      }),
+    );
+    expect(screen.getByTestId("mobile-terminal-only")).toBeTruthy();
+    expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+    expect(screen.queryByTestId("mobile-more")).toBeNull();
+  });
+
+  it("an old peer still claiming runtime on an adopted row is vetoed by managed=false", () => {
+    // agora-prdg.2 修前的服务端把采纳行报成 text_via=runtime；同一条 wire 上早就带着
+    // managed=false。手机拿它否决：混版本 / 旧 peer 的行也不给必然 409 的 composer 与 Kill。
+    setup(
+      row("mac:adopt", {
+        origin: "adopted",
+        status: "turn_done",
+        runtime_ref: "tmux:other:x",
+        text_via: "runtime",
+        managed: false,
+        command: "claude",
+      }),
+    );
+    expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+    expect(screen.queryByTestId("mobile-more")).toBeNull();
   });
 });
 

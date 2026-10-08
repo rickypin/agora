@@ -50,6 +50,11 @@ function row(id: string, patch: Partial<SessionRow> = {}): SessionRow {
     agent_type: "claude",
     reason: null,
     respond_via: "hook",
+    // 服务端的普通行：活着、由 agora 管的运行时（agora-prdg.2 起 composer 门看 text_via；
+    // 采纳 / 死 pane 的行是 none，`managed = false` 也会否决）。
+    runtime_ref: `tmux:agora:${id}`,
+    text_via: "runtime",
+    managed: true,
     ...patch,
   };
 }
