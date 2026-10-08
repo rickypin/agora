@@ -147,11 +147,14 @@ async fn presets_are_read_only_and_require_a_principal() {
 }
 
 #[test]
-fn api_version_is_1_15_with_the_presets_endpoint() {
+fn api_version_is_at_least_1_15_with_the_presets_endpoint() {
     // 版本纪律（agora-prdg.4）：新端点 + 新错误类型 preset_unknown ⇒ minor +1；两边同改的是
     // src/api/version.rs 与 web/src/health.ts，一致性由 version.rs 单测
     // `page_is_built_against_the_same_api_version` 钉住。
-    assert_eq!(API_VERSION, ApiVersion::new(1, 15));
+    // 只钉「这条 feature 的最低版本」：后来者继续 bump（1.16 起）不该让这条红（2026-10-08，
+    // 状态一窝的 ohvn 加 end_cause kind 统一 bump 到 1.16 时踩到过）。当前版本由 version.rs 自己
+    // 的常量与 `page_is_built_against_the_same_api_version` 钉住，不在这里重复。
+    assert!(API_VERSION >= ApiVersion::new(1, 15));
 }
 
 #[tokio::test]
