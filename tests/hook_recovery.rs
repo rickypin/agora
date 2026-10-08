@@ -3,7 +3,7 @@ mod common;
 use agora::{
     hook::{Delivery, Envelope, Inbox, Receiver},
     runtime::{Exit, Size},
-    session::{Db, NewSession, SessionManager},
+    session::{Db, ExternalSession, NewSession, Origin, SessionManager},
     status::{AgoraEvent, MachineConfig, Source, Status},
 };
 use serde_json::json;
@@ -1197,4 +1197,82 @@ fn the_retention_comes_from_config_not_from_the_hardcoded_twenty_four_hours() {
         inbox.completed().unwrap().is_empty(),
         "retention = 0 时刚归档的文件也该清掉：保留期要跟着 hooks.inbox_retention 走（agora-t36）"
     );
+}
+
+/// 行在 `record(id)` 与尾部落盘之间被删掉时，不该留下无行检查点（agora-bmng）。
+///
+/// 那个窗口转瞬即逝，这条守卫把它撑开：`restore_hook_checkpoints` 会攥着 `machines` 锁
+/// 逐行读检查点，而检查点路径做成 FIFO 后 `fs::read` 会一直阻塞（writer 不关，read 不返回）。
+/// 于是 restore 钉住 machines 锁，apply_hook 拿到自己那份 record 后等在这把锁上；另一个
+/// manager（同一个 Db、不带 hook_state_dir）把行删掉；再放开 FIFO，apply 才走到落盘那一步。
+///
+/// 关掉修复：`apply_hook_inner` 少了写前重查 → 无行检查点被写出来，最后一条断言红。
+#[test]
+fn a_deleted_row_gets_no_checkpoint_from_an_event_that_was_already_in_flight() {
+    let home = tempfile::tempdir().unwrap();
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let rt = Arc::new(common::FakeRuntime::default());
+    let s = Arc::new(SessionManager::new(db.clone(), rt.clone()));
+    s.enable_hook_checkpoints(home.path());
+    let id = s
+        .register_external(&ExternalSession {
+            agent_type: "claude".into(),
+            agent_session_id: "conversation-bmng".into(),
+            runtime_ref: None,
+            working_directory: None,
+            created_at: None,
+            origin: Origin::External,
+        })
+        .unwrap();
+
+    // victim 的检查点路径做成 FIFO：restore 的 fs::read 停在这里等 writer。
+    let checkpoint = checkpoint_path(home.path(), &id);
+    std::fs::create_dir_all(checkpoint.parent().unwrap()).unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(&checkpoint)
+        .status()
+        .expect("mkfifo 不可用");
+    assert!(made.success(), "建 FIFO 失败: {made:?}");
+
+    // ① restore 攥着 machines 锁停在 FIFO 的 read 上。
+    let restoring = {
+        let s = s.clone();
+        std::thread::spawn(move || s.restore_hook_checkpoints())
+    };
+    // 以 writer 加入：open 成功那一刻 restore 已经打开了读端、正阻塞在 read。writer 不关，
+    // read 就不返回，machines 锁一直被 restore 拿着。
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&checkpoint)
+        .expect("和 restore 在 FIFO 上会合");
+
+    // ② 事件在途：apply 先拿到自己那份 record（行还在），随后卡在 machines 锁上。
+    let applying = {
+        let s = s.clone();
+        let id = id.clone();
+        std::thread::spawn(move || s.apply_hook(&id, 1, &[AgoraEvent::Activity("working".into())]))
+    };
+    // record 只是一次主键 SELECT；200 ms 足够它走完并排到 machines 锁后面（撑窗口的余量，
+    // 不是语义的一部分：就算这步没排上，后面的删除也只会让 record 失败、测试在超时余量内照常收场）。
+    std::thread::sleep(Duration::from_millis(200));
+
+    // ③ 另一个 manager 把行删掉——它不带 hook_state_dir，不会顺手清检查点。
+    let deleter = SessionManager::new(db.clone(), rt);
+    deleter.delete_metadata(&id).unwrap();
+    assert!(deleter.record(&id).is_err(), "行已经删掉");
+
+    // ④ FIFO 本身不是检查点，先摘掉它，剩下的才是「这次 apply 写没写检查点」；unlink 不影响
+    // restore 已经打开的 fd，它的 read 照旧等 writer 关。
+    std::fs::remove_file(&checkpoint).unwrap();
+
+    // ⑤ 放开 FIFO：restore 读到空文件（解析失败、跳过），apply 才拿到 machines 锁去落盘。
+    drop(writer);
+    let applied = applying.join().unwrap().unwrap();
+    restoring.join().unwrap().unwrap();
+
+    assert!(
+        !checkpoint_path(home.path(), &id).exists(),
+        "行已经没了，apply 不该再写出检查点（agora-bmng）"
+    );
+    assert!(!applied, "行没了，事件不算应用");
 }

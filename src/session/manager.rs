@@ -535,7 +535,26 @@ impl SessionManager {
             if let (Some(dir), Some(snapshot)) =
                 (lock(&self.hook_state_dir).as_ref(), m.hook_snapshot())
             {
-                super::hook_state::save(dir, id, snapshot)?;
+                // 写前重查（agora-bmng）：开头那次 `record(id)` 到这里之间，另一个连接 / 线程
+                // （DELETE /api/sessions/:id、sweep 的过期删除）可能已经把这一行删了；行没了就
+                // 不该落检查点——`state/<hex>.json` 在库里没有对应行，`restore_hook_checkpoints`
+                // 按行迭代永远不会加载它，只能等 sweep 下一轮才收敛。
+                // 落盘之后才删的那一半窗口不用在这里堵：那条路径上的 `delete_metadata` 自己会
+                // `hook_state::remove`，而它要拿的 `machines` 锁正被本次调用握着，remove 必然
+                // 发生在这次 save 之后。
+                match self.record(id) {
+                    Ok(_) => super::hook_state::save(dir, id, snapshot)?,
+                    Err(SessionError::NotFound(_)) => {
+                        tracing::debug!(
+                            component = "hook",
+                            session = id,
+                            "行已删除，跳过 hook 检查点"
+                        );
+                        machines.remove(id);
+                        return Ok(false);
+                    }
+                    Err(err) => return Err(err),
+                }
             }
             *stored = m;
         }
