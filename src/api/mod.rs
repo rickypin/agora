@@ -11,6 +11,7 @@ pub mod changes;
 mod events;
 pub mod forward;
 mod health;
+mod presets;
 mod projects;
 mod push;
 mod sessions;
@@ -221,6 +222,8 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/projects/worktrees"),
     ("GET", "/api/projects/tasks"),
     ("GET", "/api/agents"),
+    // 手机「新建」的按钮列表（agora-prdg.4）：只读，没有对应的写端点。
+    ("GET", "/api/presets"),
     ("GET", "/api/events"),
     ("POST", "/api/auth/pair"),
     ("POST", "/api/auth/pair/new"),
@@ -264,6 +267,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/projects/tasks", get(projects::tasks))
         .route("/api/projects", get(projects::list))
         .route("/api/agents", get(agents::list))
+        // 预设（agora-prdg.4；MISSION §6.9）：只注册 GET——增删改只在桌面终端的 `agora preset`，
+        // 这里的 POST / PUT / DELETE 由 axum 回 405（"端点有、写没有"），是 S2 的只读边界。
+        .route("/api/presets", get(presets::list))
         .route("/api/events", get(events::upgrade))
         .route("/api/auth/pair", post(auth::pair))
         .route("/api/auth/pair/new", post(auth::pair_new))

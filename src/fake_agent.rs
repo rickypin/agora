@@ -6,6 +6,8 @@
 //! - `print <text>`：输出一行
 //! - `sleep <ms>`：睡
 //! - `read`：阻塞等一行 stdin，回显 `read:<line>`（EOF → 输出 `read:EOF` 并退出 0）
+//! - `argv <path>`：把自己收到的 argv（不含 argv[0]，一行一个）原子地写进 `path`
+//!   （agora-prdg.4：预设的 `launch_args` 有没有真的接在裸命令名之后，靠这个文件证）
 //! - `ignore-hup`：忽略 SIGHUP（模拟不理会挂断的 agent）
 //! - `ignore-term`：忽略 SIGTERM（模拟交互式 shell：Kill 得等满宽限再 SIGKILL，agora-284）
 //! - `exit <code>`：以该码退出
@@ -20,12 +22,16 @@ use std::io::{BufRead, Write};
 use crate::runtime::exec::{exec, ExecOptions};
 
 pub fn run(args: &[&str]) -> i32 {
+    // 尾部的多余参数不是用法错误：预设的 launch_args 是经 shell 追加在**整条命令行**之后的
+    // （`session::preset`；命令形如 `agora fake-agent -e "argv /tmp/a" --model opus`），扮演 agent
+    // 的 fake-agent 因此会多出几个结尾参数。`argv` 指令要断言的就是它们真的到了，所以这里按
+    // 脚本模式收下尾部参数、不解析（别把 launch_args 里的 `-e` 当成自己的选项）。
     let script = match args {
-        ["-e", inline] => inline
+        ["-e", inline, ..] => inline
             .split(';')
             .map(|s| s.trim().to_owned())
             .collect::<Vec<_>>(),
-        [path] => match std::fs::read_to_string(path) {
+        [path, ..] if !path.starts_with('-') => match std::fs::read_to_string(path) {
             Ok(s) => s.lines().map(|l| l.trim().to_owned()).collect(),
             Err(err) => {
                 eprintln!("fake-agent: 读脚本 {path} 失败: {err}");
@@ -71,6 +77,18 @@ pub fn run(args: &[&str]) -> i32 {
                         let _ = writeln!(out, "read:ERR {err}");
                         return 1;
                     }
+                }
+            }
+            "argv" => {
+                // 原子写（先写旁路文件再 rename）：测试那侧是"看到文件就断言"，半写的文件会
+                // 变成偶发假红。
+                let lines = std::env::args().skip(1).collect::<Vec<_>>().join("\n");
+                let tmp = format!("{arg}.tmp");
+                let written = std::fs::write(&tmp, format!("{lines}\n"))
+                    .and_then(|()| std::fs::rename(&tmp, arg));
+                if let Err(err) = written {
+                    eprintln!("fake-agent: 写 argv 文件 {arg} 失败: {err}");
+                    return 2;
                 }
             }
             #[cfg(unix)]

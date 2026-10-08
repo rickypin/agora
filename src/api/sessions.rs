@@ -159,8 +159,18 @@ pub struct CreateBody {
     /// `node_unknown`。转发过去时这个字段原样带着，所属节点看它就是自己的名字。
     #[serde(default)]
     pub node: Option<String>,
+    /// 用预设起会话（agora-prdg.4；epic agora-hxva）：只给 preset，节点把它展开成 agent_type /
+    /// working_directory / command（缺省链）/ launch_args / 首句（A43），display_name 缺省是预设名。
+    /// **只在本机起**（预设列表属于承载节点，跨节点见 V2，承接 agora-ch7a）；与 `node` 或任何显式
+    /// 字段同时给都 → 400，不猜。给 preset 时其余字段留空，所以它们都带 serde 缺省（显式路径在
+    /// handler 里把空值挡成 400）。
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
     pub display_name: String,
+    #[serde(default)]
     pub agent_type: String,
+    #[serde(default)]
     pub working_directory: PathBuf,
     #[serde(default)]
     pub worktree: Option<String>,
@@ -179,11 +189,63 @@ pub struct CreateBody {
     pub prompt: Option<String>,
 }
 
+impl CreateBody {
+    /// 与 preset 同时给了哪些显式字段（用于 400 里点名）；空串 / 空路径不算显式。
+    fn explicit_fields(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if !self.display_name.trim().is_empty() {
+            out.push("display_name");
+        }
+        if !self.agent_type.trim().is_empty() {
+            out.push("agent_type");
+        }
+        if !self.working_directory.as_os_str().is_empty() {
+            out.push("working_directory");
+        }
+        if self.worktree.is_some() {
+            out.push("worktree");
+        }
+        if self.task_ref.is_some() {
+            out.push("task_ref");
+        }
+        if self.command.is_some() {
+            out.push("command");
+        }
+        if self.cols.is_some() {
+            out.push("cols");
+        }
+        if self.rows.is_some() {
+            out.push("rows");
+        }
+        if self.prompt.is_some() {
+            out.push("prompt");
+        }
+        out
+    }
+}
+
 pub async fn create(
     principal: Principal,
     State(state): State<AppState>,
     Json(body): Json<CreateBody>,
 ) -> Result<Response, ApiError> {
+    // preset 的两个拒绝要在转发**之前**（agora-prdg.4 的第一性原理审查第 1 条）：预设列表只有
+    // 承载节点这一份（MISSION §6.9），把预设名转发到 peer 只会在那边查不到、回一个误导性的 404。
+    if let Some(name) = body.preset.as_deref() {
+        if body.node.as_deref().is_some_and(|n| !n.trim().is_empty()) {
+            return Err(bad_request(
+                "preset 只在本机起：预设列表属于承载节点，跨节点起会话见 V2（承接 agora-ch7a）",
+            ));
+        }
+        let explicit = body.explicit_fields();
+        if !explicit.is_empty() {
+            return Err(bad_request(&format!(
+                "preset 与显式字段（{}）不能同时给：预设就是完整的启动定义，不猜",
+                explicit.join(" / ")
+            )));
+        }
+        return create_from_preset(&state, &principal, name).await;
+    }
     // 选了 peer 节点：整个 body 原样过去，在那边校验、起会话、发事件；本机的库、运行时、projects
     // 表一个字都不动——新行随 peer 视图的 session_created 进本机的事件流（A45）。
     if let Some(resp) = forward::route_node(
@@ -200,6 +262,9 @@ pub async fn create(
     }
     if body.display_name.trim().is_empty() || body.agent_type.trim().is_empty() {
         return Err(bad_request("display_name 与 agent_type 不能为空"));
+    }
+    if body.working_directory.as_os_str().is_empty() {
+        return Err(bad_request("working_directory 不能为空"));
     }
     // 缺省链：请求 > `agents.<type>.command` 覆盖 > Adapter 的 default_command >
     // agent_type 本身（`GET /api/agents` 走同一条链的前两段）。
@@ -233,17 +298,93 @@ pub async fn create(
     if let (Some(c), Some(r)) = (body.cols, body.rows) {
         size = Size { cols: c, rows: r };
     }
-    let working_directory = body.working_directory;
     let new = NewSession {
         display_name: body.display_name,
         agent_type: body.agent_type,
-        working_directory: working_directory.clone(),
+        working_directory: body.working_directory,
         worktree: body.worktree,
         task_ref: body.task_ref,
         command,
         env: vec![],
         size,
     };
+    let view = spawn_session(&state, new, initial_prompt, None).await?;
+    tracing::info!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, "创建会话");
+    Ok((StatusCode::CREATED, Json(announce_created(&state, &view))).into_response())
+}
+
+/// `POST /api/sessions {preset}`（agora-prdg.4）：把 S1 存好的预设展开成与显式字段路径同一形状的
+/// 一代命令行。调用方已拒掉 `node` 与显式字段，这里只做展开与起会话。
+async fn create_from_preset(
+    state: &AppState,
+    principal: &Principal,
+    name: &str,
+) -> Result<Response, ApiError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(bad_request("preset 不能为空"));
+    }
+    let preset = super::presets::load(state, name).await?;
+    // 目录在 `agora preset add` 那一刻校验过（S1）；之后被删 / 移走的话，运行时给的是 502
+    // runtime（tmux 的 can't chdir），对手机是一句听不懂的话——这里先判，给 400。
+    let working_directory = PathBuf::from(&preset.working_directory);
+    if !working_directory.is_dir() {
+        return Err(bad_request(&format!(
+            "预设 {} 的目录不存在: {}（在终端里重新 `agora preset add` 一条）",
+            preset.name, preset.working_directory
+        )));
+    }
+    // 命令缺省链与显式路径同一条（agents.<type>.command → Adapter 的 default_command → 类型名
+    // 本身）：预设存的是 agent_type、不存命令——ADR-001 D7 的可移植裸名在这里定。
+    let command = state
+        .agents
+        .get(&preset.agent_type)
+        .and_then(|a| a.command.clone())
+        .or_else(|| {
+            crate::adapter::find(&preset.agent_type)
+                .map(|a| crate::adapter::AgentIdentity::default_command(a).to_owned())
+        })
+        .unwrap_or_else(|| preset.agent_type.clone());
+    // 预设的首句按 agent 当时的能力用：CLI 存的时候对不吃首句的 agent 是"警告并保留"（将来接了
+    // 就生效），所以这里不接受的直接不发，而不是像显式 prompt 那样 400 把整条预设废掉。
+    let initial_prompt = preset
+        .prompt
+        .clone()
+        .filter(|p| !p.trim().is_empty())
+        .filter(|_| {
+            crate::adapter::find(&preset.agent_type)
+                .is_some_and(crate::adapter::AgentIdentity::accepts_initial_prompt)
+        });
+    let new = NewSession {
+        display_name: preset.name.clone(),
+        agent_type: preset.agent_type.clone(),
+        working_directory,
+        worktree: None,
+        task_ref: None,
+        command,
+        env: vec![],
+        size: Size::default(),
+    };
+    // launch_args 是预设里的原样字符串快照；`create_with_prompt` 把它接在裸命令名之后。
+    let view = spawn_session(state, new, initial_prompt, preset.args.clone()).await?;
+    tracing::info!(
+        component = "api",
+        principal = %principal.log_id(),
+        session_id = %view.record.id,
+        preset = %preset.name,
+        "从预设创建会话"
+    );
+    Ok((StatusCode::CREATED, Json(announce_created(state, &view))).into_response())
+}
+
+/// 两条创建路径（显式字段 / preset）的汇合点：钉死对话 id、起运行时、落库、更新项目最近使用。
+async fn spawn_session(
+    state: &AppState,
+    new: NewSession,
+    initial_prompt: Option<String>,
+    launch_args: Option<String>,
+) -> Result<SessionView, ApiError> {
+    let working_directory = new.working_directory.clone();
     // 钉死对话 id（D7 识别顺序第二位）：hook 自报会覆盖它；没 hook 的会话靠它 resume。
     let st = state.clone();
     let view = blocking(&state.sessions, move |s| {
@@ -255,7 +396,7 @@ pub async fn create(
             new.command = command;
             id
         });
-        let view = s.create_with_prompt(&new, initial_prompt.as_deref(), None)?;
+        let view = s.create_with_prompt(&new, initial_prompt.as_deref(), launch_args.as_deref())?;
         if let Some(id) = pinned {
             s.set_pinned_agent_session_id(&view.record.id, &id)?;
             return s.get(&view.record.id);
@@ -263,9 +404,8 @@ pub async fn create(
         Ok(view)
     })
     .await?;
-    touch_project(&state, working_directory).await;
-    tracing::info!(component = "api", principal = %principal.log_id(), session_id = %view.record.id, "创建会话");
-    Ok((StatusCode::CREATED, Json(announce_created(&state, &view))).into_response())
+    touch_project(state, working_directory).await;
+    Ok(view)
 }
 
 #[derive(Debug, Deserialize)]
