@@ -8,6 +8,7 @@
 
 - 表里每一行有一个 id（`a01`… 有句柄、`x01`… 无句柄），**id 同时是对应测试名的前缀**，所以表里的任何一行都能拿 id 在测试名里检索到；`cargo test status_truth_table` 逐行重跑，几毫秒。
 - `::spec_rows_and_code_rows_agree` 拿本文件的表与测试里那张 `ROWS` 逐行对账：新增一行不写守卫、删掉一行不删表、把 ✗ 改成 ✓，都会红。
+- 整个文件只有一张 `ROWS` 表（agora-fhez，2026-10-08 收口）：38 个 spec 格加它们下面的一档档组合（external STARTING 衰减、runtime gone、`end_cause` / `unknown_cause` 词表、process 分片矩阵、expire 的三条 arm）。每一行的期望都是枚举（`status` / `source` / `process` / `end_cause.kind` 或 `unknown_cause`），`::every_row_in_the_table_is_asserted` 把每一行真的喂一遍（没有格子只声明不断言）；`::shard_process_assertions_are_all_in_the_table` 与 `::expire_arms_are_shapes_in_the_table` 是本轮收进来的两组，expire 真跑删行的是 `::expire_arms_and_the_local_seen_anchor_are_pinned`（含 agora-91vy 的 `local_seen_at` 锚存在 / 缺失两态）。
 - `::every_reachable_cell_is_in_the_table` 反方向查：把能喂的都喂一遍，状态机吐出的每一个落点都要在本档那一节的表里找得到一格。表少写一格（或把口径改了）就红——这一条管的是"表是不是闭合的"，上面那两条管的是"表与守卫是不是同一份"。
 
 ## 1. 四列的取值与判定符号
@@ -82,7 +83,7 @@
 
 1. **STARTING 不是筐**：hook 层的 STARTING 最多停 `startup_grace`（默认 10 s），到点归 TURN_DONE `awaiting first prompt`，不分 origin、不分进程号在不在（a03 / x02 共用 `Machine::decay_starting`）。
 2. **UNKNOWN 必须带原因、必须有出口**：`unknown_cause` 是封闭集合（`runtime_unavailable | hooks_silent_screen | prompt_gone | hooks_silent_no_handle | no_observation | exit_status_missing`，形态见 `docs/spec/api.md`「会话形态」，每一种原因的出口逐条列在 MISSION §4.3「UNKNOWN 的允许原因」——那一节是口径，本表是它与代码对账的结果）；表里只允许 a17 / a18 / a22 / a23 / x10 / x12 六格出现 UNKNOWN：六个值都有人认领（a18 一格承两档——屏幕沉默与提示消失对使用者是同一件事），而 `no_observation` 在有句柄与无句柄两档各占一格（a23 / x12，出口不一样：前者下一 tick 落 a01，后者等第一条 hook 事件）。守卫是 `::every_reachable_cell_is_in_the_table`：把 13 类 hook 事件 × 屏幕证据 × 进程事实 × 三种进程号状态喂一遍，每一个落点都要在表里找得到同一档（有句柄 / 无句柄）的一格——状态机私自产出一格新形状而表上没有人写过的话，红在这里。
-3. **结束必须说得出原因**：`end_cause` 是封闭集合（`exit_code | signal | killed_by_user | host_session_end | superseded | process_gone | runtime_gone | checkpoint_unrecorded`）；`reason` 只是给人看的一句话，程序按枚举分支（MISSION §2.3 规则 10）。`checkpoint_unrecorded` 只属于这条枚举落地之前写下的 hook 检查点恢复出来的结束行：`Machine::restore_hook` 补这一档，不把「检查点没记类型」留成 `null`（agora-ohvn）。守卫 `::every_finished_and_failed_row_names_its_end_cause`、`::every_unknown_row_names_why_it_is_unknown`、`::cause_wire_vocabulary_is_the_locked_set`。
+3. **结束必须说得出原因**：`end_cause` 是封闭集合（`exit_code | signal | killed_by_user | host_session_end | superseded | process_gone | runtime_gone | checkpoint_unrecorded`）；`reason` 只是给人看的一句话，程序按枚举分支（MISSION §2.3 规则 10）。`checkpoint_unrecorded` 只属于这条枚举落地之前写下的 hook 检查点恢复出来的结束行：`Machine::restore_hook` 补这一档，不把「检查点没记类型」留成 `null`（agora-ohvn）。守卫 `::every_finished_and_failed_row_names_its_end_cause`、`::every_unknown_row_names_why_it_is_unknown`、`::cause_wire_vocabulary_is_the_locked_set`、`::expire_arms_and_the_local_seen_anchor_are_pinned`（expire 三条 arm × 两只时钟 × 两个 ttl，含 91vy 锚的两态）。
 
 ## 5. headless 与 external 不同的三件事
 
