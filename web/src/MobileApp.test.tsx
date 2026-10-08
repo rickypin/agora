@@ -59,7 +59,7 @@ function row(id: string, patch: Partial<SessionRow> = {}): SessionRow {
   };
 }
 
-function setup(rows: SessionRow[], fetchImpl?: FetchLike) {
+function setup(rows: SessionRow[], fetchImpl?: FetchLike, now = 1000) {
   const sock = new FakeSocket();
   const store = new SessionStore({
     connect: () => sock,
@@ -69,7 +69,7 @@ function setup(rows: SessionRow[], fetchImpl?: FetchLike) {
   const health = new HealthWatcher({ fetchHealth: async () => ({ status: "ok" }) });
   const version = new VersionWatcher({ fetchSystem: async () => ({ node: "zuan", api_version: { major: 1, minor: 9 } }) });
   const ui = render(
-    <MobileApp store={store} health={health} version={version} now={1000} api={fetchImpl ? sessionApi(fetchImpl) : undefined} />,
+    <MobileApp store={store} health={health} version={version} now={now} api={fetchImpl ? sessionApi(fetchImpl) : undefined} />,
   );
   return { ui, store, sock };
 }
@@ -146,8 +146,8 @@ describe("mobile inbox sections", () => {
 
     const local = screen.getByTestId("mobile-row-n:a");
     const peer = screen.getByTestId("mobile-row-n:p");
-    expect(local.textContent).toContain("waiting 3m");
-    expect(peer.textContent).toContain("waiting ≥3m");
+    expect(local.textContent).toContain("等你 3m");
+    expect(peer.textContent).toContain("等你 ≥3m");
     expect(local.textContent).toContain("Claude");
     expect(screen.getByTestId("mobile-node-n:a").className).toContain("local");
     const peerChip = screen.getByTestId("mobile-node-n:p");
@@ -175,6 +175,71 @@ describe("mobile inbox sections", () => {
     expect(screen.getByTestId("mobile-card-n:a")).toBeTruthy();
     fireEvent.click(screen.getByTestId("mobile-back"));
     expect(screen.getByTestId("mobile-inbox").textContent).toContain("需要我");
+  });
+});
+
+describe("手机端状态词与段名（agora-o975.4）", () => {
+  // 2026-10-08 真机反馈第四条：段名「在跑」装的是所有「不需要你」的行——用户在「需要我」里点开一行
+  // 只记了「看过」（agora-5gg.21 的降段），行本身没在跑，却被段名说成在跑；行上的词还是英文
+  // （working / turn done），看不出看过没看过。
+  //
+  // 时刻用真实墙上钟附近的值：段位（turn_done 的 12 h 新鲜度窗口，attention.ts）按 wallClock 判，
+  // 拿假的 1000 当 now 会让所有 turn_done 都过期降段；`now` 参数同时喂给显示时长，两边就都对了。
+  const NOW = Math.floor(Date.now() / 1000);
+  const since = (secs: number) => NOW - secs;
+
+  it("段名说「不用你」；没看过的 turn_done 说「回完了」、看过一次的说「已看过」", async () => {
+    const seenDone = row("n:seen", { status: "turn_done", status_since: since(180) });
+    localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify([seenKey(seenDone)]));
+    const t = setup([seenDone, row("n:done", { status: "turn_done", status_since: since(180) })], undefined, NOW);
+    await online(t);
+
+    // 看过的降进「不用你」段（sectionOf 与桌面同源），行上带记号；没看过的还在「需要我」。
+    const working = screen.getByTestId("mobile-section-working");
+    expect(working.getAttribute("aria-label")).toBe("不用你");
+    expect(working.textContent).toContain("已看过");
+    expect(working.textContent).not.toContain("回完了");
+    const attention = screen.getByTestId("mobile-section-attention");
+    expect(attention.textContent).toContain("回完了");
+    // 段名不再是「在跑」：跑着的行也在这一段，但段名说的是要不要我管。
+    expect(t.ui.container.textContent).not.toContain("在跑 0");
+  });
+
+  it("逐状态词：等你 / 等你批准 / 在跑 / 闲着 / 已结束 / 失败 / 说不清", async () => {
+    const t = setup(
+      [
+        row("n:wait", { status: "waiting", status_since: since(180) }),
+        row("n:perm", { status: "waiting", status_since: since(180), reason: "permission" }),
+        row("n:run", { status: "running", status_since: since(180) }),
+        row("n:start", { status: "starting", status_since: since(180) }),
+        row("n:idle", { status: "idle", status_since: since(180) }),
+        row("n:fail", { status: "failed", status_since: since(180) }),
+        row("n:unknown", { status: "unknown", status_since: since(180) }),
+        row("n:fin", { status: "finished", status_since: since(180), origin: "external" }),
+      ],
+      undefined,
+      NOW,
+    );
+    await online(t);
+
+    const status = (id: string) => screen.getByTestId(`mobile-row-${id}`).querySelector(".mobile-status")?.textContent;
+    expect(status("n:wait")).toBe("等你 3m");
+    expect(status("n:perm")).toBe("等你批准 3m");
+    expect(status("n:run")).toBe("在跑 3m");
+    expect(status("n:start")).toBe("启动中 3m");
+    expect(status("n:idle")).toBe("闲着 3m");
+    expect(status("n:fail")).toBe("失败 3m");
+    expect(status("n:unknown")).toBe("说不清 3m");
+    // FINISHED 的行在收起的一段里：展开才画（行文字与其他段同一条规则）。
+    fireEvent.click(screen.getByTestId("mobile-finished-toggle"));
+    expect(status("n:fin")).toBe("已结束 3m");
+  });
+
+  it("卡片头也用同一份手机端状态词（不是桌面英文）", async () => {
+    const t = setup([row("n:wait", { status: "waiting", status_since: since(180) })], undefined, NOW);
+    await online(t);
+    fireEvent.click(screen.getByTestId("mobile-row-n:wait"));
+    expect(screen.getByTestId("mobile-card-n:wait").querySelector(".mobile-status")?.textContent).toBe("等你 3m");
   });
 });
 

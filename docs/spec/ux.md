@@ -232,7 +232,7 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 │ 承载节点 zuan ●      │         │  ⚠ frontend ✦ Claude @ zuan │
 │ [添加到主屏幕引导]   │         │    把 sidebar 换成…… waiting 3m│
 │ [粘贴配对链接] [配对]│         │  ↳ Bash: git push …          │
-└──────────────────────┘         │ 在跑 4   已完成 12（折叠）   │
+└──────────────────────┘         │ 不用你 4   已完成 12（折叠） │
                                   └──────────────────────────────┘
 3 会话卡（即时消息语法）          4 设置
 ┌────────────────────────────────┐   ┌──────────────────────────┐
@@ -304,6 +304,31 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 `z-index: 2`（滚过来的内容不许画在它们上面），composer 的 padding 里继续吃掉 `--safe-bottom`
 （主屏指示条不盖发送键）。守卫 `web/src/mobileCss.test.ts`（raw 断言：两条 sticky 规则都要在、都带
 背景与 z-index）与 `web/src/MobileCard.test.tsx`（结构：头在最前、composer 与头共用同一个 scrollport）。
+
+### 手机端的段名与状态词（agora-o975.4，2026-10-08）
+
+四段回答的是「**要不要我管**」，不是「在不在跑」：`working` 段装的是**一切不需要你的行**——`running` /
+`starting` / `idle`，以及看过一次的 `turn_done`（agora-5gg.21 的降段）。真机上用户在「需要我」里点开
+一行只记了「看过」，行没在跑、agent 也没动，段名却写着「在跑」——名不副实。所以手机端的段名改成
+**「不用你」**（只改 `MobileApp` 的 `OPEN_SECTIONS`，桌面四段不动），行上的状态词同时换成中文，词表只
+放在 `web/src/mobileStatus.ts`（不动桌面共用的 `attention.ts` `STATUS_TEXT`）：
+
+| 状态 | 手机端的词 | 条件 |
+|---|---|---|
+| `waiting` | 等你 |  |
+| `waiting` 且 `reason = "permission"` | 等你批准 | 人的动作是照命令批准 / 拒绝，与“回答问题”分开说 |
+| `turn_done` | 回完了 | 没看过（本设备 seen 集合里没有这一行的记号） |
+| `turn_done` | 已看过 | 看过一次（`seen.has(seenKey(row))`；降进「不用你」段的是同一枚记号） |
+| `running` | 在跑 |  |
+| `starting` | 启动中 |  |
+| `idle` | 闲着 |  |
+| `finished` | 已结束 |  |
+| `failed` | 失败 |  |
+| `unknown` | 说不清 |  |
+
+时长接在词后（`等你 3m`），peer 行的 `≥` 下界语义照旧（ADR-004，只换词不换口径）；认不出的状态
+原样显示，不猜也不翻译。守卫 `web/src/mobileStatus.test.ts`（逐状态 + seen/unseen 两态 + permission
+特例）与 `web/src/MobileApp.test.tsx`（段名与「已看过」逐字）。
 
 ### 横屏用满宽度（agora-x70t，2026-10-08）
 

@@ -20,7 +20,7 @@ import {
 } from "react";
 import { agentBadge } from "./agentBadge";
 import { sessionApi, type PresetInfo, type SessionApi } from "./api";
-import { anchoredNow, isHandleless, loadSeen, sectionOf, sortByAttention, statusLine, storeSeen, taskLabel, type Section, type SeenSet } from "./attention";
+import { anchoredNow, isHandleless, loadSeen, sectionOf, seenKey, sortByAttention, storeSeen, taskLabel, type Section, type SeenSet } from "./attention";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow } from "./events";
 import { HealthWatcher, VersionWatcher } from "./health";
@@ -29,17 +29,21 @@ import { MobileSettings } from "./MobileSettings";
 import { applyOutline, rememberLayout } from "./mobileDebug";
 import { installSafeInsets } from "./mobileInsets";
 import { parseSessionTarget } from "./mobileRoute";
+import { mobileStatusLine } from "./mobileStatus";
 import { loadMobileTextSize, storeMobileTextSize, type MobileTextSize } from "./mobileText";
 import { browserPushEnv, selfCheckPush, type PushEnv } from "./push";
 import { nodeHue } from "./nodeColor";
 import { rowName, statusSymbol, str } from "./SessionRow";
 import { SessionStore, useServerClock, useSessions } from "./store";
 
-/** 前三段固定顺序（与 attention.ts 的 partitionByAttention 同一顺序）；已完成是折叠的一段。 */
+/** 前三段固定顺序（与 attention.ts 的 partitionByAttention 同一顺序）；已完成是折叠的一段。
+ *  段名回答的是「要不要我管」，不是「在不在跑」：working 段装的是**一切不需要你的行**——running /
+ *  starting / idle，以及看过一次的 turn_done（agora-5gg.21 的降段）。用户点开一行只是记了「看过」，
+ *  行没在跑却显示成「在跑」，正是 2026-10-08 真机反馈的第四条（agora-o975.4）。 */
 const OPEN_SECTIONS: { key: Section; label: string }[] = [
   { key: "attention", label: "需要我" },
   { key: "unclear", label: "说不清" },
-  { key: "working", label: "在跑" },
+  { key: "working", label: "不用你" },
 ];
 
 interface Props {
@@ -296,6 +300,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
           now={nowSeconds}
           onBack={() => setSelected(null)}
           onSeen={markSeen}
+          seen={seen.has(seenKey(selectedRow))}
           focusComposer={focusComposerFor === selectedRow.id}
         />
       </main>
@@ -370,7 +375,8 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   }
 
   const renderRow = (row: SessionRow) => (
-    <MobileRow key={row.id} row={row} now={nowSeconds} localNode={localNode} onOpen={setSelected} />
+    // 「已看过」是本设备的 seen 集合算出来的（MISSION §4.6 证据 ①）：记号跟着「这一次完成」走。
+    <MobileRow key={row.id} row={row} now={nowSeconds} localNode={localNode} seen={seen.has(seenKey(row))} onOpen={setSelected} />
   );
 
   return (
@@ -458,6 +464,8 @@ interface RowProps {
   now: number;
   /** 本机 node.id（`/api/system`）：已知后每一行标节点 chip，本机不着色（与桌面 RowIdentity 同规矩）。 */
   localNode: string | null;
+  /** 本设备看过这一行了吗（`seen.has(seenKey(row))`）：turn_done 的「回完了 / 已看过」靠它。 */
+  seen: boolean;
   onOpen: (id: string) => void;
 }
 
@@ -508,10 +516,12 @@ function PresetButton({ preset, starting, disabled, onStart }: PresetProps) {
   );
 }
 
-function MobileRow({ row, now, localNode, onOpen }: RowProps) {
+function MobileRow({ row, now, localNode, seen, onOpen }: RowProps) {
   const badge = agentBadge(String(row.agent_type ?? ""));
   const local = localNode !== null && row.node === localNode;
   const summary = mobileSummary(row);
+  // 手机端的词（等你 / 回完了 / 已看过 / 在跑…），不是桌面那份英文（agora-o975.4）。
+  const status = mobileStatusLine(row, seen, now);
   return (
     <li>
       <button
@@ -528,7 +538,7 @@ function MobileRow({ row, now, localNode, onOpen }: RowProps) {
             {statusSymbol(row.status)}
           </span>
           <span className="mobile-row-name">{rowName(row)}</span>
-          <span className="mobile-status">{statusLine(row, now)}</span>
+          <span className="mobile-status">{status}</span>
         </span>
         <span className="mobile-row-sub">
           <span className="mobile-agent" style={{ "--hue": badge.hue } as CSSProperties}>

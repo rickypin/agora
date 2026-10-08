@@ -15,8 +15,9 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { agentBadge } from "./agentBadge";
 import type { ApiErrorBody, SessionApi } from "./api";
-import { isHandleless, seenKey, seenRelevant, statusLine, taskLabel } from "./attention";
+import { isHandleless, seenKey, seenRelevant, taskLabel } from "./attention";
 import { textVia } from "./events";
+import { mobileStatusLine } from "./mobileStatus";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow } from "./events";
 import { MarkdownView } from "./MarkdownView";
@@ -37,6 +38,8 @@ interface Props {
   onBack: () => void;
   /** 「看过」记号（打开卡片 = 看到这一条结果）：写进每设备 localStorage 的集合。 */
   onSeen?: (key: string) => void;
+  /** 本设备看过这一行了吗（`seen.has(seenKey(row))`，MobileApp 算好传进来）：头里的「回完了 / 已看过」。 */
+  seen?: boolean;
   /** 推送点击进来且这一行可发送（turn_done / idle）：把焦点放进底部 composer（agora-thc.7）。 */
   focusComposer?: boolean;
 }
@@ -69,7 +72,7 @@ export function sendFailureText(error: ApiErrorBody): string {
   }
 }
 
-export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Props) {
+export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusComposer }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [more, setMore] = useState(false);
   const [pending, setPending] = useState<Pending>(null);
@@ -231,7 +234,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
         <span className="mobile-node-chip peer" data-testid="mobile-card-node" data-node={row.node} style={{ "--hue": nodeHue(row.node) } as CSSProperties}>
           @{row.node}
         </span>
-        <span className="mobile-status">{statusLine(row, now)}</span>
+        <span className="mobile-status">{mobileStatusLine(row, seen, now)}</span>
       </header>
       <p className="mobile-card-task">{taskLabel(row)}</p>
 
