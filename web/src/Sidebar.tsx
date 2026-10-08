@@ -221,7 +221,9 @@ export function Sidebar({
   const pageNow = useNowSeconds();
   // 时长以节点钟为基准（agora-au5）：status_since 是节点打的（peer 行也是本节点钟重写的），
   // 用页面钟减会把页面与节点的钟差整体加在时长上；serverClock 缺省时退回页面钟（老节点 / 测试）。
-  const now = serverClock ? anchoredNow(serverClock, pageNow) : pageNow;
+  // 锚定必须用**当下的墙钟**（agora-o975.5）：`pageNow` 是 30 s 才走一格的渲染信号，拿它当锚会
+  // 让「现在」最多落后 30 s——2026-10-08 真机实测：刚进入在跑的行显示 `0s`、节点侧已经过了 5 s。
+  const now = serverClock ? anchoredNow(serverClock, Math.floor(Date.now() / 1000)) : pageNow;
   // 一键清理的对象是折叠区的定义本身（已看过的 agora / adopted FINISHED + 全部 external FINISHED），按过滤
   // 前的 all 算——过滤只是暂时少画几行，不改变哪些行「可以清」；NEEDS ATTENTION 里没看过的 FINISHED 不碰
   // （MISSION §4.6「不得在用户看到结果之前清理」）。没有批量端点也不加：逐行 DELETE /api/sessions/:id

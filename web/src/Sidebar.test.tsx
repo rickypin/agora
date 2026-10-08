@@ -140,6 +140,30 @@ it("anchors row durations on the node clock, not the page clock (agora-au5)", ()
   expect(screen.getByTestId("state-n:wait").textContent).toBe("waiting 3m");
 });
 
+it("anchors with the live wall clock, not the 30 s tick state (agora-o975.5)", () => {
+  const T = 1_900_000_000_000;
+  vi.mocked(Date.now).mockReturnValue(T);
+  const nodeNow = 1_000_000;
+  const rows = [row("n:wait", "waiting", { status_since: nodeNow - 100 })];
+  const props = {
+    rows: partitionByAttention(sortByAttention(rows), new Set<string>()),
+    seen: new Set<string>(),
+    all: rows,
+    total: rows.length,
+    active: null,
+    onOpen: () => {},
+    filter: "",
+    onFilter: () => {},
+    serverClock: { now: nodeNow, at: T / 1000 },
+  };
+  const ui = render(<Sidebar {...props} />);
+  expect(screen.getByTestId("state-n:wait").textContent).toBe("waiting 1m");
+  // 20 s 过去：30 s 的心跳还没到，但「现在」必须跟着墙钟走（旧写法用 30 s 粒度的状态 → 还是 1m）
+  vi.mocked(Date.now).mockReturnValue(T + 20_000);
+  ui.rerender(<Sidebar {...props} />);
+  expect(screen.getByTestId("state-n:wait").textContent).toBe("waiting 2m");
+});
+
 it("expands the Finished section on click; rows keep attention order, stay selectable and keep their ordinals", () => {
   const { onOpen, visible } = mount(ROWS);
   fireEvent.click(screen.getByTestId("section-finished"));

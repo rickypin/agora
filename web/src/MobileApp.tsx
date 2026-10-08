@@ -275,7 +275,10 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     setFocusComposerFor(pendingNew);
     setPendingNew(null);
   }, [rows, pendingNew]);
-  const nowSeconds = now ?? (serverClock ? anchoredNow(serverClock, clock) : clock);
+  // 锚定要拿**当下的墙钟**，不能拿 `clock`（它是每 30 s 走一格的渲染信号）——否则锚定值最多落后
+  // 30 s，卡片心跳从这个偏低的起点往上加，刚进在跑的行头几秒被夹成 `0s`（agora-o975.5，2026-10-08
+  // 真机实测：节点侧已过 5 s、页面还写 0s）。`clock` 仍留着当重渲染的信号。
+  const nowSeconds = now ?? (serverClock ? anchoredNow(serverClock, Math.floor(Date.now() / 1000)) : clock);
   const selectedRow = selected === null ? undefined : rows.find((r) => r.id === selected);
 
   // 安全区自适应（agora-xu12）：主屏 PWA 全屏时 env(safe-area-inset-*) 要照加；但浏览器里

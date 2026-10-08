@@ -7,7 +7,7 @@
  * 已完成区也要先展开再选中）、行上的时长与摘要口径。
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionApi, type FetchLike, type PresetInfo } from "./api";
 import { SEEN_STORAGE_KEY, seenKey } from "./attention";
 import type { SessionRow, SocketLike } from "./events";
@@ -719,5 +719,37 @@ describe("回到前台与断线重连（agora-f068）", () => {
     });
     expect(t.store.client.snapshots).toBe(2);
     expect(screen.getByTestId("mobile-inbox").textContent).toContain("n:b");
+  });
+});
+
+describe("锚定「现在」用当下墙钟（agora-o975.5）", () => {
+  it("30 s 心跳还没到，行上的时长也跟墙钟走（不是 30 s 粒度的状态）", async () => {
+    const T = 1_900_000_000_000;
+    const spy = vi.spyOn(Date, "now").mockReturnValue(T);
+    const nodeNow = 1_000_000;
+    const sock = new FakeSocket();
+    // 快照带 now（真节点都会带）→ 走锚定路；**不传 now prop**，让组件自己算。
+    const store = new SessionStore({
+      connect: () => sock,
+      fetchSnapshot: async () => ({ sessions: [row("zuan:wait", { status: "waiting", status_since: nodeNow - 100 })], unregistered: [], now: nodeNow }),
+      coalesceMs: 0,
+    });
+    const health = new HealthWatcher({ fetchHealth: async () => ({ status: "ok" }) });
+    const version = new VersionWatcher({ fetchSystem: async () => ({ node: "zuan", api_version: { major: 1, minor: 9 } }) });
+    const ui = render(<MobileApp store={store} health={health} version={version} />);
+    await act(async () => {
+      sock.onopen?.({});
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    const status = () => screen.getByTestId("mobile-row-zuan:wait").querySelector(".mobile-status")?.textContent;
+    expect(status()).toBe("等你 1m"); // 锚点 = 快照那一刻（status_since 是 100 s 前）
+    // 20 s 过去：30 s 的心跳**没有**触发，但「现在」必须跟着墙钟走。
+    // 旧写法把 30 s 粒度的 clock state 当 pageNow → 这里还会是「等你 1m」（真机实测落后 4–30 s）。
+    spy.mockReturnValue(T + 20_000);
+    ui.rerender(<MobileApp store={store} health={health} version={version} />);
+    expect(status()).toBe("等你 2m");
+    spy.mockRestore();
   });
 });
