@@ -3,6 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { SessionRow } from "./events";
 import { clockText } from "./Header";
+import { SCORE } from "./attention";
 import { RowIdentity, projectLine } from "./RowIdentity";
 import rawCss from "./index.css?raw";
 import { SidebarRow, staleSeen } from "./SessionRow";
@@ -83,6 +84,25 @@ function cssRule(selector: string): string {
   expect(m, `index.css 里找不到规则 \`${selector}\``).toBeTruthy();
   return m![1];
 }
+
+/** 选择器里含 `sel` 的所有规则体（`.st-running, .st-starting { … }` 里两个选择器都算一条）。 */
+function cssRulesWith(sel: string): string[] {
+  return [...CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter((m) => m[1].split(",").some((s) => s.trim() === sel))
+    .map((m) => m[2]);
+}
+
+it("gives a color to every status in the attention score table, unknown included (agora-7vu0)", () => {
+  // 行上写的是 `dot st-${row.status}`（`SessionRow` 的行号 / `RowIdentity` 的 state），而 index.css 少一条
+  // .st-unknown 时，UNCLEAR 段的 ? 掉回默认前景色——比同屏 IDLE 的 ○ 还亮，符号的亮度把「看不清」说成了
+  // 「更值得看」。SCORE 是状态全集（MISSION §6.3 的分数表；不认识的状态名落 unknown 档），拿它逐条点名：
+  // 将来加状态忘了补色同样会红。
+  for (const status of Object.keys(SCORE)) {
+    expect(cssRulesWith(`.st-${status}`).length, `index.css 里缺少 .st-${status} 的配色规则`).toBeGreaterThan(0);
+  }
+  // unknown 与 finished / idle 同属「不用你现在动手」一档：同一枚 muted，不抢注意力。
+  expect(cssRulesWith(".st-unknown").join(" ")).toMatch(/color:\s*var\(--muted\)/);
+});
 
 it("splits the badge into a whole glyph and a truncatable label, full name in title (agora-8lb)", () => {
   // 2026-09-09 用户目检：侧栏行徽标成了「✧ Gro」，本机 external 行只剩半个 glyph。根因是 glyph 与

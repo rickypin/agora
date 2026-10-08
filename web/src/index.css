@@ -127,7 +127,10 @@ select:disabled { opacity: 0.5; }
 .st-turn_done { color: var(--accent); }
 .st-running, .st-starting { color: var(--ok); }
 .st-failed { color: var(--bad); }
-.st-finished, .st-idle { color: var(--muted); }
+/* unknown 与 finished / idle 同属「不用你现在动手」一档（agora-7vu0，2026-10-08）：UNCLEAR 段的 ? 少了
+   这一条就掉回默认前景色，比同屏 IDLE 的 ○ 还亮（`SessionRow` 的行号 / `RowIdentity` 的 state 都写
+   `st-${status}`，未登记的 runtime 行 `Sidebar.tsx` 也用它）。守卫 `SessionRow.test.tsx` 按 SCORE 逐状态点名。 */
+.st-finished, .st-idle, .st-unknown { color: var(--muted); }
 
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .crumb { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; border-bottom: 1px solid var(--border); color: var(--muted); }
