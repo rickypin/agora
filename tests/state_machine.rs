@@ -1041,8 +1041,9 @@ fn handleless_silence_is_measured_from_event_time() {
     // 旧写法只认 `last_hook_at`（daemon 收到的时刻），于是停机 3.5 天后重启：被重放的那批 TURN_DONE
     // 把时钟拨到重放那一刻、要再等 2 h 才 UNKNOWN，而没被重放、从检查点恢复的 4 行当场就 UNKNOWN
     // ——同一批行两种结果（`docs/analysis/session-status-audit-2026-09-18.md` §4 A4，判 (b)）。
-    // 守卫四段：① apply_at(at = now - 3 h) 后下一个 tick 即 UNKNOWN（不需再等 2 h），但状态起点是
-    // 判定的那一刻（前端拿它算 "unknown 3m"）；② 迟到的旧投递件不把刚出声的行打回 UNKNOWN（取 max）；
+    // 守卫四段：① apply_at(at = now - 3 h) 后下一个 tick 即 UNKNOWN（不需再等 2 h），状态起点是
+    // 越过沉默阈值那一刻（观察期时钟，agora-5oce：重启 + 重放后 TTL 出口不被清零）；② 迟到的旧
+    // 投递件不把刚出声的行打回 UNKNOWN（取 max）；
     // ③ 有 pane 的 D1 沉默规则**不变**，同一条三小时前的重放不能让它当场判定 hook 沉默（那条问的是
     // daemon 的等待），到 600 s 才落 UNKNOWN；④ STARTING 宽限同理按收到时刻（agora-rkl 的 ms=1 投递
     // 不当场衰减，接 tests/hook_recovery.rs）。
@@ -1078,8 +1079,9 @@ fn handleless_silence_is_measured_from_event_time() {
     assert_eq!(a.reason.as_deref(), Some("hooks silent; no process handle"));
     assert_eq!(
         m.status_since(),
-        now + 1,
-        "UNKNOWN 的起点是 agora 开始说不清的那一刻，不是三小时前"
+        at + 2 * 3600,
+        "UNKNOWN 的起点是越过沉默阈值那一刻（观察期时钟），不是这次观察的 now：TTL 因此不被\
+         重启 + 重放清零（agora-5oce）"
     );
 
     // ② 停机期间落下的旧件晚到（`replay_stale_pending` 补送）：不能把刚出声的行推回「沉默 3 h」。

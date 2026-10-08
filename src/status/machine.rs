@@ -68,7 +68,9 @@ pub struct MachineConfig {
     ///
     /// 这条的沉默时钟是**最近一条 hook 事件自己的时刻**（[`Machine::last_event_at`]），不是 daemon
     /// 收到它的时刻（agora-5gg.2 修订 ADR-002 D1）：这条规则回答的是「agent 大概率早退了」，事件
-    /// 三小时前发生就是三小时前没声音，daemon 停机三天再重放不该把「沉默了多久」清零。上面
+    /// 三小时前发生就是三小时前没声音，daemon 停机三天再重放不该把「沉默了多久」清零。这一格的
+    /// 起点（`status_since`）从 agora-5oce 起也记**越过阈值那一刻**（同一只事件时钟），所以
+    /// `sessions.external_unknown_ttl` 的出口同样不被 daemon 重启清零。上面
     /// `silence_after`（有 pane 的 D1 沉默规则）不适用同一条理由——那条问的是「daemon 从上次听到
     /// hook 起还没等到下一条多久」，屏幕证据要 daemon 活着才采得到，仍按收到时刻算。
     pub external_silent_after: Duration,
@@ -800,10 +802,17 @@ impl Machine {
                 // 沉默时钟用事件自己的时刻（agora-5gg.2，Mac 现场 0e26ad / 14d791 / eb129d / b939bb：
                 // 停机 3.5 天，重放过的那批 TURN_DONE 把 last_hook_at 记成重放时刻、沉默 62 h 仍
                 // TURN_DONE，没被重放、从检查点恢复的 4 行却当场 UNKNOWN——同一批行两种结果）。
+                // 起点记**越过阈值那一刻**（观察期时钟），不是 `now`（agora-5oce）：observe 落的
+                // UNKNOWN 不进检查点，重启 + 重放后这一格会重新落一次；拿 `now` 当起点的话
+                // `status_since` 变成重启时刻，TTL（`sessions.external_unknown_ttl`，管理器按
+                // `status_since` 算）也跟着从零计，频繁重启的机器上这类行会比 FINISHED 行留得久。
+                // quiet 时钟与 5gg.2 同一只（随检查点落盘），所以重建出来的是同一个 `landed`；
+                // `set` 只在 (status, source) 变时写起点，后续 tick 不会覆盖它。
+                let quiet_since = self.handleless_quiet_since();
+                let quiet_secs = self.cfg.external_silent_after.as_secs() as i64;
                 if obs.liveness == Liveness::Unknown
                     && !matches!(self.current.status, Status::Finished | Status::Failed)
-                    && now - self.handleless_quiet_since()
-                        >= self.cfg.external_silent_after.as_secs() as i64
+                    && now - quiet_since >= quiet_secs
                 {
                     self.set(
                         Assessment::new(
@@ -813,7 +822,7 @@ impl Machine {
                             Some(EXTERNAL_SILENT_REASON),
                         )
                         .with_unknown(UnknownCause::HooksSilentNoHandle),
-                        now,
+                        quiet_since + quiet_secs,
                     );
                 }
                 return self.current.clone();

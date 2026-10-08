@@ -549,8 +549,8 @@ fn handleless_external_silence_is_not_cleared_by_replay_or_restart() {
         .as_millis() as u64;
     // 三小时前落盘的投递件（daemon 停机期间写的）；external_silent_after 用生产默认的 2 h。
     let old_ms = now_ms - 3 * 3600 * 1000;
-    // `external_delivery_with_env` 的 `ms` 是相对“现在”的偏移，摆不到过去；本测试要的正是
-    // “落盘时刻比 daemon 这次启动早三小时”，所以信封里直接给绝对时刻。
+    // `external_delivery_with_env` 的 `ms` 是相对“现在”的偏移（可以为负）；这条测试要的是
+    // “落盘时刻比 daemon 这次启动早三小时”，信封里直接给绝对时刻更直白。
     let old_delivery = |session: &str, ms: u64, payload: serde_json::Value| Delivery {
         envelope: Envelope {
             host: "claude".into(),
@@ -681,12 +681,109 @@ fn handleless_external_silence_is_not_cleared_by_replay_or_restart() {
     );
 }
 
+#[test]
+fn handleless_unknown_ttl_counts_from_the_first_unknown_not_the_restart() {
+    // agora-5oce：无句柄 external 行落 UNKNOWN（`hooks silent; no process handle`）之后，
+    // TTL 出口（`sessions.external_unknown_ttl`）按 status_since 算（`expire_external_finished`
+    // 的第二个 arm），而 observe 落的 UNKNOWN 不进检查点（检查点只存最后一条 hook 写出的状态）。
+    // 旧写法在重新观察时拿收到它的 tick 当起点：daemon 一重启，检查点恢复出 TURN_DONE，
+    // 重新落 UNKNOWN 时起点就是重启那一刻，TTL 从零计。守卫：重启 + 重放前后 status_since
+    // 必须是同一个「越过沉默阈值」的时刻（观察期时钟，与 5gg.2 的 last_event_at 同一只），
+    // 并且满 TTL 的 sweep 用这个起点当场删得掉。
+    // 改坏：把 observe 里那一格的 `self.set(.., 越过阈值那一刻)` 换回 `now` → 重启后的
+    // status_since 断言与 sweep 断言都红。
+    let home = tempfile::tempdir().unwrap();
+    let rt = Arc::new(common::FakeRuntime::default());
+    let cfg = MachineConfig {
+        external_silent_after: Duration::from_secs(2),
+        ..Default::default()
+    };
+    let ttl = Duration::from_secs(60);
+    let before_write = agora::clock::now_secs();
+    let (id, first_since) = {
+        let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+        let s = Arc::new(
+            SessionManager::new(db, rt.clone())
+                .with_external_unknown_ttl(ttl)
+                .with_status_config(cfg.clone()),
+        );
+        let r = Receiver::new(home.path(), s.clone());
+        let inbox = Inbox::new(home.path());
+        let stop = json!({"hook_event_name":"Stop","session_id":"ext-ttl","cwd":"/work/codex-desktop","last_assistant_message":"done"});
+        // 事件发生在 30 s 前（`external_delivery_with_env` 的 ms 是相对现在的偏移，可以为负）：
+        // 沉默阈值（2 s）早已越过，第一次 observe 就落 UNKNOWN，起点是
+        // last_event_at + external_silent_after（约 28 s 前），不是看到的这一刻。
+        let path = inbox
+            .write(&external_delivery_with_env(
+                "ext-ttl",
+                BTreeMap::new(),
+                -30_000,
+                stop,
+            ))
+            .unwrap();
+        let id = r.ingest(&path).unwrap().unwrap().session_key;
+        // 检查点里是 hook 写下的 TURN_DONE（observe 给的那一格不落盘）；第一次 get() 观察到的
+        // 就已经是 UNKNOWN——事件在 30 s 前，2 s 的沉默阈值早越过了。
+        let v = s.get(&id).unwrap();
+        assert_eq!(
+            (v.assessment.status, v.assessment.source),
+            (Status::Unknown, Source::Hook),
+            "沉默 30 s > 阈值 2 s：该落 UNKNOWN：{:?}",
+            v.assessment
+        );
+        assert_eq!(
+            v.assessment.reason.as_deref(),
+            Some("hooks silent; no process handle")
+        );
+        // 归档清掉：重启后的结论只能来自检查点，不准从 done/ 重建。
+        inbox.prune_done(Duration::ZERO);
+        (id, v.status_since)
+    };
+
+    // 重启 + 重放：检查点里仍是 TURN_DONE，observe 重新落 UNKNOWN 时必须算出同一个起点。
+    let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
+    let s = Arc::new(
+        SessionManager::new(db, rt)
+            .with_external_unknown_ttl(ttl)
+            .with_status_config(cfg),
+    );
+    s.reconcile().unwrap();
+    Receiver::new(home.path(), s.clone()).replay().unwrap();
+    let v = s.get(&id).unwrap();
+    assert_eq!(
+        (v.assessment.status, v.assessment.source),
+        (Status::Unknown, Source::Hook),
+        "重启之后照样是 UNKNOWN：{:?}",
+        v.assessment
+    );
+    assert_eq!(
+        v.status_since, first_since,
+        "重启不许把 UNKNOWN 的起点清零（agora-5oce）：{:?}",
+        v.assessment
+    );
+    // 起点必须来自事件时钟（越过阈值那一刻，比写投递件还早 ≈28 s），不是这次观察的时刻。
+    // 只看 `== first_since` 会被整秒截断骗过：同一秒里重启，旧写法也算“对上了”。
+    assert!(
+        v.status_since < before_write,
+        "起点是越过阈值那一刻（事件时钟），不是重启后第一次观察的时刻：{} vs {before_write}",
+        v.status_since
+    );
+    // 起点是越过阈值那一刻（≈28 s 前）：TTL 满 60 s 的 sweep 用这个时刻当场删得掉。
+    // 旧写法重启后起点≈现在，同一个 sweep 只会再给这行续 60 s。
+    assert_eq!(
+        s.sweep(first_since + 61).unwrap(),
+        vec![id.clone()],
+        "TTL 按首次落 UNKNOWN 的时刻算，重启 + 重放不清零"
+    );
+    assert!(s.get(&id).is_err(), "行已删");
+}
+
 /// 无句柄 external 行的投递件：没有 AGORA_*，身份是 (host, agent_session_id)，进程号在 CLAUDE_PID。
 /// 时刻从"现在"起算（`ms` 只是序号）：进程号要与报来它的 hook 时刻对一下，进程不得晚于 hook。
 fn external_delivery(
     agent_session: &str,
     pid: u32,
-    ms: u64,
+    ms: i64,
     payload: serde_json::Value,
 ) -> Delivery {
     external_delivery_with_env(
@@ -702,13 +799,13 @@ fn external_delivery(
 fn external_delivery_with_env(
     agent_session: &str,
     agent_env: BTreeMap<String, String>,
-    ms: u64,
+    ms: i64,
     payload: serde_json::Value,
 ) -> Delivery {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_millis() as u64;
+        .as_millis() as i64;
     let ms = now_ms + ms;
     Delivery {
         envelope: Envelope {
@@ -720,7 +817,7 @@ fn external_delivery_with_env(
             runtime_env: BTreeMap::new(),
             ppid: 1,
             received_at: String::new(),
-            received_unix_ms: ms,
+            received_unix_ms: ms as u64,
         },
         payload,
     }

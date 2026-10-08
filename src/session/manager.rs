@@ -1813,11 +1813,11 @@ impl SessionManager {
                 // 它们不该被同一把删掉（docs/spec/api.md「会话形态」UNKNOWN 的封闭清单）。
                 // 时钟用 `status_since`（落进 UNKNOWN 那一刻，UI 上「unknown 2h」读的就是它），
                 // 因为这一行还没结束：`ended_at` 对它是空的，拿结束时刻算就是拿一个不存在的事实算。
-                // 已知不足（2026-09-20 读码确认，不是猜的）：`status_since` 是状态机的内存时钟，
-                // 而检查点只存最后一条 hook 写出的状态（apply 里那个 snapshot，不含 observe 给的
-                // UNKNOWN），所以重启 + 重放后这一格从零计。拿检查点里的 `last_hook_at`（沉默时钟）
-                // 当主时钟能躲过这一刀，但代价是文案变成「沉默了多久」而不是「这行 UNKNOWN 落了
-                // 多久」，与页面上那个时长不是同一只表；反例先记在这，要改连 agora-5gg.2 一起改。
+                // 那一格从 agora-5oce 起记的是**越过沉默阈值那一刻**（观察期时钟，与 5gg.2 的
+                // `last_event_at` 同一只、随检查点落盘），不是落 UNKNOWN 时那次观察的时刻：
+                // observe 给的这一格不进检查点，重启 + 重放会重新落一次，拿观察时刻当起点就会
+                // 让 TTL 从零计（2026-09-20 读码记下的不足，2026-10-08 修在 machine.rs 的
+                // 无句柄沉默兜底里）。
                 Status::Unknown
                     if unknown_ttl > 0
                         && v.assessment.reason.as_deref() == Some(EXTERNAL_SILENT_REASON) =>
