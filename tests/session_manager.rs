@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agora::runtime::{Exit, Runtime, RuntimeRef, Size};
 use agora::session::{Db, NewSession, Origin, SessionError, SessionManager};
-use agora::status::{EndCause, RuntimeGone, Status};
+use agora::status::{EndCause, ProcessState, RuntimeGone, Status};
 use common::FakeRuntime;
 
 fn mgr() -> (SessionManager, Arc<FakeRuntime>, Arc<Db>) {
@@ -644,6 +644,18 @@ fn starting_window_exempts_a_row_that_is_still_starting() {
     );
     assert!(after.record.ended_at.is_none(), "更不能写 ended_at");
     assert_eq!(after.assessment.status, Status::Unknown);
+    // 这一格的进程事实是「没有观测」而不是「死了」：`view()` 在 `_` 支里给 `Liveness::Dead`
+    // 只是内部编码（让状态机别把「没看见」当活着），导出给调用方时必须是 unknown——旧口径
+    // 在这里报出一条假的 `process = gone`（agora-86nk）。
+    assert_eq!(
+        after.process,
+        ProcessState::Unknown,
+        "还没报到它 ≠ 没了：{after:?}"
+    );
+    assert!(
+        !after.alive,
+        "alive 是 process == alive 的投影，必须跟着 unknown"
+    );
 }
 
 #[test]

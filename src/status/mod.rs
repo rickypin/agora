@@ -281,20 +281,23 @@ pub enum ProcessState {
 }
 
 impl ProcessState {
-    /// 从状态机结论 + [`Liveness`] 导出 `process`。`runtime_unreadable` 是"这一代运行时会话
-    /// 根本没读到"（协议不匹配、版本低于下限那一类运行时降级），不是"读到了、里面没有它"。
+    /// 从状态机结论 + [`Liveness`] 导出 `process`。`runtime_fact_missing` 是"这一行有运行时应答
+    /// 可得而这一 tick 没有事实"：运行时整体读不到（协议不匹配、版本低于下限那一类运行时降级，
+    /// 或它所在的采纳 socket 没扫成），或本代还在 STARTING 窗口、列表还没报到它。
     ///
     /// 三条规则按此顺序：
     /// 1. FINISHED / FAILED 一律 `gone`——裁决 Q4，压过一切进程事实；
-    /// 2. 运行时整体读不到 → `unknown`。ADR-001 D7「不许拿读不到当已经死了」：`view()` 上半段在
-    ///    这种情况下把 liveness 压成 [`Liveness::Dead`] 只为了让状态机别把"读不到"当成"还活着"，
-    ///    那是一处内部编码，导出时必须还原（不还原就会给出一条假的 `gone`，2026-09-19 定）；
+    /// 2. 没有运行时事实 → `unknown`。ADR-001 D7「不许拿读不到当已经死了」：`view()` 上半段在
+    ///    这种情况下把 liveness 压成 [`Liveness::Dead`] 只为了让状态机别把"没看见"当成"还活着"，
+    ///    那是一处内部编码，导出时必须还原（不还原就会给出一条假的 `gone`）。窗口那一格是
+    ///    agora-86nk：本代进程才起、运行时这一 tick 还没报到它，与"读不到"同一种事实——没观测，
+    ///    不是死了（`process_layer` 的 rt=None 分支给的就是 UNKNOWN `runtime session missing`）；
     /// 3. 其余按三值直译：alive → `alive`、dead → `gone`、没有可信进程号 → `unknown`。
-    pub fn derive(status: Status, liveness: Liveness, runtime_unreadable: bool) -> Self {
+    pub fn derive(status: Status, liveness: Liveness, runtime_fact_missing: bool) -> Self {
         if matches!(status, Status::Finished | Status::Failed) {
             return ProcessState::Gone;
         }
-        if runtime_unreadable {
+        if runtime_fact_missing {
             return ProcessState::Unknown;
         }
         match liveness {
@@ -543,7 +546,7 @@ mod tests {
     fn unreadable_runtime_is_unknown_not_gone() {
         // ADR-001 D7：不许拿"读不到"当"已经死了"。view() 上半段在降级时给出 Liveness::Dead
         // 只是内部编码（让状态机别把失明当成活着），导出时必须还原成 unknown。
-        // 关掉 derive 的 runtime_unreadable 分支 → 第一组断言红（报成 gone）。
+        // 关掉 derive 的 runtime_fact_missing 分支 → 第一组断言红（报成 gone）。
         for lv in [Liveness::Alive, Liveness::Dead, Liveness::Unknown] {
             assert_eq!(
                 ProcessState::derive(Status::Unknown, lv, true),
@@ -551,6 +554,20 @@ mod tests {
                 "{lv:?}"
             );
         }
+        // 同一档还盖着 STARTING 窗口那一格（agora-86nk）：本代进程还在起、运行时这一 tick 还没
+        // 报到它时，view() 也把 liveness 压成 Dead（内部编码），而事实是"没有观测"不是"没了"。
+        // 没有运行时事实时一律 unknown；对照：同一条 `Unknown + Dead` 但事实来自进程层
+        // （`exit_status_missing`，a22）不走这个参数，照旧报 gone——进程确实退了。
+        assert_eq!(
+            ProcessState::derive(Status::Unknown, Liveness::Dead, true),
+            ProcessState::Unknown,
+            "窗口内没有运行时事实：假的 gone（agora-86nk）"
+        );
+        assert_eq!(
+            ProcessState::derive(Status::Unknown, Liveness::Dead, false),
+            ProcessState::Gone,
+            "有进程事实（退了、码还没收集到）就该报 gone（a22）"
+        );
     }
 
     #[test]

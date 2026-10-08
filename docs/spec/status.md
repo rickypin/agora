@@ -22,7 +22,7 @@
 `process` 与状态机内部的 `Liveness`（"最后看到的那个进程号此刻在不在"）不是一件事，它多两条裁决（`src/status/mod.rs`）：
 
 - **FINISHED / FAILED 一律 `gone`**：对话结束即不再谈进程，哪怕那个号还在跑别的对话（现场那 10 行 `finished` + `alive: true` 全是 superseded / SessionEnd 留下的旧行）。
-- **运行时整体读不到是 `unknown`，不是 `gone`**（ADR-001 D7「读不到 ≠ 已死」）。
+- **这一 tick 没有运行时事实是 `unknown`，不是 `gone`**：运行时整体读不到（降级 / 采纳 socket 没扫成，ADR-001 D7「读不到 ≠ 已死」），以及本代还在 STARTING 窗口、列表还没报到它（agora-86nk：那一刻只是"还没看见"，进程 `unknown`、不写 `ended_at`）。
 
 判定符号：**✓** 合法，写明对使用者的含义与出口；**◐** 合法但只许短暂（≤ 一个 tick、≤ 启动宽限、≤ 下一条 hook 事件），持续出现就是 bug；**✗** 不可能，每一行各有一条反向断言。
 
@@ -54,7 +54,7 @@
 | a20 | UNKNOWN | 任何 | hook | ✗ | 有句柄的行里 UNKNOWN 只有 a17 / a18 / a22 / a23 四格；hook 层的词表不含 UNKNOWN | `…::a20_the_hook_layer_never_writes_unknown` |
 | a21 | WAITING | alive | text（agent 无 hook）| ✓ | 答它：这一行没有 hook 可回，只能打开终端（`respond_via = terminal`）。与 a07 是同一层在两种行上的两种命运 | `…::a21_text_raises_waiting_only_on_a_row_without_hooks` |
 | a22 | UNKNOWN | gone | process（`process exited, exit status not yet collected`）| ◐ | 只许停一个 tick：退出码到了落 a12 / a15，永远补不上就是会话连同 pane 没了，落 a13。不猜 FINISHED 也不猜 FAILED | `…::a22_a_missing_exit_status_is_unknown_not_a_guess` |
-| a23 | UNKNOWN | gone | none（`runtime session missing`，本代还在 STARTING 窗口 < 2 s）| ◐ | 运行时这一 tick 还没报到它，不等于"没了"：绝不写 `ended_at`（守卫 `tests/session_manager.rs::starting_window_exempts_a_row_that_is_still_starting`），下一 tick 落 a01 | `…::a23_a_row_the_runtime_has_not_reported_yet_is_not_gone` |
+| a23 | UNKNOWN | unknown | none（`runtime session missing`，本代还在 STARTING 窗口 < 2 s）| ◐ | 运行时这一 tick 还没报到它，不等于"没了"：绝不写 `ended_at`，`process` 也不报一条假的 gone（agora-86nk；守卫 `tests/session_manager.rs::starting_window_exempts_a_row_that_is_still_starting`），下一 tick 落 a01 | `…::a23_a_row_the_runtime_has_not_reported_yet_is_not_gone` |
 | a24 | IDLE | alive | hook（登记即空闲）| ✓ | 宿主在 `session_start` 里自报 `ctx.isIdle()`（pi 的 `/reload`、以及 `agora create pi` 的托管行）：进程层不盖 hook 的结论，停到下一条事件为止 | `…::a24_a_handle_reports_idle_at_registration_and_stays_idle` |
 
 ## 3. origin = external / headless（无运行时句柄）

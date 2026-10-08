@@ -1479,13 +1479,16 @@ impl SessionManager {
         };
         let respond_within_secs = hook_host.map(|h| h.hold_timeout().as_secs());
         // 进程三态（Q4 裁决 agora-5gg.4，agora-5gg.18）：上半段的 `liveness` 是给状态机看的，
-        // `process` 是给调用方看的——两者不同处只在"对话已结束就不再谈进程"与"运行时读不到"
-        // 这两处。第三个参数照抄上半段那个分支的条件（`unreadable` + 有句柄）：上半段在这种情况
-        // 给出 Liveness::Dead 是内部编码，derive 里要还原成 unknown（ADR-001 D7）。
+        // `process` 是给调用方看的——两者不同处只在"对话已结束就不再谈进程"与"这一 tick 没有
+        // 运行时事实"这两处。第三个参数是后者：有句柄而整体读不到（降级 / 采纳 socket 没扫成），
+        // 或本代还在 STARTING 窗口、列表还没报到它（rt=None——`gone` 那条门正因为窗口豁免而没开）。
+        // 两种都是"没观测"不是"死了"：上半段给 Liveness::Dead 是内部编码，derive 里要还原成
+        // unknown（ADR-001 D7；窗口那一格是 agora-86nk——少了 rt.is_none() 这一半，每次起会话
+        // 都会先给自己的行报一条假的 process=gone）。
         let process = ProcessState::derive(
             assessment.status,
             liveness,
-            unreadable.is_some() && rec.runtime_ref.is_some(),
+            rec.runtime_ref.is_some() && (unreadable.is_some() || rt.is_none()),
         );
         let name = match rt {
             Some(s) if !rec.name_locked && !s.title.trim().is_empty() => s.title.clone(),

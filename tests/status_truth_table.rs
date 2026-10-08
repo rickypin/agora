@@ -1005,8 +1005,8 @@ const ROWS: &[Cell] = &[
     Cell {
         id: "a23",
         verdict: Verdict::Brief,
-        cell: "UNKNOWN | gone | none（`runtime session missing`，本代还在 STARTING 窗口 < 2 s）",
-        why: "运行时这一 tick 还没报到它，不等于没了：不写 ended_at，下一 tick 落 a01",
+        cell: "UNKNOWN | unknown | none（`runtime session missing`，本代还在 STARTING 窗口 < 2 s）",
+        why: "运行时这一 tick 还没报到它，不等于没了：不写 ended_at、`process` 也不报假的 gone（agora-86nk），下一 tick 落 a01",
     },
     Cell {
         id: "a24",
@@ -1121,8 +1121,9 @@ fn expected_process(liveness: Liveness) -> ProcessState {
 struct Fed {
     a: Assessment,
     liveness: Liveness,
-    /// 运行时整体读不到（`view()` 的"降级 + 有句柄"那一支）。
-    unreadable: bool,
+    /// 有句柄而这一 tick 没有运行时事实（`view()` 的"降级 / socket 没扫成 / 本代还在
+    /// STARTING 窗口"那几支；就是 `ProcessState::derive` 的第三个参数，agora-86nk）。
+    runtime_fact_missing: bool,
 }
 
 impl Fed {
@@ -1130,13 +1131,13 @@ impl Fed {
         Fed {
             a,
             liveness,
-            unreadable: false,
+            runtime_fact_missing: false,
         }
     }
 
     /// 这一行报给调用方的进程三态（`GET /api/sessions` 的 `process`）。
     fn process(&self) -> ProcessState {
-        ProcessState::derive(self.a.status, self.liveness, self.unreadable)
+        ProcessState::derive(self.a.status, self.liveness, self.runtime_fact_missing)
     }
 }
 
@@ -1193,7 +1194,7 @@ fn tick_rt(
     Fed {
         a,
         liveness,
-        unreadable: false,
+        runtime_fact_missing: false,
     }
 }
 
@@ -1219,7 +1220,7 @@ fn tick_external(m: &mut Machine, liveness: Liveness, now: i64) -> Fed {
     Fed {
         a,
         liveness,
-        unreadable: false,
+        runtime_fact_missing: false,
     }
 }
 
@@ -1230,7 +1231,7 @@ fn running_then_fact(
     declared_hooks: bool,
     fact: Assessment,
     liveness: Liveness,
-    unreadable: bool,
+    runtime_fact_missing: bool,
 ) -> Fed {
     let mut m = Machine::new(cfg(), declared_hooks, 1, 0);
     let rt = pane(Some(0));
@@ -1247,7 +1248,7 @@ fn running_then_fact(
     Fed {
         a,
         liveness,
-        unreadable,
+        runtime_fact_missing,
     }
 }
 
@@ -1672,7 +1673,7 @@ fn a16_an_ended_row_never_reports_an_alive_process() {
 #[test]
 fn a17_an_unreadable_runtime_is_unknown_not_gone() {
     // ADR-001 D7：读不到 ≠ 已死。`view()` 在降级时给 Liveness::Dead 只是内部编码（让状态机别把
-    // 失明当活着），导出时必须还原成 unknown——关掉 derive 的 unreadable 分支就报出一条假的 gone。
+    // 失明当活着），导出时必须还原成 unknown——关掉 derive 的 runtime_fact_missing 分支就报出一条假的 gone。
     // 视图那一段：`tests/session_manager.rs::degraded_runtime_never_becomes_runtime_gone`。
     let mut m = Machine::new(cfg(), true, 1, 0);
     m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 0);
@@ -1688,7 +1689,7 @@ fn a17_an_unreadable_runtime_is_unknown_not_gone() {
     let fed = Fed {
         a,
         liveness: Liveness::Dead,
-        unreadable: true,
+        runtime_fact_missing: true,
     };
     lands(
         "a17",
@@ -1903,25 +1904,29 @@ fn a23_a_row_the_runtime_has_not_reported_yet_is_not_gone() {
     // ——视图那一侧红在
     // `tests/session_manager.rs::starting_window_exempts_a_row_that_is_still_starting`；
     // 这一格红在 `process_layer(None)` 被换成 `runtime_gone` 时（lands 的三列对不上）。
+    // `process` 也是 unknown 不是 gone（agora-86nk）：这一格的 `Liveness::Dead` 与上面那条
+    // `runtime_unreadable` 同一种内部编码——"没有运行时事实"，derive 里必须还原成 unknown。
     let mut m = Machine::new(cfg(), true, 1, 0);
-    let fed = Fed::new(
-        m.observe(Observation {
-            process: agora::status::process_layer(None, Some(0), false),
-            liveness: Liveness::Dead,
-            text: None,
-            runtime: None,
-            epoch: 1,
-            now: 1,
-            at: None,
-        }),
-        Liveness::Dead,
-    );
+    let a = m.observe(Observation {
+        process: agora::status::process_layer(None, Some(0), false),
+        liveness: Liveness::Dead,
+        text: None,
+        runtime: None,
+        epoch: 1,
+        now: 1,
+        at: None,
+    });
+    let fed = Fed {
+        a,
+        liveness: Liveness::Dead,
+        runtime_fact_missing: true,
+    };
     lands(
         "a23",
         &fed,
         Status::Unknown,
         Source::None,
-        ProcessState::Gone,
+        ProcessState::Unknown,
     );
     assert_eq!(
         fed.a.unknown_cause,
@@ -2619,9 +2624,11 @@ fn process_facts() -> Vec<(Assessment, bool)> {
             v.push((gone_fact(gone, killed), false));
         }
         // 有句柄、这一 tick 运行时还没报到它：STARTING 窗口内（a23）与窗口外（视图里会走上面那条
-        // `runtime_gone`，状态机这一层只认拿到的事实）两种喂法。
+        // `runtime_gone`，状态机这一层只认拿到的事实）两种喂法。这两类都算"没有运行时事实"
+        // （agora-86nk 起 `ProcessState::derive` 的第三个参数）：窗口内是 unknown、窗口外的
+        // a13 靠 derive 的第一条规则落 gone。
         for age in [Some(0u64), Some(3600), None] {
-            v.push((agora::status::process_layer(None, age, killed), false));
+            v.push((agora::status::process_layer(None, age, killed), true));
         }
     }
     v.push((
@@ -2669,13 +2676,13 @@ fn probe_handle_rows(v: &mut Vec<Fed>) {
             }
         }
         // ② 每一条进程事实：既喂给"hook 还没说话"的行，也喂给"hook 先说了结束"的行。
-        for (fact, unreadable) in process_facts() {
+        for (fact, runtime_fact_missing) in process_facts() {
             for declared2 in [true, false] {
                 v.push(running_then_fact(
                     declared2,
                     fact.clone(),
                     Liveness::Dead,
-                    unreadable,
+                    runtime_fact_missing,
                 ));
                 let mut m = Machine::new(cfg(), true, 1, 0);
                 m.apply(&AgoraEvent::PromptSubmitted("go".into()), 1, 0);
@@ -2693,7 +2700,7 @@ fn probe_handle_rows(v: &mut Vec<Fed>) {
                 v.push(Fed {
                     a,
                     liveness: Liveness::Dead,
-                    unreadable,
+                    runtime_fact_missing,
                 });
             }
         }
