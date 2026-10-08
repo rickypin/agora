@@ -3,6 +3,7 @@
 mod common;
 
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -48,9 +49,9 @@ fn stale_upgrade_home_from_a_killed_process_is_swept() {
     use common::isolate;
 
     let n = isolate::nth();
-    // tag 也由 isolate 的规则生成（home 与 socket 同一处构造）：这里的 tag 模仿"已死进程"
-    // 的名字形状，但 sweep 真正的判据是目录里的 owner.pid，不是名字里的 pid。
-    let (home, socket) = isolate::home_and_socket("up", &format!("sweep{n}"), n);
+    // 目录名保持每轮唯一；已死 owner 的判据来自 owner.pid，无须复用固定 sweep tag。
+    let home = isolate::home_dir("up", n);
+    let socket = isolate::socket_name("up", n);
     std::fs::create_dir_all(home.join("bin")).unwrap();
 
     // 已死的 "测试进程"：spawn 一个 true、收尸，pid 短期内不会被复用。
@@ -77,11 +78,11 @@ fn stale_upgrade_home_from_a_killed_process_is_swept() {
         .success());
     assert!(sock_path.exists());
 
-    // 遗留 daemon：sleep 的副本，argv[0] 就是 `<home>/bin/agora`（sweep 的 ps 检查认这个）。
+    // 2026-10-09 macOS：复制系统 sleep 后 exec 可卡在 UE，连 SIGKILL 也无法回收。
+    // 直接用系统二进制，只设置 argv[0]，保留 sweep 用 home 路径核对身份的判据。
     let fake_daemon = home.join("bin").join("agora");
-    std::fs::copy("/bin/sleep", &fake_daemon).unwrap();
-    isolate::mark_executable(&fake_daemon, &["0"]);
-    let mut child = Command::new(&fake_daemon)
+    let mut child = Command::new("/bin/sleep")
+        .arg0(&fake_daemon)
         .arg("300")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
