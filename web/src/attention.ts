@@ -39,6 +39,42 @@ export function attentionScore(status: string): number {
 }
 
 /**
+ * 「需要我」的新鲜度窗口（agora-82x7 的另一半，2026-10-08 用户拍板"按你的建议实施"）。
+ *
+ * 从第一性原理：「需要我」回答的是**现在**需要你——不是"曾经需要过你"。判据分两类：
+ * - `waiting` / `failed` 不设上限：那是真的卡着人（一条挂起的权限、一次崩掉的运行），三小时后照样是
+ *   现在的事；
+ * - `turn_done` / `finished`（"等你回看"的那两种）超过这个窗口就不再占「需要我」：现场 8 行里有 6 行
+ *   是 9/20 与 10/6 的旧账，最老 15 天——一块 15 天没动过的终端不是"现在需要你"，它只是把今天真正的事
+ *   压下去。降段不等于消失：`turn_done` 落到「在跑」段（与"看过一次"同一个去处，agora-5gg.21），
+ *   `finished` 落到折叠的「已完成」区（同时进入 Header「Finished N」一键清理的名单——名单按
+ *   `sectionOf === "finished"` 算，与 `finishedCollapsed` 同一个判据）。
+ *
+ * 时刻取 `peer_status_since ?? status_since`（与 [`seenKey`] 同一个口径：peer 行要用 peer 自己那只钟）；
+ * 两个都没有的行（旧节点 / 测试桩）**不判**——"不知道何时完成的"不该被当成"很久以前完成的"。
+ */
+export const ATTENTION_WINDOW_SECS = 12 * 3600;
+
+/** 这一行"等你"的时刻（unix 秒）；不知道就是 null。 */
+function waitedSince(row: { status_since?: unknown; peer_status_since?: unknown }): number | null {
+  if (typeof row.peer_status_since === "number") return row.peer_status_since;
+  return typeof row.status_since === "number" ? row.status_since : null;
+}
+
+/** 还在新鲜度窗口内吗（只有"等你回看"的两种状态会被时间淘汰；不知道时刻的不淘汰）。 */
+function fresh(row: SessionRow, now: number): boolean {
+  if (row.status !== "turn_done" && row.status !== "finished") return true;
+  const since = waitedSince(row);
+  if (since === null) return true;
+  return now - since <= ATTENTION_WINDOW_SECS;
+}
+
+/** 当前时刻（unix 秒）；调用方都能传，缺省用墙上时钟（纯函数留出 `now` 只为了可测）。 */
+function wallClock(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+/**
  * 「看过」的行集合（MISSION §4.6 三条证据的第 ①；A46，agora-j4w.1；agora-5gg.21 扩到 TURN_DONE）：
  * 是浏览器视图状态，不是服务端字段。空集 = 谁都没看过。
  *
@@ -114,12 +150,13 @@ export function isHandleless(row: SessionRow): boolean {
  * `sectionOf === "finished"` 算），所以一行还在跑的无头会话也可能被那一键删掉记录——它本来就满
  * 24 h 不论状态都会被 `expire_external_finished` 自动删（agora-5gg.20），人手动删同一行不是新权力。
  */
-export function finishedCollapsed(row: SessionRow, seen: SeenSet = NO_SEEN): boolean {
+export function finishedCollapsed(row: SessionRow, seen: SeenSet = NO_SEEN, now: number = wallClock()): boolean {
   // headless 不看状态：它从来不是「等你回看结果」（§4.6 的三条证据一条都不成立：没有工作面、
   // 没有人结束过它、也没有人会去选中它），停在 TURN_DONE / UNKNOWN 也一样进折叠区。
   if (isHeadless(row)) return true;
   if (row.status !== "finished") return false;
-  return row.origin === "external" || seen.has(seenKey(row));
+  // 超过新鲜度窗口的：不再占「需要我」，进折叠区（见 `ATTENTION_WINDOW_SECS`）。
+  return row.origin === "external" || seen.has(seenKey(row)) || !fresh(row, now);
 }
 
 /**
@@ -138,10 +175,12 @@ export function finishedCollapsed(row: SessionRow, seen: SeenSet = NO_SEEN): boo
  * 自己结束了会话，结束即看过），TURN_DONE 没有这条——它还在跑，工作面在不在 agora 都得人瞟一眼，
  * 所以两种来源都走"选中看过一次才降"。
  */
-export function needsAttention(row: SessionRow, seen: SeenSet = NO_SEEN): boolean {
+export function needsAttention(row: SessionRow, seen: SeenSet = NO_SEEN, now: number = wallClock()): boolean {
   if (attentionScore(row.status) < SCORE.finished) return false;
-  if (finishedCollapsed(row, seen)) return false;
-  return !(row.status === "turn_done" && seen.has(seenKey(row)));
+  if (finishedCollapsed(row, seen, now)) return false;
+  // turn_done 降段的两条路：看过一次（agora-5gg.21）或已经超过新鲜度窗口（`ATTENTION_WINDOW_SECS`）。
+  if (row.status === "turn_done" && (seen.has(seenKey(row)) || !fresh(row, now))) return false;
+  return true;
 }
 
 export function taskOf(row: SessionRow): TaskInfo | null {
@@ -212,9 +251,9 @@ export function unclearStatus(status: string): boolean {
   return status === "unknown" || SCORE[status] === undefined;
 }
 
-export function sectionOf(row: SessionRow, seen: SeenSet = NO_SEEN): Section {
-  if (finishedCollapsed(row, seen)) return "finished";
-  if (needsAttention(row, seen)) return "attention";
+export function sectionOf(row: SessionRow, seen: SeenSet = NO_SEEN, now: number = wallClock()): Section {
+  if (finishedCollapsed(row, seen, now)) return "finished";
+  if (needsAttention(row, seen, now)) return "attention";
   return unclearStatus(row.status) ? "unclear" : "working";
 }
 
@@ -223,9 +262,13 @@ export function sectionOf(row: SessionRow, seen: SeenSet = NO_SEEN): Section {
  * = 这个顺序，Alt/Option+N 跳的也是它——折叠区收起时行不画，序号照数（折叠与否不改变第 N 条是谁，A46）。
  * 段与段之间不重排、段内也不丢行，所以序号是 1…N 连续的一条线（每段各有标题时标题也不占序号）。
  */
-export function partitionByAttention(rows: SessionRow[], seen: SeenSet = NO_SEEN): SessionRow[] {
+export function partitionByAttention(
+  rows: SessionRow[],
+  seen: SeenSet = NO_SEEN,
+  now: number = wallClock(),
+): SessionRow[] {
   const order: Section[] = ["attention", "unclear", "working", "finished"];
-  return order.flatMap((section) => rows.filter((r) => sectionOf(r, seen) === section));
+  return order.flatMap((section) => rows.filter((r) => sectionOf(r, seen, now) === section));
 }
 
 /**

@@ -266,6 +266,19 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 把横屏底部 21px 的 home indicator 让位丢掉（`web/src/mobileInsets.ts`，按排序后的长短边比，
 两种 `screen` 口径都成立）。
 
+### 「需要我」的新鲜度窗口（2026-10-08，agora-82x7）
+
+「需要我」回答的是**现在**需要你，不是"曾经需要过你"。分段规则（`web/src/attention.ts`）：
+
+- `waiting` / `failed` **不设上限**：一条挂起的权限、一次崩掉的运行，三小时后照样是现在的事；
+- `turn_done` / `finished`（"等你回看"的那两种）超过 `ATTENTION_WINDOW_SECS`（12 h）就不占「需要我」——
+  现场 8 行里有 6 行是 9/20 与 10/6 的旧账、最老 15 天，把今天真正的事压下去了。降段**不等于消失**：
+  `turn_done` 落到「在跑」段（与"看过一次"同一个去处，agora-5gg.21），`finished` 落到折叠的「已完成」区
+  并进入 Header「Finished N」一键清理的名单（名单按 `sectionOf === "finished"` 算）。手机上同理：降段是
+  段位变化，行还在列表里。
+- 时刻取 `peer_status_since ?? status_since`（与「看过」的键同一个口径：peer 行要用 peer 自己那只钟）；
+  两个都没有的行（旧节点 / 测试桩）**不判**——"不知道何时完成的"不该被当成"很久以前完成的"。
+
 ### 按钮上的 flex 必须自己写 align-items（agora-x70t，2026-10-08）
 
 手机端收件箱的每一行是一个 `<button class="mobile-row">`，里面是列方向的 flex（第一行名字+状态、

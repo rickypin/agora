@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { SessionRow } from "./events";
 import type { NodeStatus } from "./Header";
 import { SidebarTree } from "./SidebarTree";
@@ -59,6 +59,19 @@ function order(): string[] {
     .filter((id) => id.startsWith("tree-group-") || id.startsWith("row-"))
     .filter((id) => !id.startsWith("tree-group-attention-") && !id.startsWith("row-node-"));
 }
+
+
+/**
+ * 冻住墙上时钟：分段判据（`ATTENTION_WINDOW_SECS` 的新鲜度）要读时钟，而这些用例的 `status_since` 是
+ * 5…820 这种假时刻——不冻时钟，它们相对真实时间就是"十几年前"，`turn_done` / `finished` 行会被新鲜度
+ * 淘汰出「需要我」，段位断言全错。冻在 1000 s（毫秒 1_000_000）之后它们都是"几分钟前"，相对顺序不变。
+ */
+beforeEach(() => {
+  vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 it("group headers show branch, main marker and attention count when collapsed (A48)", () => {
   mount();

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ATTENTION_WINDOW_SECS,
   countByStatus,
   finishedCollapsed,
   formatAgo,
@@ -22,6 +23,16 @@ function row(id: string, status: string, extra: Record<string, unknown> = {}): S
   return { id, node: "n", status, alive: true, ...extra };
 }
 
+/**
+ * 固定的时间基准（秒），**只用于显式传 `now`**。
+ *
+ * 2026-10-08 新鲜度窗口（`ATTENTION_WINDOW_SECS`）落地后，时间成了分段判据的一部分：测试里那些
+ * `status_since: 5/7/100` 是配合一个固定的 `NOW` 才成立的字面量（相对墙上时钟它们是"十几年前"）。
+ * 所以凡是问分段/降段的地方都把 `NOW` 显式传进去（纯函数留出 `now` 正是为了这个），字面时刻一个都不动——
+ * 改字面量会连带把"越大越新"的相对顺序改反（第一次改就是这么翻车的）。
+ */
+const NOW = 400;
+
 describe("attention", () => {
   it("puts whatever is stuck on a human above whatever is running (A17)", () => {
     // MISSION §6.3 的分数表：FAILED 100 / WAITING 90 / TURN_DONE 85 / FINISHED 80 / UNKNOWN 40 /
@@ -37,7 +48,7 @@ describe("attention", () => {
       row("fail", "failed"),
     ];
     expect(sortByAttention(rows).map((r) => r.id)).toEqual(["fail", "wait", "done", "fin", "unk", "idle", "start", "run"]);
-    expect(rows.filter((r) => needsAttention(r)).map((r) => r.id)).toEqual(["fin", "wait", "done", "fail"]);
+    expect(rows.filter((r) => needsAttention(r, undefined, NOW)).map((r) => r.id)).toEqual(["fin", "wait", "done", "fail"]);
   });
 
   // A46（agora-j4w.1）：FINISHED 分来源与看没看过。external 的工作面在别的窗口，人在终端里自己结束了会话
@@ -48,28 +59,28 @@ describe("attention", () => {
     const own = row("own", "finished", { origin: "agora" });
     const adopted = row("ad", "finished", { origin: "adopted" });
     const none = new Set<string>();
-    expect(needsAttention(ext)).toBe(false);
-    expect(needsAttention(ext, none)).toBe(false);
-    expect(finishedCollapsed(ext)).toBe(true);
-    expect(needsAttention(own, none)).toBe(true);
-    expect(needsAttention(adopted, none)).toBe(true);
-    expect(finishedCollapsed(own, none)).toBe(false);
+    expect(needsAttention(ext, undefined, NOW)).toBe(false);
+    expect(needsAttention(ext, none, NOW)).toBe(false);
+    expect(finishedCollapsed(ext, undefined, NOW)).toBe(true);
+    expect(needsAttention(own, none, NOW)).toBe(true);
+    expect(needsAttention(adopted, none, NOW)).toBe(true);
+    expect(finishedCollapsed(own, none, NOW)).toBe(false);
     const seen = new Set([seenKey(own)]);
-    expect(needsAttention(own, seen)).toBe(false);
-    expect(finishedCollapsed(own, seen)).toBe(true);
-    expect(needsAttention(adopted, seen)).toBe(true);
+    expect(needsAttention(own, seen, NOW)).toBe(false);
+    expect(finishedCollapsed(own, seen, NOW)).toBe(true);
+    expect(needsAttention(adopted, seen, NOW)).toBe(true);
     // 记号跟着这一次完成走（agora-23h）：同一行、新的 status_since 就是新结果，旧记号不算。
     // 没有 status_since 的退化键带状态（agora-no5）：bare `own@` 会让同 id 的 FINISHED / TURN_DONE 撞键。
     expect(seenKey(own)).toBe("own@finished");
     expect(seenKey(row("own", "finished", { status_since: 7 }))).toBe("own@7");
-    expect(finishedCollapsed(row("own", "finished", { origin: "agora", status_since: 7 }), seen)).toBe(false);
+    expect(finishedCollapsed(row("own", "finished", { origin: "agora", status_since: 7 }), seen, NOW)).toBe(false);
     // 看过只对 FINISHED 有意义：WAITING 行在集合里也照样"等你"，RUNNING 行也不会因此进 Finished 区。
-    expect(needsAttention(row("w", "waiting"), new Set(["w@waiting"]))).toBe(true);
-    expect(finishedCollapsed(row("r", "running", { origin: "external" }))).toBe(false);
-    expect(sectionOf(ext)).toBe("finished");
-    expect(sectionOf(own, none)).toBe("attention");
-    expect(sectionOf(own, seen)).toBe("finished");
-    expect(sectionOf(row("r", "running"))).toBe("working");
+    expect(needsAttention(row("w", "waiting"), new Set(["w@waiting"]), NOW)).toBe(true);
+    expect(finishedCollapsed(row("r", "running", { origin: "external" }), undefined, NOW)).toBe(false);
+    expect(sectionOf(ext, undefined, NOW)).toBe("finished");
+    expect(sectionOf(own, none, NOW)).toBe("attention");
+    expect(sectionOf(own, seen, NOW)).toBe("finished");
+    expect(sectionOf(row("r", "running"), undefined, NOW)).toBe("working");
   });
 
   // agora-5gg.21（决策 agora-5gg.10 选 B 为主）：A46 的「看过」扩到 TURN_DONE——选中看过一次即降到中段，
@@ -81,22 +92,22 @@ describe("attention", () => {
     const none = new Set<string>();
     for (const status of ["failed", "waiting", "turn_done", "finished", "unknown"]) {
       const r = row(`h-${status}`, status, { origin: "headless" });
-      expect(finishedCollapsed(r, none), status).toBe(true);
-      expect(needsAttention(r, none), status).toBe(false);
-      expect(sectionOf(r, none), status).toBe("finished");
+      expect(finishedCollapsed(r, none, NOW), status).toBe(true);
+      expect(needsAttention(r, none, NOW), status).toBe(false);
+      expect(sectionOf(r, none, NOW), status).toBe("finished");
     }
     // running / idle 本来就不进 NEEDS ATTENTION，但它们也不因 origin 落进 UNCLEAR：
     // 折叠在 sectionOf 的第一条判断里就了断了。
-    expect(sectionOf(row("h-run", "running", { origin: "headless" }), none)).toBe("finished");
+    expect(sectionOf(row("h-run", "running", { origin: "headless" }), none, NOW)).toBe("finished");
     // 记号无效：headless 行即使被选中展开过也不换地方（它从来不是"看过就不再弹"那种）。
     const hl = row("h-seen", "turn_done", { origin: "headless", status_since: 5 });
-    expect(sectionOf(hl, new Set([seenKey(hl)]))).toBe("finished");
+    expect(sectionOf(hl, new Set([seenKey(hl)]), NOW)).toBe("finished");
     // 反过来：同样状态的 external / agora 行不因这条改动改掉归属。
-    expect(sectionOf(row("x", "turn_done", { origin: "external", status_since: 5 }), none)).toBe("attention");
-    expect(sectionOf(row("a", "unknown", { origin: "agora" }), none)).toBe("unclear");
+    expect(sectionOf(row("x", "turn_done", { origin: "external", status_since: 5 }), none, NOW)).toBe("attention");
+    expect(sectionOf(row("a", "unknown", { origin: "agora" }), none, NOW)).toBe("unclear");
     // 分段拼接：无头行永远排到最后，与分数无关（它的分数比 running 高）。
     const rows = [row("r", "running"), row("h", "waiting", { origin: "headless" }), row("w", "waiting")];
-    expect(partitionByAttention(sortByAttention(rows), none).map((r) => r.id)).toEqual(["w", "r", "h"]);
+    expect(partitionByAttention(sortByAttention(rows), none, NOW).map((r) => r.id)).toEqual(["w", "r", "h"]);
     // header 那一行仍按状态数：无头行照数（它确实在跑 / 确实做完了），折叠只是不画。
     expect(countByStatus(rows).needsInput).toBe(2);
   });
@@ -105,30 +116,30 @@ describe("attention", () => {
     const done = row("d", "turn_done", { origin: "agora", status_since: 10 });
     const extDone = row("x", "turn_done", { origin: "external", status_since: 20 });
     const none = new Set<string>();
-    expect(needsAttention(done, none)).toBe(true);
-    expect(sectionOf(done, none)).toBe("attention");
+    expect(needsAttention(done, none, NOW)).toBe(true);
+    expect(sectionOf(done, none, NOW)).toBe("attention");
     const seen = new Set([seenKey(done), seenKey(extDone)]);
-    expect(needsAttention(done, seen)).toBe(false);
-    expect(sectionOf(done, seen)).toBe("working");
+    expect(needsAttention(done, seen, NOW)).toBe(false);
+    expect(sectionOf(done, seen, NOW)).toBe("working");
     // 不许进折叠区：`sectionOf === "finished"` 是 Sidebar 一键清理逐行发 DELETE 的依据。
-    expect(finishedCollapsed(done, seen)).toBe(false);
-    expect(sectionOf(done, seen)).not.toBe("finished");
+    expect(finishedCollapsed(done, seen, NOW)).toBe(false);
+    expect(sectionOf(done, seen, NOW)).not.toBe("finished");
     // external 的 TURN_DONE 一样降（不看 origin）：FINISHED 那边 external 直接收起靠的是证据 ②（人在终端里
     // 自己结束了会话），TURN_DONE 的进程还在，工作面在哪都得人自己瞟一眼。
-    expect(needsAttention(extDone, seen)).toBe(false);
-    expect(sectionOf(extDone, seen)).toBe("working");
+    expect(needsAttention(extDone, seen, NOW)).toBe(false);
+    expect(sectionOf(extDone, seen, NOW)).toBe("working");
     // 新一次完成：status_since 不同 → 旧记号作废，回到 NEEDS ATTENTION。
-    expect(needsAttention(row("d", "turn_done", { origin: "agora", status_since: 11 }), seen)).toBe(true);
-    expect(sectionOf(row("d", "turn_done", { origin: "agora", status_since: 11 }), seen)).toBe("attention");
+    expect(needsAttention(row("d", "turn_done", { origin: "agora", status_since: 11 }), seen, NOW)).toBe(true);
+    expect(sectionOf(row("d", "turn_done", { origin: "agora", status_since: 11 }), seen, NOW)).toBe("attention");
     // 记号不越界：同一行的 WAITING 不会被 TURN_DONE 的记号压下去。
-    expect(needsAttention(row("d", "waiting", { status_since: 10 }), seen)).toBe(true);
+    expect(needsAttention(row("d", "waiting", { status_since: 10 }), seen, NOW)).toBe(true);
     // 分段：看过的 TURN_DONE 进 WORKING 段（分数 85 高于 running，所以在本段最前），行不丢、折叠区不涨。
     const rows = [row("run", "running"), done, extDone, row("fin", "finished", { origin: "external" })];
     const sorted = sortByAttention(rows);
-    const shown = partitionByAttention(sorted, seen);
+    const shown = partitionByAttention(sorted, seen, NOW);
     expect(shown.map((r) => r.id)).toEqual(["x", "d", "run", "fin"]);
     expect(shown.length).toBe(rows.length);
-    expect(shown.filter((r) => sectionOf(r, seen) === "finished").map((r) => r.id)).toEqual(["fin"]);
+    expect(shown.filter((r) => sectionOf(r, seen, NOW) === "finished").map((r) => r.id)).toEqual(["fin"]);
   });
 
   it("brings a row back to NEEDS ATTENTION on a second TURN_DONE with nothing in between (agora-8x6)", () => {
@@ -137,49 +148,49 @@ describe("attention", () => {
     // 那正是人打开页面要找的东西。
     const first = row("d", "turn_done", { origin: "agora", status_since: 10 });
     const none = new Set<string>();
-    expect(sectionOf(first, none)).toBe("attention");
+    expect(sectionOf(first, none, NOW)).toBe("attention");
     // 人选中看了一眼 → 记这一次完成的记号 → 降到 WORKING 段。
     const seen = new Set([seenKey(first)]);
-    expect(sectionOf(first, seen)).toBe("working");
+    expect(sectionOf(first, seen, NOW)).toBe("working");
     // 第二轮做完：同一行、同一个状态，起点换了 → 旧记号作废，回到 NEEDS ATTENTION。
     const second = row("d", "turn_done", { origin: "agora", status_since: 40 });
     expect(seenKey(second)).not.toBe(seenKey(first));
-    expect(needsAttention(second, seen)).toBe(true);
-    expect(sectionOf(second, seen)).toBe("attention");
-    expect(partitionByAttention([row("run", "running"), second], seen).map((r) => r.id)).toEqual(["d", "run"]);
+    expect(needsAttention(second, seen, NOW)).toBe(true);
+    expect(sectionOf(second, seen, NOW)).toBe("attention");
+    expect(partitionByAttention([row("run", "running"), second], seen, NOW).map((r) => r.id)).toEqual(["d", "run"]);
     // 这条测的是前端跟着起点走，不是前端自己认回合：起点原地不动（修复前的服务端）时它仍然算看过，
     // 所以服务端那半边（`tests/state_machine.rs::a_second_turn_ended_moves_status_since_so_the_seen_mark_expires`）
     // 不能省——两边合起来才是这条不变量。
-    expect(sectionOf(row("d", "turn_done", { origin: "agora", status_since: 10 }), seen)).toBe("working");
+    expect(sectionOf(row("d", "turn_done", { origin: "agora", status_since: 10 }), seen, NOW)).toBe("working");
   });
 
   // agora-5gg.11：段名不副实（2026-09-18 Mac 截图上叫 RUNNING 的那一段 9 行没有一行在跑——UNKNOWN /
   // STARTING / IDLE 全塞在里面）。四段 NEEDS ATTENTION / UNCLEAR / WORKING / FINISHED，**分数表一个字没动**，
   // 只改 sectionOf 的分段：unknown 单独成段，running / starting / idle 与看过的 TURN_DONE 共用 WORKING 段。
   it("gives UNKNOWN its own UNCLEAR segment and renames the rest to WORKING without touching the scores (agora-5gg.11)", () => {
-    expect(sectionOf(row("u", "unknown"))).toBe("unclear");
+    expect(sectionOf(row("u", "unknown"), undefined, NOW)).toBe("unclear");
     // 不认识的状态名（旧节点报来的新状态）分数落到 unknown 档，段也跟着走：`unclearStatus` 是段与行
     // （`SessionRow.tsx` 那句 reason + 出口）共用的唯一判据，两边不会各判一套。
-    expect(sectionOf(row("v", "detached"))).toBe("unclear");
+    expect(sectionOf(row("v", "detached"), undefined, NOW)).toBe("unclear");
     expect(unclearStatus("unknown")).toBe(true);
     expect(unclearStatus("detached")).toBe(true);
     expect(unclearStatus("idle")).toBe(false);
     for (const status of ["running", "starting", "idle"]) {
-      expect(sectionOf(row(`w-${status}`, status))).toBe("working");
+      expect(sectionOf(row(`w-${status}`, status), undefined, NOW)).toBe("working");
     }
     // 看过的 TURN_DONE 降进 WORKING 段（agora-5gg.21 的落点）：段名换了，归属一个字没换。
     const done = row("d", "turn_done", { origin: "agora", status_since: 10 });
-    expect(sectionOf(done)).toBe("attention");
-    expect(sectionOf(done, new Set([seenKey(done)]))).toBe("working");
+    expect(sectionOf(done, undefined, NOW)).toBe("attention");
+    expect(sectionOf(done, new Set([seenKey(done)]), NOW)).toBe("working");
     // UNKNOWN 不因人手而离开 UNCLEAR：分数 40 低于 FINISHED 80，所以既不进 NEEDS ATTENTION，
     // 也不因来源 / 记号进折叠区（折叠区是一键清理的删除名单，说不清的行不能被顺手删掉）。
-    expect(needsAttention(row("u", "unknown"))).toBe(false);
-    expect(finishedCollapsed(row("u", "unknown", { origin: "external" }))).toBe(false);
-    expect(sectionOf(row("u", "unknown", { origin: "external" }), new Set(["u@"]))).toBe("unclear");
+    expect(needsAttention(row("u", "unknown"), undefined, NOW)).toBe(false);
+    expect(finishedCollapsed(row("u", "unknown", { origin: "external" }), undefined, NOW)).toBe(false);
+    expect(sectionOf(row("u", "unknown", { origin: "external" }), new Set(["u@"]), NOW)).toBe("unclear");
     // 反过来：需要人的行不因四段化改掉归属。
-    expect(sectionOf(row("f", "failed"))).toBe("attention");
-    expect(sectionOf(row("w", "waiting"))).toBe("attention");
-    expect(sectionOf(row("x", "finished", { origin: "external" }))).toBe("finished");
+    expect(sectionOf(row("f", "failed"), undefined, NOW)).toBe("attention");
+    expect(sectionOf(row("w", "waiting"), undefined, NOW)).toBe("attention");
+    expect(sectionOf(row("x", "finished", { origin: "external" }), undefined, NOW)).toBe("finished");
   });
 
   // 验收：Alt/Option+N 的序号跨段连续——分段只改归属、不产生空位也不重复计数（`Sidebar.tsx` 的
@@ -194,12 +205,12 @@ describe("attention", () => {
       row("run", "running"),
       row("ext", "finished", { origin: "external" }),
     ];
-    const shown = partitionByAttention(sortByAttention(rows));
+    const shown = partitionByAttention(sortByAttention(rows), undefined, NOW);
     expect(shown.map((r) => r.id)).toEqual(["fail", "wait", "unk", "idle", "start", "run", "ext"]);
     // 序号就是下标 +1：1…7 连续，UNCLEAR 段插在中间不会把后面的序号顶乱或留空洞。
     expect(shown.map((_r, i) => i + 1)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     // 每种状态各占一段、段与段之间不交叉（Sidebar 的表头按 indexOf 推，全靠这个连续性）。
-    expect(shown.map((r) => sectionOf(r))).toEqual([
+    expect(shown.map((r) => sectionOf(r, undefined, NOW))).toEqual([
       "attention",
       "attention",
       "unclear",
@@ -257,18 +268,18 @@ describe("attention", () => {
     ];
     const seen = new Set(["seen-fin@2"]);
     const sorted = sortByAttention(rows);
-    const shown = partitionByAttention(sorted, seen);
+    const shown = partitionByAttention(sorted, seen, NOW);
     // 四段各自等于 sortByAttention 顺序按段过滤的结果，拼起来就是显示顺序。
-    const by = (section: string) => sorted.filter((r) => sectionOf(r, seen) === section).map((r) => r.id);
+    const by = (section: string) => sorted.filter((r) => sectionOf(r, seen, NOW) === section).map((r) => r.id);
     expect(shown.map((r) => r.id)).toEqual([...by("attention"), ...by("unclear"), ...by("working"), ...by("finished")]);
     expect(shown.map((r) => r.id)).toEqual(["fail", "wait", "new-fin", "unk", "idle", "run", "ext-fin", "seen-fin", "ext-fin-2"]);
     // 一行不多一行不少：折叠区的行仍在序列里，序号照数。
     expect(shown.length).toBe(rows.length);
     // 过滤（只删不换序）与分段可交换：过滤后再分段 = 分段后再过滤，Alt/Option+N 在过滤后仍指向眼睛看到的第 N 条。
     const keep = (r: SessionRow) => r.id !== "wait" && r.id !== "ext-fin";
-    expect(partitionByAttention(sorted.filter(keep), seen).map((r) => r.id)).toEqual(shown.filter(keep).map((r) => r.id));
+    expect(partitionByAttention(sorted.filter(keep), seen, NOW).map((r) => r.id)).toEqual(shown.filter(keep).map((r) => r.id));
     // 不传 seen：agora 来源的 FINISHED 全在 NEEDS ATTENTION，external 的仍收起。
-    expect(partitionByAttention(sorted).map((r) => r.id)).toEqual(["fail", "wait", "seen-fin", "new-fin", "unk", "idle", "run", "ext-fin", "ext-fin-2"]);
+    expect(partitionByAttention(sorted, undefined, NOW).map((r) => r.id)).toEqual(["fail", "wait", "seen-fin", "new-fin", "unk", "idle", "run", "ext-fin", "ext-fin-2"]);
   });
 
   it("persists the seen set defensively: bad JSON, missing storage and throwing storage all read as empty", () => {
@@ -309,7 +320,7 @@ describe("attention", () => {
 
   it("partition keeps NEEDS ATTENTION first without reordering inside a group", () => {
     const rows = [row("a", "running"), row("b", "waiting"), row("c", "running"), row("d", "failed")];
-    expect(partitionByAttention(rows).map((r) => r.id)).toEqual(["b", "d", "a", "c"]);
+    expect(partitionByAttention(rows, undefined, NOW).map((r) => r.id)).toEqual(["b", "d", "a", "c"]);
   });
 
   it("labels a row by task: issue id + title > prompt summary > display name", () => {
@@ -357,6 +368,58 @@ describe("attention", () => {
 // agora-no5：没有 status_since 的行（旧节点 / 测试桩）退化为 `<id>@` 时，同一行的 FINISHED 记号与
 // TURN_DONE 记号会撞同一个键、互相顶用。退化键必须带上状态，两种记号各认各的（真实 daemon 的行总带
 // status_since，本条只服务于退化行）。
+describe("需要我的新鲜度窗口（agora-82x7 的另一半，2026-10-08 用户拍板）", () => {
+  // 「需要我」回答的是**现在**需要你：现场 8 行里有 6 行是 9/20 与 10/6 的旧账，最老 15 天，把今天
+  // 真正的事压下去了。窗口只淘汰"等你回看"的两种状态（turn_done / finished），waiting / failed 不设
+  // 上限——那是真的卡着人。降段不等于消失：turn_done 落到在跑段，finished 落到折叠的已完成区。
+  const at = (secsAgo: number) => NOW - secsAgo;
+
+  it("turn_done 超过窗口降到 WORKING，窗口内仍在需要我，边界取 <=", () => {
+    const none = new Set<string>();
+    expect(needsAttention(row("d", "turn_done", { origin: "agora", status_since: at(3600) }), none, NOW)).toBe(true);
+    expect(sectionOf(row("d", "turn_done", { origin: "agora", status_since: at(3600) }), none, NOW)).toBe("attention");
+    expect(
+      needsAttention(row("d", "turn_done", { origin: "agora", status_since: at(ATTENTION_WINDOW_SECS) }), none, NOW),
+      "正好等于窗口：还算新鲜",
+    ).toBe(true);
+    const stale = row("d", "turn_done", { origin: "agora", status_since: at(ATTENTION_WINDOW_SECS + 1) });
+    expect(needsAttention(stale, none, NOW)).toBe(false);
+    expect(sectionOf(stale, none, NOW), "降段不消失：落到在跑段").toBe("working");
+    expect(partitionByAttention([stale], none, NOW).map((r) => r.id), "行不丢").toEqual(["d"]);
+  });
+
+  it("finished 超过窗口进折叠区（同时也是 Finished N 清理名单的口径）", () => {
+    const none = new Set<string>();
+    const stale = row("f", "finished", { origin: "agora", status_since: at(ATTENTION_WINDOW_SECS + 1) });
+    expect(finishedCollapsed(stale, none, NOW)).toBe(true);
+    expect(sectionOf(stale, none, NOW)).toBe("finished");
+    const freshFin = row("f", "finished", { origin: "agora", status_since: at(60) });
+    expect(finishedCollapsed(freshFin, none, NOW), "窗口内的还是要人回看（A46）").toBe(false);
+  });
+
+  it("waiting / failed 不设上限：卡着人的事，七天前也还是现在的事", () => {
+    const none = new Set<string>();
+    const long = at(7 * 24 * 3600);
+    expect(needsAttention(row("w", "waiting", { status_since: long }), none, NOW)).toBe(true);
+    expect(needsAttention(row("f", "failed", { status_since: long }), none, NOW)).toBe(true);
+  });
+
+  it("peer 行按 peer 自己那只钟算年龄（与 seenKey 同一口径）", () => {
+    // 本机这只钟是重启后重写的（可能差得很远），拿它当年龄会误判；peer_status_since 才是"这一次完成"。
+    const peer = row("b:1", "turn_done", {
+      node: "b",
+      peer_status_since: at(60),
+      status_since: at(30 * 24 * 3600),
+    });
+    expect(needsAttention(peer, new Set(), NOW)).toBe(true);
+  });
+
+  it("不知道何时完成的行不判：旧节点 / 测试桩不该被当成'很久以前完成的'", () => {
+    expect(needsAttention(row("d", "turn_done", { origin: "agora" }), new Set(), NOW)).toBe(true);
+    expect(sectionOf(row("f", "finished", { origin: "agora" }), new Set(), NOW)).toBe("attention");
+  });
+});
+
 describe("seenKey without status_since (agora-no5)", () => {
   const fin = row("same", "finished", { origin: "agora" });
   const done = row("same", "turn_done", { origin: "agora" });
@@ -365,11 +428,11 @@ describe("seenKey without status_since (agora-no5)", () => {
     expect(seenKey(fin)).toBe("same@finished");
     expect(seenKey(done)).toBe("same@turn_done");
     const seenFin = new Set([seenKey(fin)]);
-    expect(needsAttention(done, seenFin)).toBe(true);
-    expect(finishedCollapsed(fin, seenFin)).toBe(true);
+    expect(needsAttention(done, seenFin, NOW)).toBe(true);
+    expect(finishedCollapsed(fin, seenFin, NOW)).toBe(true);
     const seenDone = new Set([seenKey(done)]);
-    expect(finishedCollapsed(fin, seenDone)).toBe(false);
-    expect(needsAttention(done, seenDone)).toBe(false);
+    expect(finishedCollapsed(fin, seenDone, NOW)).toBe(false);
+    expect(needsAttention(done, seenDone, NOW)).toBe(false);
   });
 
   it("still expires the mark when the row carries status_since", () => {
@@ -378,7 +441,7 @@ describe("seenKey without status_since (agora-no5)", () => {
     const second = row("same", "turn_done", { origin: "agora", status_since: 40 });
     const seen = new Set([seenKey(first)]);
     expect(seen.has(seenKey(second))).toBe(false);
-    expect(needsAttention(second, seen)).toBe(true);
+    expect(needsAttention(second, seen, NOW)).toBe(true);
   });
 });
 
@@ -394,10 +457,10 @@ describe("seenKey on peer rows (agora-cjv)", () => {
     const restamped = peerRow({ status_since: 1001 });
     expect(seenKey(restamped)).toBe(seenKey(peerRow()));
     const seen = new Set([seenKey(peerRow())]);
-    expect(sectionOf(restamped, seen)).toBe("finished");
+    expect(sectionOf(restamped, seen, NOW)).toBe("finished");
     const again = peerRow({ status_since: 2000, peer_status_since: 1500 });
     expect(seen.has(seenKey(again))).toBe(false);
-    expect(needsAttention(again, seen)).toBe(true);
+    expect(needsAttention(again, seen, NOW)).toBe(true);
   });
 
   it("falls back to the local anchor when an old peer does not send the field", () => {

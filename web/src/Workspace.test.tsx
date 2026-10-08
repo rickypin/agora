@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { StrictMode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { catalogApi, sessionApi, type FetchLike } from "./api";
 import type { SessionRow, SocketLike, UnregisteredRow } from "./events";
 import { API_VERSION, HealthWatcher, VersionWatcher } from "./health";
@@ -172,6 +172,19 @@ afterEach(() => {
   mounted.length = 0;
   unmounted.length = 0;
   sockets.length = 0;
+});
+
+
+/**
+ * 冻住墙上时钟：分段判据（`ATTENTION_WINDOW_SECS` 的新鲜度）要读时钟，而这些用例的 `status_since` 是
+ * 5…820 这种假时刻——不冻时钟，它们相对真实时间就是"十几年前"，`turn_done` / `finished` 行会被新鲜度
+ * 淘汰出「需要我」，段位断言全错。冻在 1000 s（毫秒 1_000_000）之后它们都是"几分钟前"，相对顺序不变。
+ */
+beforeEach(() => {
+  vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+});
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("Workspace", () => {
