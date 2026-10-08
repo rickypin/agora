@@ -4,17 +4,17 @@
  * 为什么需要：`viewport-fit=cover` + `black-translucent` 时（主屏 PWA 全屏），页面确实铺到刘海下面，
  * CSS 里的 `env(safe-area-inset-top)`（iPhone 16 Pro 上是 62px）必须照加；但同一台手机上如果视口比
  * 屏幕小（Safari 的浏览器 chrome 在，或状态栏样式不是 translucent），**这 62px 系统已经让出去了**，
- * 再加一遍就是顶部凭空多一条空白。实测证据（2026-10-08，同一台 iPhone 18.5）：
- *   03:03 的报告 inner=[402,812] screen=[402,874]，safeArea.top=62 —— 差值正好是状态栏那 62px。
- * 判据取"视口是否覆盖整块屏幕"（两个维度都比，差 > 4px 就算没覆盖），不猜 display-mode：它在浏览器与
- * PWA 里都可能是一样的。算出来的值写进 `--safe-top` / `--safe-bottom`（CSS 只用这两个变量，
- * 左右两侧仍直接用 env()——横屏刘海在侧边，但那两格没有"系统已经让出"的问题）。
+ * 再加一遍就是顶部凭空多一条空白。
+ * 2026-10-09 完整 iOS 18.5 Simulator 反例：black-translucent 主屏启动时 inner=402×812、
+ * screen=402×874，标题仍在状态栏下面。不能单凭高度较小就清掉安全区；独立模式优先保留 env，
+ * 浏览器模式才按长短边判断。软键盘缩小视口时也不能丢掉独立模式的顶部让位。
+ * 结果写进 --safe-top / --safe-bottom；左右两侧直接用 env()。
  */
 export interface Insets {
   /** 实际有效的上/下让位（px）。 */
   top: number;
   bottom: number;
-  /** 视口是否覆盖整屏（false = 系统已经让出了 chrome）。 */
+  /** 视口尺寸是否覆盖整屏；独立模式较小时也可能覆盖状态栏。 */
   fullscreen: boolean;
   /** 读到的 env(safe-area-inset-top/bottom) 原始值（报告用）。 */
   envTop: number;
@@ -47,15 +47,15 @@ export interface Viewport {
  * 于是判定"非全屏"、把横屏底部那 21px 的 home indicator 让位丢掉（2026-10-08 自查发现）。
  * 按排序后的长短边比就两种口径都对：视口盖住整块屏幕 ⇔ 长短边分别相等。
  */
-export function resolveInsets(inner: Viewport, screen: Viewport, env: { top: number; bottom: number }): Insets {
+export function resolveInsets(inner: Viewport, screen: Viewport, env: { top: number; bottom: number }, standalone = false): Insets {
   const same = (a: number, b: number) => Math.abs(a - b) <= 4;
   const innerSides = [Math.min(inner.w, inner.h), Math.max(inner.w, inner.h)];
   const screenSides = [Math.min(screen.w, screen.h), Math.max(screen.w, screen.h)];
   const known = screen.w > 0 && screen.h > 0;
   const fullscreen = !known || (same(innerSides[0], screenSides[0]) && same(innerSides[1], screenSides[1]));
   return {
-    top: fullscreen ? env.top : 0,
-    bottom: fullscreen ? env.bottom : 0,
+    top: standalone || fullscreen ? env.top : 0,
+    bottom: standalone || fullscreen ? env.bottom : 0,
     fullscreen,
     envTop: env.top,
     envBottom: env.bottom,
@@ -70,11 +70,28 @@ export function applyInsets(insets: Insets, root: Element | null = document.docu
   }
 }
 
+function isStandalone(): boolean {
+  return (navigator as Navigator & { standalone?: boolean }).standalone === true
+    || window.matchMedia?.("(display-mode: standalone)").matches === true;
+}
+
+/** iOS 18.5 standalone reports dvh=812 but lvh=874 (2026-10-09 Simulator).
+ * Keep the full canvas until the keyboard consumes substantially more than the status bar.
+ * Compare the screen edge opposite the current width so portrait keyboard resizing is not
+ * mistaken for a landscape rotation. Browser chrome continues to use dynamic viewport units.
+ */
+export function mobileViewportHeight(inner: Viewport, screen: Viewport, standalone: boolean): string {
+  const portrait = Math.abs(inner.w - Math.min(screen.w, screen.h)) <= 4;
+  const height = portrait ? Math.max(screen.w, screen.h) : Math.min(screen.w, screen.h);
+  return standalone && height - inner.h < 150 ? "100lvh" : "100dvh";
+}
+
 export function currentInsets(): Insets {
   return resolveInsets(
     { w: window.innerWidth, h: window.innerHeight },
     { w: window.screen?.width ?? 0, h: window.screen?.height ?? 0 },
     envInsets(),
+    isStandalone(),
   );
 }
 
@@ -82,7 +99,11 @@ let installed = false;
 
 /** 装一次：立刻算 + 视口变化（旋转 / 地址栏收起 / 键盘）时重算。 */
 export function installSafeInsets(): Insets {
-  const run = () => applyInsets(currentInsets());
+  const resize = () => document.documentElement.style.setProperty("--mobile-height", mobileViewportHeight(
+    { w: window.innerWidth, h: window.visualViewport?.height ?? window.innerHeight },
+    { w: window.screen.width, h: window.screen.height }, isStandalone(),
+  ));
+  const run = () => { applyInsets(currentInsets()); resize(); };
   const insets = (() => {
     try {
       return currentInsets();
@@ -91,6 +112,7 @@ export function installSafeInsets(): Insets {
     }
   })();
   applyInsets(insets);
+  resize();
   if (typeof window !== "undefined" && !installed) {
     installed = true;
     window.addEventListener("resize", run);

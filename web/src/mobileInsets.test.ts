@@ -1,14 +1,17 @@
-/**
- * 安全区自适应（agora-xu12）：判定"这 62px 系统是不是已经让出去了"。
- *
- * 实测依据（2026-10-08，iPhone 18.5，同一台机器两分钟内的两份诊断报告）：
- *   02:44 inner=[402,874] screen=[402,874] → 主屏 PWA 全屏，env 的 62/34 必须照加；
- *   03:03 inner=[402,812] screen=[402,874] → 视口矮了正好一个状态栏（62），此时再加就是白白空一条。
- */
 import { describe, expect, it } from "vitest";
-import { resolveInsets } from "./mobileInsets";
+import { mobileViewportHeight, resolveInsets } from "./mobileInsets";
 
 describe("安全区自适应（agora-xu12）", () => {
+  it("iOS 18.5 主屏冷启动视口少 62px 仍保留状态栏安全区", () => {
+    const result = resolveInsets({ w: 402, h: 812 }, { w: 402, h: 874 }, { top: 62, bottom: 34 }, true);
+    expect([result.top, result.bottom]).toEqual([62, 34]);
+  });
+
+  it("独立模式键盘弹出不清除顶部安全区", () => {
+    const result = resolveInsets({ w: 402, h: 455 }, { w: 402, h: 874 }, { top: 62, bottom: 0 }, true);
+    expect([result.top, result.bottom]).toEqual([62, 0]);
+  });
+
   it("视口覆盖整屏（主屏 PWA 全屏）时照加 env 的四条", () => {
     const it0 = resolveInsets({ w: 402, h: 874 }, { w: 402, h: 874 }, { top: 62, bottom: 34 });
     expect(it0.fullscreen).toBe(true);
@@ -48,5 +51,18 @@ describe("安全区自适应（agora-xu12）", () => {
 
   it("拿不到 screen（桌面浏览器 / 单测环境）时不猜：按全屏算，env 本来就是 0", () => {
     expect(resolveInsets({ w: 1200, h: 800 }, { w: 0, h: 0 }, { top: 0, bottom: 0 }).top).toBe(0);
+  });
+});
+
+describe("iOS 18.5 standalone viewport", () => {
+  it("fills the screen when dvh omits the translucent status bar", () => {
+    expect(mobileViewportHeight({ w: 402, h: 812 }, { w: 402, h: 874 }, true)).toBe("100lvh");
+  });
+  it("keeps the keyboard visible in portrait and landscape", () => {
+    expect(mobileViewportHeight({ w: 402, h: 455 }, { w: 402, h: 874 }, true)).toBe("100dvh");
+    expect(mobileViewportHeight({ w: 874, h: 200 }, { w: 402, h: 874 }, true)).toBe("100dvh");
+  });
+  it("preserves Safari toolbar resizing", () => {
+    expect(mobileViewportHeight({ w: 402, h: 678 }, { w: 402, h: 874 }, false)).toBe("100dvh");
   });
 });

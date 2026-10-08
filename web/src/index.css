@@ -17,7 +17,8 @@
   --ok: #3fb950;
   --bad: #f85149;
   /* 上下让位（agora-xu12）：默认就是 env(safe-area-inset-*)；视口比屏幕矮时（浏览器 chrome 在、
-     状态栏已让出）由 JS 把这两个变量改成 0——否则会凭空多出一条 62px 的空白。见 mobileInsets.ts。 */
+     状态栏已让出）由 JS 把这两个变量改成 0，主屏独立模式始终保留 env——否则会凭空多出一条 62px 的空白。见 mobileInsets.ts。 */
+  --mobile-height: 100dvh;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --sel: #1f2a38;             /* 选中 / 高亮底：侧栏行、命令面板命中、手机行（原为两处硬编码） */
@@ -409,7 +410,7 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
   display: flex;
   flex-direction: column;
   height: 100%;
-  height: 100dvh;                          /* Safari 工具栏收起/展开时 composer 不被顶到屏幕外 */
+  height: var(--mobile-height, 100dvh);     /* Safari 工具栏收起/展开时 composer 不被顶到屏幕外 */
   max-width: 44rem;
   margin: 0 auto;
 }

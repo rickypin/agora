@@ -235,6 +235,8 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 
 兼容基线为 iPhone 16 Pro / iOS 18.5：构建目标显式固定 Safari 18，避免工具升级抬高最低引擎版本。2026-10-09 使用 WebKit 18.5（Playwright 1.53.2）验证 402×874、320×640 与 874×402 视口，筛选、搜索、草稿、多行发送、浏览器后退、大字号和预设启动通过，页面无错误、无横向溢出。
 
+2026-10-09 补完完整 iOS 18.5（22F77）iPhone 16 Pro Simulator 验证：Safari 竖屏 402×874、横屏、原生软键盘多行发送、审批通过；从系统分享菜单添加到主屏，冷启动确认 `navigator.standalone=true`，修复状态栏重叠后复测顶部 62px / 底部 34px 安全区与独立模式键盘发送。最终页面宽度 402px、缩放 1、无页面错误。操作由 Appium 3.6.0 / XCUITest 原生点按和键盘完成，截图由 simctl 保存；生产构建连接隔离的本地 API fixture，发送与审批有服务端请求记录，未操作真实 agent，也未把本次结果扩展为 HTTPS 推送验收。
+
 守卫：`MobileApp.test.tsx` 的关注筛选 / 搜索 / 草稿隔离 / 下一件待处理 / reason 预览；既有 `MobileCard.test.tsx` 的发送、重试、批准、危险操作确认与 DOM 边界；`mobileCss.test.ts` 的字号、安全区与触控约束。验证使用本地浏览器与 iOS Simulator，未运行 CI。
 
 ### 新建（预设）（agora-prdg.4，2026-10-08）
@@ -441,10 +443,11 @@ PTY 没有队列，键击直接落进 TUI 的输入区，各家对「跑着的�
 随机查询串的地址重新导航：同 scope 仍在 PWA 里，下次冷启回到 start_url。
 
 顺带一条安全区规则（同一次排障的副产物）：页面不再直接写 `env(safe-area-inset-top/bottom)`，而是
-`--safe-top` / `--safe-bottom` 两个变量，由 JS 判「视口是否覆盖整屏」后写值（`:root` 里仍是 `env()`
-默认）。同一台 iPhone 上主屏全屏时 `inner=[402,874]`（那 62px 该让），而浏览器里 `inner=[402,812]`
-（系统已经把状态栏让出去了，再让就是凭空多一条空白）——两种都在，写死哪一种都会错一半
-（`web/src/mobileInsets.ts`）。
+`--safe-top` / `--safe-bottom` 两个变量（`:root` 默认 `env()`）。独立模式优先保留系统安全区，
+浏览器模式才按视口与屏幕长短边判断。2026-10-09 完整 iOS 18.5 Simulator 反证了旧的高度推断：
+主屏模式也会报告 `inner=[402,812]`、`screen=[402,874]`，此时清零会让标题压住状态栏。
+独立模式无键盘时用 `100lvh` 填满屏幕；视口被键盘缩小超过 150px 时恢复 `100dvh`，浏览器模式
+始终跟随动态视口。iPhone 16 Pro 实测顶部 62px、底部 34px，让位由 `web/src/mobileInsets.ts` 统一维护。
 
 WAITING 的变体：决策原文（等宽逐字、不过 markdown）作为一张内联卡片画在 composer 上方，其下是 [Allow] [Deny]；`respond_via = terminal` 时这两个按钮换成「需要到桌面」，composer 不出现。
 
