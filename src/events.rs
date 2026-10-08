@@ -710,6 +710,7 @@ mod tests {
                 worktree: None,
                 task_ref: None,
                 command: None,
+                launch_args: None,
                 agent_session_id: None,
                 epoch: 1,
                 transcript_path: None,

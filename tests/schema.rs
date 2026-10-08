@@ -97,6 +97,58 @@ fn v1_database_upgrades_in_place_and_old_rows_read_back() {
 }
 
 #[test]
+fn v7_database_upgrades_in_place_to_presets_and_launch_args() {
+    // v8（agora-prdg.3）：presets 表 + sessions.launch_args。造一个 v7 形状（拿掉 v8 加的两样），
+    // 里面躺着升级前就有的行；Db::open 升到 v8 后旧行一条不少、launch_args 默认 NULL、
+    // presets 可读写。SQLite 3.35+ 的 DROP COLUMN：bundled 的 rusqlite 0.40 带 SQLite 3.50+。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agora.db");
+    {
+        let db = Db::open(&path).unwrap();
+        db.conn()
+            .execute_batch(
+                "DROP TABLE presets;
+                 ALTER TABLE sessions DROP COLUMN launch_args;",
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO sessions (id, runtime_ref, display_name, agent_type, command,
+                    created_at, updated_at, origin)
+                 VALUES ('oldv7', 'tmux:agora:ag-oldv7', 'v7 行', 'shell', 'sleep 300',
+                    '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z', 'agora')",
+                [],
+            )
+            .unwrap();
+        db.conn().pragma_update(None, "user_version", 7).unwrap();
+    }
+    let db = Db::open(&path).unwrap();
+    assert_eq!(db.user_version().unwrap(), SCHEMA_VERSION);
+    let (command, launch_args): (Option<String>, Option<String>) = db
+        .conn()
+        .query_row(
+            "SELECT command, launch_args FROM sessions WHERE id = 'oldv7'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(command.as_deref(), Some("sleep 300"), "旧行不受影响");
+    assert_eq!(launch_args, None, "旧行的 launch_args 默认 NULL");
+    // 同趟迁移建的 presets 表可读写。
+    let p = agora::session::preset::upsert(
+        &db,
+        "p1",
+        "claude",
+        "/tmp",
+        Some("--model opus"),
+        Some("hi"),
+    )
+    .unwrap();
+    assert_eq!(p.name, "p1");
+    assert_eq!(agora::session::preset::list(&db).unwrap().len(), 1);
+}
+
+#[test]
 fn newer_database_is_refused_not_downgraded() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("agora.db");

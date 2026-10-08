@@ -61,6 +61,10 @@ pub struct SessionRecord {
     pub worktree: Option<String>,
     pub task_ref: Option<String>,
     pub command: Option<String>,
+    /// 创建时从预设复制进来的启动参数字符串（原样、经 shell，接在 `command` 这个裸命令名之后；
+    /// agora-prdg.3）。`command` 仍是裸名（ADR-001 D7）：Restart 拿它当底算 resume，再把这一列
+    /// 原样接回去；prompt 不在这里、也从不重发（A43）。没参数的行是 NULL。
+    pub launch_args: Option<String>,
     pub agent_session_id: Option<String>,
     pub epoch: i64,
     pub transcript_path: Option<String>,

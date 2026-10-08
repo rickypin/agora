@@ -8,6 +8,7 @@ pub mod db;
 mod hook_state;
 pub mod manager;
 pub mod model;
+pub mod preset;
 pub mod throttle;
 
 pub use db::{Db, DbError};

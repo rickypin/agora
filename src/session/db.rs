@@ -103,6 +103,24 @@ const MIGRATIONS: &[&str] = &[
         last_failure_at DATETIME,
         failure TEXT
     );",
+    // v8：预设（agora-prdg.3，2026-10-08；epic agora-hxva）。presets 存"一键启动"的定义：
+    // agent 类型、目录、启动参数（原样字符串）与可选首句。跟着 `agora peer token` 的先例：
+    // CLI 直接操作 AGORA_HOME/agora.db、不需要 daemon 在跑（ADR-003 D6），daemon 每次请求查库，
+    // 所以在终端里加 / 改 / 删即时生效——config.yaml 没有热重载（只有 TLS 证书被 watch），
+    // 放配置就得重启。
+    // sessions.launch_args 是创建时从预设**复制**进这一行的一份参数快照（不引用 preset）：
+    // 预设之后被改 / 删，Restart 仍要按当时的样子重放。command 不塞参数——它按 ADR-001 D7
+    // 存可移植的裸命令名，Restart 拿它当底算 resume。旧行留 NULL：没有参数就是没有。
+    "CREATE TABLE presets (
+        name TEXT PRIMARY KEY,
+        agent_type TEXT NOT NULL,
+        working_directory TEXT NOT NULL,
+        args TEXT,
+        prompt TEXT,
+        created_at DATETIME NOT NULL,
+        updated_at DATETIME NOT NULL
+    );
+    ALTER TABLE sessions ADD COLUMN launch_args TEXT;",
 ];
 
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

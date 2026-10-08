@@ -255,7 +255,7 @@ pub async fn create(
             new.command = command;
             id
         });
-        let view = s.create_with_prompt(&new, initial_prompt.as_deref())?;
+        let view = s.create_with_prompt(&new, initial_prompt.as_deref(), None)?;
         if let Some(id) = pinned {
             s.set_pinned_agent_session_id(&view.record.id, &id)?;
             return s.get(&view.record.id);

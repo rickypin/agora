@@ -11,6 +11,8 @@
 //!                               --record（或 AGORA_HOOK_RECORD）顺手录成脱敏 fixture（D10）
 //! agora peer token create <name> [--rotate] | list | revoke <name>
 //!                               被访问节点签发 / 列出 / 吊销某个 peer 的机器 token（ADR-003 D3）
+//! agora preset add <name> --agent <agent> --dir <path> [--args "…"] [--prompt "…"] | list | show | rm
+//!                               定义 / 列出 / 查看 / 删除预设（一键启动；agora-prdg.3）
 //! agora tls fingerprint         本节点 TLS 证书的 SPKI 指纹（peer 的 cert_fingerprint 填它；ADR-003 D4）
 //! agora tls rotate-key          自签模式换钥重签；daemon 热加载，peer 需更新指纹
 //! agora upgrade --from <新二进制> [--no-restart]
@@ -43,7 +45,7 @@ use agora::tls::{self, Mode, TlsFiles};
 /// V1 唯一的运行时；配置里 `runtime.kind` 缺省就是它。
 const RUNTIME_KIND: &str = "tmux";
 
-const USAGE: &str = "用法: agora [serve | pair | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | peer token create <name> [--rotate]|list|revoke <name> | tls fingerprint|rotate-key | upgrade --from <新二进制> [--no-restart] | upgrade --probe | fake-agent <script>|-e <inline>]";
+const USAGE: &str = "用法: agora [serve | pair | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | peer token create <name> [--rotate]|list|revoke <name> | preset add <name> --agent <agent> --dir <path> [--args \"…\"] [--prompt \"…\"]|list|show|rm | tls fingerprint|rotate-key | upgrade --from <新二进制> [--no-restart] | upgrade --probe | fake-agent <script>|-e <inline>]";
 
 #[tokio::main]
 async fn main() {
@@ -59,6 +61,7 @@ async fn main() {
         ["hook", rest @ ..] => agora::hook::cmd::run(rest).await,
         ["hooks", rest @ ..] => agora::hook::install::run(rest),
         ["peer", rest @ ..] => agora::cli::peer::run(rest),
+        ["preset", rest @ ..] => agora::cli::preset::run(rest),
         ["tls", rest @ ..] => tls_cmd(rest),
         // --probe 不读配置、不碰 AGORA_HOME：被问的是这份二进制本身（agora-7ku.8）。
         ["upgrade", "--probe"] => agora::cli::upgrade::probe(),

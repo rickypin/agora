@@ -742,32 +742,40 @@ impl SessionManager {
 
     /// 先外部资源后 metadata（不变量 7 同构）：写库失败 → remove 运行时会话回滚。
     pub fn create(&self, new: &NewSession) -> Result<SessionView, SessionError> {
-        self.create_with_prompt(new, None)
+        self.create_with_prompt(new, None, None)
     }
 
-    /// 起会话，带可选的首条 prompt（MISSION §6.4 从就绪任务起会话；A43；agora-h1k.2）。
+    /// 起会话，带可选的首条 prompt（MISSION §6.4 从就绪任务起会话；A43；agora-h1k.2）与预设定下的
+    /// 启动参数（agora-prdg.3）。
     ///
     /// prompt **只进这一代的启动命令**：Adapter 的 `initial_prompt_args` 给形态（一等 agent 都是
     /// 位置参数 `<command> '<prompt>'`），`resume::append_positional` 单引号包住接到命令尾。
     /// **不进库**——`sessions.command` 存的仍是 `new.command`，Restart 经 `plan_restart` 用库里的
     /// 命令续对话，prompt 绝不重发：重发会让 agent 把任务从头再做一遍（2026-09-06）。
     /// 没有 Adapter 的类型（API 层已拦成 400）兜底当位置参数接上。
+    ///
+    /// `launch_args` 是预设的参数字符串（原样、经 shell，[`crate::session::preset`]），拼接顺序
+    /// 是 `command + launch_args + initial_prompt_args`：三者只在启动命令行这一处汇合，库里
+    /// `command` 仍存裸名（ADR-001 D7），`launch_args` 单独一列（Restart 靠它重放）。参数是**快照**
+    /// ——复制进这一行，不引用 preset：预设之后被改 / 删，Restart 仍按当时的样子重放。
     pub fn create_with_prompt(
         &self,
         new: &NewSession,
         initial_prompt: Option<&str>,
+        launch_args: Option<&str>,
     ) -> Result<SessionView, SessionError> {
-        let launch_command = match initial_prompt.filter(|p| !p.trim().is_empty()) {
-            Some(prompt) => {
-                let args = adapter::find(&new.agent_type)
-                    .and_then(|a| adapter::AgentIdentity::initial_prompt_args(a, prompt))
-                    .unwrap_or_else(|| vec![prompt.to_owned()]);
-                args.iter().fold(new.command.clone(), |cmd, arg| {
-                    adapter::resume::append_positional(&cmd, arg)
-                })
-            }
-            None => new.command.clone(),
-        };
+        let mut launch_command = new.command.clone();
+        if let Some(args) = launch_args.filter(|a| !a.trim().is_empty()) {
+            launch_command = format!("{launch_command} {args}");
+        }
+        if let Some(prompt) = initial_prompt.filter(|p| !p.trim().is_empty()) {
+            let args = adapter::find(&new.agent_type)
+                .and_then(|a| adapter::AgentIdentity::initial_prompt_args(a, prompt))
+                .unwrap_or_else(|| vec![prompt.to_owned()]);
+            launch_command = args.iter().fold(launch_command, |cmd, arg| {
+                adapter::resume::append_positional(&cmd, arg)
+            });
+        }
         let id = self.fresh_id()?;
         // 不让已删除会话遗留的文件在 id 被复用时成为新会话的观测。
         if let Some(dir) = lock(&self.hook_state_dir).as_ref() {
@@ -788,9 +796,9 @@ impl SessionManager {
 
         let inserted = self.db.conn().execute(
             "INSERT INTO sessions (id, runtime_ref, display_name, name_locked, agent_type,
-                working_directory, worktree, task_ref, command, epoch, created_at, spawned_at,
+                working_directory, worktree, task_ref, command, launch_args, epoch, created_at, spawned_at,
                 updated_at, origin)
-             VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+             VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7, ?8, ?9, 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
                 strftime('%Y-%m-%dT%H:%M:%SZ','now'), strftime('%Y-%m-%dT%H:%M:%SZ','now'),
                 'agora')",
             params![
@@ -802,6 +810,7 @@ impl SessionManager {
                 new.worktree,
                 new.task_ref,
                 new.command,
+                launch_args,
             ],
         );
         if let Err(err) = inserted {
@@ -1559,12 +1568,20 @@ impl SessionManager {
         let mut env = env.to_vec();
         env.push(("AGORA_SESSION_ID".into(), rec.id.clone()));
         env.push(("AGORA_EPOCH".into(), epoch.to_string()));
+        // 这一代的命令行 = 基座 / resume 覆盖命令 + 库里的 launch_args（预设复制来的参数快照）。
+        // 两条分支（respawn 与运行时会话已不在、退化为同名 create）共用这一个 spec，所以两边都在
+        // ——少了任何一边就是"预设起的会话 Restart 之后参数静默消失"。
+        let mut command = command
+            .filter(|c| !c.trim().is_empty())
+            .map(str::to_owned)
+            .unwrap_or(base);
+        if let Some(args) = rec.launch_args.as_deref().filter(|a| !a.trim().is_empty()) {
+            command.push(' ');
+            command.push_str(args);
+        }
         let spec = LaunchSpec {
             name: runtime_name(&r#ref),
-            command: command
-                .filter(|c| !c.trim().is_empty())
-                .map(str::to_owned)
-                .unwrap_or(base),
+            command,
             cwd: PathBuf::from(rec.working_directory.clone().unwrap_or_else(|| "/".into())),
             env,
             size: Size::default(),
@@ -2011,7 +2028,8 @@ impl SessionManager {
 const SELECT: &str =
     "SELECT id, runtime_ref, display_name, name_locked, agent_type, working_directory,
     worktree, task_ref, command, agent_session_id, epoch, transcript_path, created_at, ended_at,
-    updated_at, origin, spawned_at, killed_at, ended_at_approximate, ended_at_from_missing
+    updated_at, origin, spawned_at, killed_at, ended_at_approximate, ended_at_from_missing,
+    launch_args
     FROM sessions";
 
 fn row_to_record(row: &Row<'_>) -> rusqlite::Result<SessionRecord> {
@@ -2037,6 +2055,7 @@ fn row_to_record(row: &Row<'_>) -> rusqlite::Result<SessionRecord> {
         killed_at: row.get(17)?,
         ended_at_approximate: row.get(18)?,
         ended_at_from_missing: row.get(19)?,
+        launch_args: row.get(20)?,
     })
 }
 

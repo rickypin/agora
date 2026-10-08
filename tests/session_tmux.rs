@@ -345,3 +345,62 @@ fn kill_server_finishes_every_row_on_it() {
         .unwrap()
         .success());
 }
+
+#[test]
+fn preset_launch_args_are_in_the_command_line_and_survive_both_restart_paths() {
+    // agora-prdg.3：预设参数在创建时真的进了命令行（tmux 把 <command> 交给 shell，pane 打印
+    // 出来就是证据、单引号里的空格是一个参数）；Restart 的两条分支——同会话 respawn、运行时
+    // 会话不在时退化为同名 create——都要把参数带回来。漏掉任何一条就是"Restart 之后参数静默消失"。
+    let f = Fixture::new();
+    let m = f.manager();
+    let v = m
+        .create_with_prompt(
+            &spec("preset", "echo START"),
+            None,
+            Some("ARG_ONE 'arg two'"),
+        )
+        .unwrap();
+    let id = v.record.id.clone();
+    assert_eq!(
+        v.record.command.as_deref(),
+        Some("echo START"),
+        "库里仍是裸命令"
+    );
+    assert_eq!(v.record.launch_args.as_deref(), Some("ARG_ONE 'arg two'"));
+    let r = agora::runtime::RuntimeRef(v.record.runtime_ref.clone().unwrap());
+    let session_name = r.0.rsplit(':').next().unwrap().to_owned();
+
+    let wait_tail = |needle: &str| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let tail = String::from_utf8_lossy(&f.rt.capture_tail(&r, 50).unwrap()).into_owned();
+            if tail.contains(needle) {
+                return tail;
+            }
+            assert!(Instant::now() < deadline, "等不到 {needle:?}: {tail}");
+            std::thread::sleep(POLL);
+        }
+    };
+    wait_tail("START ARG_ONE arg two");
+
+    // ① respawn 分支：覆盖命令（API 层算的 resume 形态）+ 库里的参数。
+    m.restart_with(&id, &[], Some("echo RESUME")).unwrap();
+    assert_eq!(m.get(&id).unwrap().record.epoch, 2);
+    wait_tail("RESUME ARG_ONE arg two");
+
+    // ② 运行时会话已不在（保留一个 keepalive，server 还活着、只有这一条没了——"session gone"
+    // 而不是"server gone"）→ respawn 报 NotFound → 退化为同名 create，参数仍要在。
+    assert!(Command::new("tmux")
+        .args(["-L", &f.socket, "new-session", "-d", "-s", "keepalive"])
+        .status()
+        .unwrap()
+        .success());
+    assert!(Command::new("tmux")
+        .args(["-L", &f.socket, "kill-session", "-t", &session_name])
+        .status()
+        .unwrap()
+        .success());
+    m.restart_with(&id, &[], Some("echo AGAIN")).unwrap();
+    assert_eq!(m.get(&id).unwrap().record.epoch, 3);
+    wait_tail("AGAIN ARG_ONE arg two");
+}

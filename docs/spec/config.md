@@ -82,6 +82,7 @@ CREATE TABLE sessions (
     worktree TEXT,                                 -- git worktree 路径；可空（§4.2）
     task_ref TEXT,                                 -- issue id 或摘要；为空时首条 prompt 的首行补上（ADR-002 D8）
     command TEXT,
+    launch_args TEXT,                              -- 创建时从预设复制进来的启动参数字符串：原样、经 shell 接在裸命令名 command 之后（v8，agora-prdg.3）；command 仍是裸名（ADR-001 D7），Restart 拿它当底再把这一列接回去。prompt 不在这里，也从不重发（A43）
     agent_session_id TEXT,                         -- agent 自报的当前对话 id（§5.6），Restart resume 依据
     epoch INTEGER NOT NULL DEFAULT 1,              -- 进程代次：create 为 1，每次 respawn +1；旧代次的 hook 事件丢弃（ADR-002 D1）
     transcript_path TEXT,                          -- agent 自报的 transcript 路径；V1 只存不读（ADR-002 D8）
@@ -123,6 +124,15 @@ CREATE TABLE push_subscriptions (                  -- Web Push 订阅（schema v
     failure TEXT                                   -- 最近失败的**类型**（timeout / tls / 410 …），不是错误正文
 );
 CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE presets (                            -- 预设：桌面/终端里用 `agora preset` 定义的"一键启动"；手机只消费（schema v8，agora-prdg.3）
+    name TEXT PRIMARY KEY,                         -- 同名 add 即 upsert（整行覆盖，created_at 保留）
+    agent_type TEXT NOT NULL,                      -- 必须是已知 agent（adapter::find）；校验在 CLI 层
+    working_directory TEXT NOT NULL,               -- canonicalize 过的绝对路径（预设会被 daemon 在别的工作目录下使用）
+    args TEXT,                                     -- 原样字符串：与在终端里敲的一致，经 shell 加在裸命令名之后
+    prompt TEXT,                                   -- 可选首句；不吃首句的 agent（grok/shell）也保留（将来接了就生效）
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL
+);
 ```
 
 MVP 不需要保存大量 operational telemetry。peer 的最后视图只在内存（重启后等待重连），不落库；持久化留 V2 peer 历史（§11）。迁移带版本号（§2.3 规则 10）。
@@ -133,6 +143,22 @@ MVP 不需要保存大量 operational telemetry。peer 的最后视图只在内�
 - 形态 `apt_<name>_<base64url(32 字节随机)>`（一行，随机段恰好 43 字符）：前缀让日志与 secret scanner 认得出它，`<name>` 是被访问节点眼里这个 peer 的名字（字符集与 `node.id` 相同：字母、数字、`-`、`_`，最长 64）。name 与随机段都可能含 `_`，解析按尾部定长 43 切，不按 `_` 切（`src/auth/peer_token.rs`）。
 - 由被访问的节点签发：`agora peer token create <name>`——stdout **只有 token 一行**（`> mac.token` 直接就是 token_file），提示走 stderr；明文只输出这一次，该节点的 `peer_tokens` 表（schema v4）只存整串的 SHA-256。已有有效 token 的 name 再 `create` 拒绝（退出 1），加 `--rotate` 才换新——同一行换哈希，旧 token 立即失效；已吊销的 name 直接重签、不需要 `--rotate`。`agora peer token list` 列出 name / 签发时刻 / 最近使用 / active|revoked（不显示哈希，更没有明文）；`agora peer token revoke <name>` 即时生效（daemon 每次请求查库、不缓存；已建立的 `/api/events` 订阅等长连接由 daemon 在 5 s 内主动以 `4401 revoked` 关掉，`--rotate` 换掉的旧 token 同样——`docs/spec/api.md`「认证」末条，agora-0jt）。三条命令直接操作 `AGORA_HOME/agora.db`，不需要 daemon 在跑（ADR-003 D6）；库文件若由 CLI 首次创建也只属主可读。签发没有前置条件（ADR-003 D3）；token 只在 TLS 监听器上被接受（`docs/spec/api.md`「认证」）。
 - 持有方写入 `peers[].token_file`：明文、`0600`、不进 git、不进日志（MISSION §8）。读它（`peer_token::load_token_file`）先查权限再读内容：文件必须属于当前 uid、group / other 不得有任何位（与 `AGORA_HOME` 自检同一尺度）、内容去掉首尾空白后必须是上面的形态——任何一条不满足都是**配置错误**（`TokenFileError`），该 peer 应显示为「配置错误」而不是"离线"或"未授权"，也不进退避重试（重试改不了文件权限）。守卫 `tests/peer_token.rs::token_file_too_open_is_config_error`。 peer 客户端每次请求时读它、不缓存（换文件即生效）；配置错误时一个字节都不会发出去。
+
+## 预设（`agora preset`；agora-prdg.3 / epic agora-hxva）
+
+预设 = 在桌面 / 终端里定义好的"一键启动"：agent + 目录 + 启动参数（+ 可选首句）。手机端只消费（S2 提供只读 `GET /api/presets`，零打字；agora-prdg.4），"能起什么"冻结在桌面侧。
+
+```
+agora preset add <name> --agent <claude|codex|grok|pi|shell> --dir <path> [--args "…"] [--prompt "…"]
+agora preset list            # 名称 / agent / 目录 / 参数 / 首句（有则显示）/ updated_at
+agora preset show <name>
+agora preset rm <name>
+```
+
+- 存储是 SQLite 的 `presets` 表（schema v8）。与 `agora peer token` 同一条路：CLI 直接操作 `AGORA_HOME/agora.db`、不需要 daemon 在跑（ADR-003 D6）；daemon 每次请求查库、不缓存，所以新增 / 修改 / 删除即时生效（config.yaml 没有热重载，放配置就得重启——这就是预设进 DB 的原因）。
+- `add` 是幂等 upsert（同名覆盖：agent / 目录 / 参数 / 首句整行替换，`created_at` 保留）。`--agent` 必须是已知 agent（`adapter::find`）；`--dir` 必须存在，存 canonicalize 过的绝对路径（预设会被 daemon 在它自己的工作目录下使用）；`--prompt` 给了不吃首句的 agent（grok / shell）时**警告并保留**——现在用不上，将来接了就生效。
+- `--args` 是原样字符串，与你在终端里敲的完全一致（`--model opus`、`--continue`、`-c` …），起会话时经 shell 追加在裸命令名之后。它**不塞进 `sessions.command`**：那一列按 ADR-001 D7 存可移植的裸命令名、Restart 要拿它当底算 resume；参数单独进 `sessions.launch_args`——创建时从预设复制的一份**快照**，不引用 preset（预设之后被改 / 删，Restart 仍按当时的样子重放）。启动命令行 = `command + launch_args + 首条 prompt`（prompt 只在创建那一代、Restart 不重发，A43；agora-prdg.3）。
+- 退出码与 `agora hooks` / `agora peer token` 一致：0 成功 / 1 操作失败（未知 agent、目录不存在、预设不存在）/ 2 用法错误。
 
 ## Web Push（V2-1；agora-thc.6）
 

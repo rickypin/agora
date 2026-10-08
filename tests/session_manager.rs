@@ -215,6 +215,57 @@ fn restart_bumps_epoch_and_clears_ended_at() {
     assert_eq!(r.record.runtime_ref, v.record.runtime_ref, "同一运行时会话");
 }
 
+/// 预设参数（agora-prdg.3）：落库时 `command` 仍是裸名（ADR-001 D7）、参数在 `launch_args`，
+/// Restart 把覆盖命令（API 层算的 resume 形态）与参数一起交给运行时——两条分支共用一个 spec，
+/// 不是只在 respawn 那一条拼。
+#[test]
+fn preset_launch_args_live_in_their_own_column_and_are_replayed_on_restart() {
+    let (m, rt, db) = mgr();
+    let v = m
+        .create_with_prompt(
+            &new_session("preset"),
+            None,
+            Some("--model opus --continue"),
+        )
+        .unwrap();
+    assert_eq!(
+        v.record.command.as_deref(),
+        Some("sleep 300"),
+        "command 不塞参数（ADR-001 D7）"
+    );
+    assert_eq!(
+        v.record.launch_args.as_deref(),
+        Some("--model opus --continue"),
+        "参数单独一列"
+    );
+    // 库里的原文也一样（视图来自同一行）。
+    let stored: Option<String> = db
+        .conn()
+        .query_row(
+            "SELECT launch_args FROM sessions WHERE id = ?1",
+            [&v.record.id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("--model opus --continue"));
+
+    let r = m
+        .restart_with(&v.record.id, &[], Some("sleep 300 --resume ctx-1"))
+        .unwrap();
+    assert_eq!(r.record.epoch, 2);
+    let respawns = rt.respawns.lock().unwrap();
+    assert_eq!(
+        respawns.last().map(String::as_str),
+        Some("sleep 300 --resume ctx-1 --model opus --continue"),
+        "restart 的这一代命令行 = 覆盖命令 + 参数"
+    );
+    // 参数被复制进会话行，不引用 preset：之后改预设不影响这一行的重放。
+    assert_eq!(
+        r.record.launch_args.as_deref(),
+        Some("--model opus --continue")
+    );
+}
+
 #[test]
 fn delete_metadata_leaves_alive_session_and_removes_dead_one() {
     let (m, rt, _db) = mgr();
