@@ -443,7 +443,15 @@ impl Receiver {
         let stale = self.is_stale(&delivery);
         if stale {
             self.inbox.done(path)?;
-            tracing::debug!(component = "hook", session = %session_key(&delivery), "旧 epoch 的事件丢弃");
+            // 与 manager 里那道 epoch 门同一件事、同一句话（agora-51bo）：这里更早拦下（不必
+            // 先登记外部会话），但“被拒”得在默认 AGORA_LOG=info 下看得见——原来是 debug，
+            // 跟 manager 那行一样属于“静默丢事件”。
+            tracing::info!(
+                component = "hook",
+                session = %session_key(&delivery),
+                epoch = delivery.envelope.agora_epoch,
+                "旧 epoch 的 hook 事件被拒"
+            );
             return Ok(None);
         }
         // 宿主名来自 `--host`，`parse_args` 已校验；文件是别人手写的才会走到 Outside。
