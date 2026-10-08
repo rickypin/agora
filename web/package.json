@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "AGORA_WEB_BUILD=$(git rev-parse --short HEAD 2>/dev/null || echo nogit)-$(date -u +%H:%M) vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

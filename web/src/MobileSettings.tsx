@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { InstallHint, iosWithoutStandalone } from "./InstallHint";
+import { webBuild } from "./build";
 import { applyOutline, clipboardReport, copyText, outlineEnabled, toggleOutline } from "./mobileDebug";
 import { apiFetch } from "./net";
 import { browserPushEnv, disablePush, enablePush, selfCheckPush, type PushEnv, type PushReport } from "./push";
@@ -202,6 +203,35 @@ export function MobileSettings({ onClose, onRevoked, env, probe, textSize: given
             复制布局报告
           </button>
         </div>
+        {/* 前端构建号摆在设置页底：升级后一眼能看出手机跑的是不是新包（iOS 主屏 PWA 会把
+            start_url 钉在缓存里，光看行为看不出来）。 */}
+        <p className="muted" data-testid="mobile-build">
+          前端 {webBuild()} ·{" "}
+          <button
+            type="button"
+            className="link"
+            data-testid="mobile-reload"
+            onClick={() => {
+              // 硬刷新：iOS 主屏 PWA 从任务切换器回来常常是"恢复旧页面"（不重新导航），光
+              // location.reload() 也可能落在同一份缓存条目上——所以先清 Cache Storage，再用
+              // 带随机查询串的地址重新导航（同 scope，仍留在 PWA 里；下次冷启又回到 start_url）。
+              void (async () => {
+                try {
+                  for (const key of await caches.keys()) await caches.delete(key);
+                } catch {
+                  /* 没有 caches（非安全上下文 / 单测）就算了 */
+                }
+                try {
+                  location.replace(`/m?r=${Date.now()}`);
+                } catch {
+                  /* 单测里没有 location.replace */
+                }
+              })();
+            }}
+          >
+            重新加载
+          </button>
+        </p>
         {diagNote && <p className="muted" data-testid="mobile-diag-note">{diagNote}</p>}
         {diagReport && (
           <textarea className="mobile-diag-report" data-testid="mobile-diag-text" readOnly rows={8} value={diagReport} />

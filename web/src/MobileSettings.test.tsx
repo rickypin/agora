@@ -128,6 +128,24 @@ describe("MobileSettings", () => {
  * `browserPushEnv()` 每次调用返回新对象；如果没有 useMemo，点「设置」会冻结页面（桌面复现 CDP
  * 超时），用户看到的就是"点了没反应"。这里不注入 env，数 browserPushEnv 被调用几次。
  */
+describe("前端构建号与硬刷新（agora-xu12）", () => {
+  it("设置页底部显示构建号，并有重新加载（清缓存 + 换地址导航）", async () => {
+    // iOS 主屏 PWA 会把 start_url 钉在缓存里、从任务切换器回来还可能只是"恢复旧页面"，
+    // 升级后手机上跑的是哪一版光看行为猜不出来——构建号是唯一判据，重新加载是唯一的自救。
+    render(
+      <MobileSettings
+        onClose={() => {}}
+        onRevoked={() => {}}
+        env={env()}
+        probe={async () => ({ apple: null, reason: null })}
+      />,
+    );
+    const build = await screen.findByTestId("mobile-build");
+    expect(build.textContent).toContain("前端");
+    expect(screen.getByTestId("mobile-reload")).toBeTruthy();
+  });
+});
+
 describe("布局诊断（agora-xu12）", () => {
   it("显示边框可开关，复制布局报告退到 textarea 时内容含行与可疑元素", async () => {
     // 手机是唯一跑真 Safari 的机器：现场取证靠这两颗按钮——描边看出框/被裁，报告给我盒子数字。

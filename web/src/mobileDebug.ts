@@ -13,6 +13,9 @@
  * 只读、不发网络（不引入上报通道：一次性排障不值得为它开一个写端点）、不含任何凭据：报告里只有
  * 盒子数字、class 名与**行上已经显示出来的那点文字**（本来就是屏幕上可见的东西）。
  */
+import { webBuild } from "./build";
+import { currentInsets } from "./mobileInsets";
+
 const OUTLINE_ATTR = "data-outline";
 const OUTLINE_KEY = "agora.mobile-outline";
 const CLIP_ATTR = "data-clip";
@@ -161,6 +164,8 @@ export function layoutReport(): string {
   const vv = window.visualViewport;
   const report = {
     at: new Date().toISOString(),
+    // 先看这一行：手机上跑的是不是最新前端（agora-xu12 的判据）。
+    build: webBuild(),
     ua: navigator.userAgent,
     // jsdom 没有 matchMedia（诊断本身不该因为环境缺个 API 就炸掉）。
     standalone: typeof window.matchMedia === "function" ? window.matchMedia("(display-mode: standalone)").matches : false,
@@ -172,6 +177,15 @@ export function layoutReport(): string {
       doc: [document.documentElement.clientWidth, document.documentElement.scrollWidth],
     },
     safeArea: safeAreas(),
+    // 实际生效的让位（JS 自适应后的值）；与上一条不同的行就是"系统已经让出去、不该再加"的那种情况。
+    insets: (() => {
+      try {
+        const it = currentInsets();
+        return { top: it.top, bottom: it.bottom, fullscreen: it.fullscreen, envTop: it.envTop, envBottom: it.envBottom };
+      } catch {
+        return null;
+      }
+    })(),
     scale: mobile
       ? {
           dataText: mobile.getAttribute("data-text"),

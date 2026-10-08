@@ -16,6 +16,10 @@
   --warn: #e3b341;
   --ok: #3fb950;
   --bad: #f85149;
+  /* 上下让位（agora-xu12）：默认就是 env(safe-area-inset-*)；视口比屏幕矮时（浏览器 chrome 在、
+     状态栏已让出）由 JS 把这两个变量改成 0——否则会凭空多出一条 62px 的空白。见 mobileInsets.ts。 */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
   --sel: #1f2a38;             /* 选中 / 高亮底：侧栏行、命令面板命中、手机行（原为两处硬编码） */
   --danger-border: #6e2a2a;   /* danger 按钮的边框（比 --bad 暗一档） */
   --warn-bg: #2a2410;         /* degraded 横幅的底 */
@@ -396,14 +400,14 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
   display: flex;
   align-items: center;
   gap: var(--m-2);
-  padding: calc(var(--m-3) + env(safe-area-inset-top)) calc(var(--m-3) + env(safe-area-inset-right))
+  padding: calc(var(--m-3) + var(--safe-top)) calc(var(--m-3) + env(safe-area-inset-right))
     var(--m-3) calc(var(--m-3) + env(safe-area-inset-left));
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
 .mobile-top h1 { letter-spacing: 0.06em; }
 .mobile-carrier { color: var(--muted); font-size: var(--m-fs-mini); }
-.mobile-inbox { flex: 1; overflow-y: auto; padding: var(--m-2) calc(var(--m-3) + env(safe-area-inset-right)) calc(var(--m-5) + env(safe-area-inset-bottom)) calc(var(--m-3) + env(safe-area-inset-left)); }
+.mobile-inbox { flex: 1; overflow-y: auto; padding: var(--m-2) calc(var(--m-3) + env(safe-area-inset-right)) calc(var(--m-5) + var(--safe-bottom)) calc(var(--m-3) + env(safe-area-inset-left)); }
 .mobile-section h2 { display: flex; align-items: baseline; justify-content: space-between; gap: var(--m-2); margin: 0; padding: var(--m-3) var(--m-1) var(--m-1); color: var(--muted); font-size: var(--m-fs-mini); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 .mobile-section ul { display: flex; flex-direction: column; gap: var(--m-2); margin: 0; padding: 0; list-style: none; }
 /* overflow: hidden 是**硬夹断**：行里任何元素万一没收缩住（WebKit 对 flex 项的处理与
@@ -441,7 +445,7 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 
 /* ---------- /m 会话卡（agora-thc.10）：IM 语法——最近一轮两气泡、底部 composer、乐观发送 ---------- */
 .mobile-card { display: flex; flex: 1; flex-direction: column; gap: var(--m-2); min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 calc(var(--m-3) + env(safe-area-inset-right)) 0 calc(var(--m-3) + env(safe-area-inset-left)); }
-.mobile-card-head { gap: var(--m-2); padding: calc(var(--m-3) + env(safe-area-inset-top)) 0 var(--m-2); border-bottom: 1px solid var(--border); }
+.mobile-card-head { gap: var(--m-2); padding: calc(var(--m-3) + var(--safe-top)) 0 var(--m-2); border-bottom: 1px solid var(--border); }
 /* 卡片头是**唯一**的那一个（不是重复的行），装不下可以折成两行：320px + 特大时
    返回键 + 名字 + 徽标 + 节点 + 状态的最小宽度真的放不下一行（2026-10-08 实测 297 > 269），
    折行比"把状态挤到框外"好。行头不折——收件箱是重复列表，行高必须可预测。 */
@@ -465,7 +469,7 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .mobile-actions { display: flex; flex-direction: column; gap: var(--m-2); }
 .mobile-more-toggle { align-self: flex-start; padding: 0; color: var(--muted); background: none; border-color: transparent; }
 .mobile-more-actions { display: flex; gap: var(--m-2); }
-.mobile-composer { position: sticky; bottom: 0; display: flex; gap: var(--m-2); padding: var(--m-2) 0 calc(var(--m-2) + env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--border); }
+.mobile-composer { position: sticky; bottom: 0; display: flex; gap: var(--m-2); padding: var(--m-2) 0 calc(var(--m-2) + var(--safe-bottom)); background: var(--bg); border-top: 1px solid var(--border); }
 .mobile-composer input { flex: 1; min-width: 0; padding: var(--m-2) var(--m-3); font-size: max(16px, var(--m-fs)); }
 .mobile-composer button { padding: 0 var(--m-4); }
 .mobile-note { margin: 0; color: var(--muted); font-size: var(--m-fs-note); }
@@ -540,8 +544,8 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 /* 手机门页（未配对 / 被吊销时的那一屏）：与 /m 同一套基准，别让"重新配对"这一屏回到 13px
    （agora-x70t.ten0；.gate-mobile 以前只有类名没有样式）。 */
 .gate-mobile {
-  padding: calc(var(--m-4) + env(safe-area-inset-top)) calc(var(--m-3) + env(safe-area-inset-right))
-    calc(var(--m-4) + env(safe-area-inset-bottom)) calc(var(--m-3) + env(safe-area-inset-left));
+  padding: calc(var(--m-4) + var(--safe-top)) calc(var(--m-3) + env(safe-area-inset-right))
+    calc(var(--m-4) + var(--safe-bottom)) calc(var(--m-3) + env(safe-area-inset-left));
 }
 .gate-mobile .pair-paste input { min-width: 0; flex: 1 1 16rem; font-size: var(--m-fs); }
 .gate-mobile button { min-height: var(--m-tap); padding: 0 var(--m-4); }

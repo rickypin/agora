@@ -123,11 +123,25 @@ describe("手机端视口 / 键盘 / 安全区（agora-x70t.ten0）", () => {
     expect(has(".mobile", /100dvh/), "100dvh").toBe(true);
   });
 
+  it("上下让位走 --safe-top/--safe-bottom（JS 自适应），env() 作为 :root 默认", () => {
+    // 为什么要变量：同一台 iPhone 上，主屏 PWA 全屏时 env(safe-area-inset-top)=62 该照加；视口比
+    // 屏幕矮时（浏览器 chrome 在）这 62px 系统已经让出去了、再加就是凭空多一条空白（2026-10-08
+    // 实测 inner=[402,812] screen=[402,874]）。JS 算出来覆盖 --safe-top/--safe-bottom；JS 还没跑
+    // 的第一帧走 :root 的 env() 默认，让位不会消失。
+    expect(css, ":root 默认 top").toMatch(/--safe-top:\s*env\(safe-area-inset-top, 0px\)/);
+    expect(css, ":root 默认 bottom").toMatch(/--safe-bottom:\s*env\(safe-area-inset-bottom, 0px\)/);
+    expect(css, "顶栏用变量").toContain("var(--safe-top)");
+    expect(css, "composer 用变量").toContain("var(--safe-bottom)");
+  });
+
   it("四条 safe-area 都要让：上下（状态栏 / 主屏指示条）与左右（横屏刘海）", () => {
     const all = [...blocks(".mobile-top"), ...blocks(".mobile-inbox"), ...blocks(".mobile-card"), ...blocks(".mobile-composer"), ...blocks(".gate-mobile")].join("\n");
-    for (const side of ["top", "bottom", "left", "right"]) {
+    // 左右没有"系统已经让出"的问题（横屏刘海才非 0），直接 env()；
+    for (const side of ["left", "right"]) {
       expect(all, `safe-area-inset-${side}`).toContain(`safe-area-inset-${side}`);
     }
+    expect(all, "上下走变量").toContain("var(--safe-top)");
+    expect(all, "上下走变量").toContain("var(--safe-bottom)");
   });
 
   it("横屏不放大文字（-webkit-text-size-adjust）", () => {
