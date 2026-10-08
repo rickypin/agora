@@ -357,6 +357,25 @@ export function isPeerRow(row: SessionRow): boolean {
   return typeof row.stale === "boolean";
 }
 
+/**
+ * 时长基准（agora-au5）：`now` 是节点（报告方）打快照时自己那只钟的读数（`GET /api/sessions`
+ * 响应顶层的 `now`，docs/spec/api.md「peer 视图」），`at` 是页面收到这份快照时页面钟的读数，
+ * 两个都是 unix 秒。页面与节点差多少都不平移时长：页面只贡献"自收到快照以来走过的量"。
+ */
+export interface ServerClock {
+  now: number;
+  at: number;
+}
+
+/**
+ * 以节点那只钟为基准的"现在"。行上的 `status_since` 是节点打的（peer 行也是本节点钟重写过的），
+ * 直接拿页面钟去减，页面与节点的钟差会整体平移所有行的时长（agora-au5：手机与节点没校时是最常见的
+ * 现场）；换成 `节点读数 + 页面自快照以来走过的量`，钟差在减法里自己抵消，而时长照常随页面走。
+ */
+export function anchoredNow(clock: ServerClock, pageNow: number): number {
+  return clock.now + (pageNow - clock.at);
+}
+
 /** "waiting 3m"：状态文案 + 从状态起点算起的时长。 */
 export function statusLine(row: SessionRow, nowSeconds: number): string {
   const text = STATUS_TEXT[row.status] ?? row.status;

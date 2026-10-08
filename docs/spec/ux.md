@@ -134,6 +134,8 @@ WORKING
 
 **计数行是状态清单，四段是动作分段**（agora-l4r3）：header 那一行数的是 `status`（Running = running + starting、Needs Input = waiting、Turn Done = turn_done、Finished、Failed、Idle、Unknown），回答"这些状态各有多少行"；四段（NEEDS ATTENTION / UNCLEAR / WORKING / FINISHED）回答"现在该看哪一段"，是按分数与"看过"派出来的动作分段。两者**本就不该相等**，也不要去对齐：`Turn Done 3` 可能两行在 NEEDS ATTENTION、一行（看过一次的）在 WORKING；`Finished 2` 可能一行没看过的留在 NEEDS ATTENTION、一行已收进折叠区；`Running 1` 与非无头的 `Idle` 可能同处 WORKING。唯一的例外是 `origin = headless` 的行（agora-2x3z）：它永远收进 FINISHED 折叠区（`finishedCollapsed` 对 headless **不看状态**），计数就跟着它被显示的那一段走——无头行不论停在 running / turn_done / unknown，都只计进 `Finished`，不再进 Running / Turn Done 等（否则 `Running N` 里有一行在侧栏哪一段都找不到）。这条口径顺带说清 `Finished N` 与 `▸ FINISHED N` 不是同一个数：前者是状态清单（含留在 NEEDS ATTENTION 里没看过的 FINISHED 行、含全部无头行），后者是折叠区里画着的行数；一键清理的名单按 `sectionOf(r, seen) === "finished"` 算，名单人数写在按钮 title 里（`清理 Finished 区里的 N 行`）。守卫 `web/src/attention.test.ts`（在跑的 headless 行不进 Running）、`web/src/Sidebar.test.tsx`（计数行与折叠区同源：Running 1 · Finished 1）。
 
+行上的时长（`waiting 3m` / `starting ≥8h`）以**节点那只钟**为基准（agora-au5）：`GET /api/sessions` 响应顶层带报告方自己那只钟的读数 `now`（`docs/spec/api.md`「peer 视图」），页面只把「自收到快照以来走过的时间」加到它上面（`anchoredNow`），页面与节点的钟差在减法里自己抵消——手机没跟节点校时也不会把满屏时长整体平移。peer 行的 `≥` 只说明起点是并入方的下界（ADR-004），与基准无关；本机行的起点由节点打、照旧精确。
+
 展开 `▸ FINISHED 3` 之后（收起时这三行不画，但 Alt/Option+N 的序号照数）：
 
 ```

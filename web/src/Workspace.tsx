@@ -15,7 +15,7 @@ import { SessionSettings } from "./SessionSettings";
 import { loadMode, storeMode, visibleOrder, type SidebarMode } from "./sidebarMode";
 import { rowName, Sidebar } from "./Sidebar";
 import { FREEZE_MS, stableOrder, stableSections } from "./stableOrder";
-import { SessionStore, useSessions, useUnreadableSockets, useUnregistered } from "./store";
+import { SessionStore, useServerClock, useSessions, useUnreadableSockets, useUnregistered } from "./store";
 import { defaultDiffSocket, runtimeSessionGone, type TerminalClientOptions } from "./terminal";
 import { TerminalView, type RuntimeGoneActions } from "./TerminalView";
 
@@ -60,6 +60,8 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
   const catalog = useMemo(() => givenCatalog ?? catalogApi(), [givenCatalog]);
   const rows = useSessions(store);
+  // 行上时长以节点钟为基准（agora-au5）：快照顶层的 now 与收到它的页面钟配对，页面钟偏差不平移时长。
+  const serverClock = useServerClock(store);
   const unregistered = useUnregistered(store);
   // 未登记列表可能因为某个采纳 socket 没扫成而短一块（agora-ebfa）：侧栏据此说明，不安静少列。
   const unreadableSockets = useUnreadableSockets(store);
@@ -487,6 +489,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         mode={mode}
         onMode={applyMode}
         seen={seen}
+        serverClock={serverClock}
         nodes={nodes}
         localNode={localNode ?? undefined}
         all={rows}

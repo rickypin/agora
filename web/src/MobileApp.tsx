@@ -20,7 +20,7 @@ import {
 } from "react";
 import { agentBadge } from "./agentBadge";
 import { sessionApi, type PresetInfo, type SessionApi } from "./api";
-import { isHandleless, loadSeen, sectionOf, sortByAttention, statusLine, storeSeen, taskLabel, type Section, type SeenSet } from "./attention";
+import { anchoredNow, isHandleless, loadSeen, sectionOf, sortByAttention, statusLine, storeSeen, taskLabel, type Section, type SeenSet } from "./attention";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow } from "./events";
 import { HealthWatcher, VersionWatcher } from "./health";
@@ -33,7 +33,7 @@ import { loadMobileTextSize, storeMobileTextSize, type MobileTextSize } from "./
 import { browserPushEnv, selfCheckPush, type PushEnv } from "./push";
 import { nodeHue } from "./nodeColor";
 import { rowName, statusSymbol, str } from "./SessionRow";
-import { SessionStore, useSessions } from "./store";
+import { SessionStore, useServerClock, useSessions } from "./store";
 
 /** 前三段固定顺序（与 attention.ts 的 partitionByAttention 同一顺序）；已完成是折叠的一段。 */
 const OPEN_SECTIONS: { key: Section; label: string }[] = [
@@ -81,6 +81,9 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   const store = useMemo(() => given ?? new SessionStore(), [given]);
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
   const rows = useSessions(store);
+  // 行上时长以节点钟为基准（agora-au5）：手机与节点没校时是最常见的现场，用页面钟减 status_since
+  // 会把钟差整体加在时长上；serverClock 缺省（老节点 / 还没拉到快照）时退回页面钟。
+  const serverClock = useServerClock(store);
   const health = useMemo(() => givenHealth ?? new HealthWatcher(), [givenHealth]);
   const version = useMemo(() => givenVersion ?? new VersionWatcher(), [givenVersion]);
   const localNode = useSyncExternalStore(version.subscribe, version.nodeSnapshot, version.nodeSnapshot);
@@ -268,7 +271,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     setFocusComposerFor(pendingNew);
     setPendingNew(null);
   }, [rows, pendingNew]);
-  const nowSeconds = now ?? clock;
+  const nowSeconds = now ?? (serverClock ? anchoredNow(serverClock, clock) : clock);
   const selectedRow = selected === null ? undefined : rows.find((r) => r.id === selected);
 
   // 安全区自适应（agora-xu12）：主屏 PWA 全屏时 env(safe-area-inset-*) 要照加；但浏览器里

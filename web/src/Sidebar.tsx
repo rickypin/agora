@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
 import type { AdoptBody, SessionApi, WriteResult } from "./api";
-import { countByStatus, isHandleless, sectionOf, type SeenSet, type Section } from "./attention";
+import { anchoredNow, countByStatus, isHandleless, sectionOf, type SeenSet, type Section, type ServerClock } from "./attention";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow, UnregisteredRow, UnreadableSocket } from "./events";
 import { Header, type NodeStatus } from "./Header";
@@ -81,6 +81,9 @@ interface SidebarProps {
   onMode?: (mode: SidebarMode) => void;
   /** 看过的 FINISHED 行（MISSION §4.6；A46）：与 Workspace 拼 rows 时用的是同一个集合，交界才对得上。 */
   seen?: SeenSet;
+  /** 节点钟基准（`GET /api/sessions` 顶层 now + 收到它时的页面钟，agora-au5）：给了就按节点钟
+   *  算行上的时长；没给（老节点 / 还没拉到快照 / 测试没注入）退回页面钟，行为与以前一致。 */
+  serverClock?: ServerClock | null;
   /** 过滤前的全部行：header 计数用。 */
   all?: SessionRow[];
   /** Header 上本机与每个 peer 的状态（MISSION §10.3）；只透传给 Header。 */
@@ -190,6 +193,7 @@ export function Sidebar({
   mode = "attention",
   onMode,
   seen,
+  serverClock,
   all = rows,
   nodes,
   localNode,
@@ -214,7 +218,10 @@ export function Sidebar({
   api,
   onCreated,
 }: SidebarProps) {
-  const now = useNowSeconds();
+  const pageNow = useNowSeconds();
+  // 时长以节点钟为基准（agora-au5）：status_since 是节点打的（peer 行也是本节点钟重写的），
+  // 用页面钟减会把页面与节点的钟差整体加在时长上；serverClock 缺省时退回页面钟（老节点 / 测试）。
+  const now = serverClock ? anchoredNow(serverClock, pageNow) : pageNow;
   // 一键清理的对象是折叠区的定义本身（已看过的 agora / adopted FINISHED + 全部 external FINISHED），按过滤
   // 前的 all 算——过滤只是暂时少画几行，不改变哪些行「可以清」；NEEDS ATTENTION 里没看过的 FINISHED 不碰
   // （MISSION §4.6「不得在用户看到结果之前清理」）。没有批量端点也不加：逐行 DELETE /api/sessions/:id

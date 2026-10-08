@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ATTENTION_WINDOW_SECS,
+  anchoredNow,
   countByStatus,
   finishedCollapsed,
   formatAgo,
@@ -360,6 +361,22 @@ describe("attention", () => {
     expect(formatAgo(59)).toBe("");
     expect(formatAgo(3600 * 5)).toBe("5h");
     expect(formatAgo(3600 * 72)).toBe("3d");
+  });
+
+  // agora-au5：浏览器用自己的 now 减服务端打的 status_since，页面钟与节点钟有偏差时所有时长整体
+  // 平移。基准换成响应顶层的 now（节点钟读数）+ 页面自收到快照以来走过的时间，钟差在减法里抵消。
+  it("anchors durations on the snapshot's node clock so a skewed page clock does not shift them (agora-au5)", () => {
+    const nodeNow = 1_000_000;
+    const r = row("a", "waiting", { status_since: nodeNow - 180 });
+    // 页面钟快 15 分钟：`at` 是收到快照那一刻页面钟的读数，时长仍是节点侧的三分钟。
+    expect(statusLine(r, anchoredNow({ now: nodeNow, at: 1_900_000_000 }, 1_900_000_000))).toBe("waiting 3m");
+    // 页面钟慢 15 分钟：同样的三分钟（差多少都不平移）。
+    expect(statusLine(r, anchoredNow({ now: nodeNow, at: 1_899_999_100 }, 1_899_999_100))).toBe("waiting 3m");
+    // 页面自己又走了两分钟：时长跟着走到 5m（基准不是冻在快照那一刻）。
+    expect(statusLine(r, anchoredNow({ now: nodeNow, at: 1_899_999_100 }, 1_899_999_220))).toBe("waiting 5m");
+    // peer 行的 ≥ 语义不看基准：判据仍是 stale 键在不在（peer 行的 status_since 也是本节点钟重写的）。
+    const peer = row("z:1", "waiting", { status_since: nodeNow - 180, stale: false });
+    expect(statusLine(peer, anchoredNow({ now: nodeNow, at: 1_899_999_100 }, 1_899_999_100))).toBe("waiting ≥3m");
   });
 
   it("marks a peer row's wait as the lower bound it is, and leaves local rows exact (agora-5gg.12)", () => {

@@ -206,6 +206,12 @@ export interface Snapshot {
   sessions: SessionRow[];
   unregistered: UnregisteredRow[];
   /**
+   * 打这份快照时报告方（节点）自己那只钟的读数（unix 秒；docs/spec/api.md「peer 视图」，
+   * agora-5gg.12）。页面算等待时长拿它当基准（`web/src/attention.ts` 的 `ServerClock` + `anchoredNow`，
+   * agora-au5）；老节点不发这个键，读成「没有」并退回页面钟。
+   */
+  now?: number;
+  /**
    * 这一次没扫成的 socket（agora-ebfa）：`unregistered` 短了的时候说得出少在哪里。
    * 老节点不发这个字段，读成"全都扫到了"。
    */

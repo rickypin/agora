@@ -117,6 +117,29 @@ it("counts a running headless row as Finished, where the row is actually drawn (
   expect(screen.getByTestId("row-n:hl")).toBeTruthy();
 });
 
+// agora-au5：行上的时长以响应顶层的 now（节点钟）为基准，不用页面这只钟。这里让页面钟比节点快
+// 15 分钟（Date.now 冻在 1_900_000_000 s）：节点钟上三分钟前的行必须还是 `waiting 3m`，
+// 不能被页面钟平移到 15 分钟以外。
+it("anchors row durations on the node clock, not the page clock (agora-au5)", () => {
+  vi.mocked(Date.now).mockReturnValue(1_900_000_000_000);
+  const nodeNow = 1_000_000;
+  const rows = [row("n:wait", "waiting", { status_since: nodeNow - 180 })];
+  render(
+    <Sidebar
+      rows={partitionByAttention(sortByAttention(rows), new Set())}
+      seen={new Set()}
+      all={rows}
+      total={rows.length}
+      active={null}
+      onOpen={() => {}}
+      filter=""
+      onFilter={() => {}}
+      serverClock={{ now: nodeNow, at: 1_900_000_000 }}
+    />,
+  );
+  expect(screen.getByTestId("state-n:wait").textContent).toBe("waiting 3m");
+});
+
 it("expands the Finished section on click; rows keep attention order, stay selectable and keep their ordinals", () => {
   const { onOpen, visible } = mount(ROWS);
   fireEvent.click(screen.getByTestId("section-finished"));
