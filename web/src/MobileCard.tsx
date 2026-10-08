@@ -100,7 +100,21 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
   const decision = row.pending_decision;
   const canDecide = waiting && row.respond_via === "hook" && row.reason === "permission" && !!decision;
   const within = typeof row.respond_within_secs === "number" ? row.respond_within_secs : null;
-  const canCompose = (row.status === "turn_done" || row.status === "idle") && (!handleless || hostText);
+  const idleOrDone = row.status === "turn_done" || row.status === "idle";
+  // 排队门（agora-shze）：host 通道在跑也开放——扩展用 `pi.sendUserMessage(text, { deliverAs:
+  // "followUp" })` 收下这句话，pi 在**当前这一轮跑完（不再有工具调用）之后**自动交进去，
+  // 不 settle 直接继续处理（ADR-002 D11）。**不是**"做完当前工具批次就插进去"——那是 pi 的
+  // `steer` 语义（`dist/core/agent-session.d.ts`：steer = after the current assistant turn
+  // finishes its tool calls；followUp = delivered only when agent has no more tool calls）。
+  // 反例（2026-10-08，pi 1.0.4 实测，隔离 daemon + 真 TUI）：一轮里两个工具批次（sleep 60 →
+  // echo），运行中注入的 followUp 在第一个工具结果之后 60 s 都没出现，而是在本轮最终回复
+  // （assistant "OK"，09:28:54.438）之后 2 ms 才进 transcript（09:28:54.440）；hook 侧只有
+  // 末尾一条 agent_settled（last=QUEUED-OK）、**没有**第二条 before_agent_start。所以文案说
+  // "等它跑完这一轮"，说"这一步"就是 steer 的时机、不诚实。runtime（PTY）没有队列，running
+  // 仍禁用（键击直接落进 TUI 的输入区，各家解释不同）；waiting 也沿用状态门（pi 没有权限问句，
+  // 但别的宿主将来会有，不给排队）。
+  const queueWhileRunning = hostText && running;
+  const canCompose = (idleOrDone && (!handleless || hostText)) || queueWhileRunning;
   // 推送点击进来：可发送的行把焦点直接放进 composer（ux.md「行为」；焦点只在打开那一下要，之后别抢）。
   useEffect(() => {
     if (focusComposer && canCompose) composerRef.current?.focus();
@@ -321,12 +335,12 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
           </button>
         </form>
       )}
-      {running && handleless && hostText && (
+      {running && hostText && (
         <p className="mobile-note" data-testid="mobile-host-running-note">
-          它还在跑；等它跑完这一轮再发（会经 pi 的扩展交进去）。
+          它还在跑；发出去会排队，等它跑完这一轮就交进去。
         </p>
       )}
-      {running && !handleless && (
+      {running && !hostText && !handleless && (
         <p className="mobile-note" data-testid="mobile-running-note">
           它还在跑，等它停下来或回完这一轮再发。
         </p>

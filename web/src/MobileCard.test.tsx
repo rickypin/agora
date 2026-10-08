@@ -119,13 +119,43 @@ describe("composer", () => {
     await act(async () => {});
     expect(requests[0].body).toBe(JSON.stringify({ kind: "text", data: "从手机发一条\n" }));
     expect(screen.getByTestId("mobile-sent-state").textContent).toBe("已发送");
+  });
 
-    // 在跑：状态门与有句柄行一致（不发），但说明是"等它跑完"，不是"只能到桌面"。
-    cleanup();
+  it("host + running: the composer stays open and the note says queued until this run ends", () => {
+    // agora-shze：pi 的扩展在会话非空闲时走 `deliverAs: "followUp"`，语义是**等当前这一轮跑完
+    // （不再有工具调用）再交进去**，不是"做完当前工具批次"（那是 pi 的 `steer`）。文案必须与这个
+    // 事实一致：说"跑完这一轮"；issue 里原本要求的"这一步"是 steer 的时机，写上去就是假话
+    // （ADR-002 D11 的实测记录：两次真 TUI 实测 + pi 1.0.4 自己的 SDK 注释）。
     setup(row("zuan:bb", { agent_type: "pi", origin: "external", status: "running", text_via: "host", detail: "bash" }));
-    expect(screen.getByTestId("mobile-host-running-note").textContent).toContain("跑完");
-    expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+    expect(screen.getByTestId("mobile-next-input")).toBeTruthy();
+    const note = screen.getByTestId("mobile-host-running-note").textContent ?? "";
+    expect(note).toContain("排队");
+    expect(note).toContain("跑完这一轮");
     expect(screen.queryByTestId("mobile-terminal-only")).toBeNull();
+    expect(screen.queryByTestId("mobile-running-note")).toBeNull();
+  });
+
+  it("runtime + running keeps the old gate: no composer, wait for it to stop", () => {
+    // runtime（PTY）没有队列：文本直接落进 TUI 的输入区，各家对"跑着的时候打字"解释不同
+    // （Claude 排队、别的可能当快捷键），不值得赌——门与文案都不动（agora-shze，issue 的 ①）。
+    setup(row("n:rt", { status: "running", runtime_ref: "tmux:agora:n-rt", command: "claude", detail: "在跑" }));
+    expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+    expect(screen.getByTestId("mobile-running-note").textContent).toContain("等它停下来");
+    expect(screen.queryByTestId("mobile-host-running-note")).toBeNull();
+  });
+
+  it("host + running: sending still lands on 已发送", async () => {
+    // 发送链路不变：POST /api/sessions/:id/input（daemon 对 host 通道 200 + 排队），
+    // 卡片与小节里 host-idle 路径同一套乐观态（agora-shze）。
+    const { requests } = setup(
+      row("zuan:bb", { agent_type: "pi", origin: "external", status: "running", text_via: "host", detail: "bash" }),
+    );
+    fireEvent.change(screen.getByTestId("mobile-next-input"), { target: { value: "做完这个之后顺手跑一下测试" } });
+    fireEvent.click(screen.getByTestId("mobile-send"));
+    expect(screen.getByTestId("mobile-sent-state").textContent).toBe("发送中…");
+    await act(async () => {});
+    expect(requests[0].body).toBe(JSON.stringify({ kind: "text", data: "做完这个之后顺手跑一下测试\n" }));
+    expect(screen.getByTestId("mobile-sent-state").textContent).toBe("已发送");
   });
 
   it("聚焦 composer 时把输入框滚进可见区（iOS 键盘不遮它）", () => {
