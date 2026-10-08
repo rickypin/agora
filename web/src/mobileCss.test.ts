@@ -134,6 +134,22 @@ describe("卡片吸顶与 composer 固定（agora-o975.1）", () => {
   });
 });
 
+describe("手机端发送链路（agora-o975.2）", () => {
+  it("转圈与等接手的动态点都是具名动画，reduced-motion 下关掉", () => {
+    for (const sel of [".mobile-spinner", ".mobile-pending-dot"]) {
+      const body = blocks(sel).join("\n");
+      const name = body.match(/animation:\s*([A-Za-z0-9_-]+)/)?.[1];
+      expect(name, `${sel} 要有动画`).toBeTruthy();
+      expect(css, `@keyframes ${name} 存在`).toMatch(new RegExp(`@keyframes\\s+${name}\\b`));
+    }
+    const m = css.match(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/);
+    expect(m, "prefers-reduced-motion 覆盖块").toBeTruthy();
+    const block = m?.[1] ?? "";
+    expect(block).toContain(".mobile-spinner");
+    expect(block).toContain(".mobile-pending-dot");
+  });
+});
+
 describe("手机端运行动态信号（agora-o975.3）", () => {
   it("running / starting 的符号脉冲，reduced-motion 下关掉", () => {
     // 真机反馈第 3 条：符号是静态字符，刚发出去的几十秒看着完全静止。脉冲只加在手机端的符号上

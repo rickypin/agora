@@ -45,7 +45,7 @@ interface Props {
 }
 
 type Pending = { kind: "kill" | "restart" } | null;
-type Sent = { text: string; phase: "sending" | "sent" | "failed"; failure?: string };
+type Sent = { text: string; phase: "sending" | "sent" | "failed"; queued?: boolean; failure?: string };
 
 /**
  * 发送失败给手机看的一句话（agora-jidm）：按错误码分开说，不把内部话直接扔给用户。
@@ -172,16 +172,30 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   const prompt = str(row.prompt).split("\n")[0] ?? "";
   const userText = sent?.text ?? prompt;
 
+  // 发送三段（agora-o975.2，2026-10-08 真机反馈第 2 条）：宿主 ack 最长等 10 s，ack 回来时 hook
+  // 往往还没到（行状态仍停在 turn_done / idle）——「已发出，等它接手…」要撑到 **row.prompt 首行
+  // 回显**（服务端把这句话收下了）或 **row.status 离开 turn_done / idle**（它真的动起来了）为止。
+  // 已在跑的行不发这条：它走「已排队」+ 原有的排队文案（等它跑完这一轮就交进去）。
+  const promptEchoed = (() => {
+    if (!sent || sent.phase !== "sent") return false;
+    const first = str(row.prompt).split("\n")[0]?.trim();
+    return first !== "" && first === sent.text.split("\n")[0]?.trim();
+  })();
+  const awaitingTakeover = sent?.phase === "sent" && idleOrDone && !promptEchoed;
+
   const replyLines = detail.split("\n");
   const folded = !expanded && replyLines.length > FOLD_LINES;
   const replyShown = folded ? replyLines.slice(0, FOLD_LINES).join("\n") : detail;
 
   async function sendText(text: string) {
     setError(null);
+    // 「排队 / 没排队」按**发出去的那一刻**这一行是否在跑：ack 回来时 hook 可能已经把它改成别的
+    // 状态，标签要跟着这一次发送走，不回头看。
+    const queued = hostText && running;
     setSent({ text, phase: "sending" });
     const r = await api.input(row.id, { kind: "text", data: `${text}\n` });
     if (r.ok) {
-      setSent({ text, phase: "sent" });
+      setSent({ text, phase: "sent", queued });
       return;
     }
     setSent({ text, phase: "failed", failure: r.needsConfirmation ? undefined : sendFailureText(r.error) });
@@ -297,7 +311,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
                 <span>{userText}</span>
                 {sent && sent.phase !== "failed" && (
                   <span className="mobile-sent-state" data-testid="mobile-sent-state">
-                    {sent.phase === "sending" ? "发送中…" : "已发送"}
+                    {sent.phase === "sending" ? "发送中…" : sent.queued ? "已排队" : "已发出"}
                   </span>
                 )}
                 {sent?.phase === "failed" && (
@@ -306,6 +320,16 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
                   </button>
                 )}
               </div>
+            )}
+            {awaitingTakeover && (
+              // 过渡提示（aria-live，agora-o975.2）：动态点是 CSS 脉冲（reduced-motion 下关掉）；
+              // 它只说「已交给它」，它真的动起来由状态词与符号脉冲接棒。
+              <p className="mobile-note mobile-await-takeover" data-testid="mobile-await-takeover" aria-live="polite">
+                <span className="mobile-pending-dot" aria-hidden="true">
+                  ●
+                </span>
+                已发出，等它接手…
+              </p>
             )}
             {sent?.phase === "failed" && sent.failure && (
               // 失败的原因贴着失败气泡放（不在卡片底部）：重试按钮就在这一团里，为什么失败
@@ -388,11 +412,14 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
             aria-label="下一条指令"
             data-testid="mobile-next-input"
             disabled={busy}
+            /* 在途只读（agora-o975.2）：ack 回来之前这一格写什么都发不出去，不如说清它锁着。 */
+            readOnly={sent?.phase === "sending"}
             onChange={(e) => setDraft(e.target.value)}
             onFocus={(e) => keepAboveKeyboard(e.currentTarget)}
           />
           <button type="submit" data-testid="mobile-send" disabled={!draft.trim() || sent?.phase === "sending"}>
-            发送
+            {sent?.phase === "sending" && <span className="mobile-spinner" aria-hidden="true" />}
+            {sent?.phase === "sending" ? "发送中…" : "发送"}
           </button>
         </form>
       )}

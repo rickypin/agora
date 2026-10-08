@@ -128,6 +128,101 @@ describe("运行动态信号（agora-o975.3）", () => {
   });
 });
 
+describe("发送链路（agora-o975.2）", () => {
+  /**
+   * 可控的假 api：`/input` 的响应挂着不收，直到 `release()`——把「在途」定格。真机上宿主 ack 最长
+   * 等 10 s（`input_ack_wait`），这段时间以前只有气泡里一行小字，看不出「在路上」。(2026-10-08)
+   */
+  function setupPending(r: SessionRow) {
+    let release!: (body: unknown) => void;
+    const input = new Promise<Response>((resolve) => {
+      release = (body: unknown) =>
+        resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }));
+    });
+    const f: FetchLike = async (url) =>
+      url.endsWith("/input") ? input : new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    const api = sessionApi(f);
+    const ui = render(<MobileCard row={r} api={api} now={1000} onBack={vi.fn()} onSeen={vi.fn()} />);
+    return { ui, release, api };
+  }
+
+  const card = (r: SessionRow, api: ReturnType<typeof sessionApi>) => (
+    <MobileCard row={r} api={api} now={1000} onBack={vi.fn()} onSeen={vi.fn()} />
+  );
+
+  it("①在途：按钮变「发送中…」+ 转圈、输入框只读、气泡标签仍是「发送中…」", async () => {
+    const { release } = setupPending(row("n:a", { status: "turn_done" }));
+    await typeAndSend("把菜单加到侧栏");
+
+    expect(screen.getByTestId("mobile-sent-state").textContent).toBe("发送中…");
+    const send = screen.getByTestId("mobile-send");
+    expect(send.textContent).toContain("发送中…");
+    expect(send.querySelector(".mobile-spinner"), "转圈元素").toBeTruthy();
+    expect((screen.getByTestId("mobile-next-input") as HTMLInputElement).readOnly).toBe(true);
+    // 收尾：把悬挂的 promise 放掉，不留一个永远在途的请求。
+    await act(async () => {
+      release({});
+    });
+  });
+
+  it("②ack 成功（turn_done 行）：标签「已发出」+ aria-live 提示「已发出，等它接手…」带动态点", async () => {
+    const { release } = setupPending(row("n:a", { status: "turn_done", prompt: "上一句" }));
+    await typeAndSend("再跑一遍测试");
+    await act(async () => {
+      release({});
+    });
+
+    expect(screen.getByTestId("mobile-sent-state").textContent).toBe("已发出");
+    const hint = screen.getByTestId("mobile-await-takeover");
+    expect(hint.getAttribute("aria-live")).toBe("polite");
+    expect(hint.textContent).toContain("已发出，等它接手…");
+    expect(hint.querySelector(".mobile-pending-dot"), "动态点").toBeTruthy();
+    // 输入框回到可写（在途那一段只读）。
+    expect((screen.getByTestId("mobile-next-input") as HTMLInputElement).readOnly).toBe(false);
+  });
+
+  it("②ack 成功（host 且在跑）：标签「已排队」，原有排队文案不动，不弹「等它接手」", async () => {
+    const { release } = setupPending(
+      row("zuan:bb", { agent_type: "pi", origin: "external", status: "running", text_via: "host", detail: "bash" }),
+    );
+    await typeAndSend("做完顺手跑一下测试");
+    await act(async () => {
+      release({});
+    });
+
+    expect(screen.getByTestId("mobile-sent-state").textContent).toBe("已排队");
+    expect(screen.getByTestId("mobile-host-running-note").textContent).toContain("等它跑完这一轮就交进去");
+    // 它已经在跑：接手提示是给「我发完它才动起来」那一段的（turn_done / idle）。
+    expect(screen.queryByTestId("mobile-await-takeover")).toBeNull();
+  });
+
+  it("③等它接手：row.prompt 首行回显时提示与乐观气泡一起擂掉", async () => {
+    const { release, api, ui } = setupPending(row("n:a", { status: "turn_done", prompt: "上一句" }));
+    await typeAndSend("再跑一遍测试");
+    await act(async () => {
+      release({});
+    });
+    expect(screen.getByTestId("mobile-await-takeover")).toBeTruthy();
+
+    // 服务端把这句话收进 prompt（首行相等）：乐观气泡让位给真实投影，提示随之擂掉。
+    ui.rerender(card(row("n:a", { status: "turn_done", prompt: "再跑一遍测试" }), api));
+    expect(screen.queryByTestId("mobile-await-takeover")).toBeNull();
+    expect(screen.queryByTestId("mobile-sent-state")).toBeNull();
+  });
+
+  it("③等它接手：row.status 离开 turn_done/idle（它动起来了）时擂掉", async () => {
+    const { release, api, ui } = setupPending(row("n:a", { status: "turn_done", prompt: "上一句" }));
+    await typeAndSend("再跑一遍测试");
+    await act(async () => {
+      release({});
+    });
+    expect(screen.getByTestId("mobile-await-takeover")).toBeTruthy();
+
+    ui.rerender(card(row("n:a", { status: "running", prompt: "上一句" }), api));
+    expect(screen.queryByTestId("mobile-await-takeover")).toBeNull();
+  });
+});
+
 describe("thread", () => {
   it("renders the last turn as two bubbles and folds the reply to 6 lines with one expand", () => {
     const reply = Array.from({ length: 10 }, (_, i) => `第 ${i + 1} 行`).join("\n");
@@ -181,7 +276,7 @@ describe("composer", () => {
     expect(screen.queryByTestId("mobile-running-note")).toBeNull();
   });
 
-  it("sends optimistically and settles to 已发送", async () => {
+  it("sends optimistically and settles to 已发出（agora-o975.2 起按是否在跑分「已发出 / 已排队」）", async () => {
     const { requests } = setup(row("n:a"));
     const input = screen.getByTestId("mobile-next-input");
     fireEvent.change(input, { target: { value: "把菜单加到侧栏" } });
@@ -190,7 +285,7 @@ describe("composer", () => {
     expect(screen.getByTestId("mobile-sent-state").textContent).toBe("发送中…");
     await act(async () => {});
     expect(requests[0].body).toBe(JSON.stringify({ kind: "text", data: "把菜单加到侧栏\n" }));
-    expect(screen.getByTestId("mobile-sent-state").textContent).toBe("已发送");
+    expect(screen.getByTestId("mobile-sent-state").textContent).toBe("已发出");
   });
 
   it("host text channel: a handleless pi row can be answered from the phone", async () => {
@@ -204,7 +299,7 @@ describe("composer", () => {
     fireEvent.click(screen.getByTestId("mobile-send"));
     await act(async () => {});
     expect(requests[0].body).toBe(JSON.stringify({ kind: "text", data: "从手机发一条\n" }));
-    expect(screen.getByTestId("mobile-sent-state").textContent).toBe("已发送");
+    expect(screen.getByTestId("mobile-sent-state").textContent).toBe("已发出");
   });
 
   it("host + running: the composer stays open and the note says queued until this run ends", () => {
@@ -230,7 +325,7 @@ describe("composer", () => {
     expect(screen.queryByTestId("mobile-host-running-note")).toBeNull();
   });
 
-  it("host + running: sending still lands on 已发送", async () => {
+  it("host + running: sending still lands on 已排队", async () => {
     // 发送链路不变：POST /api/sessions/:id/input（daemon 对 host 通道 200 + 排队），
     // 卡片与小节里 host-idle 路径同一套乐观态（agora-shze）。
     const { requests } = setup(
@@ -241,7 +336,7 @@ describe("composer", () => {
     expect(screen.getByTestId("mobile-sent-state").textContent).toBe("发送中…");
     await act(async () => {});
     expect(requests[0].body).toBe(JSON.stringify({ kind: "text", data: "做完这个之后顺手跑一下测试\n" }));
-    expect(screen.getByTestId("mobile-sent-state").textContent).toBe("已发送");
+    expect(screen.getByTestId("mobile-sent-state").textContent).toBe("已排队");
   });
 
   it("聚焦 composer 时把输入框滚进可见区（iOS 键盘不遮它）", () => {

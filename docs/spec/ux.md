@@ -408,6 +408,26 @@ PTY 没有队列，键击直接落进 TUI 的输入区，各家对「跑着的�
 状态门（只给决定按钮，不给排队）。守卫 `web/src/MobileCard.test.tsx`（host+running 开 composer 且
 文案说「排队…跑完这一轮」；runtime+running 仍禁用且原文案；host+running 发送后落「已发送」）。
 
+### 发送三段（agora-o975.2，2026-10-08）
+
+真机反馈第 2 条：`text_via = host` 的发送是入队 + 等宿主 ack（`src/api/mod.rs` 的 `input_ack_wait`
+默认 10 s），ack 回来后行状态仍停在 `turn_done` / `idle`（状态等 hook 上报），中间那段对用户是空白
+——只有气泡里一行小字「发送中…」。三段现在各自可见：
+
+1. **在途**：气泡标签「发送中…」，发送按钮变「发送中…」+ 转圈（`.mobile-spinner`，CSS 动画），
+   输入框 `readOnly`——ack 回来之前这一格写什么都发不出去。
+2. **ack 成功**：按**发出去的那一刻**这一行是否在跑分两种标签——`host` 且在跑给「已排队」
+   （原有 `mobile-host-running-note`「等它跑完这一轮就交进去」不动），其余给「已发出」；标签跟着
+   这一次发送走，不回看 ack 回来时的状态。
+3. **等它接手**：`aria-live` 过渡提示「已发出，等它接手…」（带脉冲点 `.mobile-pending-dot`），在
+   `row.prompt` 首行回显（服务端收下了这句话）**或** `row.status` 离开 `turn_done` / `idle`（它真的
+   动起来了）时撤掉；已在跑的行不发这条（它本来就有「已排队」）。这两段期间会话卡走 1 s 心跳
+   （见上节）。
+
+失败路径一个字不改（草稿回填 + 重试 + 按错误码的失败原因，agora-jidm）。守卫
+`web/src/MobileCard.test.tsx`（延迟 resolve 的假 api 定格三段 + 两条撤掉路径 + 失败用例照旧）与
+`web/src/mobileCss.test.ts`（转圈 / 动态点的具名动画与 reduced-motion 覆盖）。
+
 ### 按钮上的 flex 必须自己写 align-items（agora-x70t，2026-10-08）
 
 手机端收件箱的每一行是一个 `<button class="mobile-row">`，里面是列方向的 flex（第一行名字+状态、
@@ -451,7 +471,8 @@ WAITING 的变体：决策原文（等宽逐字、不过 markdown）作为一张
 
 - 收件箱行：状态 + 等待时长、agent 徽标、任务标签、节点、一行摘要（≤ 80 字）；没有树视图、仓库/分支行、source / confidence。
 - 会话卡：任务标题；**最近一轮用两个气泡**——`❯` 你最后一句（`prompt`，首行）+ `↳` agent 最后回复（`detail`，与桌面同一 markdown 子集，默认折 6 行、**仅最后一条可展开一次**，不做更早消息的翻页）；WAITING 时决策原文（等宽逐字、不过 markdown）作为内联卡片画在 composer 上方；Restart / Kill 收进「更多」（确认框，确认逻辑在所属节点）。
-- composer 与发送：固定在底部（拇指区）。**状态门**：turn_done / idle 开放文本；waiting 只给决定按钮；running / starting 上 `host` 通道**可排队**（见「运行中排队发送」），`runtime` 置灰并说明「它还在跑」。**能不能发看 `textVia(row)` 而不是有没有句柄**（agora-t5kf.3，ADR-002 D11）：`runtime`（有 PTY）与 `host`（无句柄但宿主收文本，目前是 pi 的扩展）都给 composer；`none`（Claude / Codex / Grok、旧扩展、老节点）没有 composer，并给一句说明（`mobile-terminal-only`：在跑时说“它还在跑；只能在桌面终端里回复”、其余说“没有可写的运行时”——agora-71p2，不能让它看着像输入框没画出来）。host 行在跑时 composer 仍在，其下是 `mobile-host-running-note`“它还在跑；发出去会排队，等它跑完这一轮就交进去”——排的是 pi 的 followUp，语义与实测见「运行中排队发送」。发送是**乐观的**：气泡先以「发送中」出现，`POST /api/sessions/:id/input` 成功后转「已发送」；失败时文本回填输入框（不覆盖在途时新打的字）、失败气泡上保留「重试」，失败原因贴着气泡按错误码说人话（agora-jidm）：`no_runtime` 与 `mobile-terminal-only` 同一句人话「回复要到桌面终端」、`runtime_session_not_found`（`text_via=runtime` 但 pane 没了）「这个会话的终端已经不在了；到桌面看它」、`read_only`（采纳行）「这一行只能看不能写」；`host_timeout`（504，宿主没来取件）与 `host_rejected`（502，扩展 `.failed` 的原话）把服务端 / 宿主那句话直接显示、不加壳——504 的队列里那件已被 daemon 删掉，重试不会跑两遍。
+- composer 与发送：固定在底部（拇指区）。**状态门**：turn_done / idle 开放文本；waiting 只给决定按钮；running / starting 上 `host` 通道**可排队**（见「运行中排队发送」），`runtime` 置灰并说明「它还在跑」。**能不能发看 `textVia(row)` 而不是有没有句柄**（agora-t5kf.3，ADR-002 D11）：`runtime`（有 PTY）与 `host`（无句柄但宿主收文本，目前是 pi 的扩展）都给 composer；`none`（Claude / Codex / Grok、旧扩展、老节点）没有 composer，并给一句说明（`mobile-terminal-only`：在跑时说“它还在跑；只能在桌面终端里回复”、其余说“没有可写的运行时”——agora-71p2，不能让它看着像输入框没画出来）。host 行在跑时 composer 仍在，其下是 `mobile-host-running-note`“它还在跑；发出去会排队，等它跑完这一轮就交进去”——排的是 pi 的 followUp，语义与实测见「运行中排队发送」。发送是**乐观的**：气泡先以「发送中」出现，`POST /api/sessions/:id/input` 成功之后按**发出去的那一刻这一行是否在跑**分两种标签：`host` 且在跑给「已排队」、其余给「已发出」
+（见下面「发送三段」）；失败时文本回填输入框（不覆盖在途时新打的字）、失败气泡上保留「重试」，失败原因贴着气泡按错误码说人话（agora-jidm）：`no_runtime` 与 `mobile-terminal-only` 同一句人话「回复要到桌面终端」、`runtime_session_not_found`（`text_via=runtime` 但 pane 没了）「这个会话的终端已经不在了；到桌面看它」、`read_only`（采纳行）「这一行只能看不能写」；`host_timeout`（504，宿主没来取件）与 `host_rejected`（502，扩展 `.failed` 的原话）把服务端 / 宿主那句话直接显示、不加壳——504 的队列里那件已被 daemon 删掉，重试不会跑两遍。
 - 排版与自适应（agora-x70t，2026-10-08 在 iPhone 16 Pro 上按计算样式与几何量测定的牙）：手机壳用**一套 `--m-fs` 令牌**（`web/src/index.css` 的 `.mobile` / `.gate-mobile`），字号、间距（`--m-1..--m-5`）、触控下限（`--m-tap`）都由它派生——换一档字，行距与留白跟着变，否则字号一大人就觉得挤。基准 **17px**（Apple HIG 的 body；桌面壳仍是 13px 的 dense 工作台，两套不互相牵连），设置屏有四档 **小 15 / 标准 17 / 大 19 / 特大 22**，存 localStorage（键 `agora.mobile-text`，`data-text` 是与 CSS 的接口）；默认档就是 17px，因为"整体偏小"正是这一轮要修的。两条**平台下限是绝对的**、不跟档位缩：输入框 ≥16px（低于它 iOS 一聚焦就整页放大——"点输入框页面就放大"的根因）、可点目标 ≥44pt（Apple 触控下限）。长词与 URL 到处可折（`overflow-wrap: anywhere`；无空格长串以前会画出卡片外，量测 `.mobile-card-task` scrollWidth 2210 / clientWidth 384），收件箱行的单行省略号保留（那是设计）。**引擎差异要有硬夹断兜底**：WebKit（iOS 上唯一的引擎）对没有 `overflow`/`min-width: 0` 的 flex 项不给收缩——80 字符无空格的行名在那里盒子 1138px 直接顶出卡片框，而 Chromium 会换行、量不出来（2026-10-08，agora-c03z：Playwright WebKit 复现）；所以 `.mobile-row` 有 `overflow: hidden`、`.mobile-card` 有 `overflow-x: hidden`、行头子项有 `min-width: 0`，名字/状态再叠 `overflow-wrap: anywhere`。视口：`100dvh`（Safari 工具栏不把 composer 顶出屏幕）、四向 `env(safe-area-inset-*)`（横屏刘海）、`interactive-widget=resizes-content`（Chromium 系键盘缩内容）、`-webkit-text-size-adjust: 100%`（横屏不放大文字），composer 聚焦后 `scrollIntoView({block:"nearest"})` 兜住 iOS 键盘。守卫：`web/src/mobileCss.test.ts`（把 CSS 当数据钉上述不变式）、`mobileText.test.ts`、`MobileSettings.test.tsx` / `MobileApp.test.tsx`（档位读写与 `data-text`）、`MobileCard.test.tsx`（聚焦滚动、失败草稿回填与四类失败文案）。
 - 不做：终端（xterm 不加载）、New Agent 自由表单（「新建」= 预设一屏，见上）、diff / 验收 / 改动列表、命令面板与快捷键、多节点切换（只配一个承载节点）、消息流与完整对话历史（Conversation indexing 见 §11，承接 `agora-ghl3`）。
 - `respond_via = terminal`（Grok 权限、AskUserQuestion）显示「需要到桌面」，不提供「打开终端」；不注入键击（MISSION §1.2）。

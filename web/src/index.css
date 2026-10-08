@@ -451,8 +451,15 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
    prefers-reduced-motion 的用户关掉——状态词与秒级时长还在，不动的东西也不是没信号。 */
 @keyframes mobile-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 .mobile-symbol.live { animation: mobile-pulse 1.2s ease-in-out infinite; }
+/* 发送在途的转圈与「等它接手」的动态点（agora-o975.2，2026-10-08 真机反馈第 2 条）：宿主 ack
+   最长 10 s，转圈告诉人「在路上」，动态点告诉人「已交给它、等它动」。 */
+@keyframes mobile-spin { to { transform: rotate(360deg); } }
+.mobile-spinner { display: inline-block; width: 0.85em; height: 0.85em; margin-right: 0.4em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -0.08em; animation: mobile-spin 0.8s linear infinite; }
+.mobile-pending-dot { display: inline-block; margin-right: 0.3em; animation: mobile-pulse 1.2s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .mobile-symbol.live { animation: none; }
+  .mobile-symbol.live,
+  .mobile-spinner,
+  .mobile-pending-dot { animation: none; }
 }
 .mobile-row-name { flex: 0 1 auto; min-width: 2em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mobile-status { flex: none; margin-left: auto; color: var(--muted); white-space: nowrap; }
