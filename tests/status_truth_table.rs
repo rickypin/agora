@@ -294,6 +294,7 @@ const END_CAUSE_KINDS: &[&str] = &[
     "superseded",
     "process_gone",
     "runtime_gone",
+    "checkpoint_unrecorded",
 ];
 /// `host_session_end` 的 value：宿主 SessionEnd 的 reason 归一化之后的五档。三家的原话
 /// （`prompt_input_exit`、`shutdown` 那一类）不进枚举，原话留在 `reason` 里。
@@ -437,6 +438,28 @@ fn end_rows() -> Vec<EndRow> {
     fn session_end(reason: Option<&str>) -> Assessment {
         hook(AgoraEvent::SessionEnded(reason.map(str::to_owned)))
     }
+    /// 这条修复之前写下的 hook 检查点恢复出来的结束行（`end_cause` 还没有落盘，agora-ohvn）：
+    /// `restore_hook` 要补一档显式的「检查点未记录原因」，不能让 None 一路冒到 API。
+    fn checkpoint_finished_without_end_cause() -> Assessment {
+        let mut m = Machine::new(cfg(), true, 1, 0);
+        let snapshot: agora::status::machine::HookSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "version": 3,
+                "epoch": 1,
+                "current": {
+                    "status": "finished",
+                    "source": "hook",
+                    "confidence": 0.8,
+                    "reason": "session ended (hook)",
+                },
+                "set_at": 5,
+                "last_hook_at": 5,
+                "pending": [],
+            }))
+            .unwrap();
+        m.restore_hook(snapshot);
+        m.current().clone()
+    }
     vec![
         EndRow {
             why: "退出码 0 = 干净结束",
@@ -528,6 +551,12 @@ fn end_rows() -> Vec<EndRow> {
             why: "同一进程换到了新对话（不发 SessionEnd 的那两家）",
             feed: || hook(AgoraEvent::Superseded),
             want: "superseded",
+        },
+        EndRow {
+            why: "修复前写下的 hook 检查点：恢复出来的结束行没有 end_cause，要补一档显式的\
+                  「检查点未记录原因」（agora-ohvn）——reason 那句话照旧在，程序不该拿到 None",
+            feed: checkpoint_finished_without_end_cause,
+            want: "checkpoint_unrecorded",
         },
     ]
 }
@@ -754,6 +783,10 @@ fn cause_wire_vocabulary_is_the_locked_set() {
     assert_eq!(
         serde_json::to_value(EndCause::RuntimeGone(RuntimeGone::Server)).unwrap(),
         serde_json::json!({ "kind": "runtime_gone", "value": "server" })
+    );
+    assert_eq!(
+        serde_json::to_value(EndCause::CheckpointUnrecorded).unwrap(),
+        serde_json::json!({ "kind": "checkpoint_unrecorded" })
     );
     for reason in ["clear", "resume", "logout", "exit", "other"] {
         let v = serde_json::to_value(EndCause::HostSessionEnd(

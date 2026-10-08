@@ -28,8 +28,9 @@
 //!
 //! 每一条写进结论的 FINISHED / FAILED 都带 `end_cause`、每一条 UNKNOWN 都带 `unknown_cause`
 //! （封闭枚举，agora-5gg.6）：`reason` 只是给人看的那一句，程序按类型分支（MISSION §2.3 规则 10）。
-//! 唯一的例外是这条修复之前写下的 hook 检查点恢复出来的结束行——它只有 `reason`，读到 `None`
-//! （见 [`HookSnapshot`]）。守卫 `tests/status_truth_table.rs::every_finished_and_failed_row_names_its_end_cause`、
+//! 这条枚举落地之前写下的 hook 检查点恢复出来的结束行没有那一格：`restore_hook` 补一档显式的
+//! [`EndCause::CheckpointUnrecorded`]（agora-ohvn），所以 `None` 到不了调用方。守卫
+//! `tests/status_truth_table.rs::every_finished_and_failed_row_names_its_end_cause`、
 //! `::every_unknown_row_names_why_it_is_unknown`。
 
 use serde::{Deserialize, Serialize};
@@ -336,6 +337,16 @@ impl Machine {
             || snapshot.current.source != Source::Hook
         {
             return;
+        }
+        // end_cause 枚举（agora-5gg.6）落地之前写下的检查点没有这一格：恢复出来的结束行
+        // 只有 `reason`。补一档显式的「检查点未记录原因」，不让 `None` 一路冒到 API
+        // （agora-ohvn）——那句话照旧在，`CheckpointUnrecorded` 只回答「为什么没有类型」。
+        // 有值的行一个字节不动：枚举落地之后写出的检查点每一格都带值（守卫
+        // `tests/status_truth_table.rs::every_finished_and_failed_row_names_its_end_cause`）。
+        if matches!(snapshot.current.status, Status::Finished | Status::Failed)
+            && snapshot.current.end_cause.is_none()
+        {
+            snapshot.current.end_cause = Some(EndCause::CheckpointUnrecorded);
         }
         // v2 的 `seen_at` 是秒：不换算就会被当成毫秒（约 1970 年），启动时刻一比就成了"进程比 hook
         // 还新 = 号被复用"，重启后现存的每一行 external 都会被判成 FINISHED。

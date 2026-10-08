@@ -175,6 +175,10 @@ pub enum EndCause {
     ProcessGone,
     /// 有 `runtime_ref` 而运行时的列表里没有它（agora-u5p）。值分 server gone / session gone。
     RuntimeGone(RuntimeGone),
+    /// 检查点里没有记结束原因：这条枚举落地之前写下的 hook 检查点恢复出来的结束行
+    /// （agora-ohvn）。它不是「没有原因」——`reason` 那句话照旧在——只是当时没有把原因落成类型。
+    /// 同一行之后被下一条 hook 事件或进程事实重写时，这个值随之消失。
+    CheckpointUnrecorded,
 }
 
 /// 一行说不清的原因（封闭集合，agora-5gg.6）。与 [`EndCause`] 对称：`reason` 给人看，
@@ -208,9 +212,9 @@ pub struct Assessment {
     /// 给人看的一句话，措辞随版本变，**程序不得据它判断**（MISSION §2.3 规则 10）。
     pub reason: Option<String>,
     /// `status` 是 FINISHED / FAILED 时：结束的原因（封闭枚举，agora-5gg.6）。
-    /// 唯一的 `None` 来源是这条修复之前写下的 hook 检查点恢复出来的结束行
-    /// （`#[serde(default)]`，见 [`crate::status::HOOK_SNAPSHOT_VERSION`] 的说法）：
-    /// 那一格的 `reason` 照旧在，只是调用方拿不到类型。
+    /// `None` 只出现在两种输入里：这条修复之前写下的 hook 检查点（agora-ohvn 起由
+    /// `Machine::restore_hook` 补成 [`EndCause::CheckpointUnrecorded`]，不会带到调用方），
+    /// 以及没升级的老节点发来的 JSON（`#[serde(default)]`）——两者都按「这一格没说原因」处理。
     #[serde(default)]
     pub end_cause: Option<EndCause>,
     /// `status` 是 UNKNOWN 时：为什么说不清（封闭枚举，agora-5gg.6）。缺省同上。
