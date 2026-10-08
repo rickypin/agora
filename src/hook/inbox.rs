@@ -62,6 +62,16 @@ pub struct Inbox {
     home: PathBuf,
 }
 
+/// [`Inbox::prune_done`] 的结果：删掉几个归档、哪些没删掉（`"<path>: <err>"`，给人看）。
+/// 同时那行 info 会把这两项交给排障的人（agora-sgbw）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PrunedDone {
+    /// 成功删掉的归档文件数。
+    pub removed: usize,
+    /// 删失败的路径与原因；目录那两级只在不是「还没空 / 已经没了」时才记。
+    pub failed: Vec<String>,
+}
+
 impl Inbox {
     pub fn new(home: &Path) -> Self {
         Inbox {
@@ -292,11 +302,15 @@ impl Inbox {
         cut_any.then(|| serde_json::to_vec(&delivery).ok())?
     }
 
-    /// 删掉 `done/` 里超过保留期的文件；空目录随手删。错误只记日志——排障文件不值得让 daemon 退出。
-    pub fn prune_done(&self, retention: Duration) {
+    /// 删掉 `done/` 里超过保留期的文件；空目录随手删。返回删了几个、哪个失败，并留一行 info
+    /// （agora-sgbw）：原来两个 `let _ =` 把结果与失败全吞了，daemon.log 里一个字都没有，
+    /// 排障的人看不到清了什么、也看不到哪个卡住。失败不让 daemon 退出——排障文件不值得——
+    /// 但也不吞：进返回值、随那一行 info 交出去。
+    pub fn prune_done(&self, retention: Duration) -> PrunedDone {
+        let mut report = PrunedDone::default();
         let root = self.done_dir();
         let Ok(hosts) = list_dir(&root) else {
-            return;
+            return report;
         };
         let cutoff = SystemTime::now().checked_sub(retention);
         for host in hosts {
@@ -306,14 +320,42 @@ impl Inbox {
                         .and_then(|m| m.modified())
                         .map(|m| cutoff.is_some_and(|c| m < c))
                         .unwrap_or(false);
-                    if old {
-                        let _ = std::fs::remove_file(&file);
+                    if !old {
+                        continue;
+                    }
+                    match std::fs::remove_file(&file) {
+                        Ok(()) => report.removed += 1,
+                        Err(err) => report.failed.push(format!("{}: {err}", file.display())),
                     }
                 }
-                let _ = std::fs::remove_dir(&session);
+                // 空目录随手删：还没空（上面留着没删的文件/目录）与已经没了都不是错，别的才记。
+                if let Err(err) = std::fs::remove_dir(&session) {
+                    if !matches!(
+                        err.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                    ) {
+                        report.failed.push(format!("{}: {err}", session.display()));
+                    }
+                }
             }
-            let _ = std::fs::remove_dir(&host);
+            if let Err(err) = std::fs::remove_dir(&host) {
+                if !matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                ) {
+                    report.failed.push(format!("{}: {err}", host.display()));
+                }
+            }
         }
+        if report.removed > 0 || !report.failed.is_empty() {
+            tracing::info!(
+                component = "hook",
+                removed = report.removed,
+                failed = ?report.failed,
+                "清理 hooks/done 里的过期归档"
+            );
+        }
+        report
     }
 }
 
@@ -526,5 +568,31 @@ mod tests {
         assert_eq!(safe_component(""), "unknown");
         assert_eq!(safe_component(".."), "unknown");
         assert_eq!(safe_component("abc-DEF_1.2"), "abc-DEF_1.2");
+    }
+    /// `prune_done` 把「删了几个、哪个没删掉」交出来（agora-sgbw）：原来两个 `let _ =` 把
+    /// 结果与失败全吞了，daemon.log 里一个字都没有，排障的人看不到清了什么、也看不到哪个卡住。
+    ///
+    /// 那行 info 的端到端观察在代检（隔离 daemon + 真日志）里做：单测里 `capture_logs` 与
+    /// `files_sort_by_time_...` 共享同一个 callsite，tracing 的 interest 缓存对并行单测有
+    /// 已知竞态（2026-10-08 实测 `cargo test --lib inbox` 十次里红两三次），这里只断言返回值。
+    ///
+    /// 改坏法：恢复 `let _ = remove_file` / 不再累计失败 → 断言红。
+    #[test]
+    fn prune_done_reports_what_it_removed_and_what_it_could_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = Inbox::new(dir.path());
+        let a = inbox.write(&delivery(1, "s1")).unwrap();
+        let b = inbox.write(&delivery(2, "s1")).unwrap();
+        inbox.done(&a).unwrap();
+        inbox.done(&b).unwrap();
+        // 一个删不掉的：`done/` 里的子目录——`remove_file` 对目录报错，root 也删不动它。
+        let stuck = inbox.done_dir().join("h/s1/stuck.json");
+        std::fs::create_dir_all(&stuck).unwrap();
+
+        let report = inbox.prune_done(Duration::ZERO);
+        assert_eq!(report.removed, 2, "两个归档文件都该删掉: {report:?}");
+        assert_eq!(report.failed.len(), 1, "删不掉的那个要报出来: {report:?}");
+        assert!(report.failed[0].contains("stuck.json"), "{report:?}");
+        assert!(stuck.exists(), "删不掉的那个下一轮还能再看到");
     }
 }
