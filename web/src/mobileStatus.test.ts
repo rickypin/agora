@@ -94,4 +94,12 @@ describe("手机端时长（agora-o975.3）", () => {
   it("行上在跑的行用秒：刚发出去的 42 秒看得见在走", () => {
     expect(mobileStatusLine(row({ status: "running", status_since: 958 }), false, 1000)).toBe("在跑 42s");
   });
+
+  it("列表用分钟粒度（审查修订 ①）：不到一分钟只写状态词，不写秒", () => {
+    // 列表 30 s 才走一格，显示秒会「冻住」反而更像死了；秒级只留给卡片（那里有 1 s 心跳）。
+    expect(mobileStatusLine(row({ status: "running", status_since: 958 }), false, 1000, "minutes")).toBe("在跑");
+    expect(mobileStatusLine(row({ status: "running", status_since: 820 }), false, 1000, "minutes")).toBe("在跑 3m");
+    // peer 的下界语义在分钟粒度下也在。
+    expect(mobileStatusLine(row({ status: "waiting", status_since: 820, stale: false }), false, 1000, "minutes")).toBe("等你 ≥3m");
+  });
 });

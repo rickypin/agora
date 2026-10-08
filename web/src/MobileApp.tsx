@@ -521,7 +521,9 @@ function MobileRow({ row, now, localNode, seen, onOpen }: RowProps) {
   const local = localNode !== null && row.node === localNode;
   const summary = mobileSummary(row);
   // 手机端的词（等你 / 回完了 / 已看过 / 在跑…），不是桌面那份英文（agora-o975.4）。
-  const status = mobileStatusLine(row, seen, now);
+  // 时长用分钟粒度（agora-o975.3 审查修订）：列表 30 s 才走一格，显示秒会“冻住”；秒级只留给
+  // 有 1 s 心跳的卡片。
+  const status = mobileStatusLine(row, seen, now, "minutes");
   // 在跑 / 启动中的符号脉冲（agora-o975.3）：与卡片同一个 .mobile-symbol.live、同一条 CSS。
   const live = row.status === "running" || row.status === "starting";
   return (

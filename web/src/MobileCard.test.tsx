@@ -134,35 +134,82 @@ describe("发送链路（agora-o975.2）", () => {
    * 等 10 s（`input_ack_wait`），这段时间以前只有气泡里一行小字，看不出「在路上」。(2026-10-08)
    */
   function setupPending(r: SessionRow) {
+    const inputBodies: string[] = [];
     let release!: (body: unknown) => void;
     const input = new Promise<Response>((resolve) => {
       release = (body: unknown) =>
         resolve(new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }));
     });
-    const f: FetchLike = async (url) =>
-      url.endsWith("/input") ? input : new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    const f: FetchLike = async (url, init) => {
+      if (url.endsWith("/input")) {
+        inputBodies.push(String(init.body));
+        return input;
+      }
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    };
     const api = sessionApi(f);
     const ui = render(<MobileCard row={r} api={api} now={1000} onBack={vi.fn()} onSeen={vi.fn()} />);
-    return { ui, release, api };
+    return { ui, release, api, inputBodies };
   }
 
   const card = (r: SessionRow, api: ReturnType<typeof sessionApi>) => (
     <MobileCard row={r} api={api} now={1000} onBack={vi.fn()} onSeen={vi.fn()} />
   );
 
-  it("①在途：按钮变「发送中…」+ 转圈、输入框只读、气泡标签仍是「发送中…」", async () => {
+  it("①在途：按钮变「发送中…」+ 转圈禁用、输入框仍可编辑、气泡标签仍是「发送中…」", async () => {
     const { release } = setupPending(row("n:a", { status: "turn_done" }));
     await typeAndSend("把菜单加到侧栏");
 
     expect(screen.getByTestId("mobile-sent-state").textContent).toBe("发送中…");
-    const send = screen.getByTestId("mobile-send");
+    const send = screen.getByTestId("mobile-send") as HTMLButtonElement;
     expect(send.textContent).toContain("发送中…");
     expect(send.querySelector(".mobile-spinner"), "转圈元素").toBeTruthy();
-    expect((screen.getByTestId("mobile-next-input") as HTMLInputElement).readOnly).toBe(true);
+    expect(send.disabled, "在途只锁发送按钮").toBe(true);
+    // 审查修订 ①（2026-10-08）：在途锁输入框会挡住「接着打下一句」，所以输入框不锁。
+    expect((screen.getByTestId("mobile-next-input") as HTMLInputElement).readOnly).toBe(false);
     // 收尾：把悬挂的 promise 放掉，不留一个永远在途的请求。
     await act(async () => {
       release({});
     });
+  });
+
+  it("在途防重：Enter 连击 / 重复提交不得发两遍，第二次的草稿不丢", async () => {
+    // 审查修订 ②（2026-10-08）：发送按钮在途禁用，但输入框可编辑（修订 ①），Enter 还能提交表单——
+    // submit() 必须自己挡住第二次；挡的时候草稿留在框里（等 ack 回来还能发），不能吞掉。
+    const { release, inputBodies } = setupPending(row("n:a", { status: "turn_done" }));
+    await typeAndSend("第一条");
+    const input = screen.getByTestId("mobile-next-input") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "第二条" } });
+    fireEvent.submit(input.closest("form")!);
+    await act(async () => {});
+    expect(inputBodies, "在途只发一次").toHaveLength(1);
+    expect(input.value).toBe("第二条");
+    await act(async () => {
+      release({});
+    });
+    // ack 回来之后按钮又能按：这一句还能发出去（不是扣着不放）。
+    expect((screen.getByTestId("mobile-send") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("③等它接手 20 s 还没动静：补一句出口话（别让提示永远挂着）", async () => {
+    // 审查修订 ③（2026-10-08）：prompt 首行没回显、状态还在 turn_done/idle，20 s 后补一句
+    // 「它还没接手——一直没动静就去桌面看看」；撤销条件不变（这里还没撤，所以只测兜底那句话）。
+    vi.useFakeTimers();
+    try {
+      const { release } = setupPending(row("n:a", { status: "turn_done", prompt: "上一句" }));
+      await typeAndSend("再跑一遍测试");
+      await act(async () => {
+        release({});
+      });
+      expect(screen.getByTestId("mobile-await-takeover")).toBeTruthy();
+      expect(screen.queryByTestId("mobile-await-stalled")).toBeNull();
+      act(() => vi.advanceTimersByTime(19_000));
+      expect(screen.queryByTestId("mobile-await-stalled"), "不到 20 s 不吓人").toBeNull();
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(screen.getByTestId("mobile-await-stalled").textContent).toBe("它还没接手——一直没动静就去桌面看看");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("②ack 成功（turn_done 行）：标签「已发出」+ aria-live 提示「已发出，等它接手…」带动态点", async () => {
@@ -177,7 +224,7 @@ describe("发送链路（agora-o975.2）", () => {
     expect(hint.getAttribute("aria-live")).toBe("polite");
     expect(hint.textContent).toContain("已发出，等它接手…");
     expect(hint.querySelector(".mobile-pending-dot"), "动态点").toBeTruthy();
-    // 输入框回到可写（在途那一段只读）。
+    // 输入框全程可写（审查修订 ①：在途也不锁）。
     expect((screen.getByTestId("mobile-next-input") as HTMLInputElement).readOnly).toBe(false);
   });
 

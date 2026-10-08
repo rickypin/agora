@@ -81,6 +81,10 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   const [note, setNote] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [sent, setSent] = useState<Sent | null>(null);
+  // 「等它接手…」20 s 还没动静的兜底（agora-o975.2 审查修订，2026-10-08）：ack 回来了、
+  // row.prompt 没回显、状态也没离开 turn_done/idle——再等下去没有新信息，补一句出口话，
+  // 别让一句进度提示永远挂着。
+  const [takeoverStalled, setTakeoverStalled] = useState(false);
   const composerRef = useRef<HTMLInputElement>(null);
   // 卡片内的心跳（agora-o975.3）：这一行在跑时每秒走一格，刚发出去的几十秒看得见在动；收件箱
   // 列表保持 30 s 一格（别让整屏每秒重排）。心跳只在本地加秒，父级的 now（服务端锚定的节点钟）
@@ -133,7 +137,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   // 无句柄、但宿主自己收文本的（pi 的扩展，ADR-002 D11）：手机上照旧能给下一条；
   // 真正的只读是 `textVia == "none"` 那些（MISSION §5.5）。
   const hostText = textVia(row) === "host";
-  // 卡片里这一行「在动」吗：running / starting 或发送在途（发送在途的那一段在下面 sent 就位后并进来）。
+  // 卡片里这一行「在动」吗：running / starting，或发送在途（那一段也在跑心跳）。
   const live = running || sent?.phase === "sending";
   useEffect(() => {
     if (!live) return;
@@ -182,6 +186,16 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
     return first !== "" && first === sent.text.split("\n")[0]?.trim();
   })();
   const awaitingTakeover = sent?.phase === "sent" && idleOrDone && !promptEchoed;
+  // 20 s 兜底用墙上钟的 setTimeout（这一段行已经不在跑，没有 1 s 心跳可借）：提示一撤
+  // （prompt 回显 / 状态离开 turn_done/idle / 新一次发送）就清掉，下一次发送重新计时。
+  useEffect(() => {
+    if (!awaitingTakeover) {
+      setTakeoverStalled(false);
+      return;
+    }
+    const timer = setTimeout(() => setTakeoverStalled(true), 20_000);
+    return () => clearTimeout(timer);
+  }, [awaitingTakeover]);
 
   const replyLines = detail.split("\n");
   const folded = !expanded && replyLines.length > FOLD_LINES;
@@ -209,6 +223,9 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   function submit() {
     const text = draft.trim();
     if (!text) return;
+    // 在途防重（agora-o975.2 审查修订，2026-10-08）：输入框在途仍可编辑（能接着打下一句），
+    // 所以 Enter 提交还会进门——这里挡住第二次；挡的时候草稿留在框里（等 ack 回来还能发）。
+    if (sent?.phase === "sending") return;
     setDraft("");
     void sendText(text);
   }
@@ -331,6 +348,13 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
                 已发出，等它接手…
               </p>
             )}
+            {awaitingTakeover && takeoverStalled && (
+              // 20 s 兜底（审查修订 ③）：不是错误（它可能还在忙），只是一句出口——手机上看不到
+              // 动静时，桌面是唯一能看到它到底怎么了的地方。
+              <p className="mobile-note mobile-await-stalled" data-testid="mobile-await-stalled">
+                它还没接手——一直没动静就去桌面看看
+              </p>
+            )}
             {sent?.phase === "failed" && sent.failure && (
               // 失败的原因贴着失败气泡放（不在卡片底部）：重试按钮就在这一团里，为什么失败
               // 与"再试一次"是同一个决定的两半（agora-jidm）。.mobile-error 的红色与可换行
@@ -412,8 +436,6 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
             aria-label="下一条指令"
             data-testid="mobile-next-input"
             disabled={busy}
-            /* 在途只读（agora-o975.2）：ack 回来之前这一格写什么都发不出去，不如说清它锁着。 */
-            readOnly={sent?.phase === "sending"}
             onChange={(e) => setDraft(e.target.value)}
             onFocus={(e) => keepAboveKeyboard(e.currentTarget)}
           />

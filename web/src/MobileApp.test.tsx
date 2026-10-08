@@ -256,6 +256,17 @@ describe("手机端运行动态信号（agora-o975.3）", () => {
     expect(sym("n:start")).toContain("live");
     expect(sym("n:done")).not.toContain("live");
   });
+
+  it("列表保持分钟粒度（审查修订 ①）：刚跑起来的 42 秒在列表里不显示秒", async () => {
+    // 列表 30 s 才重算一次，显示秒会「冻住」；秒级时长只属于有 1 s 心跳的卡片。
+    const NOW = Math.floor(Date.now() / 1000);
+    const t = setup([row("n:fresh", { status: "running", status_since: NOW - 42 })], undefined, NOW);
+    await online(t);
+    expect(screen.getByTestId("mobile-row-n:fresh").querySelector(".mobile-status")?.textContent).toBe("在跑");
+    // 打开卡片（1 s 心跳那个面）同一行就有秒。
+    fireEvent.click(screen.getByTestId("mobile-row-n:fresh"));
+    expect(screen.getByTestId("mobile-card-n:fresh").querySelector(".mobile-status")?.textContent).toBe("在跑 42s");
+  });
 });
 
 describe("mobile information budget (A52)", () => {
