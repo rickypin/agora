@@ -249,6 +249,56 @@ pub fn run(argv: &[&str], home: &Path, listen: SocketAddr) -> i32 {
     }
 }
 
+/// 旧版本副本的保留份数（agora-9q1x 的收尾，2026-10-08 用户要求清理后发现的新常态）。
+///
+/// 每次升级都在 `versions/<sha256 前 12 位>/agora` 放一份约 12 MB 的二进制副本（回滚用）。这台机器
+/// 一天升级十几次就攒到 **34 个 / 420 MB**（实测），而回滚真正需要的只是最近几份。升级**成功后**
+/// （链接已指向新二进制、daemon 起来且 `/api/health` 200）清一次：**链接指向的那份永远保留**，
+/// 另外留最近的 [`KEEP_VERSIONS`] 份。升级失败绝不清理——那时旧副本正是要用的东西。
+pub const KEEP_VERSIONS: usize = 5;
+
+/// 版本目录名：sha256 前 12 位十六进制（`stage` 的落点）。清理只认这个形状，别的东西一律不碰。
+fn is_version_dir_name(name: &str) -> bool {
+    name.len() == 12 && name.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// 删掉用不上的旧版本目录；返回被删的名字（给上面那行说明用）。
+///
+/// 按目录 mtime 从新到旧保留 `KEEP_VERSIONS` 个，加上 `keep_linked`（当前链接指向的那份）——
+/// 它可能比最近几份都老（回滚过），但正在被 `bin/agora` 用着。删的是目录树，失败只记不炸：
+/// 清理是收尾，不是升级的成败条件（下一次升级会再试）。
+fn prune_versions(home: &Path, keep_linked: &Path) -> Vec<String> {
+    let dir = home.join(VERSIONS_DIR);
+    let keep_linked = keep_linked.parent().map(Path::to_path_buf);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|e| e.file_name().to_str().is_some_and(is_version_dir_name))
+        .filter_map(|e| {
+            let modified = e.metadata().ok().and_then(|m| m.modified().ok())?;
+            Some((modified, e.path()))
+        })
+        .collect();
+    dirs.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    let mut removed = Vec::new();
+    for (i, (_, path)) in dirs.into_iter().enumerate() {
+        if i < KEEP_VERSIONS || Some(path.clone()) == keep_linked {
+            continue;
+        }
+        if std::fs::remove_dir_all(&path).is_ok() {
+            removed.push(
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    removed
+}
+
 /// 全部步骤；给人看的进度写进 `out`。
 pub fn run_with(
     opts: &Options,
@@ -323,6 +373,19 @@ pub fn run_with(
             Some(pid)
         }
     };
+    // 到这一步这次升级已经成立（链接指向新二进制、daemon 健康）：清掉用不上的旧副本。
+    // 失败路径不清理——那时旧副本正是要用的东西（见 `prune_versions` / `KEEP_VERSIONS`）。
+    let pruned = prune_versions(home, &exe);
+    if !pruned.is_empty() {
+        say(
+            out,
+            format!(
+                "清理旧版本 {} 个（保留最近 {KEEP_VERSIONS} 个与当前链接指向的那份）：{}",
+                pruned.len(),
+                pruned.join(", ")
+            ),
+        )?;
+    }
     Ok(Report {
         probe,
         staged: exe,
@@ -835,6 +898,55 @@ impl Drop for PidFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 清理只认 `versions/<sha12>/` 这个形状、永远保留链接指向的那份与最近 N 份，别的文件不碰。
+    /// 现场：一天升级十几次攒到 34 个 / 420 MB（2026-10-08 实测），手工清还出过一次留错份数的事。
+    #[test]
+    fn prune_keeps_the_linked_version_and_the_newest_ones() {
+        let tmp = std::env::temp_dir().join(format!("agora-prune-{}", std::process::id()));
+        let versions = tmp.join(VERSIONS_DIR);
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&versions).unwrap();
+        // 13 个版本目录，mtime 依次递增（下标越大越新）；另放两个"不是版本目录"的东西。
+        let all: Vec<String> = (0..(KEEP_VERSIONS + 8))
+            .map(|i| format!("{i:012x}"))
+            .collect();
+        for name in &all {
+            std::fs::create_dir_all(versions.join(name)).unwrap();
+            std::fs::write(versions.join(name).join("agora"), b"x").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::fs::create_dir_all(versions.join("not-a-version")).unwrap();
+        std::fs::write(versions.join("stray.txt"), b"keep me").unwrap();
+
+        // 链接指向的是**旧**的一份：回滚过的机器就是这样，那份正在被 bin/agora 用，绝不能删。
+        let linked = 1;
+        let newest_from = all.len() - KEEP_VERSIONS;
+        let removed = prune_versions(&tmp, &versions.join(&all[linked]).join("agora"));
+
+        let gone: Vec<&String> = all
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != linked && *i < newest_from)
+            .map(|(_, n)| n)
+            .collect();
+        assert_eq!(removed.len(), gone.len(), "只删最旧的那些：{removed:?}");
+        for name in &gone {
+            assert!(!versions.join(name).exists(), "{name} 该被删");
+        }
+        for (i, name) in all.iter().enumerate() {
+            if i == linked || i >= newest_from {
+                assert!(versions.join(name).is_dir(), "{name} 该留");
+            }
+        }
+        assert!(
+            versions.join(&all[linked]).is_dir(),
+            "链接指向的那份永远保留，哪怕它很旧"
+        );
+        assert!(versions.join("not-a-version").is_dir(), "不认的目录不碰");
+        assert!(versions.join("stray.txt").is_file(), "非目录更不碰");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn probe_reports_this_binarys_schema_and_api_version() {

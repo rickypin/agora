@@ -231,6 +231,8 @@ scripts/install.sh --binary <path> [--home <dir>] [--node-id <id>] [--listen <ad
 1. 读 `<from>` 算 SHA-256，复制到 `versions/<sha 前 12 位>/agora`（先写 `.part` 再 rename；同 sha 已在就复用）。`<from>` 可以是链接本身、也可以是正在跑的那份——按内容放置，没有"自己复制自己"的坑。
 2. 以那一份跑 `upgrade --probe`（≤ 10 s），解析 JSON；再**只读**打开 `agora.db` 读 `PRAGMA user_version`（不经 `Db::open`——那会先把库迁到本程序的版本）。`schema_version` < 库的 `user_version` → 退出码 2「新版本不认识这个库」，链接不动、daemon 不动、本次放进 `versions/` 的副本删掉。这是规则 10 的**前向**守卫：升级到一个更老的二进制不会让它读错新库；运行期的**后向**守卫是 `DbError::TooNew`（旧程序打开更新的库拒绝启动，守卫 `tests/schema.rs::newer_database_is_refused_not_downgraded`）。迁移带版本号、只前进（`src/session/db.rs`）。
 3. 重指 `<AGORA_HOME>/bin/agora`：与 `agora hooks install` 同一个 `hook::install::ensure_bin_link`，exe 传 canonicalize 后的真路径。hook 条目里的命令是这条稳定路径，条目内容不变，升级后**不必**重新 `hooks install` / 重新在宿主里信任。
+3.5 **清理旧版本副本**（agora-82x7 的收尾，2026-10-08）：升级**成功**（链接已指向新二进制、daemon 起来且 `/api/health` 200）之后删掉用不上的旧副本——保留最近 5 个（`KEEP_VERSIONS`）与**当前链接指向的那一份**（回滚过的机器上它可能比最近 5 个都老，但正在被 `bin/agora` 用）。只认 `versions/<12 位十六进制>/` 这个形状，别的文件与目录不碰；失败只记不炸（收尾不是升级的成败条件）。为什么要有这一步：每次升级留一份约 12 MB 的副本，这台机器一天升级十几次就攒到 **34 个 / 420 MB**（实测），而回滚真正需要的只是最近几份。守卫 `src/cli/upgrade.rs::prune_keeps_the_linked_version_and_the_newest_ones`。
+
 4. 重启 daemon（`--no-restart` 跳过，"daemon 下次启动即新版本"），按顺序探测、命中即用：
    1. `systemctl --user is-active agora.service` 答 `active` **且** `systemctl --user show -p ExecStart agora.service` 里的 `path=` 就是本 `<AGORA_HOME>/bin/agora` → `systemctl --user restart agora.service`（单元必须是 `KillMode=process`，否则这一步就是杀光会话，见「安装」节；agora-x1z）。只看 active 不看它属于哪个 home，装了真 daemon 的开发机上隔离 `AGORA_HOME` 的升级（`tests/upgrade.rs`）就会去重启人的 daemon（agora-wyk，2026-09-19 修）；ExecStart 读不出来时仍按 active 算，别把真装了单元的机器错判到 pid 文件那一支；
       **测试注入口**：探测要调用的 `systemctl` 的位置可由环境变量 **`AGORA_UPGRADE_SYSTEMCTL`** 指定
