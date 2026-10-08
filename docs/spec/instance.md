@@ -7,7 +7,7 @@
 | MacBook Air | M3 / 16 GB / macOS 15.6.1 / arm64；既是节点（跑本地 agent）也是日常客户端所在；本机 105 个 git 仓库 |
 | zuan | Ubuntu 24.04.4 LTS / x86_64，112 核 Intel Xeon Gold 5520+，503 GiB 内存，`/` 295 GB + `/home` 2 TB，无 GPU；私网 172.16.103.10，与 Mac（172.16.103.138）同网段可直连（9-05 复核 ping 13 ms）；几乎空机（python3 3.12、tmux 3.4；无 Docker / node / agent）；sshd 已开、Mac 免密可登（9-06 复核） |
 | 设备 | 日常 MacBook Air；部分时段只有 iPhone 或 Android 手机；偶尔 iPad |
-| agent | 本机装有 Claude Code 2.1.261（9-05 复核；hook fixture 在 `testdata/claude/2.1.261/`，2.1.260 的合成件保留作对照）、Codex CLI 0.152.1（hook fixture 在 `testdata/codex/0.152.1/`）、Grok 1.0.13（`~/.grok/bin/grok`；hook fixture 在 `testdata/grok/1.0.13/`）、cursor-agent（版本 2026-09-02 以 `--version` 复核；9-01 记的 Codex 0.145.0 是过期的更新检查记录）；pi 未装；zuan 上尚无任何 agent |
+| agent | **MacBook Air**（9-05 复核；此后从 zuan 不可达、未再核）：Claude Code 2.1.261、Codex CLI 0.152.1、Grok 1.0.13、cursor-agent；pi 未装（9-05）。**zuan**（2026-10-08 机上复核 `--version`）：Claude Code 2.1.291、Codex CLI 0.153.4、Grok 1.0.46、pi 1.0.4 均已装（`~/.pi/agent` 在；agora-t5kf 的宿主通道与 `testdata/pi/1.0.4/` 都是在这台上实测的）。hook fixture：`testdata/claude/2.1.291/`（七场景 + headless + 转载 resume）、`testdata/codex/0.153.4/`（headless 冒烟）、`testdata/grok/1.0.30/`（headless 冒烟）；2.1.261 / 0.152.1 / 1.0.13 的旧录保留作对照 |
 | 运行时 | 两台机器都可按需安装配置（tmux / Docker / 容器 / SDK 均可），运行时选择不受现状约束（ADR-001） |
 | 网络 | Mac（`rickys-macbook-air`）与 iPhone（`iphone171`）已在 tailnet（`tail5fb9b.ts.net`，9-05 以 `tailscale status` 复核；9-01 记的 tail6f613 有误）；zuan 已装 tailscale（`zuan.tail5fb9b.ts.net`，100.113.93.16，tagged 设备，9-06 复核在线）；Android 待加入（tailnet 里只有一台 3 年未上线的 `pro`）；tailnet 内还有他人共享的节点与 tagged 设备（不变量 11「网络可达 ≠ 授权」与 ADR-003「没有 loopback 例外」的动机之一）；zuan 出网：Apple 推送 / Let's Encrypt / tailscale 可达，**FCM 不可达**（MISSION §6.6 降级策略的来源） |
 | 规模 | 并发 ≤ 30 个会话（本机可达 10、zuan 其余）；多 git worktree 并行是常态 |
