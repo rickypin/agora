@@ -26,14 +26,14 @@ function row(patch: Partial<SessionRow> = {}): SessionRow {
 describe("手机端状态词（agora-o975.4）", () => {
   it("逐状态给中文词：waiting / turn_done / running / starting / idle / finished / failed / unknown", () => {
     expect(mobileStatusText(row({ status: "waiting" }), false)).toBe("等你");
-    expect(mobileStatusText(row({ status: "turn_done" }), false)).toBe("回完了");
-    expect(mobileStatusText(row({ status: "turn_done", status_since: 500 }), true)).toBe("已看过");
+    expect(mobileStatusText(row({ status: "turn_done" }), false)).toBe("待查看");
+    expect(mobileStatusText(row({ status: "turn_done", status_since: 500 }), true)).toBe("已读");
     expect(mobileStatusText(row({ status: "running" }), false)).toBe("在跑");
     expect(mobileStatusText(row({ status: "starting" }), false)).toBe("启动中");
     expect(mobileStatusText(row({ status: "idle" }), false)).toBe("闲着");
     expect(mobileStatusText(row({ status: "finished" }), false)).toBe("已结束");
     expect(mobileStatusText(row({ status: "failed" }), false)).toBe("失败");
-    expect(mobileStatusText(row({ status: "unknown" }), false)).toBe("说不清");
+    expect(mobileStatusText(row({ status: "unknown" }), false)).toBe("状态待确认");
   });
 
   it("等你批准只给 reason=permission 的 waiting；别的 reason 还是「等你」", () => {
@@ -42,8 +42,8 @@ describe("手机端状态词（agora-o975.4）", () => {
     expect(mobileStatusText(row({ status: "waiting", reason: "needs input" }), false)).toBe("等你");
   });
 
-  it("「已看过」只改 turn_done；finished 是「已结束」，不受看过记号影响", () => {
-    // 看过的 TURN_DONE 降到「不用你」段（agora-5gg.21），行上要有记号；FINISHED 的归宿是
+  it("「已读」只改 turn_done；finished 是「已结束」，不受看过记号影响", () => {
+    // 看过的 TURN_DONE 降到「暂无需处理」段（agora-5gg.21），行上要有记号；FINISHED 的归宿是
     // 「已完成」折叠区，行上的词只管说它结束了。
     expect(mobileStatusText(row({ status: "finished" }), true)).toBe("已结束");
     // 记号对别的状态没有副作用。
@@ -63,10 +63,10 @@ describe("手机端状态词（agora-o975.4）", () => {
     expect(mobileStatusLine(row({ status: "running" }), false, 1000)).toBe("在跑");
   });
 
-  it("看到过的那一行：行文案说「已看过」，段位交给 sectionOf（同一个记号）", () => {
+  it("看到过的那一行：行文案说「已读」，段位交给 sectionOf（同一个记号）", () => {
     const done = row({ status: "turn_done", status_since: 500 });
-    expect(mobileStatusLine(done, true, 1000)).toContain("已看过");
-    expect(mobileStatusLine(done, false, 1000)).toContain("回完了");
+    expect(mobileStatusLine(done, true, 1000)).toContain("已读");
+    expect(mobileStatusLine(done, false, 1000)).toContain("待查看");
   });
 });
 

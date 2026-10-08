@@ -119,9 +119,9 @@ describe("运行动态信号（agora-o975.3）", () => {
     try {
       setup(row("n:done", { status: "turn_done", status_since: 990, detail: "完了" }));
       const status = () => screen.getByTestId("mobile-card-n:done").querySelector(".mobile-status")?.textContent;
-      expect(status()).toBe("回完了 10s");
+      expect(status()).toBe("待查看 10s");
       act(() => vi.advanceTimersByTime(1000));
-      expect(status()).toBe("回完了 10s");
+      expect(status()).toBe("待查看 10s");
     } finally {
       vi.useRealTimers();
     }
@@ -623,4 +623,30 @@ describe("information budget (A52)", () => {
     setup(row("n:a", { status: "turn_done", status_since: 500 }), true, onSeen);
     expect(onSeen).toHaveBeenCalledWith(seenKey({ id: "n:a", status: "turn_done", status_since: 500 }));
   });
+});
+
+
+it("offline cards retain their content but disable sending and decisions (agora-d0r)", () => {
+  setup(row("n:offline", { stale: true, detail: "上次的回复" }));
+  expect(screen.getByRole("status").textContent).toContain("节点离线");
+  expect((screen.getByLabelText("下一条指令") as HTMLTextAreaElement).disabled).toBe(true);
+  expect((screen.getByTestId("mobile-send") as HTMLButtonElement).disabled).toBe(true);
+  cleanup();
+  setup(row("n:waiting", {stale: true, status: "waiting", reason: "permission", pending_decision: {request_id: "r", summary: "npm test", epoch: 1, host: "claude"}}));
+  expect((screen.getByTestId("mobile-allow") as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByTestId("mobile-deny") as HTMLButtonElement).disabled).toBe(true);
+});
+
+
+it("a failed reply cannot be retried after its node goes offline (agora-d0r)", async () => {
+  const input = vi.fn().mockResolvedValue({ ok: false, needsConfirmation: false, error: { error: "host_timeout", message: "节点未响应" } });
+  const api = { ...sessionApi(), input };
+  const renderCard = (stale: boolean) => <MobileCard row={row("n:a", { stale })} api={api} now={1000} onBack={vi.fn()} />;
+  const ui = render(renderCard(false));
+  await typeAndSend("再试一次");
+  expect(input).toHaveBeenCalledTimes(1);
+  ui.rerender(renderCard(true));
+  expect((screen.getByTestId("mobile-retry") as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByTestId("mobile-retry"));
+  expect(input).toHaveBeenCalledTimes(1);
 });

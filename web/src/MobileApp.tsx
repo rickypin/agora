@@ -2,8 +2,8 @@
  * 手机交互收件箱 /m（MISSION §6.9；A37 / A52；agora-thc.5；会话卡 agora-thc.10）。
  *
  * 这一屏只回答一件事：**现在谁在等我**。四段与排序复用 attention.ts（与桌面同一条规则、同一个
- * 「看过」集合），但信息预算只有一行——状态 + 时长、agent 徽标、任务标签、节点、一行摘要。没有
- * 终端、创建、diff / 验收 / 改动列表，也没有消息流与历史翻页（A52；DOM 守卫在 MobileApp.test.tsx）。
+ * 「看过」集合）。移动工作台提供概览、关注筛选、搜索与任务卡片，底部导航进入预设和设置。
+ * 没有终端、自由创建表单、diff / 验收 / 改动列表，也没有消息流与历史翻页（A52；DOM 守卫在 MobileApp.test.tsx）。
  *
  * 点一行进会话卡（MobileCard）：即时消息语法，动作走与桌面相同的节点 API。本文件管收件箱、
  * 深链、会话卡的进出，以及「已完成」段的清理入口（与桌面同一删除名单、逐行 DELETE、跳过 stale）；
@@ -24,6 +24,7 @@ import { anchoredNow, isHandleless, loadSeen, sectionOf, seenKey, sortByAttentio
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow } from "./events";
 import { HealthWatcher, VersionWatcher } from "./health";
+import { MobileIcon } from "./MobileIcon";
 import { MobileCard } from "./MobileCard";
 import { MobileSettings } from "./MobileSettings";
 import { applyOutline, rememberLayout } from "./mobileDebug";
@@ -42,8 +43,8 @@ import { SessionStore, useServerClock, useSessions } from "./store";
  *  行没在跑却显示成「在跑」，正是 2026-10-08 真机反馈的第四条（agora-o975.4）。 */
 const OPEN_SECTIONS: { key: Section; label: string }[] = [
   { key: "attention", label: "需要我" },
-  { key: "unclear", label: "说不清" },
-  { key: "working", label: "不用你" },
+  { key: "unclear", label: "状态待确认" },
+  { key: "working", label: "暂无需处理" },
 ];
 
 interface Props {
@@ -66,10 +67,12 @@ export function groupSections(rows: SessionRow[], seen: SeenSet): Record<Section
   return out;
 }
 
-/** 一行摘要：progress > detail > reason 的第一行，80 字封顶（docs/spec/ux.md 的信息预算）。 */
+/** 一行摘要：pending_decision.summary > progress > detail > 人可读 reason 的第一行，80 字封顶（docs/spec/ux.md 的信息预算）。 */
 export function mobileSummary(row: SessionRow): string {
-  const raw = str(row.progress) || str(row.detail) || str(row.reason);
-  const line = raw.split("\n").find((l) => l.trim() !== "")?.trim() ?? "";
+  // Structured reasons are state codes, not message previews. Keep human-readable legacy reasons.
+  const reason = str(row.reason);
+  const raw = str(row.pending_decision?.summary) || str(row.progress) || str(row.detail) || (/^[a-z_]+$/.test(reason) ? "" : reason);
+  const line = raw.split("\n").find((l) => l.trim() !== "")?.trim().replace(/^#{1,6}\s+/, "") ?? "";
   return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }
 
@@ -164,7 +167,41 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     );
   }, [rows, target]);
   const [selected, setSelected] = useState<string | null>(null);
+  // Drafts stay in this page's memory only, so switching sessions never loses an unfinished reply.
+  const drafts = useRef<Record<string, string>>({});
+  const inboxScroll = useRef(0);
+  const inboxRef = useRef<HTMLDivElement>(null);
+  const openRow = (id: string) => {
+    inboxScroll.current = inboxRef.current?.scrollTop ?? 0;
+    const url = new URL(window.location.href);
+    url.searchParams.set("session", id);
+    window.history.pushState({ agoraMobileCard: true }, "", url);
+    setSelected(id);
+  };
+  const closeCard = () => {
+    setSelected(null);
+    if (window.history.state?.agoraMobileCard) window.history.back();
+    else {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("session");
+      window.history.replaceState(null, "", url);
+    }
+  };
+  useEffect(() => {
+    const restore = () => {
+      const value = new URL(window.location.href).searchParams.get("session");
+      setSelected(value && rows.some((r) => r.id === value) ? value : null);
+    };
+    window.addEventListener("popstate", restore);
+    return () => window.removeEventListener("popstate", restore);
+  }, [rows]);
+  useEffect(() => {
+    if (selected === null && inboxRef.current) inboxRef.current.scrollTop = inboxScroll.current;
+  }, [selected]);
   const [finishedOpen, setFinishedOpen] = useState(false);
+  const [filter, setFilter] = useState<"all" | "attention" | "working">("all");
+  const [query, setQuery] = useState("");
+  const matches = (row: SessionRow) => `${rowName(row)} ${taskLabel(row)} ${row.node} ${row.agent_type} ${row.project?.name ?? ""} ${row.project?.branch ?? ""} ${mobileSummary(row)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   // 手机版的一键清理（agora-off0）：与桌面同一条链——对象是「已完成」段里的全部行（`sectionOf === "finished"`，
   // 与 Sidebar.tsx 的 clearable 同一判据）、逐行 DELETE /api/sessions/:id（MISSION §11 不引入批量端点）、
   // 跳过 peer stale 的行（一跳转发到不了）。文案与桌面有意差一处（2026-10-08 口径修正时定）：手机报
@@ -227,7 +264,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     setPendingNew(r.value.id);
   }
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // 新建一屏（agora-prdg.4；epic agora-hxva）：收件箱 Header →「新建」→ 预设按钮 → 点一下直接起。
+  // 新建一屏（agora-prdg.4；epic agora-hxva）：收件箱底部导航 →「新建」→ 预设按钮 → 点一下直接起。
   // **零打字**：这一屏只有按钮（名称 / agent 徽标 / 目录 / 参数摘要 / 首句），没有任何 input /
   // textarea——DOM 守卫在 MobileApp.test.tsx。这是 agora-uqpi 的拍板：手机要能"开始一件事"，
   // 但"能起什么"冻结在桌面侧的 CLI 预设里，被临时拿到的手机只能选已经批准过的那几条。
@@ -298,10 +335,20 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     return (
       <main className="mobile" data-testid="mobile-inbox" data-text={textSize}>
         <MobileCard
+          key={selectedRow.id}
           row={selectedRow}
           api={api}
+          initialDraft={drafts.current[selectedRow.id] ?? ""}
+          onDraftChange={(text) => { drafts.current[selectedRow.id] = text; }}
+          onNext={sections.attention.some((r) => r.id !== selectedRow.id) ? () => {
+            const id = sections.attention.find((r) => r.id !== selectedRow.id)!.id;
+            const url = new URL(window.location.href);
+            url.searchParams.set("session", id);
+            window.history.replaceState(window.history.state, "", url);
+            setSelected(id);
+          } : undefined}
           now={nowSeconds}
-          onBack={() => setSelected(null)}
+          onBack={closeCard}
           onSeen={markSeen}
           seen={seen.has(seenKey(selectedRow))}
           focusComposer={focusComposerFor === selectedRow.id}
@@ -339,9 +386,10 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
           >
             ←
           </button>
-          <h1>新建</h1>
+          <h1>开始一件事</h1>
         </header>
         <div className="mobile-inbox" data-testid="mobile-preset-screen">
+          <div className="mobile-page-intro"><span className="mobile-eyebrow">准备就绪，轻点开始</span><h2>选择一个预设</h2><p>在节点上启动，随时回来查看进展。</p></div>
           {presetError !== null && (
             <p className="mobile-error" data-testid="mobile-preset-error" role="alert">
               {presetError}
@@ -378,43 +426,51 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   }
 
   const renderRow = (row: SessionRow) => (
-    // 「已看过」是本设备的 seen 集合算出来的（MISSION §4.6 证据 ①）：记号跟着「这一次完成」走。
-    <MobileRow key={row.id} row={row} now={nowSeconds} localNode={localNode} seen={seen.has(seenKey(row))} onOpen={setSelected} />
+    // 「已读」是本设备的 seen 集合算出来的（MISSION §4.6 证据 ①）：记号跟着「这一次完成」走。
+    <MobileRow key={row.id} row={row} now={nowSeconds} localNode={localNode} seen={seen.has(seenKey(row))} onOpen={openRow} />
   );
 
   return (
     <main className="mobile" data-testid="mobile-inbox" data-text={textSize}>
-      <header className="mobile-top">
-        <h1>agora</h1>
+      <header className="mobile-top mobile-home-head">
+        <div className="mobile-brand"><span className="mobile-brand-mark" aria-hidden="true">a</span><h1>agora</h1></div>
         <span className="mobile-carrier" data-testid="mobile-carrier" data-reachable={String(nodes.reachable === true)}>
-          承载节点 {localNode ?? "…"} {nodes.reachable === false ? "○" : "●"}
+          <span aria-hidden="true">●</span> {localNode ?? "连接中"} · {nodes.reachable === false ? "离线" : nodes.reachable === true ? "已连接" : "连接中"}
         </span>
-        <button type="button" className="mobile-new" data-testid="mobile-new-open" onClick={() => void openNew()}>
-          新建
-        </button>
-        <button type="button" className="mobile-gear" data-testid="mobile-settings-open" onClick={() => setSettingsOpen(true)}>
-          设置
-        </button>
       </header>
-      <div className="mobile-inbox">
+      <div className="mobile-inbox mobile-home-inbox" ref={inboxRef}>
+        <section className="mobile-overview" aria-label="会话概览">
+          <span className="mobile-eyebrow">你的移动工作台</span>
+          <h2>{sections.attention.length > 0 ? <>有 <strong>{sections.attention.length}</strong> 件事需要你</> : "暂时没有待办"}</h2>
+          <p>{sections.attention.length > 0 ? "看看结果，给个决定，让工作继续。" : "工作留在节点上，进展随时在这里。"}</p>
+          <div className="mobile-overview-meta"><span>{rows.length} 个会话</span><span>{sections.working.length} 个暂无需处理</span></div>
+        </section>
+        {nodes.reachable === false && <p className="mobile-note warning" role="status">暂时连不上节点，当前显示上次收到的状态。</p>}
+        <div className="mobile-filter" role="group" aria-label="筛选会话">
+          <button type="button" aria-pressed={filter === "all"} onClick={() => setFilter("all")}>全部</button>
+          <button type="button" aria-pressed={filter === "attention"} onClick={() => setFilter("attention")}>需要我 <span>{sections.attention.length}</span></button>
+          <button type="button" aria-pressed={filter === "working"} onClick={() => setFilter("working")}>无需处理</button>
+        </div>
+        <label className="mobile-search"><MobileIcon name="search"/><input aria-label="搜索会话" placeholder="搜索任务、项目或节点" value={query} onChange={(e) => setQuery(e.target.value)}/>{query && <button type="button" aria-label="清除搜索" onClick={() => setQuery("")}>×</button>}</label>
+        {query.trim() && !Object.entries(sections).some(([key, items]) => (filter === "all" || key === filter) && items.some(matches)) && <p className="mobile-empty" role="status">没有匹配的会话，试试其他关键词。</p>}
         {/* 清理结果（含跳过 / 失败）画在收件箱顶上：行全删完时「已完成」段整个消失，画在段里就跟着没了。 */}
         {clearNote !== null && (
           <p className="mobile-note" data-testid="mobile-clear-note" role="status">
             {clearNote}
           </p>
         )}
-        {OPEN_SECTIONS.map(({ key, label }) => (
+        {OPEN_SECTIONS.filter(({ key }) => filter === "all" || key === filter).map(({ key, label }) => (
           <section key={key} className="mobile-section" data-testid={`mobile-section-${key}`} aria-label={label}>
             <h2>
               <span>{label}</span>
-              <span>{sections[key].length}</span>
+              <span>{sections[key].filter(matches).length}</span>
             </h2>
-            {sections[key].length === 0
-              ? key === "attention" && <p className="mobile-empty">没有等你的事</p>
-              : <ul>{sections[key].map(renderRow)}</ul>}
+            {sections[key].filter(matches).length === 0
+              ? key === "attention" && !query && <div className="mobile-empty"><MobileIcon name="check"/><p>没有等你的事</p><span>可以安心离开，有新进展再回来。</span></div>
+              : <ul>{sections[key].filter(matches).map(renderRow)}</ul>}
           </section>
         ))}
-        {sections.finished.length > 0 && (
+        {filter === "all" && sections.finished.length > 0 && (
           <section className="mobile-section" data-testid="mobile-section-finished" aria-label="已完成">
             <div className="mobile-finished-head">
               <button
@@ -445,10 +501,15 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
                 {clearing ? "清理中…" : `清理 ${deletable.length} 行`}
               </button>
             </div>
-            {finishedOpen && <ul>{sections.finished.map(renderRow)}</ul>}
+            {(finishedOpen || query.trim() !== "") && <ul>{sections.finished.filter(matches).map(renderRow)}</ul>}
           </section>
         )}
       </div>
+      <nav className="mobile-nav" aria-label="主导航">
+        <button type="button" aria-current="page" onClick={() => { setFilter("all"); setQuery(""); }}><MobileIcon name="inbox"/><span>会话</span></button>
+        <button type="button" data-testid="mobile-new-open" onClick={() => void openNew()}><MobileIcon name="plus"/><span>新建</span></button>
+        <button type="button" data-testid="mobile-settings-open" onClick={() => setSettingsOpen(true)}><MobileIcon name="settings"/><span>设置</span></button>
+      </nav>
       {clearAsk && (
         <ConfirmDialog
           title="清理「已完成」里的行？"
@@ -467,7 +528,7 @@ interface RowProps {
   now: number;
   /** 本机 node.id（`/api/system`）：已知后每一行标节点 chip，本机不着色（与桌面 RowIdentity 同规矩）。 */
   localNode: string | null;
-  /** 本设备看过这一行了吗（`seen.has(seenKey(row))`）：turn_done 的「回完了 / 已看过」靠它。 */
+  /** 本设备看过这一行了吗（`seen.has(seenKey(row))`）：turn_done 的「待查看 / 已读」靠它。 */
   seen: boolean;
   onOpen: (id: string) => void;
 }
@@ -501,7 +562,7 @@ function PresetButton({ preset, starting, disabled, onStart }: PresetProps) {
         <span className="mobile-preset-head">
           <span className="mobile-preset-name">{preset.name}</span>
           <span className="mobile-agent" style={{ "--hue": badge.hue } as CSSProperties}>
-            {badge.glyph} {badge.label}
+            <span className="mobile-agent-glyph" aria-hidden="true">{badge.label.slice(0, 1).toUpperCase()}</span> {badge.label}
           </span>
         </span>
         <span className="mobile-preset-dir" title={preset.working_directory}>
@@ -523,7 +584,7 @@ function MobileRow({ row, now, localNode, seen, onOpen }: RowProps) {
   const badge = agentBadge(String(row.agent_type ?? ""));
   const local = localNode !== null && row.node === localNode;
   const summary = mobileSummary(row);
-  // 手机端的词（等你 / 回完了 / 已看过 / 在跑…），不是桌面那份英文（agora-o975.4）。
+  // 手机端的词（等你 / 待查看 / 已读 / 在跑…），不是桌面那份英文（agora-o975.4）。
   // 时长用分钟粒度（agora-o975.3 审查修订）：列表 30 s 才走一格，显示秒会“冻住”；秒级只留给
   // 有 1 s 心跳的卡片。
   const status = mobileStatusLine(row, seen, now, "minutes");
@@ -533,13 +594,11 @@ function MobileRow({ row, now, localNode, seen, onOpen }: RowProps) {
     <li>
       <button
         type="button"
-        className="mobile-row"
+        className={`mobile-row st-${row.status}${row.stale ? " mobile-row-stale" : ""}`}
         data-testid={`mobile-row-${row.id}`}
         onClick={() => onOpen(row.id)}
       >
-        {/* 第一行只有两个锚点：名字（flex:0 1 auto，装不下才省略）与状态（flex:none，永不让位——
-            "waiting 3m" 是这一行存在的理由）。徽标与节点在下一行的开头，跟任务文本一起排：
-            发信人 + 内容，也是 IM 里最熟的那种一行（agora-nzbu）。 */}
+        {/* Identity/status stay separate from the task title; agent and node follow the preview. */}
         <span className="mobile-row-head">
           <span className={`mobile-symbol${live ? " live" : ""}`} aria-hidden="true">
             {statusSymbol(row.status)}
@@ -549,7 +608,7 @@ function MobileRow({ row, now, localNode, seen, onOpen }: RowProps) {
         </span>
         <span className="mobile-row-sub">
           <span className="mobile-agent" style={{ "--hue": badge.hue } as CSSProperties}>
-            {badge.glyph} {badge.label}
+            <span className="mobile-agent-glyph" aria-hidden="true">{badge.label.slice(0, 1).toUpperCase()}</span> {badge.label}
           </span>
           {localNode !== null && (
             <span
@@ -561,9 +620,10 @@ function MobileRow({ row, now, localNode, seen, onOpen }: RowProps) {
               @{row.node}
             </span>
           )}
-          <span className="mobile-row-task">{taskLabel(row)}</span>
         </span>
+        <span className="mobile-row-task">{taskLabel(row) || rowName(row)}</span>
         {summary !== "" && <span className="mobile-row-summary">{summary}</span>}
+        <span className="mobile-row-footer"><span>{row.stale ? "节点离线 · 保留上次状态" : row.status === "waiting" ? "查看请求" : row.status === "turn_done" ? "阅读回复" : "查看会话"}</span><MobileIcon name="arrow"/></span>
       </button>
     </li>
   );

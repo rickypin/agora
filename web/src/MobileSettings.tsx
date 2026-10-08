@@ -131,7 +131,7 @@ export function MobileSettings({ onClose, onRevoked, env, probe, probeWeb, textS
   return (
     <main className="mobile mobile-settings" data-testid="mobile-settings" data-text={textSize}>
       <header className="mobile-top">
-        <button type="button" className="mobile-back" data-testid="mobile-settings-back" onClick={onClose}>
+        <button type="button" className="mobile-back" aria-label="返回收件箱" data-testid="mobile-settings-back" onClick={onClose}>
           ←
         </button>
         <h1>设置</h1>

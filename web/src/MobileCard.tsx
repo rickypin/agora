@@ -42,6 +42,9 @@ interface Props {
   seen?: boolean;
   /** 推送点击进来且这一行可发送（turn_done / idle）：把焦点放进底部 composer（agora-thc.7）。 */
   focusComposer?: boolean;
+  initialDraft?: string;
+  onDraftChange?: (text: string) => void;
+  onNext?: () => void;
 }
 
 type Pending = { kind: "kill" | "restart" } | null;
@@ -72,20 +75,21 @@ export function sendFailureText(error: ApiErrorBody): string {
   }
 }
 
-export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusComposer }: Props) {
+export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusComposer, initialDraft = "", onDraftChange, onNext }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [more, setMore] = useState(false);
   const [pending, setPending] = useState<Pending>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(initialDraft);
+  useEffect(() => { onDraftChange?.(draft); }, [draft, onDraftChange]);
   const [sent, setSent] = useState<Sent | null>(null);
   // 「等它接手…」20 s 还没动静的兜底（agora-o975.2 审查修订，2026-10-08）：ack 回来了、
   // row.prompt 没回显、状态也没离开 turn_done/idle——再等下去没有新信息，补一句出口话，
   // 别让一句进度提示永远挂着。
   const [takeoverStalled, setTakeoverStalled] = useState(false);
-  const composerRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   // 卡片内的心跳（agora-o975.3）：这一行在跑时每秒走一格，刚发出去的几十秒看得见在动；收件箱
   // 列表保持 30 s 一格（别让整屏每秒重排）。心跳只在本地加秒，父级的 now（服务端锚定的节点钟）
   // 一到就对齐——两边都与同一条基准走。发送在途也算「在动」（agora-o975.2）。
@@ -99,7 +103,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
    * 仍在屏内，但软键盘高度一变就不一定——这条是保险，不是主修复；主修复是字号 ≥16px 不放大）。
    * jsdom 里 scrollIntoView 可能不在（可选调用，测试造一个假的也能断言）。
    */
-  const keepAboveKeyboard = (el: HTMLInputElement) => {
+  const keepAboveKeyboard = (el: HTMLTextAreaElement) => {
     window.setTimeout(() => el.scrollIntoView?.({ block: "nearest" }), 300);
   };
 
@@ -115,10 +119,10 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   useEffect(() => {
     setExpanded(false);
   }, [row.id, row.detail]);
-  // 换一行：乐观气泡、草稿、错误、更多菜单全清。
+  // 换一行：清掉临时反馈，恢复这条会话的未发草稿。
   useEffect(() => {
     setSent(null);
-    setDraft("");
+    setDraft(initialDraft);
     setError(null);
     setNote(null);
     setMore(false);
@@ -202,6 +206,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   const replyShown = folded ? replyLines.slice(0, FOLD_LINES).join("\n") : detail;
 
   async function sendText(text: string) {
+    if (row.stale) return;
     setError(null);
     // 「排队 / 没排队」按**发出去的那一刻**这一行是否在跑：ack 回来时 hook 可能已经把它改成别的
     // 状态，标签要跟着这一次发送走，不回头看。
@@ -222,7 +227,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
 
   function submit() {
     const text = draft.trim();
-    if (!text) return;
+    if (!text || row.stale) return;
     // 在途防重（agora-o975.2 审查修订，2026-10-08）：输入框在途仍可编辑（能接着打下一句），
     // 所以 Enter 提交还会进门——这里挡住第二次；挡的时候草稿留在框里（等 ack 回来还能发）。
     if (sent?.phase === "sending") return;
@@ -231,7 +236,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   }
 
   async function decide(kind: "allow" | "deny") {
-    if (!decision) return;
+    if (!decision || row.stale) return;
     setBusy(true);
     setError(null);
     const r = await api.input(row.id, { kind: "decision", decision: kind, request_id: decision.request_id });
@@ -243,6 +248,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   }
 
   async function run(kind: "kill" | "restart", confirmed: boolean) {
+    if (row.stale) return;
     setBusy(true);
     setError(null);
     setNote(null);
@@ -267,20 +273,27 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
         <button className="mobile-back" data-testid="mobile-back" aria-label="返回收件箱" onClick={onBack}>
           ←
         </button>
-        <span className={`mobile-symbol${running ? " live" : ""}`} aria-hidden="true">
-          {statusSymbol(row.status)}
-        </span>
-        <span className="mobile-row-name">{rowName(row)}</span>
-        <span className="mobile-agent" style={{ "--hue": badge.hue } as CSSProperties}>
-          {badge.glyph} {badge.label}
-        </span>
-        <span className="mobile-node-chip peer" data-testid="mobile-card-node" data-node={row.node} style={{ "--hue": nodeHue(row.node) } as CSSProperties}>
-          @{row.node}
-        </span>
-        <span className="mobile-status">{mobileStatusLine(row, seen, nowSeconds)}</span>
+        <div className="mobile-card-heading">
+          <div className="mobile-title-row">
+            <span className={`mobile-symbol${running ? " live" : ""}`} aria-hidden="true">
+              {statusSymbol(row.status)}
+            </span>
+            <span className="mobile-row-name">{rowName(row)}</span>
+          </div>
+          <div className="mobile-card-meta">
+            <span className="mobile-agent" style={{ "--hue": badge.hue } as CSSProperties}>
+              <span className="mobile-agent-glyph" aria-hidden="true">{badge.label.slice(0, 1).toUpperCase()}</span> {badge.label}
+            </span>
+            <span className="mobile-node-chip peer" data-testid="mobile-card-node" data-node={row.node} style={{ "--hue": nodeHue(row.node) } as CSSProperties}>
+              @{row.node}
+            </span>
+            <span className="mobile-status">{mobileStatusLine(row, seen, nowSeconds)}</span>
+          </div>
+        </div>
       </header>
-      <p className="mobile-card-task">{taskLabel(row)}</p>
+      <div className="mobile-detail-intro"><span className="mobile-eyebrow">{waiting ? "需要你的决定" : running ? "工作进行中" : "最近一轮"}</span><p className="mobile-card-task">{taskLabel(row) || rowName(row)}</p></div>
 
+      {row.stale && <p className="mobile-note warning" role="status">节点离线，当前是上次收到的内容。重新连接后即可操作。</p>}
       <div className="mobile-thread">
         {waiting ? (
           <div className="mobile-decision" data-testid="mobile-decision">
@@ -291,11 +304,11 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
                   {decision.summary}
                 </p>
                 <div className="mobile-decision-actions">
-                  <button data-testid="mobile-allow" disabled={busy} onClick={() => void decide("allow")}>
-                    Allow
+                  <button data-testid="mobile-allow" disabled={busy || row.stale === true} onClick={() => void decide("allow")}>
+                    允许
                   </button>
-                  <button data-testid="mobile-deny" className="danger" disabled={busy} onClick={() => void decide("deny")}>
-                    Deny
+                  <button data-testid="mobile-deny" className="danger" disabled={busy || row.stale === true} onClick={() => void decide("deny")}>
+                    拒绝
                   </button>
                 </div>
                 {within !== null && within < SHORT_HOLD_SECS && (
@@ -323,7 +336,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
             {userText !== "" && (
               <div className="mobile-bubble user" data-testid="mobile-bubble-user">
                 <span className="mobile-bubble-mark" aria-hidden="true">
-                  ❯
+                  你
                 </span>
                 <span>{userText}</span>
                 {sent && sent.phase !== "failed" && (
@@ -332,7 +345,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
                   </span>
                 )}
                 {sent?.phase === "failed" && (
-                  <button className="mobile-retry" data-testid="mobile-retry" onClick={() => void sendText(sent.text)}>
+                  <button className="mobile-retry" data-testid="mobile-retry" disabled={row.stale === true} onClick={() => void sendText(sent.text)}>
                     重试
                   </button>
                 )}
@@ -369,6 +382,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
                   ↳
                 </span>
                 <div className="mobile-bubble-body">
+                  <span className="mobile-reply-label">最新回复</span>
                   <MarkdownView text={replyShown} />
                   {folded && (
                     <button className="mobile-more-line" data-testid="mobile-expand" onClick={() => setExpanded(true)}>
@@ -409,18 +423,19 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
           {more && (
             <div className="mobile-more-actions">
               {canRestart && (
-                <button data-testid="mobile-restart" disabled={busy} onClick={() => void run("restart", false)}>
-                  Restart
+                <button data-testid="mobile-restart" disabled={busy || row.stale === true} onClick={() => void run("restart", false)}>
+                  重新启动
                 </button>
               )}
-              <button data-testid="mobile-kill" className="danger" disabled={busy} onClick={() => void run("kill", false)}>
-                Kill
+              <button data-testid="mobile-kill" className="danger" disabled={busy || row.stale === true} onClick={() => void run("kill", false)}>
+                结束会话
               </button>
             </div>
           )}
         </div>
       )}
 
+      {onNext && <button type="button" className="mobile-next-task" onClick={onNext}>下一件待处理 <span aria-hidden="true">→</span></button>}
       {canCompose && (
         <form
           className="mobile-composer"
@@ -429,17 +444,18 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
             submit();
           }}
         >
-          <input
+          <textarea
+            rows={2}
             ref={composerRef}
             value={draft}
             placeholder="下一条指令"
             aria-label="下一条指令"
             data-testid="mobile-next-input"
-            disabled={busy}
+            disabled={busy || row.stale === true}
             onChange={(e) => setDraft(e.target.value)}
             onFocus={(e) => keepAboveKeyboard(e.currentTarget)}
           />
-          <button type="submit" data-testid="mobile-send" disabled={!draft.trim() || sent?.phase === "sending"}>
+          <button type="submit" data-testid="mobile-send" disabled={!draft.trim() || sent?.phase === "sending" || row.stale === true}>
             {sent?.phase === "sending" && <span className="mobile-spinner" aria-hidden="true" />}
             {sent?.phase === "sending" ? "发送中…" : "发送"}
           </button>

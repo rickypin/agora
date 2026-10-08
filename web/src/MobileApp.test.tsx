@@ -188,24 +188,24 @@ describe("手机端状态词与段名（agora-o975.4）", () => {
   const NOW = Math.floor(Date.now() / 1000);
   const since = (secs: number) => NOW - secs;
 
-  it("段名说「不用你」；没看过的 turn_done 说「回完了」、看过一次的说「已看过」", async () => {
+  it("段名说「暂无需处理」；没看过的 turn_done 说「待查看」、看过一次的说「已读」", async () => {
     const seenDone = row("n:seen", { status: "turn_done", status_since: since(180) });
     localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify([seenKey(seenDone)]));
     const t = setup([seenDone, row("n:done", { status: "turn_done", status_since: since(180) })], undefined, NOW);
     await online(t);
 
-    // 看过的降进「不用你」段（sectionOf 与桌面同源），行上带记号；没看过的还在「需要我」。
+    // 看过的降进「暂无需处理」段（sectionOf 与桌面同源），行上带记号；没看过的还在「需要我」。
     const working = screen.getByTestId("mobile-section-working");
-    expect(working.getAttribute("aria-label")).toBe("不用你");
-    expect(working.textContent).toContain("已看过");
-    expect(working.textContent).not.toContain("回完了");
+    expect(working.getAttribute("aria-label")).toBe("暂无需处理");
+    expect(working.textContent).toContain("已读");
+    expect(working.textContent).not.toContain("待查看");
     const attention = screen.getByTestId("mobile-section-attention");
-    expect(attention.textContent).toContain("回完了");
+    expect(attention.textContent).toContain("待查看");
     // 段名不再是「在跑」：跑着的行也在这一段，但段名说的是要不要我管。
     expect(t.ui.container.textContent).not.toContain("在跑 0");
   });
 
-  it("逐状态词：等你 / 等你批准 / 在跑 / 闲着 / 已结束 / 失败 / 说不清", async () => {
+  it("逐状态词：等你 / 等你批准 / 在跑 / 闲着 / 已结束 / 失败 / 状态待确认", async () => {
     const t = setup(
       [
         row("n:wait", { status: "waiting", status_since: since(180) }),
@@ -229,7 +229,7 @@ describe("手机端状态词与段名（agora-o975.4）", () => {
     expect(status("n:start")).toBe("启动中 3m");
     expect(status("n:idle")).toBe("闲着 3m");
     expect(status("n:fail")).toBe("失败 3m");
-    expect(status("n:unknown")).toBe("说不清 3m");
+    expect(status("n:unknown")).toBe("状态待确认 3m");
     // FINISHED 的行在收起的一段里：展开才画（行文字与其他段同一条规则）。
     fireEvent.click(screen.getByTestId("mobile-finished-toggle"));
     expect(status("n:fin")).toBe("已结束 3m");
@@ -513,7 +513,7 @@ describe("手机端清理「已完成」（agora-off0）", () => {
     return row(id, { status: "finished", status_since: freshSince(), origin: "external", ...patch });
   }
 
-  /** 已看过的 agora FINISHED 行：给 localStorage 种上 seenKey，才落进「已完成」段（与桌面同一条「看过」）。 */
+  /** 已读的 agora FINISHED 行：给 localStorage 种上 seenKey，才落进「已完成」段（与桌面同一条「看过」）。 */
   function seenAgora(id: string, patch: Partial<SessionRow> = {}): SessionRow {
     const r = row(id, { status: "finished", status_since: freshSince(), origin: "agora", ...patch });
     localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify([seenKey(r)]));
@@ -751,5 +751,50 @@ describe("锚定「现在」用当下墙钟（agora-o975.5）", () => {
     ui.rerender(<MobileApp store={store} health={health} version={version} />);
     expect(status()).toBe("等你 2m");
     spy.mockRestore();
+  });
+});
+
+
+describe("移动工作台的关注与切换（agora-d0r）", () => {
+  it("filters by attention and searches node/task without changing the underlying sections", async () => {
+    const t = setup([row("n:wait", {status: "waiting", task_ref: "发布准备"}), row("n:run", {node: "mac", task_ref: "性能检查"})]);
+    await online(t);
+    fireEvent.click(screen.getByRole("button", {name: "需要我 1"}));
+    expect(screen.queryByTestId("mobile-row-n:run")).toBeNull();
+    expect(screen.getByTestId("mobile-row-n:wait")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", {name: "全部"}));
+    fireEvent.change(screen.getByLabelText("搜索会话"), {target: {value: "mac"}});
+    expect(screen.getByTestId("mobile-row-n:run")).toBeTruthy();
+    expect(screen.queryByTestId("mobile-row-n:wait")).toBeNull();
+    fireEvent.change(screen.getByLabelText("搜索会话"), {target: {value: "没有这个任务"}});
+    expect(screen.getByRole("status").textContent).toContain("没有匹配");
+    fireEvent.click(screen.getByLabelText("清除搜索"));
+    expect(screen.getByTestId("mobile-row-n:wait")).toBeTruthy();
+  });
+
+  it("keeps an unfinished draft when moving between sessions", async () => {
+    const t = setup([row("n:a", {status: "idle"}), row("n:b", {status: "idle"})]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("mobile-row-n:a"));
+    fireEvent.change(screen.getByLabelText("下一条指令"), {target: {value: "请继续检查布局"}});
+    fireEvent.click(screen.getByTestId("mobile-back"));
+    fireEvent.click(screen.getByTestId("mobile-row-n:b"));
+    expect((screen.getByLabelText("下一条指令") as HTMLInputElement).value).toBe("");
+    fireEvent.click(screen.getByTestId("mobile-back"));
+    fireEvent.click(screen.getByTestId("mobile-row-n:a"));
+    expect((screen.getByLabelText("下一条指令") as HTMLInputElement).value).toBe("请继续检查布局");
+  });
+
+  it("moves straight to the next attention item and resets the card's local state", async () => {
+    const t = setup([row("n:a", {status: "waiting"}), row("n:b", {status: "waiting"})]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("mobile-row-n:a"));
+    fireEvent.click(screen.getByRole("button", {name: "下一件待处理"}));
+    expect(screen.getByTestId("mobile-card-n:b")).toBeTruthy();
+  });
+
+  it("does not leak structured reason codes into a message preview", () => {
+    expect(mobileSummary(row("x", {reason: "hooks_silent_no_handle"}))).toBe("");
+    expect(mobileSummary(row("x", {detail: "## 最新进展"}))).toBe("最新进展");
   });
 });
