@@ -374,3 +374,115 @@ describe("手机端清理「已完成」（agora-off0）", () => {
     expect(screen.getByTestId("mobile-section-attention").textContent).toContain("n:own");
   });
 });
+
+/**
+ * 回到前台就对齐（agora-f068）：iOS 把 PWA 挂起后 WS 半死、onclose 可能几十秒后才来，
+ * 这期间列表停在旧状态。可见性事件是主力（挂起时定时器被冻结，心跳救不了锁屏）；
+ * 心跳负责“页面活着但 socket 半死”那一类。这里用 jsdom 派发真事件，走 EventsClient 装的监听。
+ */
+describe("回到前台与断线重连（agora-f068）", () => {
+  /** 快照可换、socket 可造多个的现场：复用不了上面那个只认一份固定快照的 setup。 */
+  function setupLive(initial: SessionRow[]) {
+    let snapshot = initial;
+    const sockets: FakeSocket[] = [];
+    const store = new SessionStore({
+      connect: () => {
+        const s = new FakeSocket();
+        sockets.push(s);
+        return s;
+      },
+      fetchSnapshot: async () => ({ sessions: snapshot, unregistered: [] }),
+      coalesceMs: 0,
+      reconnectMinMs: 100,
+    });
+    const health = new HealthWatcher({ fetchHealth: async () => ({ status: "ok" }) });
+    const version = new VersionWatcher({ fetchSystem: async () => ({ node: "zuan", api_version: { major: 1, minor: 9 } }) });
+    const ui = render(<MobileApp store={store} health={health} version={version} now={1000} />);
+    return { ui, store, sockets, setSnapshot: (rows: SessionRow[]) => void (snapshot = rows) };
+  }
+
+  async function open(t: ReturnType<typeof setupLive>) {
+    await act(async () => {
+      t.sockets[0].onopen?.({});
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  }
+
+  it("深链的行晚到一步：快照带上它之后要补开一次", async () => {
+    window.history.replaceState(null, "", "/m?session=zuan:n:e");
+    const t = setupLive([row("zuan:n:a", { status: "waiting" })]);
+    await open(t);
+    // 第一份快照里没有那一行（推送录的是刚起的会话，列表可能晚一步）——深链不能就这么沉默。
+    expect(screen.queryByTestId("mobile-card-zuan:n:e")).toBeNull();
+
+    // 下一次全量带来了那一行：自动补开一次（deepLinked 只在真找到行时才置位）。
+    t.setSnapshot([row("zuan:n:a", { status: "waiting" }), row("zuan:n:e", { status: "turn_done" })]);
+    await act(async () => {
+      await t.store.client.refresh();
+    });
+    expect(screen.getByTestId("mobile-card-zuan:n:e")).toBeTruthy();
+  });
+
+  it("深链与回到前台串成一条：重拉带来的那一行也要能打开", async () => {
+    window.history.replaceState(null, "", "/m?session=zuan:n:e");
+    const t = setupLive([row("zuan:n:a", { status: "waiting" })]);
+    await open(t);
+    expect(screen.queryByTestId("mobile-card-zuan:n:e")).toBeNull();
+
+    // 推送就是点给刚起的会话的：第一份快照没能带上它。回到前台重拉（pageshow）后才拿到，
+    // 深链要找的那一行到了就必须开。
+    t.setSnapshot([row("zuan:n:a", { status: "waiting" }), row("zuan:n:e", { status: "turn_done" })]);
+    await act(async () => {
+      window.dispatchEvent(new Event("pageshow"));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(t.store.client.snapshots).toBe(2);
+    expect(screen.getByTestId("mobile-card-zuan:n:e")).toBeTruthy();
+  });
+
+  it("jsdom 里派 visibilitychange 就重拉：回到前台列表立刻是新的", async () => {
+    const t = setupLive([row("n:a", { status: "waiting" })]);
+    await open(t);
+    expect(t.store.client.snapshots).toBe(1);
+    expect(screen.getByTestId("mobile-inbox").textContent).toContain("n:a");
+
+    // 挂起期间起了新会话；回到前台派发真事件（EventsClient 装在 document 上）。
+    t.setSnapshot([row("n:a", { status: "waiting" }), row("n:b", { status: "turn_done", detail: "新完成" })]);
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(t.store.client.snapshots).toBe(2);
+    expect(screen.getByTestId("mobile-inbox").textContent).toContain("n:b");
+  });
+
+  it("断线重连后列表是新的，不是停在断流前的旧状态", async () => {
+    const t = setupLive([row("n:a", { status: "waiting" })]);
+    await open(t);
+    expect(t.store.client.snapshots).toBe(1);
+
+    // 断流期间一条新会话进来；重连（注入 100 ms 退避）后靠 resync 拿到。
+    t.setSnapshot([row("n:a", { status: "waiting" }), row("n:b", { status: "turn_done", detail: "断流期间完成" })]);
+    await act(async () => {
+      t.sockets[0].onclose?.({});
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 150));
+    });
+    expect(t.sockets.length).toBe(2);
+    await act(async () => {
+      t.sockets[1].onopen?.({});
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(t.store.client.snapshots).toBe(2);
+    expect(screen.getByTestId("mobile-inbox").textContent).toContain("n:b");
+  });
+});

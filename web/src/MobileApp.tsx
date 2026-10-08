@@ -199,10 +199,14 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   }, []);
   // 推送点击进来的那一行要不要把焦点送进 composer（只有可发送的行要；打开一次即消费）。
   const [focusComposerFor, setFocusComposerFor] = useState<string | null>(null);
-  // 深链只自动打开一次：只用 `selected === null` 判，返回收件箱后会把同一行又弹出来。
+  // 深链只自动打开一次：找到那一行才置位，打开过之后返回收件箱不再把同一行弹出来（agora-thc.10）。
   const deepLinked = useRef(false);
   useEffect(() => {
-    if (deepLinked.current || !targetRow) return;
+    if (deepLinked.current) return;
+    // 冷启动时 URL 先到、列表后到（推送打开的就是刚起的会话，第一份快照可能还没有它）：
+    // 找不到**不置位也不静默**，等 rows 随快照 / 事件变化后这个 effect 再跑一遍，找到才开
+    // （agora-f068；5c745f9 起就是“找到才置位”，这条守卫钉住别退成一次性尝试）。
+    if (!targetRow) return;
     deepLinked.current = true;
     setSelected(targetRow.id);
     // 可发送的行（turn_done / idle）把焦点放进 composer——推送点开就是要你回话（ux.md）。
