@@ -2,7 +2,7 @@
 
 > **由 `scripts/roadmap-view.sh` 生成，不要手改。** 真相源是 beads：阶段 = epic，阶段门 = epic 之间的 `blocks` 依赖，验收标准 = epic 的 `--acceptance`，演示剧本 = epic 的 `--design`（下方"演示剧本"一节）。
 > 本文件不放任务 checkbox（避免 devcenter 式双轨，见 `docs/analysis/beads/README.md` §6.3 / §8.2）。任务级细节：`bd ready`、`bd dep tree <epic>`。
-> 生成时间：2026-10-08
+> 生成时间：2026-10-09
 
 | 阶段 | epic | 目标 | 阶段门（被谁阻塞） | 验收要点 | 状态 / 进度 |
 |---|---|---|---|---|---|
@@ -174,6 +174,9 @@ V2-1 演示剧本（agent 先代检，人只看 👁 步骤与代检报告后关
 9. 仅当第 1 步的 external 路径在目标部署走不通：按 agora-thc.2 评估 self-ca，结论回填 ADR-003 D4（由人采纳）。
 10. CI 绿；doc-lint 绿；push 服务端加密向量、订阅与吊销联动、/m 的 A52 DOM 守卫、spa 回退 MIME 守卫逐条关掉变红；api_version 按 §7.3 bump 并写进兼容规则。
 全程不做：Android（agora-w9ki 延期）、手机终端与 ergonomics（MISSION §11）、New Agent、diff / 验收 / 改动列表、离线动作、TOTP / 登录限流（ADR-003 已否决）、多跳转发、peer 历史。
+
+2026-10-09 移动端重设计补充（agora-d0r / agora-rxa，原 epic 的真机推送与跨节点验收仍保留）：
+手机打开 /m（iPhone 16 Pro / iOS18.5）：关注筛选与搜索、进入会话卡阅读最近一轮、多行回复、批准/拒绝、返回恢复列表位置与草稿、下一件待处理、预设启动与字号设置。横屏无横向溢出；离线禁用写动作。完整22F77 Simulator已用原生点按/键盘验证Safari竖横屏、发送与审批，以及系统分享菜单添加到主屏、独立模式冷启动和键盘发送。主屏安全区62/34px、402x874、scale1。生产build连接隔离API fixture，未以此冒充真机推送、真实跨节点或主观手感验收。实现与修复提交5879624、6b93a43已在ui-redesign推送；未合入main。
 
 ### pi 文本通道（epic）：手机给终端里自起的 pi 发下一条指令 `agora-t5kf`
 
