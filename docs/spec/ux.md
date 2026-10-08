@@ -330,6 +330,24 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 原样显示，不猜也不翻译。守卫 `web/src/mobileStatus.test.ts`（逐状态 + seen/unseen 两态 + permission
 特例）与 `web/src/MobileApp.test.tsx`（段名与「已看过」逐字）。
 
+### 运行动态信号与秒级时长（agora-o975.3，2026-10-08）
+
+真机反馈第 3 条：符号是静态字符、时长 30 s 才走一格，且不到 1 分钟 `formatAgo` 返回空——刚发出去的
+几十秒界面完全静止、看不出 agent 在动。三处改动都在手机端（桌面不动）：
+
+- `running` / `starting` 行的符号带 `.mobile-symbol.live` 脉冲（收件箱列表与会话卡同一个类名、同一条
+  `@keyframes mobile-pulse`）；`@media (prefers-reduced-motion: reduce)` 里 `animation: none` 关掉
+  ——状态词与秒级时长还在，不动的东西也不是没信号。
+- 手机端自己一份时长 formatter `mobileAgo`（`web/src/mobileStatus.ts`）：不到 60 s 显示 `42s`，60 s
+  起沿用桌面共用的 `formatAgo`（`3m` / `2h` / `5d`）；负值（页面钟比节点快）夹到 `0s`，peer 行的
+  `≥` 下界语义照旧。
+- 会话卡在**这一行在跑（或发送在途，见下）**时用 1 s 心跳（`MobileCard` 本地加秒，父级的 `now`
+  一到就对齐）；收件箱列表保持 30 s 一格——整屏每秒重排不值。
+
+守卫 `web/src/mobileCss.test.ts`（keyframes、`.live`、reduced-motion 覆盖）、
+`web/src/mobileStatus.test.ts`（`42s` / `1m` / 负值夹 0）、`web/src/MobileCard.test.tsx`（假计时器推
+1 s 断言时长文本变化；不在跑的行不心跳）。
+
 ### 横屏用满宽度（agora-x70t，2026-10-08）
 
 `/m` 的手机壳有一条 `max-width: 44rem`：它是给"桌面误开 /m"用的（居中成一条手机宽的栏、两侧各一条

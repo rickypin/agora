@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { SessionRow } from "./events";
-import { mobileStatusLine, mobileStatusText } from "./mobileStatus";
+import { mobileAgo, mobileStatusLine, mobileStatusText } from "./mobileStatus";
 
 function row(patch: Partial<SessionRow> = {}): SessionRow {
   return {
@@ -67,5 +67,31 @@ describe("手机端状态词（agora-o975.4）", () => {
     const done = row({ status: "turn_done", status_since: 500 });
     expect(mobileStatusLine(done, true, 1000)).toContain("已看过");
     expect(mobileStatusLine(done, false, 1000)).toContain("回完了");
+  });
+});
+
+describe("手机端时长（agora-o975.3）", () => {
+  it("不到一分钟显示秒：42s；60 秒起沿用共用的分钟 / 小时 / 天", () => {
+    // 桌面共用的 formatAgo 不到 60s 返回空串——刚发出去的几十秒界面完全静止（真机反馈第 3 条）。
+    expect(mobileAgo(0)).toBe("0s");
+    expect(mobileAgo(42)).toBe("42s");
+    expect(mobileAgo(59.9)).toBe("59s");
+    expect(mobileAgo(60)).toBe("1m");
+    expect(mobileAgo(180)).toBe("3m");
+    expect(mobileAgo(3600)).toBe("1h");
+    expect(mobileAgo(49 * 3600)).toBe("2d");
+  });
+
+  it("负时长（页面钟比节点快）夹到 0s，不显示 -3s", () => {
+    expect(mobileAgo(-3)).toBe("0s");
+  });
+
+  it("非有限值不显示（与 formatAgo 一致）", () => {
+    expect(mobileAgo(Number.NaN)).toBe("");
+    expect(mobileAgo(Number.POSITIVE_INFINITY)).toBe("");
+  });
+
+  it("行上在跑的行用秒：刚发出去的 42 秒看得见在走", () => {
+    expect(mobileStatusLine(row({ status: "running", status_since: 958 }), false, 1000)).toBe("在跑 42s");
   });
 });

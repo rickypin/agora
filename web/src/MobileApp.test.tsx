@@ -243,6 +243,21 @@ describe("手机端状态词与段名（agora-o975.4）", () => {
   });
 });
 
+describe("手机端运行动态信号（agora-o975.3）", () => {
+  it("列表里 running / starting 的符号带 .live，其余不带（与卡片同一类名与同一条 CSS）", async () => {
+    const t = setup([
+      row("n:run", { status: "running" }),
+      row("n:start", { status: "starting" }),
+      row("n:done", { status: "turn_done" }),
+    ]);
+    await online(t);
+    const sym = (id: string) => screen.getByTestId(`mobile-row-${id}`).querySelector(".mobile-symbol")?.className ?? "";
+    expect(sym("n:run")).toContain("live");
+    expect(sym("n:start")).toContain("live");
+    expect(sym("n:done")).not.toContain("live");
+  });
+});
+
 describe("mobile information budget (A52)", () => {
   it("never renders desktop or message-stream surfaces", async () => {
     const t = setup([row("n:a", { status: "waiting" })]);

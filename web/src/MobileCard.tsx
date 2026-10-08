@@ -82,6 +82,11 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   const [draft, setDraft] = useState("");
   const [sent, setSent] = useState<Sent | null>(null);
   const composerRef = useRef<HTMLInputElement>(null);
+  // 卡片内的心跳（agora-o975.3）：这一行在跑时每秒走一格，刚发出去的几十秒看得见在动；收件箱
+  // 列表保持 30 s 一格（别让整屏每秒重排）。心跳只在本地加秒，父级的 now（服务端锚定的节点钟）
+  // 一到就对齐——两边都与同一条基准走。发送在途也算「在动」（agora-o975.2）。
+  const [nowSeconds, setNowSeconds] = useState(now);
+  useEffect(() => setNowSeconds(now), [now]);
 
   /**
    * iOS 键盘弹起时只缩**视觉**视口（Safari 不认 interactive-widget），composer 在粘性底部，
@@ -128,6 +133,13 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   // 无句柄、但宿主自己收文本的（pi 的扩展，ADR-002 D11）：手机上照旧能给下一条；
   // 真正的只读是 `textVia == "none"` 那些（MISSION §5.5）。
   const hostText = textVia(row) === "host";
+  // 卡片里这一行「在动」吗：running / starting 或发送在途（发送在途的那一段在下面 sent 就位后并进来）。
+  const live = running || sent?.phase === "sending";
+  useEffect(() => {
+    if (!live) return;
+    const timer = setInterval(() => setNowSeconds((v) => v + 1), 1000);
+    return () => clearInterval(timer);
+  }, [live]);
   // 可写的运行时（agora-prdg.2）：服务端只把"活着的、由 agora 管的运行时"报成 `runtime`
   // ——采纳行（只读 socket，写操作 409 read_only）与死 pane 的托管行都是 `none`、没有可写的
   // PTY，两种都不能给 composer / Kill。`row.managed === false` 是否决旧 peer 的谎报：修前的
@@ -224,7 +236,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
         <button className="mobile-back" data-testid="mobile-back" aria-label="返回收件箱" onClick={onBack}>
           ←
         </button>
-        <span className="mobile-symbol" aria-hidden="true">
+        <span className={`mobile-symbol${running ? " live" : ""}`} aria-hidden="true">
           {statusSymbol(row.status)}
         </span>
         <span className="mobile-row-name">{rowName(row)}</span>
@@ -234,7 +246,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
         <span className="mobile-node-chip peer" data-testid="mobile-card-node" data-node={row.node} style={{ "--hue": nodeHue(row.node) } as CSSProperties}>
           @{row.node}
         </span>
-        <span className="mobile-status">{mobileStatusLine(row, seen, now)}</span>
+        <span className="mobile-status">{mobileStatusLine(row, seen, nowSeconds)}</span>
       </header>
       <p className="mobile-card-task">{taskLabel(row)}</p>
 

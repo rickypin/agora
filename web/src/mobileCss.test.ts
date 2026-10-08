@@ -134,6 +134,23 @@ describe("卡片吸顶与 composer 固定（agora-o975.1）", () => {
   });
 });
 
+describe("手机端运行动态信号（agora-o975.3）", () => {
+  it("running / starting 的符号脉冲，reduced-motion 下关掉", () => {
+    // 真机反馈第 3 条：符号是静态字符，刚发出去的几十秒看着完全静止。脉冲只加在手机端的符号上
+    // （列表与卡片共用 .mobile-symbol 这个类），prefers-reduced-motion 下必须关。
+    const body = blocks(".mobile-symbol.live").join("\n");
+    const name = body.match(/animation:\s*([A-Za-z0-9_-]+)/)?.[1];
+    expect(name, ".mobile-symbol.live 用一条具名动画").toBeTruthy();
+    expect(css, `@keyframes ${name} 存在`).toMatch(new RegExp(`@keyframes\\s+${name}\\b`));
+
+    const m = css.match(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/);
+    expect(m, "prefers-reduced-motion 覆盖块").toBeTruthy();
+    const block = m?.[1] ?? "";
+    expect(block, "脉冲在 reduced-motion 里关掉").toContain(".mobile-symbol.live");
+    expect(block).toMatch(/animation:\s*none/);
+  });
+});
+
 describe("手机端视口 / 键盘 / 安全区（agora-x70t.ten0）", () => {
   it("viewport 要 viewport-fit=cover 与 interactive-widget=resizes-content", () => {
     expect(html).toContain("viewport-fit=cover");

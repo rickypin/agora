@@ -85,6 +85,49 @@ describe("卡片吸顶结构（agora-o975.1）", () => {
   });
 });
 
+describe("运行动态信号（agora-o975.3）", () => {
+  it("running / starting 的符号带 live 类，静态状态不带（列表与卡片同一类名）", () => {
+    const a = setup(row("n:run", { status: "running", detail: "跑" }));
+    expect(a.ui.container.querySelector(".mobile-symbol")?.className).toContain("live");
+    cleanup();
+    const b = setup(row("n:start", { status: "starting", detail: "起" }));
+    expect(b.ui.container.querySelector(".mobile-symbol")?.className).toContain("live");
+    cleanup();
+    const c = setup(row("n:done", { status: "turn_done", detail: "完了" }));
+    expect(c.ui.container.querySelector(".mobile-symbol")?.className).not.toContain("live");
+  });
+
+  it("在跑的行：卡片内的时长每秒走一格（1 s 心跳）", () => {
+    // 真机反馈第 3 条：<1min 时长以前不显示，刚发出去的几十秒看着完全静止。卡片里这一行在跑时
+    // 每秒重算一次时长；收件箱列表保持 30 s（别让整屏每秒重排）。
+    vi.useFakeTimers();
+    try {
+      setup(row("n:run", { status: "running", status_since: 990, detail: "跑" }));
+      const status = () => screen.getByTestId("mobile-card-n:run").querySelector(".mobile-status")?.textContent;
+      expect(status()).toBe("在跑 10s");
+      act(() => vi.advanceTimersByTime(1000));
+      expect(status()).toBe("在跑 11s");
+      act(() => vi.advanceTimersByTime(1000));
+      expect(status()).toBe("在跑 12s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("不在跑的行不心跳：同样的 2 s 推不出新时长（别让静态卡片白跑计时器）", () => {
+    vi.useFakeTimers();
+    try {
+      setup(row("n:done", { status: "turn_done", status_since: 990, detail: "完了" }));
+      const status = () => screen.getByTestId("mobile-card-n:done").querySelector(".mobile-status")?.textContent;
+      expect(status()).toBe("回完了 10s");
+      act(() => vi.advanceTimersByTime(1000));
+      expect(status()).toBe("回完了 10s");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("thread", () => {
   it("renders the last turn as two bubbles and folds the reply to 6 lines with one expand", () => {
     const reply = Array.from({ length: 10 }, (_, i) => `第 ${i + 1} 行`).join("\n");

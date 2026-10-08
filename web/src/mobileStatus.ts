@@ -31,13 +31,24 @@ export function mobileStatusText(row: SessionRow, seen: boolean): string {
 }
 
 /**
+ * 手机端的时长：不到一分钟显示秒（`42s`），一分钟起沿用桌面共用的 `formatAgo`（`3m` / `2h` /
+ * `5d`）。桌面那份不到 60 s 返回空串——刚发出去的几十秒界面完全静止（2026-10-08 真机反馈第 3 条）。
+ * 负值（页面钟比节点快）夹到 `0s`，不显示 `-3s`；非有限值不显示（与 `formatAgo` 一致）。
+ */
+export function mobileAgo(seconds: number): string {
+  if (!Number.isFinite(seconds)) return "";
+  if (seconds < 60) return `${Math.max(0, Math.floor(seconds))}s`;
+  return formatAgo(seconds);
+}
+
+/**
  * 行文案（状态词 + 时长）：本机精确、peer 行的 `≥` 是并入方给的下界（ADR-004，与桌面同一条语义，
  * 只换了词）。时长口径见 [`mobileAgo`]。
  */
 export function mobileStatusLine(row: SessionRow, seen: boolean, nowSeconds: number): string {
   const text = mobileStatusText(row, seen);
   const s = row.status_since;
-  const ago = typeof s === "number" ? formatAgo(nowSeconds - s) : "";
+  const ago = typeof s === "number" ? mobileAgo(nowSeconds - s) : "";
   if (!ago) return text;
   return isPeerRow(row) ? `${text} ≥${ago}` : `${text} ${ago}`;
 }

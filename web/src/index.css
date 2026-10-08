@@ -446,6 +446,14 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .mobile-row-head, .mobile-card-head { display: flex; align-items: baseline; gap: var(--m-2); min-width: 0; }
 .mobile-row-head > *, .mobile-card-head > * { min-width: 0; }
 .mobile-symbol { flex: none; width: 1em; }
+/* 运行动态信号（agora-o975.3，2026-10-08 真机反馈第 3 条）：running / starting 的符号脉冲一下，
+   刚发出去的几十秒看得见在动。列表（.mobile-row）与卡片（.mobile-card-head）共用这一个类；
+   prefers-reduced-motion 的用户关掉——状态词与秒级时长还在，不动的东西也不是没信号。 */
+@keyframes mobile-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.mobile-symbol.live { animation: mobile-pulse 1.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .mobile-symbol.live { animation: none; }
+}
 .mobile-row-name { flex: 0 1 auto; min-width: 2em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mobile-status { flex: none; margin-left: auto; color: var(--muted); white-space: nowrap; }
 .mobile-row-sub { display: flex; align-items: baseline; gap: var(--m-2); min-width: 0; }

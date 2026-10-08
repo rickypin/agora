@@ -522,6 +522,8 @@ function MobileRow({ row, now, localNode, seen, onOpen }: RowProps) {
   const summary = mobileSummary(row);
   // 手机端的词（等你 / 回完了 / 已看过 / 在跑…），不是桌面那份英文（agora-o975.4）。
   const status = mobileStatusLine(row, seen, now);
+  // 在跑 / 启动中的符号脉冲（agora-o975.3）：与卡片同一个 .mobile-symbol.live、同一条 CSS。
+  const live = row.status === "running" || row.status === "starting";
   return (
     <li>
       <button
@@ -534,7 +536,7 @@ function MobileRow({ row, now, localNode, seen, onOpen }: RowProps) {
             "waiting 3m" 是这一行存在的理由）。徽标与节点在下一行的开头，跟任务文本一起排：
             发信人 + 内容，也是 IM 里最熟的那种一行（agora-nzbu）。 */}
         <span className="mobile-row-head">
-          <span className="mobile-symbol" aria-hidden="true">
+          <span className={`mobile-symbol${live ? " live" : ""}`} aria-hidden="true">
             {statusSymbol(row.status)}
           </span>
           <span className="mobile-row-name">{rowName(row)}</span>
