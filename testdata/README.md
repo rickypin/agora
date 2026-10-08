@@ -14,7 +14,7 @@ fixture 驱动测试的数据（ADR-002 D10）。
   文件不存在写到位，已存在写成 `.jsonl.new` 供人工比对。正常模式的冒烟只比对 SessionStart 与 Stop 的顶层键集合，
   agent 版本不在表里、目录里没 fixture、键集合漂移都红并提示录新 fixture；没装的 agent 跳过。
 - **版本目录只长两种样子**（规则与兜底在 `tests/fixtures_replay.rs`）：**实测目录**七个场景一个不缺（下面的
-  claude/2.1.260、claude/2.1.261、codex/0.152.1、grok/1.0.13）；或**冒烟-only 目录**——除 `headless.jsonl`
+  claude/2.1.260、claude/2.1.261、claude/2.1.291、codex/0.152.1、grok/1.0.13）；或**冒烟-only 目录**——除 `headless.jsonl`
   外一条都没有（下面的 claude/2.1.270、codex/0.153.4、grok/1.0.30）。这么分是因为冒烟守卫按**精确版本号**
   点名要 fixture，而补录七个真交互场景是一个 epic 的量：不给这一档，agent 每次小版本升级都要花掉一整天的
   录制才能消红灯，结果就是红灯一直红（2026-09-14）。录新冒烟 fixture 时把 `expect` 行照上一版本补上（值用
@@ -65,6 +65,27 @@ fixture 驱动测试的数据（ADR-002 D10）。
 不带 `tool_use_id`（PreToolUse 带）；挂起期间 TUI 不显示审批提示，hook 退出后才弹——见 ADR-002 附录 A。
 `headless.jsonl` 是 2026-09-05 冒烟测试录制模式录的 `codex exec` 一轮（`--dangerously-bypass-hook-trust`：无头下没法在 TUI
 `/hooks` 信任 hook，见 `src/adapter/codex.rs`）。
+
+## claude/2.1.291
+
+2026-10-08 在本机 Claude Code 2.1.291 上**真录**七个交互场景 + 冒烟无头（tmux 内 `--permission-mode manual`，
+启动命令加 `AGORA_HOOK_RECORD`；`permission_dashboard` 的 `respond` 行照例合成；`headless.jsonl` 由
+`AGORA_SMOKE_RECORD=1 cargo test --test hook_smoke claude -- --ignored` 录），外加从 `bd show agora-7d1j` 的 notes
+**转载**的第八个场景 `resume.jsonl`（`claude --resume <id>` 只发一条 `SessionStart(source=resume)`、`session_id`
+仍是被 resume 的原 id，同一行从 FINISHED 被唤回 STARTING）。
+
+与 2.1.261 的差别：**八个场景全部逐键一致**（每个 fixture 的文件头各自写了这句；`turn_complete` 连 Stop 的
+`background_tasks` / `session_crons` 也逐键对上）。两处记录条件不同不是版本漂移：① 2.1.291 的 CLI 把
+`--permission-mode default` 改名成 `manual`（payload 里的 `permission_mode` 仍报 `"default"`，7d1j 没加这个 flag
+所以 `resume.jsonl` 报 `"auto"`）；② 本机 modelSettings 给 opus-5-5 定的 `effort.level` 是 `xhigh`（2.1.261 那次是
+`high`）。另有两条实测写在各文件头：`permission_suggestions` 的形状随命令变（`touch` → `[addDirectories, setMode]`、
+前台 `python3` → `[addRules]`，同一版本内两种都见过，**不是**版本差异）；Esc 中断仍**一个事件都不发**（没有
+PostToolUse / PostToolUseFailure，挂起要等下一条 prompt 的 UserPromptSubmit 才清），与 2.1.261 相同。
+
+录制隔离：隔离 `AGORA_HOME`（hook 投递与 `bin/agora` 链接都指向它）+ 临时 `HOME`（`settings.json` 从
+`~/.claude/settings.json` 删掉 `hooks` 后复制，再用 `agora hooks install claude --home <隔离> --user-home <临时>`
+写入本仓的 hook 条目）+ 专用 tmux socket；`~/.claude` 与真 daemon 一个字节没动。`resume.jsonl` 不在本机重录，
+原文与脱敏映射在 `bd show agora-7d1j` 的 notes 里。
 
 ## claude/2.1.270
 
