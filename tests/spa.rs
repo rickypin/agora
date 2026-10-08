@@ -132,3 +132,35 @@ async fn api_paths_are_never_swallowed_by_the_spa_fallback() {
     let (status, _, _, _) = get(&fx.app(), "/api/nope").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// 前端构建号必须能被服务端读出来（agora-xu12）：手机端判"我是不是最新版"全靠它。
+/// `build.txt` 不带 hash，所以必须 no-cache——缓存住就等于永远说"你是最新的"。
+#[tokio::test]
+async fn embedded_web_build_is_served_and_reported() {
+    let fx = common::Fx::new();
+    let app = fx.app();
+    let (status, _ct, cache_control, body) = get(&app, "/build.txt").await;
+    assert_eq!(status, StatusCode::OK, "web/dist/build.txt 应被内嵌");
+    assert_eq!(cache_control, "no-cache");
+    let baked = body.trim().to_string();
+    assert!(!baked.is_empty(), "build.txt 不该是空的");
+
+    // `/api/system` 报的必须是同一份值：两边不一致的话手机永远以为自己是旧的。
+    // `/api/system` 要认证（`build.txt` 不要：它是静态资源、由 SPA 的 fallback 服务）。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::get("/api/system")
+                .header(header::COOKIE, fx.cookie())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body =
+        String::from_utf8_lossy(&resp.into_body().collect().await.unwrap().to_bytes()).into_owned();
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).expect("system 应是 JSON");
+    assert_eq!(json["web_build"], serde_json::Value::String(baked));
+}

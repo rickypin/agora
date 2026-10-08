@@ -128,7 +128,36 @@ describe("MobileSettings", () => {
  * `browserPushEnv()` 每次调用返回新对象；如果没有 useMemo，点「设置」会冻结页面（桌面复现 CDP
  * 超时），用户看到的就是"点了没反应"。这里不注入 env，数 browserPushEnv 被调用几次。
  */
+// 页面构建号固定成一份：真实环境里它由 vite 的 define 烤进来；单测里不固定就没法构造"新旧对比"。
+vi.mock("./build", () => ({ webBuild: () => "2026-10-08T03:16Z" }));
+
 describe("前端构建号与硬刷新（agora-xu12）", () => {
+  const settings = (probeWeb?: () => Promise<unknown>) =>
+    render(
+      <MobileSettings
+        onClose={() => {}}
+        onRevoked={() => {}}
+        env={env()}
+        probe={async () => ({ apple: null, reason: null })}
+        { ...(probeWeb ? { probeWeb } : {}) }
+      />,
+    );
+
+  it("服务端报的是别的构建号 → 提示有新版本并给出服务端那份", async () => {
+    // 手机上跑旧包是这次排查里最贵的一格：提示必须说清"服务端已经是哪一版"。
+    settings(async () => ({ web_build: "2099-01-01T00:00Z" }));
+    const warn = await screen.findByTestId("mobile-stale-web");
+    expect(warn.textContent).toContain("2099-01-01T00:00Z");
+    expect(screen.getByTestId("mobile-build").textContent).toContain("2099-01-01T00:00Z");
+  });
+
+  it("服务端报同一份构建号 → 不提示", async () => {
+    settings(async () => ({ web_build: "2026-10-08T03:16Z" }));
+    await screen.findByTestId("mobile-build");
+    expect(screen.queryByTestId("mobile-stale-web")).toBeNull();
+  });
+
+
   it("设置页底部显示构建号，并有重新加载（清缓存 + 换地址导航）", async () => {
     // iOS 主屏 PWA 会把 start_url 钉在缓存里、从任务切换器回来还可能只是"恢复旧页面"，
     // 升级后手机上跑的是哪一版光看行为猜不出来——构建号是唯一判据，重新加载是唯一的自救。

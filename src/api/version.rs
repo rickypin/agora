@@ -52,7 +52,7 @@ impl fmt::Display for ApiVersion {
 
 /// 本二进制实现的 API 版本。改形态时按 api.md 的递增规则改这里，并同步
 /// `web/src/health.ts` 的 `API_VERSION`——页面按哪一版构建就按哪一版比。
-pub const API_VERSION: ApiVersion = ApiVersion::new(1, 12);
+pub const API_VERSION: ApiVersion = ApiVersion::new(1, 13);
 
 /// `GET /api/system` 的响应体。peer 客户端用同一个类型反序列化，字段名只在这里出现一次。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +65,11 @@ pub struct SystemInfo {
     /// 不因为一个可选字段缺失就判不兼容（api.md「api_version 兼容规则」）。
     #[serde(default)]
     pub push: SystemPush,
+    /// 这个 binary 里内嵌的前端构建号（`web/dist/build.txt`，agora-xu12）。手机把它与自己页面里
+    /// 烤进去的构建号一比就知道自己是不是最新版——iOS 主屏 PWA 会把 start_url 钉在缓存里，光看
+    /// 行为判断不出来。旧节点没有这个字段：`None` = 不知道，不据此判不兼容。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_build: Option<String>,
 }
 
 /// `/api/system` 的 `push` 段：浏览器订阅前要用的 VAPID 公钥。
@@ -207,6 +212,7 @@ mod tests {
             version: "0.1.0".into(),
             node: "mac".into(),
             push: SystemPush::default(),
+            web_build: Some("2026-10-08T03:16Z".into()),
         };
         let v = serde_json::to_value(&info).unwrap();
         // 用常量推导而不是写死数字：minor 每合入一批只增字段的分支就 +1（api.md「api_version 兼容规则」），
@@ -217,6 +223,14 @@ mod tests {
         );
         let back: SystemInfo = serde_json::from_value(v).unwrap();
         assert_eq!(back, info);
+        // `web_build` 缺失（旧节点 / 前端没构建）读成 None，不判不兼容。
+        let without: SystemInfo = serde_json::from_value(json!({
+            "api_version": { "major": 1, "minor": 13 },
+            "version": "0.1.0",
+            "node": "mac",
+        }))
+        .unwrap();
+        assert_eq!(without.web_build, None);
         // 旧形态（裸整数）反序列化必须失败，而不是悄悄变成某个版本。
         assert!(serde_json::from_value::<SystemInfo>(
             json!({ "api_version": 1, "version": "0.1.0", "node": "mac" })

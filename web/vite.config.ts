@@ -10,7 +10,6 @@ import react from "@vitejs/plugin-react";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, ".", "AGORA_");
   return {
-    plugins: [react()],
     server: {
       proxy: {
         "/api": { target: env.AGORA_DEV_API ?? "http://127.0.0.1:7680", ws: true },
@@ -18,10 +17,23 @@ export default defineConfig(({ mode }) => {
     },
     // 前端构建号（agora-xu12）：iOS 主屏 PWA 会把 start_url 钉在缓存里，升级后手机上跑的到底是哪一版
     // 光看行为猜不出来（2026-10-08 用户两次报同一个问题、报告格式却旧了两版）。`npm run build` 用
-    // git 短 sha + UTC 时刻生成 AGORA_WEB_BUILD，loadEnv（上面的 "AGORA_" 前缀）把它带进来，再烤成
-    // 字面量显示在设置页底部、随诊断报告复制出去——这就是 PWA 该有的"我是不是最新版"入口。直接
-    // `vite build`（不带 npm script）时退成 dev，不因此让构建失败。
+    // UTC 时刻生成 AGORA_WEB_BUILD，loadEnv（上面的 "AGORA_" 前缀）把它带进来，烤成字面量显示在设置页
+    // 底部、随诊断报告复制出去，并写成 `build.txt` 给服务端读——两边一比就知道手机是不是最新版。
+    // **刻意不用 git sha**：web bundle 是在 commit 之前构建的，`git rev-parse HEAD` 拿到的是**父提交**
+    // 的 sha，显示出来会让人以为手机上跑的是上一版（2026-10-08 实测，白白排查了一轮）。时间戳不会撒谎。
+    // 直接 `vite build`（不带 npm script）时退成 dev，不因此让构建失败。
     define: { __WEB_BUILD__: JSON.stringify(env.AGORA_WEB_BUILD ?? "dev") },
+    plugins: [
+      react(),
+      {
+        // `build.txt`：非 hash 名字的构建号文件，服务端 `/api/system` 的 `web_build` 读它；
+        // 手机端拿自己的 __WEB_BUILD__ 与它比，不同就是"有新版、该硬刷新"。
+        name: "agora-web-build",
+        generateBundle() {
+          this.emitFile({ type: "asset", fileName: "build.txt", source: env.AGORA_WEB_BUILD ?? "dev" });
+        },
+      },
+    ],
     build: { outDir: "dist", emptyOutDir: true },
     // css.include 是给 SessionRow.test.tsx 那条 CSS 守卫开的（agora-8lb）：vitest 默认 css: false 会把
     // CSS 模块 stub 成空，连 `import css from "./index.css?raw"` 也一起吞掉——返回空字符串，于是

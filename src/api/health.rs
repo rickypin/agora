@@ -71,6 +71,7 @@ pub async fn system(_principal: Principal, State(state): State<AppState>) -> Jso
         api_version: API_VERSION,
         version: env!("CARGO_PKG_VERSION").to_owned(),
         node: state.node.to_string(),
+        web_build: super::spa::web_build(),
         push: super::version::SystemPush {
             vapid_public_key: state.vapid.as_ref().map(|v| v.public_key().to_owned()),
         },

@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { InstallHint, iosWithoutStandalone } from "./InstallHint";
 import { webBuild } from "./build";
+import { checkWebBuild, type WebVerdict } from "./webVersion";
 import { applyOutline, clipboardReport, copyText, outlineEnabled, toggleOutline } from "./mobileDebug";
 import { apiFetch } from "./net";
 import { browserPushEnv, disablePush, enablePush, selfCheckPush, type PushEnv, type PushReport } from "./push";
@@ -18,6 +19,16 @@ import {
   type MobileTextSize,
 } from "./mobileText";
 
+async function fetchSystem(): Promise<unknown> {
+  try {
+    const resp = await apiFetch("/api/system");
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch {
+    return null;
+  }
+}
+
 interface Props {
   onClose: () => void;
   /** 本设备凭据已被吊销 / 用户点了「吊销本设备」：App 换回配对门。 */
@@ -26,6 +37,8 @@ interface Props {
   env?: PushEnv;
   /** 承载节点推送可达性；默认拉一次 `/api/health`。 */
   probe?: () => Promise<{ apple: boolean | null; reason: string | null }>;
+  /** 承载节点内嵌的前端构建号比对；默认拉一次 `/api/system`（agora-xu12）。 */
+  probeWeb?: () => Promise<unknown>;
   /** 当前字号档位（不给就现读 localStorage，独立渲染（测试）也成立）。 */
   textSize?: MobileTextSize;
   /** 改字号：由 MobileApp 写 state + localStorage（不传就自己写，但只本屏生效）。 */
@@ -53,12 +66,15 @@ const STATE_TEXT: Record<PushReport["state"], string> = {
   failed: "订阅失败",
 };
 
-export function MobileSettings({ onClose, onRevoked, env, probe, textSize: givenText, onTextSize }: Props) {
+export function MobileSettings({ onClose, onRevoked, env, probe, probeWeb, textSize: givenText, onTextSize }: Props) {
   // 这两个必须是稳定引用：effect 依赖它们，而 `browserPushEnv()` 每次调用都返回新对象——
   // 直接写在渲染里会让 effect 每渲染一次跑一次、`setReport` 再触发渲染，设置页当场死循环
   // （2026-10-07 iPhone 实测：点「设置」像没反应；桌面复现是 renderer 卡死）。
   const pushEnv = useMemo(() => env ?? browserPushEnv(), [env]);
   const probeFn = useMemo(() => probe ?? fetchPushHealth, [probe]);
+  const probeWebFn = useMemo(() => probeWeb ?? fetchSystem, [probeWeb]);
+  // 页面里的构建号 vs 服务端内嵌的那份：不同就是"手机上是旧包"（agora-xu12）。
+  const [webVerdict, setWebVerdict] = useState<WebVerdict | null>(null);
   const [report, setReport] = useState<PushReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [degrade, setDegrade] = useState<{ apple: boolean | null; reason: string | null } | null>(null);
@@ -85,6 +101,10 @@ export function MobileSettings({ onClose, onRevoked, env, probe, textSize: given
     applyOutline();
     setOutlined(outlineEnabled());
   }, []);
+  useEffect(() => {
+    // 构建号比对绝不阻塞渲染：拿不到就是 unknown（不提示），别把设置页拖住。
+    void probeWebFn().then((system) => setWebVerdict(checkWebBuild(system)));
+  }, [probeWebFn]);
 
   async function toggle() {
     setBusy(true);
@@ -206,7 +226,8 @@ export function MobileSettings({ onClose, onRevoked, env, probe, textSize: given
         {/* 前端构建号摆在设置页底：升级后一眼能看出手机跑的是不是新包（iOS 主屏 PWA 会把
             start_url 钉在缓存里，光看行为看不出来）。 */}
         <p className="muted" data-testid="mobile-build">
-          前端 {webBuild()} ·{" "}
+          前端 {webBuild()}
+          {webVerdict?.kind === "stale" ? ` · 服务端 ${webVerdict.served}` : ""} ·{" "}
           <button
             type="button"
             className="link"
@@ -232,6 +253,12 @@ export function MobileSettings({ onClose, onRevoked, env, probe, textSize: given
             重新加载
           </button>
         </p>
+        {webVerdict?.kind === "stale" && (
+          // 只在服务端明确报了另一份构建号时才提示——宁可少提示，也不要让用户天天点"重新加载"。
+          <p className="mobile-note warning" data-testid="mobile-stale-web">
+            有新版本（服务端已是 {webVerdict.served}）：点上面的「重新加载」拿到新界面
+          </p>
+        )}
         {diagNote && <p className="muted" data-testid="mobile-diag-note">{diagNote}</p>}
         {diagReport && (
           <textarea className="mobile-diag-report" data-testid="mobile-diag-text" readOnly rows={8} value={diagReport} />

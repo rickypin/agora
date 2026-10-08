@@ -18,6 +18,15 @@ struct Assets;
 const NOT_BUILT: &str = "<!doctype html><meta charset=utf-8><title>agora</title>\
 <p>前端尚未构建：<code>npm --prefix web ci &amp;&amp; npm --prefix web run build</code> 后重新 <code>cargo build</code>。</p>";
 
+/// 内嵌前端的构建号（`web/dist/build.txt`，agora-xu12）：`/api/system` 的 `web_build` 用。
+/// 前端没构建（`web/dist` 为空）时是 `None`——那时 index.html 都回说明页，谈版本没有意义。
+pub fn web_build() -> Option<String> {
+    let file = Assets::get("build.txt")?;
+    let text = String::from_utf8(file.data.to_vec()).ok()?;
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
 pub async fn serve(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     if path.starts_with("api/") {
@@ -48,7 +57,12 @@ pub async fn serve(uri: Uri) -> Response {
             // index.html 也要 no-cache：手机把旧 HTML 缓存住后，升级后它引用的旧 assets 在新
             // binary 里已经不存在，表现为白屏或「点了没反应」（2026-10-07 iPhone 验收实测）。
             // 带内容 hash 的 assets 反过来可以长缓存。
-            if served == "sw.js" || served == "manifest.webmanifest" || served == "index.html" {
+            // build.txt 是"手机上的前端是不是最新"的判据（agora-xu12），缓存住就失去意义。
+            if served == "sw.js"
+                || served == "manifest.webmanifest"
+                || served == "index.html"
+                || served == "build.txt"
+            {
                 resp.headers_mut()
                     .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
             } else if served.starts_with("assets/") {
