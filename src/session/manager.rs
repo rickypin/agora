@@ -937,6 +937,11 @@ impl SessionManager {
     }
 
     /// 已登记会话里 `agent_type` + agent 自报 id 对得上的那条（hook 事件找会话的第二把钥匙）。
+    /// 同一对钥匙可能对上两行（agent 自报 id 每次命中都覆盖，ADR-002 D7：旧行还没删，新行把 id
+    /// 覆盖成同一个），要挑的是**本节点登记序在后**的那一行。判据是 SQLite 的 `rowid`（insert
+    /// 顺序，daemon 自己的事实），不是 `created_at`——external 行的 `created_at` 来自 hook 信封的
+    /// `received_unix_ms`（另一个进程的钟），hook 进程与 daemon 有钟偏时它会把新旧排反
+    /// （agora-wpyt）。`created_at` 仍只用于展示排序（`all_records` / 侧栏树 A48）。
     pub fn find_by_agent_session(
         &self,
         agent_type: &str,
@@ -946,7 +951,7 @@ impl SessionManager {
             .db
             .conn()
             .query_row(
-                &format!("{SELECT} WHERE agent_type = ?1 AND agent_session_id = ?2 ORDER BY created_at DESC LIMIT 1"),
+                &format!("{SELECT} WHERE agent_type = ?1 AND agent_session_id = ?2 ORDER BY rowid DESC LIMIT 1"),
                 [agent_type, agent_session_id],
                 row_to_record,
             )

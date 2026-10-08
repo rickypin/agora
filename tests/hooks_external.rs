@@ -1281,6 +1281,40 @@ async fn replayed_external_row_is_created_at_the_envelope_time() {
     );
 }
 
+#[test]
+fn the_identity_lookup_follows_local_registration_order_not_the_hook_clock() {
+    // agora-wpyt：agent 自报会话 id 每次命中都覆盖（ADR-002 D7），同一
+    // (agent_type, agent_session_id) 因此可能对上两行（旧行先登记，后来者把 id 覆盖成同一个）。
+    // 哪一行是新的靠 `find_by_agent_session` 的新鲜度钥匙挑；它以前用 `created_at DESC`，而
+    // external 行的 `created_at` 是 hook 信封的 `received_unix_ms`——hook 进程与 daemon 之间有
+    // 钟偏时，后登记的行会带着更早的 `created_at`，查找挑回旧行。
+    // 守卫：把后登记的 `created_at` 人为倒挂到一小时前，查找仍选后登记的那一行。
+    // 改坏：`ORDER BY rowid DESC` 换回 `created_at DESC` → 这条红（返回 first）。
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let m = SessionManager::new(db, Arc::new(FakeRuntime::default()) as Arc<dyn Runtime>);
+    let spec = |created: i64| agora::session::ExternalSession {
+        agent_type: "claude".into(),
+        agent_session_id: "same-conv".into(),
+        runtime_ref: None,
+        working_directory: None,
+        created_at: Some(created),
+        origin: Origin::External,
+    };
+    let first = m.register_external(&spec(clock::now_secs())).unwrap();
+    let second = m
+        .register_external(&spec(clock::now_secs() - 3600))
+        .unwrap();
+    assert_ne!(first, second, "两次登记是两行");
+    let found = m
+        .find_by_agent_session("claude", "same-conv")
+        .unwrap()
+        .expect("两行都对得上");
+    assert_eq!(
+        found.id, second,
+        "本地登记序在后、信封时刻更早的那一行才是新的：created_at 是另一个进程的钟"
+    );
+}
+
 #[tokio::test]
 async fn a_resume_handoff_before_the_first_prompt_leaves_no_row() {
     // agora-29n（2026-09-18 zuan 现场 e3cd17，盘点 §3.4）：`claude --resume` 先以**新 id** 发

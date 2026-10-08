@@ -86,7 +86,7 @@ CREATE TABLE sessions (
     agent_session_id TEXT,                         -- agent 自报的当前对话 id（§5.6），Restart resume 依据
     epoch INTEGER NOT NULL DEFAULT 1,              -- 进程代次：create 为 1，每次 respawn +1；旧代次的 hook 事件丢弃（ADR-002 D1）
     transcript_path TEXT,                          -- agent 自报的 transcript 路径；V1 只存不读（ADR-002 D8）
-    created_at DATETIME NOT NULL,                      -- external 行取登记它的那条 hook 信封的时刻，不是 daemon 写库的当下（§4.2，agora-5gg.3）
+    created_at DATETIME NOT NULL,                      -- external 行取登记它的那条 hook 信封的时刻，不是 daemon 写库的当下（§4.2，agora-5gg.3）；展示排序用，身份查找按本地登记序（rowid）而不是它，agora-wpyt，见 docs/spec/api.md「会话形态」
     ended_at DATETIME,                             -- 该行结束的时刻（§4.2）：运行时报的退出时刻 / hook SessionEnd 的事件时刻 / superseded 的新对话首条事件时刻 / 探到进程没了的 tick；等待时长、attention 与 external_finished_ttl 用，A42
     updated_at DATETIME NOT NULL,
     origin TEXT NOT NULL DEFAULT 'agora',          -- agora | adopted | external | headless（§5.5；headless = 宿主自己起的无头会话，agora-5gg.20）
