@@ -174,6 +174,10 @@ pub struct SessionView {
     /// 探活失败（号没了或被复用）填 null：那个号在 `ps` 里属于别人。行已经 FINISHED 而号还探得到时
     /// 号照报（它是"这个对话落在哪个进程上"的线索，`process` 说 gone 是 Q4 的口径，两者不矛盾）。
     pub pid: Option<u32>,
+    /// 这一行的运行时在不在 **agora 自己的 socket** 上（`RuntimeSession.managed`；死 pane 仍是
+    /// true——它说的是"socket 归谁管"）。**不是可写性判据**：能不能写看 `text_via`（采纳 socket
+    /// 上写操作一律 ReadOnly，agora-prdg.2）；前端拿它否决旧 peer 把采纳行报成 runtime 的谎报
+    /// （`web/src/MobileCard.tsx`）。
     pub managed: bool,
     #[serde(flatten)]
     pub assessment: Assessment,
@@ -1367,9 +1371,13 @@ impl SessionManager {
                 m.input_channel(),
             )
         };
-        // 文本走哪条路（MISSION §5.5）：有句柄就有 PTY 可写（= 声明什么类型无关）；无句柄只有宿主
-        // 自报过输入通道的（pi 的扩展）能收；其余只能到终端（`none`）。
-        let text_via = if rec.runtime_ref.is_some() {
+        // 文本走哪条路（MISSION §5.5）：只有**活着的、由 agora 管的**运行时才是 `runtime`——
+        // 句柄在而运行时不行时，声明什么类型都无关。两种"有句柄但写不了"必须落 `none`/`host`，
+        // 否则手机与桌面会给出必然失败的 composer / Kill（agora-prdg.2）：
+        // - 采纳 socket 上的运行时 `managed = false`，写操作一律 `ReadOnly`（ADR-001 D3）；
+        // - 死 pane 还在列表里（scrollback 保留，ADR-001 D4）但 `alive = false`，没有可写的 PTY。
+        // 无句柄（或写不了）时，只有宿主自报过输入通道的（pi 的扩展）能收（`host`）；其余只能到终端。
+        let text_via = if rt.is_some_and(|s| s.alive && s.managed) {
             "runtime"
         } else if input_channel > 0 {
             "host"

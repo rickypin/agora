@@ -1160,3 +1160,48 @@ fn respond_via_follows_the_held_hook_host_not_the_declared_agent_type() {
     m.remove_pending_decision(&v.record.id, "req-1");
     assert_eq!(m.get(&v.record.id).unwrap().respond_via, "terminal");
 }
+
+#[test]
+fn text_via_is_runtime_only_for_a_live_managed_runtime() {
+    // agora-prdg.2：`text_via = runtime` 的语义是"有活着的、**由 agora 管的**运行时"。修前只问
+    // 句柄在不在（`runtime_ref.is_some()`）：采纳 socket 上的写操作一律 ReadOnly（ADR-001 D3）、
+    // 死 pane 也没有可写的 PTY，两种都被报成 runtime——手机因此给出必然失败的 composer，
+    // 卡片「更多 → Kill / Restart」也照给（zuan 现场 10-08 就有 4 行 text_via=runtime + process=gone）。
+    let (m, rt, _db) = mgr();
+    // 对照组：活着、agora 自己起的行。
+    let mine = m.create(&new_session("mine")).unwrap();
+    // 采纳行：运行时活着，但注册在别人的 socket 上（FakeRuntime 的 `fake:default` = 非 agora）。
+    rt.insert("fake:default:theirs", true, None, false);
+    let adopted = m
+        .adopt(&agora::session::AdoptSession {
+            runtime_ref: "fake:default:theirs".into(),
+            display_name: Some("theirs".into()),
+            agent_type: Some("shell".into()),
+            working_directory: None,
+        })
+        .unwrap();
+    // 死 pane 的托管行：句柄还在列表里（scrollback 还在，ADR-001 D4），alive = false。
+    let dead = m.create(&new_session("dead")).unwrap();
+    rt.set_dead(dead.record.runtime_ref.as_deref().unwrap(), Exit::Code(0));
+
+    assert_eq!(
+        m.get(&mine.record.id).unwrap().text_via,
+        "runtime",
+        "活着、由 agora 管的行才是 runtime"
+    );
+    assert_eq!(
+        m.get(&adopted.record.id).unwrap().text_via,
+        "none",
+        "采纳行只读：没有可写的运行时"
+    );
+    assert_eq!(
+        m.get(&dead.record.id).unwrap().text_via,
+        "none",
+        "死 pane 没有可写的 PTY"
+    );
+    // `managed` 仍是"socket 归谁管"这个事实（死 pane 也是 true）；可写性判据是 text_via
+    // （UI 侧拿 managed 否决旧 peer 的谎报，见 web/src/MobileCard.test.tsx）。
+    assert!(m.get(&mine.record.id).unwrap().managed);
+    assert!(!m.get(&adopted.record.id).unwrap().managed);
+    assert!(m.get(&dead.record.id).unwrap().managed);
+}
