@@ -153,6 +153,17 @@ pub fn home_dir(prefix: &str, n: u32) -> PathBuf {
     PathBuf::from(format!("/tmp/ag-{prefix}-{}-{n}", tag()))
 }
 
+/// 一组 fixture 的 home 与 tmux socket（同一 tag 的两半）：名字规则与 [`home_dir`] /
+/// [`socket_name`] 同一处构造，供 tag 不是本进程的测试用——目前只有模拟"已死进程遗留"的
+/// `tests/tmux_fixture_cleanup.rs::stale_upgrade_home_from_a_killed_process_is_swept`
+/// （agora-tzje）需要它，`sweep_stale_homes` 靠这个对称性从 home 名推出 socket 名。
+pub fn home_and_socket(prefix: &str, tag: &str, n: u32) -> (PathBuf, String) {
+    (
+        PathBuf::from(format!("/tmp/ag-{prefix}-{tag}-{n}")),
+        format!("agora-{prefix}-{tag}-{n}"),
+    )
+}
+
 /// 杀掉这个 socket 上的 tmux server，并把 socket 文件一起删掉。
 pub fn kill_tmux(socket: &str) {
     let _ = Command::new("tmux")
@@ -161,6 +172,91 @@ pub fn kill_tmux(socket: &str) {
         .status();
     // 2026-09-07 macOS 实测（agora-quy）：kill-server 之后 socket 文件仍可能留着。
     let _ = std::fs::remove_file(socket_path(socket));
+}
+
+/// 清掉本机**已死**测试进程留下的 `/tmp/ag-<prefix>-*` fixture（agora-tzje）。
+///
+/// 测试进程被 SIGKILL（门禁超时、人工中断）时 Drop 不跑，fixture 的 AGORA_HOME、其中的
+/// serve（`agora.pid`）与 tmux server 全留在机器上——2026-09-22 zuan 实测：一个 `agora serve`
+/// 从 9 月 21 日一直跑到 10 月 8 日。这里让下一次同前缀的测试进程启动时补收。
+///
+/// 判据是目录里的 `owner.pid`（fixture 创建时写入测试进程 pid）而不是目录名里的 pid：
+/// 名字里的 pid 会回绕（见模块头），owner 文件是写进去的事实。没有 owner 文件的目录一律
+/// 不碰——宁可不收，也不能误杀并行门禁里别的测试进程正在用的目录。
+///
+/// daemon 必须能证明"这个 pid 是我们的"才发信号：`ps -o args=` 里要带着这份 home 的路径；
+/// 拿不到（pid 被复用、ps 不可用）就只删目录与 tmux server。
+///
+/// 守卫：`tests/tmux_fixture_cleanup.rs::stale_upgrade_home_from_a_killed_process_is_swept`。
+pub fn sweep_stale_homes(prefix: &str) {
+    let head = format!("ag-{prefix}-");
+    let Ok(entries) = std::fs::read_dir("/tmp") else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(&head) {
+            continue;
+        }
+        let home = entry.path();
+        if !home.is_dir() {
+            continue;
+        }
+        let owner = std::fs::read_to_string(home.join("owner.pid"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok());
+        let Some(owner) = owner else { continue };
+        if process_alive(owner) {
+            continue;
+        }
+        // tmux socket 名与 home 名同一个 tag：`home_dir` 是 `ag-{prefix}-{tag}-{n}`、
+        // `socket_name` 是 `agora-{prefix}-{tag}-{n}`，去掉 `ag-` 换成 `agora-` 即可。
+        kill_tmux(&format!("agora-{}", &name[3..]));
+        // 遗留的 serve：只有 argv 里带着这份 home 才动它（pid 可能已被复用成别的进程）。
+        if let Some(pid) = std::fs::read_to_string(home.join("agora.pid"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+        {
+            if process_args(pid).is_some_and(|args| args.contains(&home.display().to_string())) {
+                let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while process_alive(pid) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                if process_alive(pid) {
+                    let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}
+
+/// [`sweep_stale_homes`] 的进程内一次性包装：fixture 每次 `new()` 都扫一遍 `/tmp` 不划算，
+/// 每个测试进程启动时收一次就够（一个测试二进制只用一个 prefix，见模块头的名字约定）。
+pub fn sweep_stale_homes_once(prefix: &str) {
+    static SWEPT: OnceLock<()> = OnceLock::new();
+    SWEPT.get_or_init(|| sweep_stale_homes(prefix));
+}
+
+/// `kill(pid, 0)`：成功或 EPERM 都是"有这个进程"（与 `src/cli/upgrade.rs` 的 `alive` 同口径）。
+fn process_alive(pid: u32) -> bool {
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// `ps -p <pid> -o args=`；进程不在（或 ps 不配合）→ None。
+fn process_args(pid: u32) -> Option<String> {
+    let out = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "args="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
 /// 等到 `path` 上的 socket 真的连不上为止（上限 [`PROC`]）。

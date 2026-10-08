@@ -177,10 +177,15 @@ struct Home {
 
 impl Home {
     fn new() -> Self {
+        // 被 SIGKILL 的上一轮留下的 fixture 在这里补收（agora-tzje）。
+        isolate::sweep_stale_homes_once("up");
         let n = isolate::nth();
         let path = isolate::home_dir("up", n);
         let _ = std::fs::remove_dir_all(&path);
         local::ensure_home(&path).unwrap();
+        // 本轮 fixture 的归属标记：`isolate::sweep_stale_homes` 靠它区分"已死进程的遗留"
+        // 与"并行门禁里还活着的另一个测试进程"。随 Drop 的 remove_dir_all 一起消失。
+        std::fs::write(path.join("owner.pid"), std::process::id().to_string()).unwrap();
         let tmux_socket = isolate::socket_name("up", n);
         // 拿一个空闲端口再放掉：绑定与 daemon 启动之间有个小窗口，够用。
         let port = std::net::TcpListener::bind("127.0.0.1:0")
