@@ -5,6 +5,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MobileSettings } from "./MobileSettings";
+import { DEFAULT_MOBILE_TEXT_SIZE, MOBILE_TEXT_SIZES, MOBILE_TEXT_STORAGE_KEY } from "./mobileText";
 import type { PushEnv, SubscriptionLike } from "./push";
 
 const net = vi.hoisted(() => ({ logout: 0 }));
@@ -127,6 +128,34 @@ describe("MobileSettings", () => {
  * `browserPushEnv()` 每次调用返回新对象；如果没有 useMemo，点「设置」会冻结页面（桌面复现 CDP
  * 超时），用户看到的就是"点了没反应"。这里不注入 env，数 browserPushEnv 被调用几次。
  */
+describe("手机端字号档位（agora-x70t.xsgz）", () => {
+  it("四档都在、当前档有 aria-pressed、点了立刻持久化并回调", async () => {
+    // iOS Safari 不把系统"文字大小"暴露给网页，所以这个旋钮得自己给；默认 17px（Apple HIG body，
+    // 也顺带让输入框不进 iOS 的"聚焦自动放大"区）。存 localStorage，刷新后还在。
+    const picked: string[] = [];
+    render(
+      <MobileSettings
+        onClose={() => {}}
+        onRevoked={() => {}}
+        env={env()}
+        probe={async () => ({ apple: null, reason: null })}
+        onTextSize={(s) => picked.push(s)}
+      />,
+    );
+    await screen.findByTestId("mobile-push-state");
+    for (const s of MOBILE_TEXT_SIZES) {
+      const b = screen.getByTestId(`mobile-text-${s.key}`) as HTMLButtonElement;
+      expect(b.textContent).toBe(s.label);
+      expect(b.getAttribute("aria-pressed")).toBe(String(s.key === DEFAULT_MOBILE_TEXT_SIZE));
+    }
+    fireEvent.click(screen.getByTestId("mobile-text-l"));
+    expect(picked).toEqual(["l"]);
+    expect(localStorage.getItem(MOBILE_TEXT_STORAGE_KEY)).toBe("l");
+    expect(screen.getByTestId("mobile-text-l").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("mobile-text-m").getAttribute("aria-pressed")).toBe("false");
+  });
+});
+
 describe("MobileSettings render stability", () => {
   it("calls browserPushEnv once, not on every render", async () => {
     const push = await import("./push");

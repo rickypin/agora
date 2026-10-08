@@ -52,6 +52,17 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
   const [sent, setSent] = useState<Sent | null>(null);
   const composerRef = useRef<HTMLInputElement>(null);
 
+  /**
+   * iOS 键盘弹起时只缩**视觉**视口（Safari 不认 interactive-widget），composer 在粘性底部，
+   * 不主动滚一下就可能被键盘盖住。等 300ms 让键盘动画走起来再滚，block:'nearest' 不会把已经
+   * 在可见区的元素又推来推去（agora-x70t.ten0；2026-10-08 iPhone 16 Pro 实测：聚焦后 composer
+   * 仍在屏内，但软键盘高度一变就不一定——这条是保险，不是主修复；主修复是字号 ≥16px 不放大）。
+   * jsdom 里 scrollIntoView 可能不在（可选调用，测试造一个假的也能断言）。
+   */
+  const keepAboveKeyboard = (el: HTMLInputElement) => {
+    window.setTimeout(() => el.scrollIntoView?.({ block: "nearest" }), 300);
+  };
+
   // 打开卡片就是"看到结果"：手机没有并存的列表可以"离开"，记在打开这一刻才不作废记号。
   const markSeen = useCallback(() => {
     if (seenRelevant(row.status)) onSeen?.(seenKey(row));
@@ -303,6 +314,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
             data-testid="mobile-next-input"
             disabled={busy}
             onChange={(e) => setDraft(e.target.value)}
+            onFocus={(e) => keepAboveKeyboard(e.currentTarget)}
           />
           <button type="submit" data-testid="mobile-send" disabled={!draft.trim() || sent?.phase === "sending"}>
             发送

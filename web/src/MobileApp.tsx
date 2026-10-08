@@ -25,6 +25,7 @@ import { HealthWatcher, VersionWatcher } from "./health";
 import { MobileCard } from "./MobileCard";
 import { MobileSettings } from "./MobileSettings";
 import { parseSessionTarget } from "./mobileRoute";
+import { loadMobileTextSize, storeMobileTextSize, type MobileTextSize } from "./mobileText";
 import { browserPushEnv, selfCheckPush, type PushEnv } from "./push";
 import { nodeHue } from "./nodeColor";
 import { rowName, statusSymbol, str } from "./SessionRow";
@@ -146,6 +147,12 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   const [selected, setSelected] = useState<string | null>(null);
   const [finishedOpen, setFinishedOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 字号档位（agora-x70t.xsgz）：存 localStorage，`data-text` 是它与 CSS 的接口（--m-fs 一族）。
+  const [textSize, setTextSize] = useState<MobileTextSize>(() => loadMobileTextSize());
+  const changeTextSize = useCallback((size: MobileTextSize) => {
+    setTextSize(size);
+    storeMobileTextSize(size);
+  }, []);
   // 推送点击进来的那一行要不要把焦点送进 composer（只有可发送的行要；打开一次即消费）。
   const [focusComposerFor, setFocusComposerFor] = useState<string | null>(null);
   // 深链只自动打开一次：只用 `selected === null` 判，返回收件箱后会把同一行又弹出来。
@@ -167,7 +174,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
 
   if (selectedRow) {
     return (
-      <main className="mobile" data-testid="mobile-inbox">
+      <main className="mobile" data-testid="mobile-inbox" data-text={textSize}>
         <MobileCard
           row={selectedRow}
           api={api}
@@ -183,6 +190,8 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     return (
       <MobileSettings
         env={givenPushEnv}
+        textSize={textSize}
+        onTextSize={changeTextSize}
         onClose={() => setSettingsOpen(false)}
         onRevoked={onRevoked ?? (() => {})}
       />
@@ -194,7 +203,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   );
 
   return (
-    <main className="mobile" data-testid="mobile-inbox">
+    <main className="mobile" data-testid="mobile-inbox" data-text={textSize}>
       <header className="mobile-top">
         <h1>agora</h1>
         <span className="mobile-carrier" data-testid="mobile-carrier" data-reachable={String(nodes.reachable === true)}>

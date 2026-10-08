@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { fetchHealth } from "./health";
 import { MobileApp } from "./MobileApp";
+import { loadMobileTextSize } from "./mobileText";
 import { isMobilePath, useNarrow } from "./mobileRoute";
 import {
   clearFragment,
@@ -23,6 +24,8 @@ export function App() {
   const mobile = isMobilePath(window.location.pathname);
   // 桌面窗口窄于 700 px：不做抽屉式全功能布局，引导去 /m（MISSION §6.6；agora-thc.5）。
   const narrow = useNarrow();
+  // 手机门页也跟 /m 用同一个字号档位（agora-x70t.xsgz）：重配对时要读的那几行正是最需要看清的。
+  const [textSize] = useState(() => loadMobileTextSize());
 
   useEffect(() => {
     let cancelled = false;
@@ -50,7 +53,7 @@ export function App() {
 
   if (auth !== "paired") {
     return (
-      <main className={`gate${mobile ? " gate-mobile" : ""}`}>
+      <main className={`gate${mobile ? " gate-mobile" : ""}`} data-text={mobile ? textSize : undefined}>
         <h1>agora</h1>
         <p>daemon：{probe === "probing" ? "探测中…" : probe === "ok" ? "在线" : "不可达"}</p>
         <p>{authLine(auth)}</p>

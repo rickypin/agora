@@ -64,6 +64,21 @@ afterEach(() => {
   window.history.replaceState(null, "", "/");
 });
 
+describe("手机端字号档位（agora-x70t.xsgz）", () => {
+  it("data-text 说出现在这一档，且跟着 localStorage 走", async () => {
+    // `data-text` 是字号档位与 CSS 的接口（--m-fs 一族都挂在它上面）。默认档是"标准"=17px。
+    const t = setup([row("n:a")]);
+    await online(t);
+    expect(screen.getByTestId("mobile-inbox").getAttribute("data-text")).toBe("m");
+    cleanup();
+
+    localStorage.setItem("agora.mobile-text", "xl");
+    const t2 = setup([row("n:a")]);
+    await online(t2);
+    expect(screen.getByTestId("mobile-inbox").getAttribute("data-text")).toBe("xl");
+  });
+});
+
 describe("mobile inbox sections", () => {
   it("keeps attention's four-section order and never counts headless as working", async () => {
     const t = setup([

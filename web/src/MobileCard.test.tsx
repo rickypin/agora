@@ -128,6 +128,27 @@ describe("composer", () => {
     expect(screen.queryByTestId("mobile-terminal-only")).toBeNull();
   });
 
+  it("聚焦 composer 时把输入框滚进可见区（iOS 键盘不遮它）", () => {
+    // agora-x70t.ten0：Safari 不认 interactive-widget，粘性底部的 composer 只能主动滚一下；
+    // 等 300ms 是让键盘动画先走起来（jsdom 里 scrollIntoView 未必存在，代码必须可选调用）。
+    vi.useFakeTimers();
+    const calls: ScrollIntoViewOptions[] = [];
+    const proto = Element.prototype as unknown as { scrollIntoView?: (o?: ScrollIntoViewOptions) => void };
+    const orig = proto.scrollIntoView;
+    proto.scrollIntoView = (o) => calls.push(o ?? {});
+    try {
+      setup(row("n:a"));
+      fireEvent.focus(screen.getByTestId("mobile-next-input"));
+      expect(calls).toEqual([]);
+      act(() => vi.advanceTimersByTime(400));
+      expect(calls).toEqual([{ block: "nearest" }]);
+    } finally {
+      if (orig) proto.scrollIntoView = orig;
+      else delete proto.scrollIntoView;
+      vi.useRealTimers();
+    }
+  });
+
   it("gates on status: running is disabled with a note, handleless has no composer", () => {
     setup(row("n:a", { status: "running", detail: "在跑" }));
     expect(screen.queryByTestId("mobile-next-input")).toBeNull();

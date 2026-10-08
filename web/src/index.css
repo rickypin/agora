@@ -15,6 +15,9 @@
   font-size: 13px;
 }
 html, body, #root { height: 100%; margin: 0; background: var(--bg); color: var(--fg); }
+/* 横屏时 iOS 会自动放大文字（"文字大小调整"），手机壳里没有可放大的余地：钉住 100%
+   （agora-x70t.ten0；桌面不疼，浏览器本来就照 100% 渲染）。 */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 h1 { font-size: 14px; margin: 0; letter-spacing: 0.04em; }
 h2 { font-size: 13px; margin: 0; }
 button { font: inherit; color: var(--fg); background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
@@ -319,64 +322,140 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .row .line-project { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- 手机交互收件箱 /m（MISSION §6.9；agora-thc.5） ----------
-   同一份 bundle 的第二种壳：只有"看谁在等我"的信息预算，行是可点的一整块。宽屏下居中成一条
-   手机宽的栏，两侧各一条边框——避免在桌面误开 /m 时被拉成一整屏的稀疏列表。 */
-.mobile { display: flex; flex-direction: column; height: 100%; max-width: 44rem; margin: 0 auto; }
+
+   手机端的排版基准与桌面分开：桌面是 dense 工作台（13px），手机是"读完就能按"的收件箱
+   （Apple HIG 的 body 17pt，agora-x70t.xsgz，2026-10-08 iPhone 16 Pro 实测：13px 偏小，且
+   `<16px` 的输入框一聚焦就被 iOS 整页放大）。**只有 `--m-fs` 一个旋钮**：字号（--m-fs-mini /
+   --m-fs-note）与间距（--m-1..--m-5）、触控下限（--m-tap）都由它派生——档位换一档，字、行距、
+   留白、按钮一起变；只放大字号不放大间距会立刻显得挤。档位在设置页选、存 localStorage
+   （web/src/mobileText.ts），`data-text` 是它与 CSS 的接口。
+
+   宽屏下居中成一条手机宽的栏，两侧各一条边框——避免在桌面误开 /m 时被拉成一整屏的稀疏列表。 */
+.mobile,
+.gate-mobile {
+  --m-fs: 17px;                            /* 与 mobileText.ts 的默认档一致（守卫在 mobileCss.test.ts） */
+  --m-fs-mini: calc(var(--m-fs) * 0.7);    /* 徽标 / 小节标题 / 计数：小而不隐形 */
+  --m-fs-note: calc(var(--m-fs) * 0.8);    /* 说明 / 状态 / 错误 */
+  --m-1: calc(var(--m-fs) * 0.25);
+  --m-2: calc(var(--m-fs) * 0.5);
+  --m-3: calc(var(--m-fs) * 0.75);
+  --m-4: calc(var(--m-fs) * 1);
+  --m-5: calc(var(--m-fs) * 1.5);
+  font-size: var(--m-fs);
+}
+/* 平台下限是**绝对**的，不跟着档位缩：触控 44pt（每一档都 ≥44），输入框 16px（iOS 聚焦不整页放大的
+   门槛）——“小”档只把阅读字号降到 15px，输入框用 max(16px, …) 钉住。 */
+.mobile,
+.gate-mobile { --m-tap: max(44px, calc(var(--m-fs) * 2.6)); }
+.mobile {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  height: 100dvh;                          /* Safari 工具栏收起/展开时 composer 不被顶到屏幕外 */
+  max-width: 44rem;
+  margin: 0 auto;
+}
+.mobile[data-text="s"], .gate-mobile[data-text="s"] { --m-fs: 15px; }
+.mobile[data-text="l"], .gate-mobile[data-text="l"] { --m-fs: 19px; }
+.mobile[data-text="xl"], .gate-mobile[data-text="xl"] { --m-fs: 22px; }
 @media (min-width: 700px) { .mobile { border-left: 1px solid var(--border); border-right: 1px solid var(--border); } }
 /* black-translucent 的状态栏会压住页面（index.html 的 apple-mobile-web-app-status-bar-style）：
-   /m 的两端把 safe-area 让出来，刘海机与全面屏下标题不会被状态栏盖住（agora-thc.4）。 */
-.mobile-top { position: sticky; top: 0; z-index: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; padding: calc(0.75rem + env(safe-area-inset-top)) 0.9rem 0.75rem; border-bottom: 1px solid var(--border); background: var(--bg); }
+   /m 的两端把 safe-area 让出来，刘海机与全面屏下标题不会被状态栏盖住（agora-thc.4）；左右两侧
+   也要让——横屏时刘海在侧边（agora-x70t.ten0）。 */
+.mobile-top {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--m-2);
+  padding: calc(var(--m-3) + env(safe-area-inset-top)) calc(var(--m-3) + env(safe-area-inset-right))
+    var(--m-3) calc(var(--m-3) + env(safe-area-inset-left));
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
 .mobile-top h1 { letter-spacing: 0.06em; }
-.mobile-carrier { color: var(--muted); font-size: 12px; }
-.mobile-inbox { flex: 1; overflow-y: auto; padding: 0.4rem 0.6rem calc(2.5rem + env(safe-area-inset-bottom)); }
-.mobile-section h2 { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; margin: 0; padding: 0.7rem 0.3rem 0.3rem; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
-.mobile-section ul { display: flex; flex-direction: column; gap: 0.4rem; margin: 0; padding: 0; list-style: none; }
-.mobile-row { display: flex; flex-direction: column; gap: 0.25rem; width: 100%; padding: 0.55rem 0.65rem; text-align: left; background: var(--panel); border-radius: 8px; }
+.mobile-carrier { color: var(--muted); font-size: var(--m-fs-mini); }
+.mobile-inbox { flex: 1; overflow-y: auto; padding: var(--m-2) calc(var(--m-3) + env(safe-area-inset-right)) calc(var(--m-5) + env(safe-area-inset-bottom)) calc(var(--m-3) + env(safe-area-inset-left)); }
+.mobile-section h2 { display: flex; align-items: baseline; justify-content: space-between; gap: var(--m-2); margin: 0; padding: var(--m-3) var(--m-1) var(--m-1); color: var(--muted); font-size: var(--m-fs-mini); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.mobile-section ul { display: flex; flex-direction: column; gap: var(--m-2); margin: 0; padding: 0; list-style: none; }
+.mobile-row { display: flex; flex-direction: column; gap: var(--m-1); width: 100%; padding: var(--m-2) var(--m-3); text-align: left; background: var(--panel); border-radius: var(--m-2); }
 .mobile-row.selected { background: var(--panel-2); border-color: var(--accent); }
-.mobile-row-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.4rem; }
+.mobile-row-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--m-2); }
 .mobile-symbol { width: 1em; flex: none; }
 .mobile-row-name { font-weight: 600; }
-.mobile-agent { flex: none; font-size: 11px; color: hsl(var(--hue, 0) 70% 68%); }
-.mobile-node-chip { flex: none; font-size: 11px; color: hsl(var(--hue, 0) 60% 70%); }
+.mobile-agent { flex: none; font-size: var(--m-fs-mini); color: hsl(var(--hue, 0) 70% 68%); }
+.mobile-node-chip { flex: none; font-size: var(--m-fs-mini); color: hsl(var(--hue, 0) 60% 70%); }
 .mobile-node-chip.local { color: var(--muted); }
 .mobile-status { margin-left: auto; flex: none; color: var(--muted); }
 .mobile-row-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mobile-row-summary { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
-.mobile-empty { margin: 0; padding: 0.2rem 0.3rem 0.4rem; color: var(--muted); }
-.mobile-finished-toggle { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; width: 100%; margin-bottom: 0.4rem; padding: 0.55rem 0.3rem; color: var(--muted); background: none; border-color: transparent; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.mobile-empty { margin: 0; padding: var(--m-1) var(--m-1) var(--m-2); color: var(--muted); }
+.mobile-finished-toggle { display: flex; align-items: baseline; justify-content: space-between; gap: var(--m-2); width: 100%; margin-bottom: var(--m-2); padding: var(--m-2) var(--m-1); color: var(--muted); background: none; border-color: transparent; font-size: var(--m-fs-mini); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 .narrow-guide a { color: var(--accent); }
 
 /* ---------- /m 会话卡（agora-thc.10）：IM 语法——最近一轮两气泡、底部 composer、乐观发送 ---------- */
-.mobile-card { display: flex; flex: 1; flex-direction: column; gap: 0.5rem; min-height: 0; overflow-y: auto; padding: 0 0.7rem; }
-.mobile-card-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.4rem; padding: calc(0.7rem + env(safe-area-inset-top)) 0 0.4rem; border-bottom: 1px solid var(--border); }
-.mobile-back { flex: none; padding: 0 0.4rem; color: var(--accent); font-size: 16px; background: none; border-color: transparent; }
+.mobile-card { display: flex; flex: 1; flex-direction: column; gap: var(--m-2); min-height: 0; overflow-y: auto; padding: 0 calc(var(--m-3) + env(safe-area-inset-right)) 0 calc(var(--m-3) + env(safe-area-inset-left)); }
+.mobile-card-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--m-2); padding: calc(var(--m-3) + env(safe-area-inset-top)) 0 var(--m-2); border-bottom: 1px solid var(--border); }
+.mobile-back { flex: none; padding: 0 var(--m-2); color: var(--accent); font-size: calc(var(--m-fs) * 1.1); background: none; border-color: transparent; }
 .mobile-card-task { margin: 0; color: var(--muted); }
-.mobile-thread { display: flex; flex: 1; flex-direction: column; gap: 0.5rem; padding: 0.4rem 0 0.6rem; }
-.mobile-bubble { display: flex; gap: 0.4rem; line-height: 1.45; }
+.mobile-thread { display: flex; flex: 1; flex-direction: column; gap: var(--m-2); padding: var(--m-2) 0 var(--m-3); }
+.mobile-bubble { display: flex; gap: var(--m-2); line-height: 1.45; }
 .mobile-bubble-mark { flex: none; color: var(--muted); }
 .mobile-bubble.user { justify-content: flex-end; }
 .mobile-bubble.user .mobile-bubble-mark { order: -1; color: var(--accent); }
-.mobile-bubble.user > span:not(.mobile-bubble-mark):not(.mobile-sent-state) { max-width: 85%; padding: 0.35rem 0.55rem; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; white-space: pre-wrap; word-break: break-word; }
-.mobile-bubble-body { min-width: 0; max-width: 90%; padding: 0.4rem 0.6rem; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
-.mobile-sent-state { align-self: flex-end; color: var(--muted); font-size: 11px; }
-.mobile-more-line { display: block; margin-top: 0.35rem; padding: 0; color: var(--accent); background: none; border-color: transparent; }
-.mobile-decision { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.6rem; background: var(--panel); border: 1px solid var(--warn); border-radius: 10px; }
-.mobile-command { margin: 0; padding: 0.45rem 0.55rem; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+.mobile-bubble.user > span:not(.mobile-bubble-mark):not(.mobile-sent-state) { max-width: 85%; padding: var(--m-1) var(--m-2); background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--m-3); white-space: pre-wrap; word-break: break-word; }
+.mobile-bubble-body { min-width: 0; max-width: 90%; padding: var(--m-2) var(--m-3); background: var(--panel); border: 1px solid var(--border); border-radius: var(--m-3); }
+.mobile-sent-state { align-self: flex-end; color: var(--muted); font-size: var(--m-fs-mini); }
+.mobile-more-line { display: block; margin-top: var(--m-1); padding: 0; color: var(--accent); background: none; border-color: transparent; }
+.mobile-decision { display: flex; flex-direction: column; gap: var(--m-2); padding: var(--m-3); background: var(--panel); border: 1px solid var(--warn); border-radius: var(--m-3); }
+.mobile-command { margin: 0; padding: var(--m-1) var(--m-2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--m-1); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
 .mobile-question { margin: 0; }
-.mobile-decision-actions { display: flex; gap: 0.5rem; }
-.mobile-decision-actions button { flex: 1; padding: 0.45rem; }
-.mobile-actions { display: flex; flex-direction: column; gap: 0.4rem; }
+.mobile-decision-actions { display: flex; gap: var(--m-2); }
+.mobile-decision-actions button { flex: 1; padding: var(--m-2); }
+.mobile-actions { display: flex; flex-direction: column; gap: var(--m-2); }
 .mobile-more-toggle { align-self: flex-start; padding: 0; color: var(--muted); background: none; border-color: transparent; }
-.mobile-more-actions { display: flex; gap: 0.5rem; }
-.mobile-composer { position: sticky; bottom: 0; display: flex; gap: 0.4rem; padding: 0.5rem 0 calc(0.6rem + env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--border); }
-.mobile-composer input { flex: 1; padding: 0.5rem 0.6rem; }
-.mobile-composer button { padding: 0 0.9rem; }
-.mobile-note { margin: 0; color: var(--muted); font-size: 12px; }
+.mobile-more-actions { display: flex; gap: var(--m-2); }
+.mobile-composer { position: sticky; bottom: 0; display: flex; gap: var(--m-2); padding: var(--m-2) 0 calc(var(--m-2) + env(safe-area-inset-bottom)); background: var(--bg); border-top: 1px solid var(--border); }
+.mobile-composer input { flex: 1; min-width: 0; padding: var(--m-2) var(--m-3); font-size: max(16px, var(--m-fs)); }
+.mobile-composer button { padding: 0 var(--m-4); }
+.mobile-note { margin: 0; color: var(--muted); font-size: var(--m-fs-note); }
 .mobile-error { margin: 0; color: var(--bad); }
+/* 手机里的对话框（Kill / Restart 的确认、吊销本设备）：字号跟手机基准走，按钮走触控下限——
+   它盖在 .mobile 里，所以 --m-* 在它身上同样成立（agora-x70t.qz01）。 */
+.mobile .dialog { width: calc(100% - 2 * var(--m-3)); max-width: 30rem; font-size: var(--m-fs); }
+.mobile .dialog h2 { font-size: calc(var(--m-fs) * 1.05); margin-bottom: var(--m-2); }
+.mobile .dialog p { margin: 0 0 var(--m-4); }
+.mobile .dialog button { min-height: var(--m-tap); padding: 0 var(--m-4); }
 
-/* 设备管理（agora-thc.1）：配对 QR 与设备列表。 */
+/* 手机上的无空格长串：任务行 / 说明 / 问题 / 名字都可能是一整条 URL 或路径，不折就会画出卡片外
+   （2026-10-08 量测：.mobile-card-task scrollWidth 2210 / clientWidth 384、overflow-x visible）。
+   anywhere 而不是 break-word：前者在**所有**行盒里都允许断，后者只在不得已时才断。 */
+.mobile-card-task,
+.mobile-note,
+.mobile-error,
+.mobile-question,
+.mobile-card-head .mobile-row-name,
+.mobile-card-head .mobile-agent,
+.mobile-card-head .mobile-node-chip { overflow-wrap: anywhere; }
+
+/* 触控下限（agora-x70t.qz01）：手机上"按得准"优先于紧凑；行本身已经 70px 上下，不在此列。 */
+.mobile-back,
+.mobile-gear,
+.mobile-more-toggle,
+.mobile-more-actions button,
+.mobile-finished-toggle,
+.mobile-push-toggle,
+.mobile-text-sizes button,
+.mobile-settings .danger,
+.mobile-composer button { min-height: var(--m-tap); }
+.mobile-decision-actions button { min-height: var(--m-tap); }
+.mobile-composer input { min-height: var(--m-tap); }
+.mobile-back { min-width: var(--m-tap); }
+
+/* 设备管理（agora-thc.1）：配对 QR 与设备列表。桌面与门页共用（手机门页的规格见 .gate-mobile）。 */
 .pair-paste { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
-.pair-paste input { min-width: 260px; padding: 6px 8px; }
+.pair-paste input { min-width: 0; flex: 1 1 16rem; padding: 6px 8px; }
 .pair-paste .error { flex-basis: 100%; }
 .devices-open { margin-top: 6px; }
 .dialog.devices { width: 520px; }
@@ -389,10 +468,22 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .device-list td { padding: 4px 6px; border-top: 1px solid var(--border); }
 
 /* /m 设置与推送（agora-thc.7）。 */
-.mobile-gear { margin-left: auto; }
-.mobile-settings .mobile-section { margin: 12px; }
-.mobile-push-toggle { min-width: 64px; }
+.mobile-gear { margin-left: auto; padding: 0 var(--m-2); }
+.mobile-settings .mobile-section { margin: var(--m-3) calc(var(--m-3) + env(safe-area-inset-right)) var(--m-3) calc(var(--m-3) + env(safe-area-inset-left)); }
+.mobile-push-toggle { min-width: var(--m-5); padding: 0 var(--m-3); }
+.mobile-settings .mobile-section > .muted { font-size: var(--m-fs-note); }
 .install-hint { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
 .install-hint ol { margin: 6px 0 0 18px; }
 .install-hint li { list-style: decimal; }
 .mobile-note.warning { color: var(--warn, #b58900); }
+
+/* 手机门页（未配对 / 被吊销时的那一屏）：与 /m 同一套基准，别让"重新配对"这一屏回到 13px
+   （agora-x70t.ten0；.gate-mobile 以前只有类名没有样式）。 */
+.gate-mobile {
+  padding: calc(var(--m-4) + env(safe-area-inset-top)) calc(var(--m-3) + env(safe-area-inset-right))
+    calc(var(--m-4) + env(safe-area-inset-bottom)) calc(var(--m-3) + env(safe-area-inset-left));
+}
+.gate-mobile .pair-paste input { min-width: 0; flex: 1 1 16rem; font-size: var(--m-fs); }
+.gate-mobile button { min-height: var(--m-tap); padding: 0 var(--m-4); }
+.gate-mobile .install-hint { font-size: var(--m-fs); }
+

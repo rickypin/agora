@@ -2,7 +2,11 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- viewport-fit=cover：让 safe-area-inset-* 有值（刘海机的状态栏与主屏指示条）。
+         interactive-widget=resizes-content：键盘弹起时缩 **内容** 而不是只缩视觉视口（Chromium 系；
+         iOS Safari 不认这条，那边靠字号 ≥16px 不自动放大 + composer 聚焦时 scrollIntoView 兜
+         ——agora-x70t.ten0）。两条都不能省，理由各一半。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="theme-color" content="#0e1116" />
     <title>agora</title>
     <!-- iPhone 加到主屏（agora-thc.4；A35 / A37 的可安装半边）：iOS 只认 apple-* 这套 meta

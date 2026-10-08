@@ -9,6 +9,12 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { InstallHint, iosWithoutStandalone } from "./InstallHint";
 import { apiFetch } from "./net";
 import { browserPushEnv, disablePush, enablePush, selfCheckPush, type PushEnv, type PushReport } from "./push";
+import {
+  MOBILE_TEXT_SIZES,
+  loadMobileTextSize,
+  storeMobileTextSize,
+  type MobileTextSize,
+} from "./mobileText";
 
 interface Props {
   onClose: () => void;
@@ -18,6 +24,10 @@ interface Props {
   env?: PushEnv;
   /** 承载节点推送可达性；默认拉一次 `/api/health`。 */
   probe?: () => Promise<{ apple: boolean | null; reason: string | null }>;
+  /** 当前字号档位（不给就现读 localStorage，独立渲染（测试）也成立）。 */
+  textSize?: MobileTextSize;
+  /** 改字号：由 MobileApp 写 state + localStorage（不传就自己写，但只本屏生效）。 */
+  onTextSize?: (size: MobileTextSize) => void;
 }
 
 async function fetchPushHealth(): Promise<{ apple: boolean | null; reason: string | null }> {
@@ -41,7 +51,7 @@ const STATE_TEXT: Record<PushReport["state"], string> = {
   failed: "订阅失败",
 };
 
-export function MobileSettings({ onClose, onRevoked, env, probe }: Props) {
+export function MobileSettings({ onClose, onRevoked, env, probe, textSize: givenText, onTextSize }: Props) {
   // 这两个必须是稳定引用：effect 依赖它们，而 `browserPushEnv()` 每次调用都返回新对象——
   // 直接写在渲染里会让 effect 每渲染一次跑一次、`setReport` 再触发渲染，设置页当场死循环
   // （2026-10-07 iPhone 实测：点「设置」像没反应；桌面复现是 renderer 卡死）。
@@ -51,6 +61,13 @@ export function MobileSettings({ onClose, onRevoked, env, probe }: Props) {
   const [busy, setBusy] = useState(false);
   const [degrade, setDegrade] = useState<{ apple: boolean | null; reason: string | null } | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState(false);
+  const [textSize, setTextSize] = useState<MobileTextSize>(() => givenText ?? loadMobileTextSize());
+
+  function pickText(size: MobileTextSize) {
+    setTextSize(size);
+    storeMobileTextSize(size);
+    onTextSize?.(size);
+  }
 
   useEffect(() => {
     // 打开设置先自查一次（iOS 可能静默丢订阅）：自查结果就是首屏状态。
@@ -81,7 +98,7 @@ export function MobileSettings({ onClose, onRevoked, env, probe }: Props) {
   const state = report?.state ?? "off";
   const canToggle = !["unsupported", "insecure"].includes(state);
   return (
-    <main className="mobile mobile-settings" data-testid="mobile-settings">
+    <main className="mobile mobile-settings" data-testid="mobile-settings" data-text={textSize}>
       <header className="mobile-top">
         <button type="button" className="mobile-back" data-testid="mobile-settings-back" onClick={onClose}>
           ←
@@ -119,6 +136,29 @@ export function MobileSettings({ onClose, onRevoked, env, probe }: Props) {
           </p>
         )}
         <p className="muted">推送到的是标题（哪个会话在等你），不含命令 / 回复原文；点开落到会话卡。</p>
+      </section>
+
+      <section className="mobile-section" aria-label="显示">
+        <h2>
+          <span>显示</span>
+        </h2>
+        {/* 四档字号（agora-x70t.xsgz）：iOS Safari 不把系统字号设置给网页，这个旋钮就得自己给。
+            默认“标准”= 17px（Apple HIG body，也与 iOS“不放大输入框”的 16px 门槛同侧）；“小”档
+            把阅读字号降到 15px，但触控 44px 与输入框 16px 由 CSS 用 max(…) 钉成平台下限，不跟着缩。 */}
+        <div className="mobile-text-sizes" role="group" aria-label="字号">
+          {MOBILE_TEXT_SIZES.map((s) => (
+            <button
+              key={s.key}
+              type="button"
+              data-testid={`mobile-text-${s.key}`}
+              aria-pressed={textSize === s.key}
+              onClick={() => pickText(s.key)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <p className="muted">字号只影响这台设备上的 /m；这一档存本机，换一台设备要重选。</p>
       </section>
 
       <section className="mobile-section" aria-label="本设备">
