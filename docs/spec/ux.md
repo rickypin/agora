@@ -279,6 +279,20 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 - 时刻取 `peer_status_since ?? status_since`（与「看过」的键同一个口径：peer 行要用 peer 自己那只钟）；
   两个都没有的行（旧节点 / 测试桩）**不判**——"不知道何时完成的"不该被当成"很久以前完成的"。
 
+### 「已完成」的清理（agora-off0，2026-10-08）
+
+手机上瞟一眼觉得旧行可以清了时不必回桌面：「已完成」段头与折叠按钮同一行有 `清理 N 行`
+（`data-testid="mobile-clear-finished"`，只在段里有行时出现；`N` 是**实际会删的行数**——peer 离线而
+`stale` 的行不数，全是 stale 时按钮置灰并说明）。点开是二次确认（不可逆），确认后逐行
+`DELETE /api/sessions/:id`：没有批量端点，与桌面 Header 的「Finished N」一键清理是同一条链、同一个
+删除名单（`sectionOf(r, seen) === "finished"`，`web/src/attention.ts`）——`external` / `headless` 直接
+进这段，`agora` / `adopted` 要看过（在手机上打开过卡片）才进，所以「需要我」里没看过的 FINISHED 行
+天然清不到。跳过 `stale` 的 peer 行并计入结果（`已清理 N 行[，跳过 S 行（节点离线）][，失败 F 行]`，
+`data-testid="mobile-clear-note"`，8 s 后消失，与桌面同一句文案）。确认框报的是**去掉 stale 后的行数**
+——与桌面确认框报含 stale 的 `clearable.length`（已知小瑕）有意不同，手机不把不会删的行报进去；
+「其中 N 行是 agora 起的会话」也只从实际会删的行里数。守卫 `web/src/MobileApp.test.tsx`（入口只在
+有行时出现 / 逐行 DELETE / 跳过 stale / 确认框计数 / 没看过的行清不到）。
+
 ### 按钮上的 flex 必须自己写 align-items（agora-x70t，2026-10-08）
 
 手机端收件箱的每一行是一个 `<button class="mobile-row">`，里面是列方向的 flex（第一行名字+状态、
