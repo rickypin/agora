@@ -26,7 +26,7 @@
 |---|---|---|
 | 节点类型 | 三类主机：**macOS**、**Ubuntu Linux**、**Windows**（用于只支持 Windows 的项目） | macOS + Linux；Windows 延期（§11），但运行时抽象**不得排除它**【ADR-001】 |
 | 节点数量 | 任意；新增节点不改变架构（节点互为 peer，§3.5） | 2 |
-| 客户端类型 | 三类设备：**macOS 笔记本**、**iPhone**、**Android 设备**；都是同一个 Web 客户端，**能力同源**（同一套节点 API、无客户端后门），**界面按设备形态分级**：桌面是全功能工作台，手机是交互收件箱（无终端、无创建、无详情，§6.9，不变量 9） | macOS 笔记本；**iPhone** 为 V2 首批（§11）；Android 延期（承接 agora-w9ki） |
+| 客户端类型 | 三类设备：**macOS 笔记本**、**iPhone**、**Android 设备**；都是同一个 Web 客户端，**能力同源**（同一套节点 API、无客户端后门），**界面按设备形态分级**：桌面是全功能工作台，手机是交互收件箱（无终端、无自由表单——「新建」只列预设、无详情，§6.9，不变量 9） | macOS 笔记本；**iPhone** 为 V2 首批（§11）；Android 延期（承接 agora-w9ki） |
 | agent 类型 | 任何 CLI coding agent，经 Adapter 接入（§5.2）；有 hook 的走 hook，没有的走文本兜底（§5.1） | 一等：Claude Code、Codex、Grok Build、pi（2026-10-07 接入：扩展投递，实测见 ADR-002 附录 A，agora-c3i） |
 | 人 | 单人；多用户是 Non-Goal，认证按 principal 留口（ADR-003）。同一主机可有多个用户各跑各的实例，互为陌生人（`node.id` 只需在自己的 peer 网内唯一） | 单人 |
 | 网络 | 无关：只要求客户端能到达节点，认证与 TLS 由 agora 自己保证（§8）；**网络可达 ≠ 授权** | 当前用 tailnet，只是部署选择 |
@@ -144,7 +144,7 @@ MVP 的完成定义不是"可以在浏览器里打开终端"，而是：
 | 6 | UI state is disposable. Agent state is persistent. |
 | 7 | 运行时是 Agent persistence 的 Source of Truth；SQLite 只保存 metadata / preferences / mapping，不是 process existence 的 Source of Truth【ADR-001】 |
 | 8 | One broken node must not affect another node；peer 离线在视图里表现为 stale（保留最后视图与时间），绝不静默消失 |
-| 9 | 客户端零特权：一切功能经节点 API 完成，没有客户端专用后门；界面呈现按设备形态分级——桌面是全功能工作台，手机是交互子集（无终端、无创建、无详情，§6.9，A52）。能力同源：设备能做什么由节点决定，不由客户端形态决定 |
+| 9 | 客户端零特权：一切功能经节点 API 完成，没有客户端专用后门；界面呈现按设备形态分级——桌面是全功能工作台，手机是交互子集（无终端、无自由表单——「新建」只列预设、无详情，§6.9，A52）。能力同源：设备能做什么由节点决定，不由客户端形态决定 |
 | 10 | 状态来源分层：hook / 结构化事件 > 进程状态 > 屏幕文本；每个状态值带来源与置信度（§5，ADR-002） |
 | 11 | 节点互不信任：每个节点独立认证 principal（人：已配对设备的 session；节点作为 peer 客户端：机器 token + 证书指纹）；网络可达（局域网 / tailnet / 公网）≠ 授权（§8，ADR-003） |
 | 12 | 任务真相在仓库里（beads / git）：agora 只存 session ↔ 任务的关联，永不复制任务的内容、状态、依赖 |
@@ -513,7 +513,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 **能力同源、呈现分级**（不变量 9）：所有客户端经同一套节点 API，没有客户端专用后门（守卫见 A36 的 `tests/arch_boundary.rs`）；界面按设备形态分档。
 
 - **桌面（全功能工作台）**：终端、创建、详情与树视图、快捷键（§6.1–§6.5）；桌面优先优化终端与创建。
-- **手机（交互收件箱，V2 首批为 iPhone）**：只做「看谁在等我 + 当场处置」——收件箱、会话卡（状态、任务标签、最近一轮的两个气泡、决策原文、底部 composer）、allow / deny、Kill / Restart（确认）、推送深链。交互语法沿用即时消息的熟悉形态（固定 composer、气泡、乐观发送），但**不做消息流与完整对话历史**（§11 的 Conversation indexing，承接 agora-ghl3）；**没有终端、没有 New Agent、没有 diff / 验收 / 改动列表、没有命令面板与快捷键**（A52）。手机不是节点：不装 daemon / tmux / hooks、不跑 agent，只配对一个承载节点（通常是常开的 zuan），经 peer 一跳看与操作全部节点（§3.5、§6.6）。
+- **手机（交互收件箱，V2 首批为 iPhone）**：只做「看谁在等我 + 当场处置」——收件箱、会话卡（状态、任务标签、最近一轮的两个气泡、决策原文、底部 composer）、预设「新建」（一屏按钮、点一下直接起、零打字；能起什么冻结在桌面侧的 `agora preset`——预设只读，手机上不定义、不改）、allow / deny、Kill / Restart（确认）、推送深链。交互语法沿用即时消息的熟悉形态（固定 composer、气泡、乐观发送），但**不做消息流与完整对话历史**（§11 的 Conversation indexing，承接 agora-ghl3）；**没有终端、没有自由表单（新建只有预设按钮）、没有 diff / 验收 / 改动列表、没有命令面板与快捷键**（A52）。手机不是节点：不装 daemon / tmux / hooks、不跑 agent，只配对一个承载节点（通常是常开的 zuan），经 peer 一跳看与操作全部节点（§3.5、§6.6）。
 - **`respond_via = terminal` 的问题**（Grok 权限、AskUserQuestion 类）在手机上显示「需要到桌面」，不提供"打开终端"、不注入键击（§1.2）。
 - **无句柄行有没有 composer 看 `text_via`**（§5.5、ADR-002 D11：`runtime` | `host` | `none`）：`host`（宿主自报输入通道，目前是 pi 的扩展）与有终端的一样能给下一条指令——只是不经 PTY，走节点上的 `input/` 队列由宿主自己执行；`none` 才是 `mobile-terminal-only`「到桌面」（agora-t5kf.3）。
 - **桌面窄屏**（< 700 px）不再叠出第二套全功能布局：给「用手机面板打开」的引导；iPad 等中间形态走桌面。
@@ -662,7 +662,7 @@ RBAC                         Teams                        Cloud service
 - [ ] **A28** 从 iPhone 经 zuan 回答 Mac 上的 WAITING、Kill / Restart，并看到行状态同步（一跳转发）；不 attach 终端
 - [ ] **A35** 节点以 HTTPS 提供服务，iPhone 可安装 PWA（ADR-003 证书路径至少一条走通）
 - [ ] **A37** iPhone 浏览器能看收件箱、回答 WAITING、确认危险操作；可安装为 PWA
-- [ ] **A52** 手机面板是无终端的交互子集：独立入口、DOM 不含终端 / 创建 / diff / 验收 / 改动列表，也不含消息流与历史翻页；动作全部走与桌面相同的节点 API（有守卫）
+- [ ] **A52** 手机面板是无终端的交互子集：独立入口、DOM 不含终端、创建自由表单（「新建」只有预设按钮这一屏，整屏无 input / textarea）、diff / 验收 / 改动列表，也不含消息流与历史翻页；动作全部走与桌面相同的节点 API（有守卫）
 
 **TUI 桌面客户端**：同一套节点 API 的第二种客户端形态，桌面专用。V1 只有浏览器——它是三类设备唯一共有的运行环境（§0.1）。
 

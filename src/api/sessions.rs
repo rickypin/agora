@@ -326,7 +326,7 @@ async fn create_from_preset(
     }
     let preset = super::presets::load(state, name).await?;
     // 目录在 `agora preset add` 那一刻校验过（S1）；之后被删 / 移走的话，运行时给的是 502
-    // runtime（tmux 的 can't chdir），对手机是一句听不懂的话——这里先判，给 400。
+    // runtime（底层运行时的 `can't chdir`），对手机是一句听不懂的话——这里先判，给 400。
     let working_directory = PathBuf::from(&preset.working_directory);
     if !working_directory.is_dir() {
         return Err(bad_request(&format!(

@@ -218,7 +218,7 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 
 ## 移动端交互收件箱 /m（MISSION §6.9；A37 / A52）
 
-手机不是桌面 Dashboard 的窄版，也不是终端：它是「看谁在等我 + 当场处置」的交互收件箱（PWA 的 `start_url` = `/m`）。四屏：
+手机不是桌面 Dashboard 的窄版，也不是终端：它是「看谁在等我 + 当场处置」的交互收件箱（PWA 的 `start_url` = `/m`）。五屏：
 
 ```
 1 门                             2 收件箱（默认）
@@ -246,7 +246,49 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 │ │ 下一条指令…        [发送]│    │
 │ └────────────────────────┘     │
 └────────────────────────────────┘
+5 新建（预设；agora-prdg.4）
+┌────────────────────────────────┐
+│ ← 新建                         │
+│ ╭────────────────────────────╮ │
+│ │ pktmask          ✦ Claude  │ │
+│ │ PktMask · --model opus     │ │
+│ ╰────────────────────────────╯ │
+│ ╭────────────────────────────╮ │
+│ │ run-tests            π pi  │ │
+│ │ agora · 跑一遍测试并总结失败 │ │
+│ ╰────────────────────────────╯ │
+│ （没有预设时：一句 agora preset │
+│   add … 的 CLI 指引，看不见表单）│
+└────────────────────────────────┘
 ```
+
+### 新建（预设）（agora-prdg.4，2026-10-08）
+
+手机要能「开始一件事」（agora-uqpi 的拍板），但**能起什么冻结在桌面侧**：预设只在终端里用
+`agora preset add <名字> --agent <agent> --dir <目录> [--args "…"] [--prompt "…"]` 定义
+（S1，见 `docs/spec/config.md` 的「预设」），手机只消费。
+
+- **入口**：收件箱 Header 的「新建」（`data-testid="mobile-new-open"`）→ 独立的「新建」屏
+  （`mobile-preset-screen`）。打开时拉一次 `GET /api/presets`——只读端点，预设的增删改只在桌面
+  终端，手机上改不了（被临时拿到的手机只能选已经批准过的那几条）。
+- **一屏按钮**：每条按钮（`mobile-preset-<name>`）第一行名称 + agent 徽标，第二行目录**末段**
+  （完整路径在 `title` 里）+ 参数摘要（`mobile-preset-args`，等宽）+ 固定首句
+  （`mobile-preset-prompt`，只取第一行）。排序用节点给的顺序（`preset::list` 按名字，确定、好扫）；
+  「updated_at 倒序是不是更好」是留给人的裁决，改的时候只动服务端那一处与这一句。
+- **点一下直接起**：`POST /api/sessions { preset }`（节点展开成 agent / 目录 / 启动参数 / 首句，
+  `display_name` 缺省是预设名）→ **不要第二段确认**——预设本身就是「预先批准」，确认与「少点几下」
+  的初衷相悖。起成功不立刻关屏：201 先于 `session_created` 到达，立刻关会先闪一下收件箱；留在
+  这一屏（按钮上「正在起…」、在途期间整列禁用）等新行进列表，一到就落它的卡片，可发送
+  （turn_done / idle）时把焦点放进卡片现成的 composer——第一句在那儿说（可用 iOS 听写）。返回键
+  不等了：会话已经起了，回收件箱点那一行就是。
+- **零打字是这一屏的验收**：整屏**没有任何 `input` / `textarea`**（DOM 守卫
+  `web/src/MobileApp.test.tsx`），桌面形态的那批 testid（`new-agent` / `create` / `term*` /
+  `diff-*` / `acceptance-*` / `changes-*` / `mobile-stream` / `mobile-load-more` / `.xterm`）仍为 0
+  ——A52 的回写只把「创建」改成「创建自由表单（只有预设按钮）」，名单一条没删。空态（没有预设）
+  也是一句 CLI 指引：「还没有预设：在终端跑 `agora preset add <名字> --agent <agent> --dir <目录>`
+  加一条」，同样零打字。
+- **失败**：留在原屏 + 节点给的中文错误（未知预设 404 `preset_unknown` / 目录被删 400 / 起不来），
+  不落卡片、不猜。
 
 ### 横屏用满宽度（agora-x70t，2026-10-08）
 
@@ -338,10 +380,10 @@ WAITING 的变体：决策原文（等宽逐字、不过 markdown）作为一张
 - 会话卡：任务标题；**最近一轮用两个气泡**——`❯` 你最后一句（`prompt`，首行）+ `↳` agent 最后回复（`detail`，与桌面同一 markdown 子集，默认折 6 行、**仅最后一条可展开一次**，不做更早消息的翻页）；WAITING 时决策原文（等宽逐字、不过 markdown）作为内联卡片画在 composer 上方；Restart / Kill 收进「更多」（确认框，确认逻辑在所属节点）。
 - composer 与发送：固定在底部（拇指区）。**状态门**：只对 turn_done / idle 开放文本；waiting 只给决定按钮；running / starting 置灰并说明「它还在跑」。**能不能发看 `textVia(row)` 而不是有没有句柄**（agora-t5kf.3，ADR-002 D11）：`runtime`（有 PTY）与 `host`（无句柄但宿主收文本，目前是 pi 的扩展）都给 composer；`none`（Claude / Codex / Grok、旧扩展、老节点）没有 composer，并给一句说明（`mobile-terminal-only`：在跑时说“它还在跑；只能在桌面终端里回复”、其余说“没有可写的运行时”——agora-71p2，不能让它看着像输入框没画出来）。host 行在跑时是 `mobile-host-running-note`“它还在跑；等它跑完这一轮再发（会经 pi 的扩展交进去）”——发得出去，只是与状态门同一个口径。发送是**乐观的**：气泡先以「发送中」出现，`POST /api/sessions/:id/input` 成功后转「已发送」，失败保留文本并给重试；host 行 504 `host_timeout`（宿主没来取件）由服务端那句话直接显示。
 - 排版与自适应（agora-x70t，2026-10-08 在 iPhone 16 Pro 上按计算样式与几何量测定的牙）：手机壳用**一套 `--m-fs` 令牌**（`web/src/index.css` 的 `.mobile` / `.gate-mobile`），字号、间距（`--m-1..--m-5`）、触控下限（`--m-tap`）都由它派生——换一档字，行距与留白跟着变，否则字号一大人就觉得挤。基准 **17px**（Apple HIG 的 body；桌面壳仍是 13px 的 dense 工作台，两套不互相牵连），设置屏有四档 **小 15 / 标准 17 / 大 19 / 特大 22**，存 localStorage（键 `agora.mobile-text`，`data-text` 是与 CSS 的接口）；默认档就是 17px，因为"整体偏小"正是这一轮要修的。两条**平台下限是绝对的**、不跟档位缩：输入框 ≥16px（低于它 iOS 一聚焦就整页放大——"点输入框页面就放大"的根因）、可点目标 ≥44pt（Apple 触控下限）。长词与 URL 到处可折（`overflow-wrap: anywhere`；无空格长串以前会画出卡片外，量测 `.mobile-card-task` scrollWidth 2210 / clientWidth 384），收件箱行的单行省略号保留（那是设计）。**引擎差异要有硬夹断兜底**：WebKit（iOS 上唯一的引擎）对没有 `overflow`/`min-width: 0` 的 flex 项不给收缩——80 字符无空格的行名在那里盒子 1138px 直接顶出卡片框，而 Chromium 会换行、量不出来（2026-10-08，agora-c03z：Playwright WebKit 复现）；所以 `.mobile-row` 有 `overflow: hidden`、`.mobile-card` 有 `overflow-x: hidden`、行头子项有 `min-width: 0`，名字/状态再叠 `overflow-wrap: anywhere`。视口：`100dvh`（Safari 工具栏不把 composer 顶出屏幕）、四向 `env(safe-area-inset-*)`（横屏刘海）、`interactive-widget=resizes-content`（Chromium 系键盘缩内容）、`-webkit-text-size-adjust: 100%`（横屏不放大文字），composer 聚焦后 `scrollIntoView({block:"nearest"})` 兜住 iOS 键盘。守卫：`web/src/mobileCss.test.ts`（把 CSS 当数据钉上述不变式）、`mobileText.test.ts`、`MobileSettings.test.tsx` / `MobileApp.test.tsx`（档位读写与 `data-text`）、`MobileCard.test.tsx`（聚焦滚动）。
-- 不做：终端（xterm 不加载）、New Agent、diff / 验收 / 改动列表、命令面板与快捷键、多节点切换（只配一个承载节点）、消息流与完整对话历史（Conversation indexing 见 §11，承接 `agora-ghl3`）。
+- 不做：终端（xterm 不加载）、New Agent 自由表单（「新建」= 预设一屏，见上）、diff / 验收 / 改动列表、命令面板与快捷键、多节点切换（只配一个承载节点）、消息流与完整对话历史（Conversation indexing 见 §11，承接 `agora-ghl3`）。
 - `respond_via = terminal`（Grok 权限、AskUserQuestion）显示「需要到桌面」，不提供「打开终端」；不注入键击（MISSION §1.2）。
 
-行为：推送点击进 `/m?session=<node>:<id>` 并定位该行（PWA 已开则聚焦；可发送的行把焦点放进 composer）；「看过」沿用每设备 localStorage（与桌面不共享，v1 接受）；承载节点离线时门页显示不可达与上次同步时间，不做离线动作队列。守卫：web/src/Mobile*.test.tsx（新建）与 A52 的 DOM 断言（不含终端 / 创建 / diff / 验收 / 改动列表的 testid）。
+行为：推送点击进 `/m?session=<node>:<id>` 并定位该行（PWA 已开则聚焦；可发送的行把焦点放进 composer）；「看过」沿用每设备 localStorage（与桌面不共享，v1 接受）；承载节点离线时门页显示不可达与上次同步时间，不做离线动作队列。守卫：web/src/Mobile*.test.tsx（新建）与 A52 的 DOM 断言（不含终端 / 创建自由表单（只有预设按钮，整屏无 input / textarea）/ diff / 验收 / 改动列表的 testid）。
 
 ## 设计令牌（全局一致性；agora-74nf）
 
