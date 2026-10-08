@@ -45,9 +45,9 @@ fn delivery_for(
     agent_env: &[(&str, String)],
     runtime_env: &[(&str, String)],
 ) -> Delivery {
-    // 每条投递须有不同文件名；真实 hook 每进程只写一条，测试用递增时间模拟。时刻从"现在"起算：
-    // external 行的进程号要与报来它的 hook 时刻对一下（进程不得晚于 hook，agora-tql），从 1 ms 起算
-    // 会把测试进程当成比 hook 还新的复用者。
+    // 每条投递须有不同文件名；真实 hook 每进程只写一条，测试用递增时间模拟。时刻从"现在"起算
+    // （文件名要用来排序 / 去重）。它与探活无关：探活不在 hook 的钟上比大小，号复用的锚是
+    // daemon 本机钟（agora-91vy）。
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1079,25 +1079,45 @@ async fn superseded_external_row_ends_at_the_new_conversation_first_event() {
 
 #[tokio::test]
 async fn a_new_conversation_supersedes_the_old_row_even_after_the_probe_guessed_it_gone() {
-    // agora-kyh9：hook 进程的钟与 daemon 不一致（信封时刻早于进程启动）时，`agent_process_alive`
-    // 的「进程不得晚于报来它的 hook」会先把这一行判成 process gone——FINISHED，`ended_at` 是探到
-    // 它的那个 tick 的近似值。同一 pid 随后报来新对话（换对话）时，旧行已经在 finished 档上，
-    // `supersede_external_rows` 直接跳过它：同一件事于是有两种说法（探活档 process_gone 与
-    // superseded 档），结束时刻也停在近似值上。
+    // agora-kyh9（agora-91vy 修订）：`agent_process_alive` 先判死一行时，同一 pid 槽位随后报来新对话
+    // （换对话）会把它重判成 superseded——FINISHED，`ended_at` 从探到的近似 tick 收回新对话首条事件
+    // 那一刻。旧行已经在 finished 档上，`supersede_external_rows` 本来直接跳过它：同一件事于是有两种
+    // 说法（探活档 process_gone 与 superseded 档）。
+    // kyh9 当时拿「hook 进程的钟走得慢」（信封比进程启动还早）制造探活档；agora-91vy 把探活换成
+    // daemon 本机钟锚之后那条路不再产探活档（见 `a_hook_envelope_older_than_the_agent_process_keeps_
+    // the_row_alive`），所以这里改用**真正的号复用**推进同一档：进程还活着，但已经不是检查点记的
+    // 那一个（现在挂在号上的是复用了这个号的别的进程）。
     // 期望：旧行仍被 supersede，`end_cause = superseded`，`ended_at` = 新对话首条事件的时刻。
     // 改坏：去掉 `supersede_external_rows` 里 ProcessGone 的改判 → `end_cause` 断言红（停在
     // process_gone）；改判时不先把状态机从 hook 快照恢复回来 → 第 1 步「进程事实压倒 hook」
     // 挡住 Superseded 事件，同样红。
     let (fx, receiver, home) = with_hooks();
     let env = [("CLAUDE_PID", std::process::id().to_string())];
-    // 两条信封都比本测试进程的启动还早（模拟 hook 进程的钟走得慢），探活因此判号复用。
+    // 两条信封都比本测试进程的启动还早，串起「旧对话 → 新对话」的先后（supersede 按 seen_at 分胜负）。
     let (old_env, _) = backdate(
-        delivery("sup-skew-old", session_start("sup-skew-old"), &env, &[]),
+        delivery("sup-reuse-old", session_start("sup-reuse-old"), &env, &[]),
         2 * 3600,
     );
     let old = ingest(&receiver, home.path(), &old_env).unwrap();
+    // 模拟真号复用：检查点里的启动时刻改成别人的。进程还活着、死的只是"当初那个进程"
+    // （探活的本机钟锚判不出来：锚就是它自己；启动时刻比对在这里咬合）。
+    let key: String = old.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    let path = home.path().join("hooks/state").join(format!("{key}.json"));
+    let mut cp: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let started = cp["agent_process"]["started_at"]
+        .as_i64()
+        .expect("本机能读到进程启动时刻");
+    cp["agent_process"]["started_at"] = json!(started - 1000);
+    std::fs::write(&path, cp.to_string()).unwrap();
+    // 重启让检查点回填进探活表（归档已由 ingest 消费，这里只重放检查点）。
+    let restarted = Arc::new(agora::session::SessionManager::new(
+        fx.db.clone(),
+        fx.rt.clone() as Arc<dyn Runtime>,
+    ));
+    let receiver = Receiver::new(home.path(), restarted.clone());
+    receiver.replay().unwrap();
     // 现实中这一步是每 2 s 的轮询；这里显式看一眼，让探活档先落上。
-    let v = fx.sessions.get(&old).unwrap();
+    let v = restarted.get(&old).unwrap();
     assert_eq!(v.assessment.status, Status::Finished);
     assert_eq!(
         v.assessment.end_cause,
@@ -1107,14 +1127,14 @@ async fn a_new_conversation_supersedes_the_old_row_even_after_the_probe_guessed_
     );
     assert!(v.record.ended_at_approximate);
 
-    // 同一进程报来新对话：旧行改判 superseded，结束时刻收回新对话首条事件那一刻。
+    // 同一 pid 槽位报来新对话：旧行改判 superseded，结束时刻收回新对话首条事件那一刻。
     let (new_env, new_at) = backdate(
-        delivery("sup-skew-new", session_start("sup-skew-new"), &env, &[]),
+        delivery("sup-reuse-new", session_start("sup-reuse-new"), &env, &[]),
         3600,
     );
     let new = ingest(&receiver, home.path(), &new_env).unwrap();
     assert_ne!(old, new);
-    let v = fx.sessions.get(&old).unwrap();
+    let v = restarted.get(&old).unwrap();
     assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
     assert_eq!(
         v.assessment.end_cause,
@@ -1122,13 +1142,71 @@ async fn a_new_conversation_supersedes_the_old_row_even_after_the_probe_guessed_
         "同一 pid 槽位换了对话，收敛到 superseded：{:?}",
         v.assessment
     );
-    let rec = fx.sessions.record(&old).unwrap();
+    let rec = restarted.record(&old).unwrap();
     assert_eq!(
         rec.ended_at.as_deref(),
         Some(clock::format_utc_secs(new_at).as_str()),
         "结束时刻用新对话首条事件，不再留着探到的近似 tick"
     );
     assert!(!rec.ended_at_approximate, "{rec:?}");
+}
+
+#[tokio::test]
+async fn a_hook_envelope_older_than_the_agent_process_keeps_the_row_alive() {
+    // agora-91vy（L2 kyh9 代检的残余观察）：hook 进程的钟偏慢、或 daemon 在重放旧投递件时，信封时刻
+    // 会早于 daemon 本地读到的进程启动时刻。旧判据 `started_at > seen_at/1000 + 1` 拿 hook 的钟比
+    // 本机的钟，把活着的行判成「号被复用」→ process gone / FINISHED（`ended_at` 近似）。修法：这条
+    // 判据换本机钟锚（`AgentProcess::local_seen_at`，daemon 本地见到这个号的时刻）；hook 的钟只留在
+    // `seen_at` 那一维（同一进程多个对话谁新谁旧，`supersede_external_rows`）。
+    // 期望：进程还在 → 行仍活着（`process = alive`、`pid` = 报来的号、不是 FINISHED）。
+    // 改坏一次看红：把 `agent_process_alive` 的本机钟锚检查换回 `p.seen_at` → 本用例的 alive 断言红
+    // （行落 process gone）。
+    let (fx, receiver, home) = with_hooks();
+    let mut child = std::process::Command::new("sleep")
+        .arg("300")
+        .spawn()
+        .unwrap();
+    let env = [("CLAUDE_PID", child.id().to_string())];
+    // 信封时刻拨到两小时前：hook 进程的钟比 daemon 慢（或这条投递件是重放的旧件）。
+    let (old, _) = backdate(
+        delivery("slow-clock", session_start("slow-clock"), &env, &[]),
+        2 * 3600,
+    );
+    let id = ingest(&receiver, home.path(), &old).unwrap();
+
+    let v = fx.sessions.get(&id).unwrap();
+    assert_ne!(
+        v.assessment.status,
+        Status::Finished,
+        "信封比进程启动还早不是号复用：{:?}",
+        v.assessment
+    );
+    assert_eq!(v.process, ProcessState::Alive, "{:?}", v.assessment);
+    assert!(v.alive);
+    assert_eq!(v.pid, Some(child.id()), "探到的还是信封报来的那个号");
+    assert!(
+        v.record.ended_at.is_none(),
+        "活着的行不许有结束时刻：{:?}",
+        v.record
+    );
+
+    // 反向仍咬得住：进程真没了 → process gone + 近似 ended_at。
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let v = fx.sessions.get(&id).unwrap();
+    assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
+    assert_eq!(
+        v.assessment.end_cause,
+        Some(EndCause::ProcessGone),
+        "{:?}",
+        v.assessment
+    );
+    assert_eq!(v.process, ProcessState::Gone, "{:?}", v.assessment);
+    assert!(
+        v.record.ended_at.is_some(),
+        "探到的 tick 补上近似结束时刻：{:?}",
+        v.record
+    );
 }
 
 #[tokio::test]

@@ -177,13 +177,20 @@ fn protected(a: &Assessment) -> bool {
 pub struct AgentProcess {
     pub pid: u32,
     pub started_at: Option<i64>,
-    /// 报来这个号的那条 hook 的时刻（信封 `received_unix_ms`，unix **毫秒**）。进程必须早于它：号上
-    /// 的进程比 hook 还新，就是号被复用了、原进程已没——从归档重建时读到的启动时刻本来就可能是别人的。
-    /// 毫秒而不是秒：同一进程先后两个对话谁新谁旧靠它分（`supersede_external_rows`），两条 hook 常在
-    /// 同一秒内（2026-09-08 agora-2nh：秒级时同秒平局落到 HashMap 迭代顺序，守卫测试稳定红）。
-    /// v2 检查点里存的是秒，`restore_hook` 加载时换算。
+    /// 报来这个号的那条 hook 的时刻（信封 `received_unix_ms`，unix **毫秒**）。毫秒而不是秒：同一
+    /// 进程先后两个对话谁新谁旧靠它分（`supersede_external_rows`），两条 hook 常在同一秒内
+    /// （2026-09-08 agora-2nh：秒级时同秒平局落到 HashMap 迭代顺序，守卫测试稳定红）。它是 **hook
+    /// 进程的钟**，不参与探活——号复用曾经拿它与 `started_at` 比大小，hook 钟偏慢 / 重放旧投递件会
+    /// 把活着的行判死（agora-91vy）；v2 检查点里存的是秒，`restore_hook` 加载时换算。
     #[serde(default)]
     pub seen_at: i64,
+    /// daemon **本机钟**（unix 秒）第一次把这个号与这一行关联起来的时刻（`note_external_pid`）。
+    /// 探活拿它与进程启动时刻比（`agent_process_alive`）：现在挂在这个号上的进程比这个时刻还新，
+    /// 就是号被复用了——原来那个已经没了。两个值都是本机钟，hook 进程的钟不参与（agora-91vy）。
+    /// 升级前的检查点没有它（`None`）：跳过这条判据，等这个号的下一条 hook 补上；同一个号的后续
+    /// 事件不推进它（锚越早，号复用越早被看见）。
+    #[serde(default)]
+    pub local_seen_at: Option<i64>,
 }
 
 /// 检查点格式版本。1 = 不带 `agent_process`（2026-09-08 之前）；2 = 带，`seen_at` 是秒；

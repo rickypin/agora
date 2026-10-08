@@ -1065,12 +1065,19 @@ impl SessionManager {
         Ok(id)
     }
 
-    /// external 会话最近一次 hook 报来的 agent 进程号；顺手记下它的启动时刻与这条 hook 的时刻
-    /// （`seen_at`，unix 毫秒），重启恢复后探活时对一下（agora-tql）。同一个号再报一次不动。
+    /// external 会话最近一次 hook 报来的 agent 进程号；顺手记下它的启动时刻、这条 hook 的时刻
+    /// （`seen_at`，unix 毫秒）与 **daemon 本地见到它的时刻**（`local_seen_at`，本机钟，agora-91vy），
+    /// 重启恢复后探活时对一下（agora-tql）。同一个号再报一次不换记录：锚只许往前不动，越早的锚越早
+    /// 看见号复用（换号才换记录）；升级前的检查点没有锚，下一条同号事件补上。
     pub fn note_external_pid(&self, id: &str, pid: u32, seen_at: i64) {
         let mut pids = lock(&self.external_pids);
-        if pids.get(id).is_some_and(|p| p.pid == pid) {
-            return;
+        if let Some(p) = pids.get_mut(id) {
+            if p.pid == pid {
+                if p.local_seen_at.is_none() {
+                    p.local_seen_at = Some(clock::now_secs());
+                }
+                return;
+            }
         }
         pids.insert(
             id.to_owned(),
@@ -1078,6 +1085,7 @@ impl SessionManager {
                 pid,
                 started_at: process_started_at(pid),
                 seen_at,
+                local_seen_at: Some(clock::now_secs()),
             },
         );
     }
@@ -1128,10 +1136,12 @@ impl SessionManager {
             // 而同一 pid 槽位随后报来新对话时，这件事的真身就是 superseded，结束时刻也该用
             // 新对话首条事件的时刻。hook 自己说结束的（SessionEnd）与带退出码的进程结束各有
             // 自己的准确时刻，绝不在这里改写。
-            // 探活档怎么来的：`agent_process_alive` 拿进程启动时刻（本机钟）与 hook 信封时刻
-            // （hook 进程的钟）比大小，两边不一致时判号复用——同一个 pid 的新旧两行在时钟这一
-            // 维上分不开，所以这里不再问探活，只按「同一 (agent_type, pid) 槽位报来了更新的
-            // seen_at」收敛（配对本身已经在上面按 seen_at 定过胜负）。
+            // 探活档怎么来的（2026-10-08 修订，agora-91vy）：`agent_process_alive` 拿进程启动时刻与
+            // **daemon 本地**见到这个号的时刻比（两边都是本机钟；hook 的钟只在 `seen_at` 那一维），
+            // 比出「现在挂在这个号上的进程不是当初那个」。而同一个 pid 槽位换了对话的新旧两行，在
+            // 探活这一维上本来就分不开（号还活着，甚至就是同一个进程），所以这里不再问探活，只按
+            // 「同一 (agent_type, pid) 槽位报来了更新的 seen_at」收敛（配对本身已经在上面按
+            // seen_at 定过胜负）。
             let current = lock(&self.machines).get(&id).map(|m| m.current().clone());
             if let Some(a) = &current {
                 if matches!(a.status, Status::Finished | Status::Failed) {
@@ -1332,7 +1342,8 @@ impl SessionManager {
             (origin, None) if origin.is_handleless() => {
                 match lock(&self.external_pids).get(&rec.id).cloned() {
                     // 没有退出码可拿：进程没了就只知道"结束了"，不分 FINISHED / FAILED。
-                    // 号还在但启动时刻对不上：号被别的进程复用了，原来那个也是没了（agora-tql）。
+                    // 号还在但不是当初那个了（启动时刻对不上，或比 daemon 本地见到它的时刻还新）：
+                    // 号被别的进程复用了，原来那个也是没了（agora-tql / agora-91vy）。
                     // 这种号不报（第三个值 None）：它在 `ps` 里属于别人，写进行里就是又一次对不上号。
                     Some(p) if !agent_process_alive(&p) => {
                         (status::external_process_gone(), Liveness::Dead, None)
@@ -2185,18 +2196,26 @@ fn process_alive(pid: u32) -> bool {
     r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// 检查点里的 agent 进程还是不是当初那个：记下的进程不晚于报来它的那条 hook（否则记的时候号就已经
-/// 是别人的了——从归档重建时读到的启动时刻可能是复用者的），号活着，且启动时刻（两边都读得到时）
-/// 一致。读不到启动时刻的平台只看号——退化为 v1 的行为，不会更差。多给 1 s 容忍秒级取整
-/// （`started_at` 是秒，`seen_at` 是毫秒）。
+/// 检查点里的 agent 进程还是不是当初那个。两条判据，都是**本机钟与本机钟**比，hook 进程的钟
+/// 不参与（agora-91vy；此前拿 `seen_at` 比 `started_at`，hook 钟偏慢 / 重放旧投递件会把活着的行
+/// 判死）：
+/// ① 现在挂在这个号上的进程，启动时刻不得晚于 daemon 本地见到这个号的时刻（`local_seen_at`）——
+///    晚了就是号被复用了，原来那个已经没了。没有本机钟锚的记录（升级前的检查点）跳过这一条：
+///    锚是记录那一刻的产物，那时 `started_at` 本来就是现读的。
+/// ② 现在这个号的启动时刻与记下的一致（两边都读得到时）。
+/// 读不到启动时刻的平台只剩号存在性——退化为 v1 的行为，不会更差。多给 1 s 容忍秒级取整
+/// （两边都是秒）。
 fn agent_process_alive(p: &AgentProcess) -> bool {
-    if p.started_at.is_some_and(|s| s > p.seen_at / 1000 + 1) {
-        return false;
+    let current = process_started_at(p.pid);
+    if let (Some(anchor), Some(now)) = (p.local_seen_at, current) {
+        if now > anchor + 1 {
+            return false;
+        }
     }
     if !process_alive(p.pid) {
         return false;
     }
-    match (p.started_at, process_started_at(p.pid)) {
+    match (p.started_at, current) {
         (Some(recorded), Some(now)) => recorded == now,
         _ => true,
     }

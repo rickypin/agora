@@ -1030,7 +1030,7 @@ fn external_agent_pid_survives_daemon_restart_and_guards_pid_reuse() {
     // 重启就丢，agent 早退了的行永远钉在 TURN_DONE。守卫：进程号随检查点落盘，重启后 alive 仍可判、
     // 进程一没就 FINISHED；检查点里的启动时刻对不上（号被复用）也算没了。
     // 关掉 HookSnapshot.agent_process 的恢复 → 第一段 alive 断言红；关掉 agent_process_alive 的启动
-    // 时刻比对 → 最后一段 finished 断言红。
+    // 时刻比对（或本机钟锚比对，agora-91vy）→ 最后两段 finished 断言各自红。
     let home = tempfile::tempdir().unwrap();
     let rt = Arc::new(common::FakeRuntime::default());
     let mut child = std::process::Command::new("sleep")
@@ -1117,11 +1117,12 @@ fn external_agent_pid_survives_daemon_restart_and_guards_pid_reuse() {
     assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
     drop(s);
 
-    // 从归档重建时读到的启动时刻可能是复用者的：hook 时刻早于号上进程的启动时刻 → 也不算活着。
-    // 模拟：检查点里 seen_at（v3 起是毫秒）改成进程启动之前。
+    // 真正的号复用：现在挂在这个号上的进程比 daemon 本地见到它的时刻还新（本机钟锚，agora-91vy）。
+    // hook 的信封时刻不再是判据——它跟这里无关，模拟改成拨 `local_seen_at`（旧写法拨 `seen_at`，
+    // 修好后那不再是号复用：信封钟偏慢会把活着的行误判死，见 hooks_external 的慢钟用例）。
     let mut cp: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     cp["agent_process"]["started_at"] = json!(started);
-    cp["agent_process"]["seen_at"] = json!((started - 60) * 1000);
+    cp["agent_process"]["local_seen_at"] = json!(started - 60);
     std::fs::write(&path, cp.to_string()).unwrap();
     let db = Arc::new(Db::open(&home.path().join("agora.db")).unwrap());
     let s = Arc::new(SessionManager::new(
@@ -1130,7 +1131,7 @@ fn external_agent_pid_survives_daemon_restart_and_guards_pid_reuse() {
     ));
     Receiver::new(home.path(), s.clone()).replay().unwrap();
     let v = s.get(&id2).unwrap();
-    assert!(!v.alive, "进程比报来它的 hook 还新 = 号被复用");
+    assert!(!v.alive, "进程比 daemon 本地见到它的时刻还新 = 号被复用");
     assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
     other.kill().unwrap();
     other.wait().unwrap();
