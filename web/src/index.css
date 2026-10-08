@@ -418,7 +418,7 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
   background: var(--bg);
 }
 .mobile-top h1 { letter-spacing: 0.06em; }
-.mobile-carrier { color: var(--muted); font-size: var(--m-fs-mini); }
+.mobile-carrier { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--m-fs-mini); }
 .mobile-inbox { flex: 1; overflow-y: auto; padding: var(--m-2) calc(var(--m-3) + env(safe-area-inset-right)) calc(var(--m-5) + var(--safe-bottom)) calc(var(--m-3) + env(safe-area-inset-left)); }
 .mobile-section h2 { display: flex; align-items: baseline; justify-content: space-between; gap: var(--m-2); margin: 0; padding: var(--m-3) var(--m-1) var(--m-1); color: var(--muted); font-size: var(--m-fs-mini); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 .mobile-section ul { display: flex; flex-direction: column; gap: var(--m-2); margin: 0; padding: 0; list-style: none; }
@@ -459,6 +459,19 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .mobile-finished-head .mobile-finished-toggle { flex: 1; min-width: 0; margin-bottom: 0; }
 .mobile-finished-clear { flex: none; min-height: var(--m-tap); padding: 0 var(--m-1); color: var(--accent); background: none; border-color: transparent; font-size: var(--m-fs-mini); white-space: nowrap; }
 .mobile-finished-clear:disabled { color: var(--muted); }
+/* 「新建」一屏（agora-prdg.4）：一列预设按钮，点一下直接起；整屏没有 input / textarea。
+   按钮是列方向 flex，align-items 必须显式写（WebKit 的 UA 给 <button> 塞 flex-start，
+   见 index.css 里 .mobile-row 的那段与 buttonFlex.test.ts）。 */
+.mobile-presets { display: flex; flex-direction: column; gap: var(--m-2); margin: 0; padding: 0; list-style: none; }
+.mobile-preset { display: flex; flex-direction: column; align-items: stretch; gap: var(--m-1); width: 100%; min-height: var(--m-tap); padding: var(--m-3); text-align: left; background: var(--panel); border-radius: var(--m-2); overflow: hidden; }
+.mobile-preset:disabled { opacity: 0.6; }
+.mobile-preset-head { display: flex; align-items: baseline; gap: var(--m-2); min-width: 0; }
+.mobile-preset-name { flex: 1 1 auto; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.mobile-preset-dir { color: var(--muted); font-size: var(--m-fs-note); overflow-wrap: anywhere; }
+.mobile-preset-args,
+.mobile-preset-prompt { color: var(--muted); font-size: var(--m-fs-note); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-preset-args { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.mobile-preset-starting { color: var(--accent); font-size: var(--m-fs-note); }
 .narrow-guide a { color: var(--accent); }
 
 /* ---------- /m 会话卡（agora-thc.10）：IM 语法——最近一轮两气泡、底部 composer、乐观发送 ---------- */
@@ -536,6 +549,7 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .device-list td { padding: 4px 6px; border-top: 1px solid var(--border); }
 
 /* /m 设置与推送（agora-thc.7）。 */
+.mobile-new { min-height: var(--m-tap); padding: 0 var(--m-2); color: var(--accent); background: none; border-color: transparent; font-size: var(--m-fs-note); }
 .mobile-gear { margin-left: auto; padding: 0 var(--m-2); }
 .mobile-settings .mobile-section { margin: var(--m-3) calc(var(--m-3) + env(safe-area-inset-right)) var(--m-3) calc(var(--m-3) + env(safe-area-inset-left)); }
 .mobile-push-toggle { min-width: var(--m-5); padding: 0 var(--m-3); }

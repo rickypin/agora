@@ -73,7 +73,20 @@ export interface AdoptBody {
   agent_type?: string;
 }
 
-export interface CreateSessionBody {
+/** `GET /api/presets` 的一项（agora-prdg.4）：桌面 / 终端里 `agora preset` 定义好的"一键启动"。 */
+export interface PresetInfo {
+  name: string;
+  agent_type: string;
+  /** CLI 存的是 canonical 过的绝对路径（add 时校验过存在；之后被删就在起会话时报 400）。 */
+  working_directory: string;
+  /** 启动参数字符串，原样（经 shell 接在裸命令名之后）；没有是 null。 */
+  args: string | null;
+  /** 固定首句（A43 的首条 prompt）；没有是 null。 */
+  prompt: string | null;
+  updated_at: string;
+}
+
+interface CreateSessionBodyExplicit {
   /** 在哪个节点起（A45）：不发 = 本机；peer 名 → 节点经一跳转发在那台机器上起，响应的 id 带它的前缀。 */
   node?: string;
   display_name: string;
@@ -85,6 +98,22 @@ export interface CreateSessionBody {
   /** 首条 prompt（A43）：只进这一代的启动命令、不进库、Restart 不重发；非空才发。 */
   prompt?: string;
 }
+
+/**
+ * `POST /api/sessions` 的 body（agora-prdg.4 起二选一）：显式字段（New Agent 对话框 / 侧栏 shell）
+ * 或预设（手机「新建」，只给 preset）。两种不能混——预设就是完整的启动定义，混给节点回 400 不猜。
+ */
+export type CreateSessionBody =
+  | {
+      /** 预设起的会话也只支持本机（发 node 就是 400）；预留字段是为了两个形态的键集一致。 */
+      node?: string;
+      /**
+       * 用预设起会话（agora-prdg.4）：节点展开成 agent_type / 目录 / 启动参数（launch_args）/ 首句，
+       * display_name 缺省是预设名。
+       */
+      preset: string;
+    }
+  | CreateSessionBodyExplicit;
 
 export interface RestartResult {
   restart?: { resumed: boolean; agent_session_id?: string; reason?: string };
@@ -144,6 +173,11 @@ export function sessionApi(fetchImpl: FetchLike = apiFetch) {
     /** New Agent 对话框的创建（§6.4）；201 的响应体就是新会话那一行。 */
     create: (body: CreateSessionBody) =>
       call<{ id: string }>(fetchImpl, "POST", "/api/sessions", body),
+    /**
+     * 手机「新建」的预设按钮（agora-prdg.4）：**只读**——预设的增删改只在桌面终端的
+     * `agora preset`（S1），这里没有写端点（非 GET 由节点回 405）。预设属于承载节点这一份。
+     */
+    presets: () => call<{ presets: PresetInfo[] }>(fetchImpl, "GET", "/api/presets"),
     /** 采纳未登记的运行时会话（§5.5）；201 的响应体就是新会话那一行。 */
     adopt: (body: AdoptBody) => call<{ id: string }>(fetchImpl, "POST", "/api/sessions/adopt", body),
     /** 该会话工作目录的改动文件（§6.3 看结果；A41，agora-h1k.5）：只读的 git status，200 + 类型原因而非错误。 */

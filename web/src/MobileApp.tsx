@@ -19,7 +19,7 @@ import {
   type CSSProperties,
 } from "react";
 import { agentBadge } from "./agentBadge";
-import { sessionApi, type SessionApi } from "./api";
+import { sessionApi, type PresetInfo, type SessionApi } from "./api";
 import { isHandleless, loadSeen, sectionOf, sortByAttention, statusLine, storeSeen, taskLabel, type Section, type SeenSet } from "./attention";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow } from "./events";
@@ -190,7 +190,49 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     setClearing(false);
     setClearNote(clearSummary(result));
   }
+
+  // 「新建」：每次打开重新拉一遍列表（终端里刚加 / 删的预设下次打开就是新的），拉失败把节点那句话
+  // 留在屏上（"正在读…"同时收掉，不留一个停不下来的转圈）。
+  async function openNew() {
+    setNewOpen(true);
+    setPresets(null);
+    setPresetError(null);
+    const r = await api.presets();
+    if (r.ok) setPresets(r.value.presets);
+    else if (!r.needsConfirmation) setPresetError(r.error.message);
+  }
+
+  // 点一条即起：**不要第二段确认**——预设本身就是"预先批准"，确认反倒与"少点几下"的初衷相悖
+  // （epic agora-hxva 的设计要点，2026-10-08）。失败留在原屏 + 节点给的中文错误（未知预设 /
+  // 目录不存在 / 起不来），不落卡片、不猜。
+  async function startPreset(preset: PresetInfo) {
+    if (starting !== null) return;
+    setStarting(preset.name);
+    setPresetError(null);
+    const r = await api.create({ preset: preset.name });
+    if (!r.ok) {
+      setStarting(null);
+      setPresetError(r.needsConfirmation ? "节点要求确认，但起会话没有确认语义；重试一次" : r.error.message);
+      return;
+    }
+    // 成功：**留在这一屏等行到**（201 先于 `session_created`，立刻关屏会先闪一下收件箱，那不像
+    // "跳到卡片"）。按钮上保持"正在起…"，pendingNew 的 effect 一行到就关屏落卡片。
+    setPendingNew(r.value.id);
+  }
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 新建一屏（agora-prdg.4；epic agora-hxva）：收件箱 Header →「新建」→ 预设按钮 → 点一下直接起。
+  // **零打字**：这一屏只有按钮（名称 / agent 徽标 / 目录 / 参数摘要 / 首句），没有任何 input /
+  // textarea——DOM 守卫在 MobileApp.test.tsx。这是 agora-uqpi 的拍板：手机要能"开始一件事"，
+  // 但"能起什么"冻结在桌面侧的 CLI 预设里，被临时拿到的手机只能选已经批准过的那几条。
+  const [newOpen, setNewOpen] = useState(false);
+  // null = 还没拉到（打开时才拉，终端里改了预设下次打开就是新的）。
+  const [presets, setPresets] = useState<PresetInfo[] | null>(null);
+  const [presetError, setPresetError] = useState<string | null>(null);
+  // 正在起的那条预设名：在途期间禁用整列，别让连点起出两条（与桌面 shell 按钮的 in-flight 同一条规矩）。
+  const [starting, setStarting] = useState<string | null>(null);
+  // 起成功但新行还没进列表（201 先于 `session_created` 到达，与 Workspace 的 pendingOpen 同一条 race）：
+  // 行一到就选中它。不在这里乐观插行——列表的真相在事件流。
+  const [pendingNew, setPendingNew] = useState<string | null>(null);
   // 字号档位（agora-x70t.xsgz）：存 localStorage，`data-text` 是它与 CSS 的接口（--m-fs 一族）。
   const [textSize, setTextSize] = useState<MobileTextSize>(() => loadMobileTextSize());
   const changeTextSize = useCallback((size: MobileTextSize) => {
@@ -216,6 +258,16 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     // 选中的行没了（被删 metadata）：回到收件箱。
     if (selected !== null && !rows.some((r) => r.id === selected)) setSelected(null);
   }, [rows, selected]);
+  useEffect(() => {
+    // 预设起的会话到了：关掉新建屏、落在它的卡片；可发送（turn_done / idle）时把焦点放进卡片现成的
+    // composer，第一句在那儿说（预设带首句时已经在启动命令行上发过了，这里只管没带首句的那些）。
+    if (pendingNew === null || !rows.some((r) => r.id === pendingNew)) return;
+    setNewOpen(false);
+    setStarting(null);
+    setSelected(pendingNew);
+    setFocusComposerFor(pendingNew);
+    setPendingNew(null);
+  }, [rows, pendingNew]);
   const nowSeconds = now ?? clock;
   const selectedRow = selected === null ? undefined : rows.find((r) => r.id === selected);
 
@@ -257,6 +309,62 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
       />
     );
   }
+  if (newOpen) {
+    return (
+      <main className="mobile" data-testid="mobile-inbox" data-text={textSize}>
+        <header className="mobile-top">
+          <button
+            type="button"
+            className="mobile-back"
+            data-testid="mobile-new-back"
+            aria-label="返回收件箱"
+            onClick={() => {
+              // 不等了：会话已经在那台机器上起了（不管发没发出去，节点都会把它放进列表），只是
+              // 不再自动弹卡片；回收件箱点那一行就是。
+              setNewOpen(false);
+              setStarting(null);
+              setPendingNew(null);
+            }}
+          >
+            ←
+          </button>
+          <h1>新建</h1>
+        </header>
+        <div className="mobile-inbox" data-testid="mobile-preset-screen">
+          {presetError !== null && (
+            <p className="mobile-error" data-testid="mobile-preset-error" role="alert">
+              {presetError}
+            </p>
+          )}
+          {presets === null ? (
+            presetError === null && (
+              <p className="mobile-note" data-testid="mobile-preset-loading">
+                正在读预设…
+              </p>
+            )
+          ) : presets.length === 0 ? (
+            /* 空态也是零打字：给一句照抄 CLI 用法的指引，不在手机上开表单（agora-prdg.4）。 */
+            <p className="mobile-empty" data-testid="mobile-preset-empty">
+              还没有预设：在终端跑 <code>agora preset add &lt;名字&gt; --agent &lt;agent&gt; --dir &lt;目录&gt;</code>
+              加一条
+            </p>
+          ) : (
+            <ul className="mobile-presets" data-testid="mobile-preset-list">
+              {presets.map((preset) => (
+                <PresetButton
+                  key={preset.name}
+                  preset={preset}
+                  starting={starting === preset.name}
+                  disabled={starting !== null}
+                  onStart={startPreset}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      </main>
+    );
+  }
 
   const renderRow = (row: SessionRow) => (
     <MobileRow key={row.id} row={row} now={nowSeconds} localNode={localNode} onOpen={setSelected} />
@@ -269,6 +377,9 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
         <span className="mobile-carrier" data-testid="mobile-carrier" data-reachable={String(nodes.reachable === true)}>
           承载节点 {localNode ?? "…"} {nodes.reachable === false ? "○" : "●"}
         </span>
+        <button type="button" className="mobile-new" data-testid="mobile-new-open" onClick={() => void openNew()}>
+          新建
+        </button>
         <button type="button" className="mobile-gear" data-testid="mobile-settings-open" onClick={() => setSettingsOpen(true)}>
           设置
         </button>
@@ -345,6 +456,53 @@ interface RowProps {
   /** 本机 node.id（`/api/system`）：已知后每一行标节点 chip，本机不着色（与桌面 RowIdentity 同规矩）。 */
   localNode: string | null;
   onOpen: (id: string) => void;
+}
+
+interface PresetProps {
+  preset: PresetInfo;
+  starting: boolean;
+  disabled: boolean;
+  onStart: (preset: PresetInfo) => void;
+}
+
+/**
+ * 预设按钮（agora-prdg.4）：名称 + agent 徽标 + 目录名 + 参数摘要（如 `--model opus`）+ 有固定
+ * 首句时显示一句。整屏没有一个输入控件——"零打字"是这一屏的验收（DOM 守卫在 MobileApp.test.tsx）。
+ */
+function PresetButton({ preset, starting, disabled, onStart }: PresetProps) {
+  const badge = agentBadge(preset.agent_type);
+  // 目录只显示末段（一行放得下）；完整路径在 title 里，悬停 / 长按能看到。
+  const dir = preset.working_directory.split("/").filter(Boolean).pop() ?? preset.working_directory;
+  const args = (preset.args ?? "").trim();
+  const prompt = (preset.prompt ?? "").split("\n").find((l) => l.trim() !== "")?.trim() ?? "";
+  return (
+    <li>
+      <button
+        type="button"
+        className="mobile-preset"
+        data-testid={`mobile-preset-${preset.name}`}
+        disabled={disabled}
+        onClick={() => onStart(preset)}
+      >
+        <span className="mobile-preset-head">
+          <span className="mobile-preset-name">{preset.name}</span>
+          <span className="mobile-agent" style={{ "--hue": badge.hue } as CSSProperties}>
+            {badge.glyph} {badge.label}
+          </span>
+        </span>
+        <span className="mobile-preset-dir" title={preset.working_directory}>
+          {dir}
+        </span>
+        {args !== "" && <span className="mobile-preset-args">{args}</span>}
+        {prompt !== "" && <span className="mobile-preset-prompt">{prompt}</span>}
+        {starting && (
+          <span className="mobile-preset-starting" data-testid={`mobile-preset-starting-${preset.name}`}>
+            正在起…
+          </span>
+        )}
+      </button>
+    </li>
+  );
 }
 
 function MobileRow({ row, now, localNode, onOpen }: RowProps) {

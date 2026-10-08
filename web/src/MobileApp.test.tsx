@@ -8,7 +8,7 @@
  */
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { sessionApi, type FetchLike } from "./api";
+import { sessionApi, type FetchLike, type PresetInfo } from "./api";
 import { SEEN_STORAGE_KEY, seenKey } from "./attention";
 import type { SessionRow, SocketLike } from "./events";
 import { HealthWatcher, VersionWatcher } from "./health";
@@ -22,6 +22,23 @@ class FakeSocket implements SocketLike {
   onerror: ((ev: unknown) => void) | null = null;
   close(): void {}
 }
+
+/** A52 的桌面形态名单（agora-uqpi 的拍板只把"创建"改成"只有预设按钮"，这一批一个都不删）。 */
+const FORBIDDEN_DESKTOP_SURFACES = [
+  '[data-testid^="term"]',
+  '[data-testid="create"]',
+  '[data-testid^="diff-"]',
+  '[data-testid^="acceptance-"]',
+  '[data-testid^="changes-"]',
+  '[data-testid^="respond-"]',
+  '[data-testid^="new-agent"]',
+  '[data-testid^="mobile-stream"]',
+  '[data-testid="mobile-load-more"]',
+  ".xterm",
+  ".terminal",
+  ".mobile-stream",
+  ".mobile-history",
+];
 
 function row(id: string, patch: Partial<SessionRow> = {}): SessionRow {
   return {
@@ -161,22 +178,7 @@ describe("mobile information budget (A52)", () => {
     const t = setup([row("n:a", { status: "waiting" })]);
     await online(t);
 
-    const forbidden = [
-      '[data-testid^="term"]',
-      '[data-testid="create"]',
-      '[data-testid^="diff-"]',
-      '[data-testid^="acceptance-"]',
-      '[data-testid^="changes-"]',
-      '[data-testid^="respond-"]',
-      '[data-testid^="new-agent"]',
-      '[data-testid^="mobile-stream"]',
-      '[data-testid="mobile-load-more"]',
-      ".xterm",
-      ".terminal",
-      ".mobile-stream",
-      ".mobile-history",
-    ];
-    for (const selector of forbidden) {
+    for (const selector of FORBIDDEN_DESKTOP_SURFACES) {
       expect(t.ui.container.querySelectorAll(selector), selector).toHaveLength(0);
     }
   });
@@ -266,6 +268,143 @@ describe("mobile push entry (agora-thc.7)", () => {
     expect(await screen.findByTestId("mobile-settings")).toBeTruthy();
     fireEvent.click(screen.getByTestId("mobile-settings-back"));
     expect(screen.queryByTestId("mobile-settings")).toBeNull();
+  });
+});
+
+describe("手机端「新建」（预设，agora-prdg.4；A52 回写）", () => {
+  // agora-uqpi 的拍板（2026-10-08）：手机要能"开始一件事"，但能起什么冻结在桌面侧的 CLI 预设里——
+  // 所以 A52 从那句"永远没有 New Agent"改成"只有预设按钮这一屏、且整屏无文本域"，桌面形态的
+  // testid 名单（FORBIDDEN_DESKTOP_SURFACES）一个都不放宽。
+  const preset = (name: string, patch: Partial<PresetInfo> = {}): PresetInfo => ({
+    name,
+    agent_type: "claude",
+    working_directory: "/Users/r/code/PktMask",
+    args: null,
+    prompt: null,
+    updated_at: "2026-10-08T00:00:00Z",
+    ...patch,
+  });
+
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+  /** 记录每次请求；GET /api/presets 给列表，POST /api/sessions 给 201。 */
+  function presetFetch(
+    requests: { url: string; method: string; body: unknown }[],
+    presets: PresetInfo[],
+    created = "n:new",
+  ): FetchLike {
+    return async (url, init) => {
+      const method = init.method ?? "GET";
+      requests.push({ url, method, body: init.body ? JSON.parse(String(init.body)) : null });
+      if (url === "/api/presets") return json({ presets });
+      if (url === "/api/sessions") return json({ id: created }, 201);
+      return json({});
+    };
+  }
+
+  async function openNewScreen() {
+    fireEvent.click(screen.getByTestId("mobile-new-open"));
+    await screen.findByTestId("mobile-preset-screen");
+    // 打开只触发 GET /api/presets；列表（或空态 / 错误）到了才算这一屏就绪。
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+  }
+
+  it("整屏没有 input / textarea，只列 GET /api/presets 的行，桌面形态的 testid 仍为 0", async () => {
+    const requests: { url: string; method: string; body: unknown }[] = [];
+    const t = setup(
+      [row("n:a", { status: "waiting" })],
+      presetFetch(requests, [
+        preset("pktmask", { args: "--model opus" }),
+        preset("run-tests", { agent_type: "pi", working_directory: "/Users/r/code/agora", prompt: "跑一遍测试\n第二行" }),
+      ]),
+    );
+    await online(t);
+    await openNewScreen();
+
+    // 只读：打开这一屏只发生一次 GET /api/presets，没有别的请求。
+    expect(requests).toEqual([{ url: "/api/presets", method: "GET", body: null }]);
+    const list = screen.getByTestId("mobile-preset-list");
+    expect([...list.querySelectorAll("button")].map((b) => b.getAttribute("data-testid"))).toEqual([
+      "mobile-preset-pktmask",
+      "mobile-preset-run-tests",
+    ]);
+    // 名称 + agent 徽标 + 目录名 + 参数摘要 + 固定首句（只取第一行）。
+    const pktmask = screen.getByTestId("mobile-preset-pktmask");
+    expect(pktmask.textContent).toContain("pktmask");
+    expect(pktmask.textContent).toContain("Claude");
+    expect(pktmask.textContent).toContain("PktMask");
+    expect(pktmask.textContent).toContain("--model opus");
+    const runTests = screen.getByTestId("mobile-preset-run-tests");
+    expect(runTests.textContent).toContain("pi");
+    expect(runTests.textContent).toContain("agora");
+    expect(runTests.textContent).toContain("跑一遍测试");
+    expect(runTests.textContent).not.toContain("第二行");
+
+    // 零打字是这一屏的验收：整屏没有任何 input / textarea。
+    expect(t.ui.container.querySelectorAll("input, textarea")).toHaveLength(0);
+    // 桌面形态的名单一个都不能放宽（A52 回写只是把"创建"换成"只有预设按钮"）。
+    for (const selector of FORBIDDEN_DESKTOP_SURFACES) {
+      expect(t.ui.container.querySelectorAll(selector), selector).toHaveLength(0);
+    }
+  });
+
+  it("点一条直接发 POST /api/sessions {preset}（没有二次确认），行进列表后落在卡片", async () => {
+    const requests: { url: string; method: string; body: unknown }[] = [];
+    const t = setup([row("n:a")], presetFetch(requests, [preset("pktmask", { args: "--model opus" })]));
+    await online(t);
+    await openNewScreen();
+
+    fireEvent.click(screen.getByTestId("mobile-preset-pktmask"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(requests.filter((r) => r.method === "POST")).toEqual([
+      { url: "/api/sessions", method: "POST", body: { preset: "pktmask" } },
+    ]);
+    // 不要第二段确认（预设本身就是"预先批准"）。
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // 201 先到、行还没来：停在原屏不闪回收件箱（与桌面 pendingOpen 同一条 race）。
+    expect(screen.getByTestId("mobile-preset-screen")).toBeTruthy();
+
+    // 新行随 session_created 进列表 → 落在它的卡片；可发送的行把焦点放进现成的 composer（第一句在那儿说）。
+    await act(async () => {
+      t.sock.onmessage?.({
+        data: JSON.stringify([{ type: "session_created", id: "n:new", session: row("n:new", { status: "turn_done" }) }]),
+      });
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.getByTestId("mobile-card-n:new")).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByTestId("mobile-next-input"));
+  });
+
+  it("空预设：显示 agora preset add 的 CLI 指引，仍然零打字", async () => {
+    const t = setup([row("n:a")], presetFetch([], []));
+    await online(t);
+    await openNewScreen();
+    const empty = screen.getByTestId("mobile-preset-empty");
+    expect(empty.textContent).toContain("agora preset add");
+    expect(empty.textContent).toContain("--agent");
+    expect(t.ui.container.querySelectorAll("input, textarea")).toHaveLength(0);
+  });
+
+  it("失败留在原屏 + 中文错误：未知预设不落卡片", async () => {
+    const t = setup([row("n:a")], async (url) => {
+      if (url === "/api/presets") return json({ presets: [preset("gone")] });
+      return json({ error: "preset_unknown", message: "未知预设 gone" }, 404);
+    });
+    await online(t);
+    await openNewScreen();
+
+    fireEvent.click(screen.getByTestId("mobile-preset-gone"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.getByTestId("mobile-preset-error").textContent).toContain("未知预设 gone");
+    expect(screen.getByTestId("mobile-preset-screen")).toBeTruthy();
+    expect(screen.queryByTestId("mobile-card-n:new")).toBeNull();
   });
 });
 
