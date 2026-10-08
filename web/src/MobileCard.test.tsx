@@ -71,6 +71,20 @@ async function typeAndSend(text: string) {
 
 afterEach(cleanup);
 
+describe("卡片吸顶结构（agora-o975.1）", () => {
+  it("头与 composer 是卡片这一滚动容器的两端（sticky 在同一 scrollport 里才成立）", () => {
+    // 旧写法把滚动交给 .mobile-card，但头不是 sticky、composer 没有 z-index：长内容一滚两者都
+    // 会被气泡盖住 / 滚出视野。结构上必须仍然是「头在最前、composer 在最后、同一个滚动容器」。
+    const { ui } = setup(row("n:a", { prompt: "q", detail: "a" }));
+    const card = ui.container.querySelector(".mobile-card");
+    expect(card).toBeTruthy();
+    expect(card!.firstElementChild?.className).toContain("mobile-card-head");
+    const composer = card!.querySelector(".mobile-composer");
+    expect(composer, "composer 存在").toBeTruthy();
+    expect(composer!.closest(".mobile-card"), "composer 与头共用同一个滚动容器").toBe(card);
+  });
+});
+
 describe("thread", () => {
   it("renders the last turn as two bubbles and folds the reply to 6 lines with one expand", () => {
     const reply = Array.from({ length: 10 }, (_, i) => `第 ${i + 1} 行`).join("\n");

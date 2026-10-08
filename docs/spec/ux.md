@@ -295,6 +295,16 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 - **失败**：留在原屏 + 节点给的中文错误（未知预设 404 `preset_unknown` / 目录被删 400 / 起不来），
   不落卡片、不猜。
 
+### 卡片吸顶与 composer 钉底（agora-o975.1，2026-10-08）
+
+会话卡的滚动容器是 `.mobile-card`（`overflow-y: auto`），头与 composer 都是它的普通子元素——真机上
+内容一长，头跟着滚掉、composer 要滚到底才看得见（收件箱的 `.mobile-top` 早就是 sticky，卡片这页没
+跟上）。修法是两者各自吸住滚动口：`.mobile-card-head` `position: sticky; top: 0`，`.mobile-composer`
+`position: sticky; bottom: 0`；两者都带不透明 `background: var(--bg)`（气泡不许从底下透出）与
+`z-index: 2`（滚过来的内容不许画在它们上面），composer 的 padding 里继续吃掉 `--safe-bottom`
+（主屏指示条不盖发送键）。守卫 `web/src/mobileCss.test.ts`（raw 断言：两条 sticky 规则都要在、都带
+背景与 z-index）与 `web/src/MobileCard.test.tsx`（结构：头在最前、composer 与头共用同一个 scrollport）。
+
 ### 横屏用满宽度（agora-x70t，2026-10-08）
 
 `/m` 的手机壳有一条 `max-width: 44rem`：它是给"桌面误开 /m"用的（居中成一条手机宽的栏、两侧各一条

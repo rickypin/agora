@@ -113,6 +113,27 @@ describe("手机端溢出与触控（agora-x70t.qz01）", () => {
   });
 });
 
+describe("卡片吸顶与 composer 固定（agora-o975.1）", () => {
+  it("卡片头吸顶、composer 钉底：sticky + 不透明背景 + z-index", () => {
+    // 2026-10-08 真机反馈：.mobile-card 是滚动容器（overflow-y: auto），而头与 composer 都是它的
+    // 普通子元素——内容一长头就滚掉、composer 要滚到底才看得见。两者都要 sticky、要不透明背景
+    // （否则气泡从底下透出来）、要 z-index（否则滚过来的内容画在它们上面）。
+    const head = blocks(".mobile-card-head").join("\n");
+    expect(head, ".mobile-card-head 吸顶").toMatch(/position:\s*sticky/);
+    expect(head, ".mobile-card-head 顶在滚动口").toMatch(/top:\s*0/);
+    expect(head, ".mobile-card-head 要挡住下面的内容").toMatch(/background:\s*var\(--bg\)/);
+    expect(head, ".mobile-card-head 要压在滚过来的气泡上面").toMatch(/z-index:\s*\d+/);
+
+    const composer = blocks(".mobile-composer").join("\n");
+    expect(composer, ".mobile-composer 钉底").toMatch(/position:\s*sticky/);
+    expect(composer, ".mobile-composer 钉在滚动口底部").toMatch(/bottom:\s*0/);
+    expect(composer, ".mobile-composer 要挡住下面的内容").toMatch(/background:\s*var\(--bg\)/);
+    expect(composer, ".mobile-composer 要压在滚过来的气泡上面").toMatch(/z-index:\s*\d+/);
+    // composer 还要吃掉底部安全区：主屏指示条不许盖住发送键。
+    expect(composer, "composer 吃 safe-bottom").toContain("var(--safe-bottom)");
+  });
+});
+
 describe("手机端视口 / 键盘 / 安全区（agora-x70t.ten0）", () => {
   it("viewport 要 viewport-fit=cover 与 interactive-widget=resizes-content", () => {
     expect(html).toContain("viewport-fit=cover");

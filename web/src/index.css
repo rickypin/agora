@@ -479,7 +479,10 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 
 /* ---------- /m 会话卡（agora-thc.10）：IM 语法——最近一轮两气泡、底部 composer、乐观发送 ---------- */
 .mobile-card { display: flex; flex: 1; flex-direction: column; gap: var(--m-2); min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 calc(var(--m-3) + env(safe-area-inset-right)) 0 calc(var(--m-3) + env(safe-area-inset-left)); }
-.mobile-card-head { gap: var(--m-2); padding: calc(var(--m-3) + var(--safe-top)) 0 var(--m-2); border-bottom: 1px solid var(--border); }
+/* 头吸顶、composer 钉底（agora-o975.1，2026-10-08 真机反馈）：滚动容器就是 .mobile-card；两者
+   都要不透明背景（气泡不许从底下透出）与 z-index（滚过来的内容不许画在它们上面），composer 的
+   padding 里吃掉 --safe-bottom（主屏指示条不盖发送键）。 */
+.mobile-card-head { position: sticky; top: 0; z-index: 2; gap: var(--m-2); padding: calc(var(--m-3) + var(--safe-top)) 0 var(--m-2); border-bottom: 1px solid var(--border); background: var(--bg); }
 /* 卡片头是**唯一**的那一个（不是重复的行），装不下可以折成两行：320px + 特大时
    返回键 + 名字 + 徽标 + 节点 + 状态的最小宽度真的放不下一行（2026-10-08 实测 297 > 269），
    折行比"把状态挤到框外"好。行头不折——收件箱是重复列表，行高必须可预测。 */
@@ -503,7 +506,7 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .mobile-actions { display: flex; flex-direction: column; gap: var(--m-2); }
 .mobile-more-toggle { align-self: flex-start; padding: 0; color: var(--muted); background: none; border-color: transparent; }
 .mobile-more-actions { display: flex; gap: var(--m-2); }
-.mobile-composer { position: sticky; bottom: 0; display: flex; gap: var(--m-2); padding: var(--m-2) 0 calc(var(--m-2) + var(--safe-bottom)); background: var(--bg); border-top: 1px solid var(--border); }
+.mobile-composer { position: sticky; bottom: 0; z-index: 2; display: flex; gap: var(--m-2); padding: var(--m-2) 0 calc(var(--m-2) + var(--safe-bottom)); background: var(--bg); border-top: 1px solid var(--border); }
 .mobile-composer input { flex: 1; min-width: 0; padding: var(--m-2) var(--m-3); font-size: max(16px, var(--m-fs)); }
 .mobile-composer button { padding: 0 var(--m-4); }
 .mobile-note { margin: 0; color: var(--muted); font-size: var(--m-fs-note); }
