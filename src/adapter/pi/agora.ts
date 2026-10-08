@@ -185,7 +185,8 @@ export default function (pi: ExtensionAPI) {
       return; // daemon 超时已删、或另一个取件者拿走了
     }
     try {
-      // followUp：在跑就排队到这一轮的工具调用之后；空闲时照常起一轮（两种都实测过）。
+      // followUp：在跑就排队，等这一轮跑完（agent 不再有工具调用）才作为 user 消息交进去；空闲时照常起一轮。
+      // 2026-10-08 实测（pi 1.0.4）：不是「做完当前工具批次就插」——那是 steer；见 ADR-002 D11 的实测段（agora-shze）。
       // 以 / 开头的文本**原样**交给 pi，不做任何前缀判断 / 转义（agora-mukn 实测，2026-10-08，
       // pi 1.0.4，隔离 daemon + 真 TUI，经 POST /input 注入）：`sendUserMessage` 走
       // `session.prompt({ expandPromptTemplates: false })`，内置命令只在 TUI 编辑器提交那条路上
