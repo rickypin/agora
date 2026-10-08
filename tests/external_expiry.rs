@@ -170,6 +170,57 @@ fn expired_external_finished_rows_are_deleted_and_the_rest_stay() {
     assert_eq!(gone, expected, "{events:?}");
 }
 
+/// 库里不该有这种行，但旧版本 / 外部写坏的库会留下：origin 是 `adopted`（或 `agora`），
+/// `runtime_ref` 却是 NULL。三条写入路径都保证有句柄的行带 ref、无句柄的行只落 external /
+/// headless，所以直插库是唯一的造法。
+fn handleless_adopted_row(m: &SessionManager, name: &str, created_at: i64) -> String {
+    let id = format!("orphan-{name}");
+    let created = clock::format_utc_secs(created_at);
+    m.db()
+        .conn()
+        .execute(
+            "INSERT INTO sessions (id, runtime_ref, display_name, name_locked, agent_type,
+                working_directory, agent_session_id, epoch, created_at, updated_at, origin)
+             VALUES (?1, NULL, ?2, 0, 'claude', '/work/agora', ?2, 1, ?3,
+                strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'adopted')",
+            [id.as_str(), name, created.as_str()],
+        )
+        .unwrap();
+    id
+}
+
+#[test]
+fn handleless_adopted_rows_get_an_exit_instead_of_sitting_in_the_list_forever() {
+    // agora-xfm5：origin = agora/adopted 而 runtime_ref 为 NULL 的行落在 a23 UNKNOWN
+    // `no_observation`，而过期扫描第一句只放行 `is_handleless()`，这种行没有出口（view() 的注释
+    // 自己写「库里不该有这种行」）。它没有终端、也做不了 Kill / Restart，与无句柄那两档同一处境：
+    // 到期即删。时钟用它自己的 `created_at`——它的状态是每 tick 新建的 UNKNOWN，`status_since`
+    // 会随 daemon 重启清零，而这一行永远不会收到能改变它的事实。
+    // 守卫：把扫描的入口判据换回 `origin.is_handleless()` → 这条红（行还在、永远占列表）。
+    let (m, _rt, _db) = mgr(Duration::from_secs(DAY as u64));
+    let now = now_secs();
+    let orphan = handleless_adopted_row(&m, "stale-adopted", now - 25 * 3600);
+    let v = m.get(&orphan).unwrap();
+    assert_eq!(v.record.origin, Origin::Adopted);
+    assert_eq!(v.record.runtime_ref, None);
+    assert_eq!(
+        v.assessment.status,
+        Status::Unknown,
+        "没有运行时事实可说：{:?}",
+        v.assessment
+    );
+
+    // 对照：正常的 external FINISHED 行走自己的出口，刚结束的行不动。
+    let finished = external(&m, "conv-normal");
+    m.apply_hook(&finished, 1, &[AgoraEvent::SessionEnded(None)])
+        .unwrap();
+
+    let removed = m.sweep(now).unwrap();
+    assert_eq!(removed, vec![orphan.clone()], "{removed:?}");
+    assert!(m.get(&orphan).is_err(), "没有出口的行必须被清");
+    assert!(m.get(&finished).is_ok(), "刚结束的 normal 行不跟着走");
+}
+
 #[test]
 fn ttl_zero_turns_expiry_off() {
     let (m, _rt, _db) = mgr(Duration::ZERO);

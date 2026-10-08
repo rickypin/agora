@@ -1337,7 +1337,8 @@ impl SessionManager {
                         },
                         killed,
                     ),
-                    // 没有句柄又不是 external（库里不该有这种行）：没有运行时事实可说。
+                    // 没有句柄又不是 external（写入路径保证不会产生这种行；旧版本 / 外部写坏的库
+                    // 会有，过期扫描给它一条 DELETE 出口，agora-xfm5）：没有运行时事实可说。
                     _ => status::process_layer(rt, spawn_age, killed),
                 };
                 let live = if rt.is_some_and(|s| s.alive) {
@@ -1727,22 +1728,25 @@ impl SessionManager {
     /// 无句柄那两档（external / headless）的自动出口（都不看节流，节流挂在 [`Self::sweep`] 那一层）：
     /// external 的 FINISHED（hook 结束、superseded、进程消失都算）按 `sessions.external_finished_ttl`，
     /// external 的 UNKNOWN `hooks silent; no process handle` 按 `sessions.external_unknown_ttl`，
-    /// headless 不论状态按 `sessions.external_finished_ttl`（第三个 arm，见下文）。删走的是
+    /// headless 不论状态按 `sessions.external_finished_ttl`（第三个 arm，见下文），`runtime_ref`
+    /// 为 NULL 却带着有句柄 origin 的行（库里不该有这种行，见第四个 arm）同样不论状态到期。删走的是
     /// `DELETE /api/sessions/:id` 同一条路径：hook 检查点、状态机、挂起一起清。
-    /// 只碰无句柄那两档：agora / adopted 的行有运行时会话与 scrollback，MISSION §4.6「不得在
-    /// 用户看到结果之前清理」对它们仍成立。结束时刻取 `ended_at`（MISSION §4.2 修订；agora-5gg.3，
-    /// 2026-09-20）：三种结束（hook SessionEnd / superseded / 探到进程没了）现在都会写它，而且它是
-    /// 库里的值——`status_since` 是状态机的内存时钟，只靠进程消失结束的行 daemon 重启后从头计（旧注释
-    /// 说 ended_at 对 external 行是死路，2026-09-08 的代码里确实是：那条分支只在有句柄的行走到）。
-    /// `status_since` 只当兼容兜底：本次改动之前入库的 FINISHED external 行 ended_at 是空的（Mac
-    /// 实测 35 行），它们只能拿旧时钟算。
+    /// 只碰没有运行时句柄的行：agora / adopted 的行（有 ref）有运行时会话与 scrollback，MISSION §4.6
+    /// 「不得在用户看到结果之前清理」对它们仍成立。结束时刻取 `ended_at`（MISSION §4.2 修订；
+    /// agora-5gg.3，2026-09-20）：三种结束（hook SessionEnd / superseded / 探到进程没了）现在都会写
+    /// 它，而且它是库里的值——`status_since` 是状态机的内存时钟，只靠进程消失结束的行 daemon 重启后
+    /// 从头计（旧注释说 ended_at 对 external 行是死路，2026-09-08 的代码里确实是：那条分支只在有句柄
+    /// 的行走到）。`status_since` 只当兼容兜底：本次改动之前入库的 FINISHED external 行 ended_at 是
+    /// 空的（Mac 实测 35 行），它们只能拿旧时钟算。
     ///
     /// 名字里的 finished 只对应第一个 arm（历史名字，agora-j4w.3）：第二个 arm 是 agora-e08 补的出口——
     /// 无句柄、无终端、Kill / Restart 都做不了的一行，沉默到 ttl 之后与 FINISHED 走同一条 DELETE 路径；
     /// 第三个 arm 是 agora-5gg.20 补的：`headless`（宿主自己起的一次性会话与子代理）不论状态都到期，
     /// 因为它不是一条等人回看的会话，没有“结果还没被人看到”这回事，而且常常连 SessionEnd 都没有
     /// （宿主自己起的那一轮答完即退，SessionEnd 与 Stop 同秒；worker 挂在崩溃上更是什么都没了），
-    /// 拿状态当门槛就让它们永远凑在库里。
+    /// 拿状态当门槛就让它们永远凑在库里。第四个 arm 是 agora-xfm5 补的：`runtime_ref` 为 NULL
+    /// 却带着 `agora` / `adopted` origin 的破行以前从这里 continue 出去后永远占列表，它同样
+    /// 没有终端、做不了 Kill / Restart，同 headless 一档不论状态到期即删。
     pub fn expire_external_finished(&self, now: i64) -> Result<Vec<String>, SessionError> {
         let finished_ttl = self.external_finished_ttl.as_secs() as i64;
         let unknown_ttl = self.external_unknown_ttl.as_secs() as i64;
@@ -1751,7 +1755,13 @@ impl SessionManager {
         }
         let mut removed = Vec::new();
         for v in self.list()? {
-            if !v.record.origin.is_handleless() {
+            // 只碰没有运行时句柄的行：agora / adopted 的行有运行时会话与 scrollback，MISSION §4.6
+            // 「不得在用户看到结果之前清理」对它们仍成立。判据从 origin 换成句柄（agora-xfm5）：
+            // `origin = agora/adopted` 而 `runtime_ref` 为 NULL 的行（三条写入路径都保证不会产生，
+            // `view()` 的注释自己写「库里不该有这种行」）以前在这里被 continue 掉，落到 a23
+            // UNKNOWN `no_observation` 后没有任何出口；它没有终端、也做不了 Kill / Restart，
+            // 与无句柄那两档同一处境，出口见第四个 arm。
+            if v.record.runtime_ref.is_some() {
                 continue;
             }
             let headless = v.record.origin == Origin::Headless;
@@ -1795,6 +1805,16 @@ impl SessionManager {
                         .as_deref()
                         .and_then(clock::parse_utc_secs)
                         .unwrap_or(v.status_since),
+                ),
+                // 第四个出口（agora-xfm5）：`runtime_ref` 为 NULL 却有带句柄的 origin——三条写入
+                // 路径（create / adopt 写句柄，register_external 只落 external / headless）都不会
+                // 产生它，只可能是旧版本或外部写坏的库。它永远收不到能改变它的 hook 事实（没有
+                // agora id 的人知道它），与 headless 一样不论状态到期即删；时钟用 `created_at`
+                // （库里唯一属于这一行的起点），不用 `status_since`——那一格是 observe 每 tick
+                // 新建的 UNKNOWN，daemon 重启就清零。
+                _ if !v.record.origin.is_handleless() && finished_ttl > 0 => (
+                    finished_ttl,
+                    clock::parse_utc_secs(&v.record.created_at).unwrap_or(v.status_since),
                 ),
                 _ => continue,
             };
