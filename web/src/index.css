@@ -1,6 +1,11 @@
 /* dark-mode-first、dense、low visual noise（MISSION §6.10；docs/spec/ux.md 视觉参考）。 */
+/* 设计令牌（agora-74nf）：**颜色 / 圆角 / 字号只在这里定义**，别处一律 var()——散着写的
+   字面量正是"手机改字号、桌面没人比对"的来路（守卫 web/src/designTokens.test.ts 扫描
+   `:root` 之外的 hex 与 px 字号/圆角）。间距档位（--s-*）先给新代码用，老的那几百处按语义
+   逐步换，不进守卫（硬把 1/3/5px 这些既有微调包成令牌只是把数字改个名字，不是一致性）。 */
 :root {
   color-scheme: dark;
+  /* 语义色 */
   --bg: #0e1116;
   --panel: #151a21;
   --panel-2: #1c2229;
@@ -11,19 +16,41 @@
   --warn: #e3b341;
   --ok: #3fb950;
   --bad: #f85149;
+  --sel: #1f2a38;             /* 选中 / 高亮底：侧栏行、命令面板命中、手机行（原为两处硬编码） */
+  --danger-border: #6e2a2a;   /* danger 按钮的边框（比 --bad 暗一档） */
+  --warn-bg: #2a2410;         /* degraded 横幅的底 */
+  --flash: #2a3a4f;           /* 解冻落位后换过位的行闪一下的底 */
+  /* 圆角四档 */
+  --r-1: 3px;
+  --r-2: 4px;
+  --r-3: 6px;
+  --r-4: 10px;
+  /* 字号：桌面基准 13px 的三档（手机端走 --m-fs 一族，见下） */
+  --fs-1: 11px;
+  --fs-2: 12px;
+  --fs-3: 13px;
+  --fs-4: 14px;
+  /* 间距档（新代码从这里取） */
+  --s-1: 2px;
+  --s-2: 4px;
+  --s-3: 6px;
+  --s-4: 8px;
+  --s-5: 10px;
+  --s-6: 12px;
+  --s-7: 16px;
   font-family: system-ui, -apple-system, sans-serif;
-  font-size: 13px;
+  font-size: var(--fs-3);
 }
 html, body, #root { height: 100%; margin: 0; background: var(--bg); color: var(--fg); }
 /* 横屏时 iOS 会自动放大文字（"文字大小调整"），手机壳里没有可放大的余地：钉住 100%
    （agora-x70t.ten0；桌面不疼，浏览器本来就照 100% 渲染）。 */
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-h1 { font-size: 14px; margin: 0; letter-spacing: 0.04em; }
-h2 { font-size: 13px; margin: 0; }
-button { font: inherit; color: var(--fg); background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+h1 { font-size: var(--fs-4); margin: 0; letter-spacing: 0.04em; }
+h2 { font-size: var(--fs-3); margin: 0; }
+button { font: inherit; color: var(--fg); background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-2); padding: 2px 8px; cursor: pointer; }
 button:disabled { opacity: 0.5; cursor: default; }
-button.danger { border-color: #6e2a2a; color: var(--bad); }
-input, select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; }
+button.danger { border-color: var(--danger-border); color: var(--bad); }
+input, select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-2); padding: 3px 6px; }
 select:disabled { opacity: 0.5; }
 .gate { padding: 2rem; }
 .muted { color: var(--muted); }
@@ -37,9 +64,9 @@ select:disabled { opacity: 0.5; }
 .sidebar-resizer { width: 6px; cursor: col-resize; position: absolute; right: -3px; top: 0; bottom: 0; }
 .sidebar-head { display: flex; justify-content: space-between; align-items: baseline; padding: 10px 10px 6px; }
 .sidebar ul { list-style: none; margin: 0; padding: 0 6px; }
-.row { display: flex; gap: 8px; align-items: flex-start; width: 100%; text-align: left; background: none; border: 0; padding: 5px 6px; border-radius: 4px; }
+.row { display: flex; gap: 8px; align-items: flex-start; width: 100%; text-align: left; background: none; border: 0; padding: 5px 6px; border-radius: var(--r-2); }
 .row:hover { background: var(--panel-2); }
-.row.selected { background: #1f2a38; }
+.row.selected { background: var(--sel); }
 .row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.3; }
 .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* meta 一行到底（agora-k9r，2026-09-05 截图：external 行的 "@ local" 折成两行、徽标撑成两行高）：
@@ -51,20 +78,20 @@ select:disabled { opacity: 0.5; }
    「finishe」。谁排第一是布局的事，谁可以截断是语义的事——改成按**类名**点名，让位顺序也写死：
    徽标先让（且只牺牲文字标签，见下面 .badge），不够再让节点名 / origin / stale 那一段；.state 与
    .badge-glyph 是两个永不让位的锚点（这行要不要我管、是哪个 agent，正是侧栏存在的理由）。 */
-.row .meta { display: flex; gap: 6px; color: var(--muted); font-size: 12px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.row .meta { display: flex; gap: 6px; color: var(--muted); font-size: var(--fs-2); min-width: 0; overflow: hidden; white-space: nowrap; }
 .row .meta > span { flex: none; }
 /* 徽标让完还不够时兜底让位：origin / stale 短且行上有 title，硬裁不致命；节点 chip 的省略号走
    内部 .node-label（agora-yaf），chip 自己不能 overflow: hidden，否则「@」会被自己削掉（同
    agora-8lb 徽标）。state 被裁才是致命的。 */
 .row .meta > .origin, .row .meta > .stale-seen { flex: 0 1 auto; min-width: 0; overflow: hidden; }
 .row .meta > .node { flex: 0 1 auto; min-width: 1em; }
-.row .origin { border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+.row .origin { border: 1px solid var(--border); border-radius: var(--r-1); padding: 0 4px; }
 .unknown .dot { color: var(--muted); }
-.adopt { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px 8px 28px; font-size: 12px; }
+.adopt { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px 8px 28px; font-size: var(--fs-2); }
 .adopt label { display: flex; gap: 6px; align-items: center; }
 .adopt input { flex: 1; min-width: 0; }
 .adopt-actions { display: flex; gap: 6px; justify-content: flex-end; }
-.row .preview { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .preview { font-size: var(--fs-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .line-prompt, .row .line-progress { color: var(--fg); opacity: 0.85; }
 .row .hooks-unheard { color: var(--warn); }
 /* UNCLEAR 段的行：「为什么说不清 + 出口」一句话（agora-5gg.11）。不走 --warn：说不清不是出错，
@@ -74,7 +101,7 @@ select:disabled { opacity: 0.5; }
 /* 进程三态里的「说不上」（agora-5gg.18）：比 preview 更轻，别和 ⚠ hook 没接上抢注意力。 */
 .row .proc-flag { color: var(--muted); opacity: 0.8; }
 .row .meta .state { flex: none; margin-left: auto; white-space: nowrap; }
-.sidebar .counts { margin: 0 10px 6px; font-size: 12px; }
+.sidebar .counts { margin: 0 10px 6px; font-size: var(--fs-2); }
 /* 侧栏视图切换（A47，agora-uvd.2）：一行两钮，选中态走 aria-pressed。 */
 .sidebar-mode { display: flex; gap: 4px; margin: 0 10px 6px; }
 .sidebar-mode button { flex: 1; }
@@ -82,9 +109,9 @@ select:disabled { opacity: 0.5; }
 /* 计数行里的 Finished 变按钮（一键清理，agora-j4w.2）：长得还是那一段文字，只多一条下划线提示能点。 */
 .sidebar .counts .clear-finished { background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; text-decoration: underline dotted; cursor: pointer; }
 .sidebar .counts .clear-finished:hover { color: var(--fg); }
-.sidebar .clear-note { font-size: 12px; margin-top: 0; }
-.sidebar-head.section { padding-top: 8px; font-size: 11px; letter-spacing: 0.06em; }
-.section-row { padding: 8px 6px 2px; font-size: 11px; letter-spacing: 0.06em; }
+.sidebar .clear-note { font-size: var(--fs-2); margin-top: 0; }
+.sidebar-head.section { padding-top: 8px; font-size: var(--fs-1); letter-spacing: 0.06em; }
+.section-row { padding: 8px 6px 2px; font-size: var(--fs-1); letter-spacing: 0.06em; }
 /* Finished 折叠区的标题是个按钮（A46，agora-j4w.1）：与 NEEDS ATTENTION / UNCLEAR / WORKING 同一副小字，
    点一下展开 / 收起；hover 提亮说明它能点。 */
 .finished-toggle { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; letter-spacing: inherit; text-align: left; }
@@ -113,12 +140,12 @@ select:disabled { opacity: 0.5; }
    与 .respond-panel 同一条底边线、同一副内边距——它们是主区里并列的两段，不是一段的附属。
    两段 2026-09-10 之前长在侧栏选中行的 <li> 里，那 28 px 缩进 + 左边线是"挂在某一行下面"的记号，
    主区没有对应的行可挂，去掉。 */
-.result-panel { border-bottom: 1px solid var(--border); padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.result-panel { border-bottom: 1px solid var(--border); padding: 6px 10px; display: flex; flex-direction: column; gap: 6px; font-size: var(--fs-2); }
 .acceptance-toggle, .changes-toggle { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; text-align: left; }
 .acceptance-toggle:hover, .changes-toggle:hover { color: var(--fg); }
 .acceptance-body { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font: inherit; color: var(--fg); opacity: 0.85; }
 .changes-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
-.changes-head button { font-size: 12px; padding: 1px 6px; }
+.changes-head button { font-size: var(--fs-2); padding: 1px 6px; }
 .changes-note { margin: 4px 0 0; }
 .changes-list { list-style: none; margin: 4px 0 0; padding: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 /* 主区宽得多，路径不再需要一律省略号：长路径折行显示，而不是把中段吃掉（agora-03k 抱怨的正是
@@ -136,9 +163,9 @@ select:disabled { opacity: 0.5; }
    这条限高与「默认露 12 行」的折叠（agora-4yr.2，RespondPanel 的 FOLD_LINES）是两件事：
    折叠管默认露多少，40vh 管展开之后最多占多高。白空格不再由这里管——正文走 markdown 排版
    （.md 一族），只有代码块保留原样。 */
-.respond-last { max-height: 40vh; overflow: auto; font-size: 13px; display: flex; align-items: flex-start; gap: 6px; }
+.respond-last { max-height: 40vh; overflow: auto; font-size: var(--fs-3); display: flex; align-items: flex-start; gap: 6px; }
 /* 无句柄行的"这里发不了"说明（agora-71p2）：与输入框同一位置、同样压低存在感。 */
-.respond-note { margin: 0; font-size: 12px; }
+.respond-note { margin: 0; font-size: var(--fs-2); }
 /* ↳ 是"这是回复"的记号，得留在正文外面：markdown 的第一个块可能是 h2 或 <pre>，把箭头塞
    进去会跟标题基线打架。flex 让它占一列，正文那列 min-width:0 才收得住宽表格 / 长代码行。 */
 .respond-last-mark { flex: none; }
@@ -163,9 +190,9 @@ select:disabled { opacity: 0.5; }
 .md ul, .md ol { margin: 0 0 0.5em; padding-left: 1.5em; }
 .md li { margin: 0.1em 0; }
 .md li > ul, .md li > ol { margin-bottom: 0; }
-.md code { background: var(--panel-2); border-radius: 3px; padding: 0 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
+.md code { background: var(--panel-2); border-radius: var(--r-1); padding: 0 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
 /* 代码块自己横向滚，别把面板撑宽（.respond-last 的正文列是 min-width:0 的 flex item）。 */
-.md pre { margin: 0 0 0.5em; padding: 5px 8px; background: var(--panel-2); border-radius: 4px; overflow-x: auto; }
+.md pre { margin: 0 0 0.5em; padding: 5px 8px; background: var(--panel-2); border-radius: var(--r-2); overflow-x: auto; }
 .md pre code { background: none; padding: 0; white-space: pre; }
 .md blockquote { margin: 0 0 0.5em; padding-left: 8px; border-left: 2px solid var(--border); color: var(--muted); }
 /* display: block 是为了让宽表格自己滚：table 默认不是 flex/block item，overflow 在它身上不生效。 */
@@ -179,7 +206,7 @@ select:disabled { opacity: 0.5; }
 .empty { padding: 2rem; }
 
 .term { display: flex; flex-direction: column; height: 100%; }
-.term-bar { display: flex; gap: 10px; align-items: center; padding: 3px 10px; color: var(--muted); font-size: 12px; }
+.term-bar { display: flex; gap: 10px; align-items: center; padding: 3px 10px; color: var(--muted); font-size: var(--fs-2); }
 .link-attached { color: var(--ok); }
 .link-exited, .link-detached { color: var(--warn); }
 .term-host { flex: 1; min-height: 0; padding: 0 4px 4px; }
@@ -195,7 +222,7 @@ select:disabled { opacity: 0.5; }
 .restart-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 10; }
-.dialog { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 16px; width: 420px; max-width: 90vw; }
+.dialog { background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-3); padding: 16px; width: 420px; max-width: 90vw; }
 .dialog h2 { margin-bottom: 8px; }
 .dialog p { margin: 0 0 14px; color: var(--muted); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
@@ -209,23 +236,23 @@ select:disabled { opacity: 0.5; }
 
 /* 侧栏过滤与 Alt/Option 跳转序号（MISSION §6.5）。 */
 .sidebar .filter { display: block; width: calc(100% - 20px); margin: 0 10px 6px; }
-.row .ord { flex: none; font-size: 11px; min-width: 0.8em; text-align: right; }
+.row .ord { flex: none; font-size: var(--fs-1); min-width: 0.8em; text-align: right; }
 
 /* Command Palette：一个输入框 + 一列命中，键盘走 ↑↓ + Enter。 */
 .overlay .dialog.palette { width: 520px; padding: 8px; align-self: flex-start; margin-top: 12vh; }
 .palette-input { width: 100%; box-sizing: border-box; padding: 6px 8px; }
 .palette-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: 50vh; overflow-y: auto; }
-.palette-hit { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 4px 8px; border-radius: 4px; color: var(--fg); }
-.palette-hit.on { background: #1f2a38; }
+.palette-hit { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 4px 8px; border-radius: var(--r-2); color: var(--fg); }
+.palette-hit.on { background: var(--sel); }
 
 /* 浏览器通知的权限条（MISSION §6.6）：只在权限还是 default 时出现，答过就没了。 */
-.notify-ask { display: flex; gap: 8px; align-items: center; padding: 4px 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.notify-ask { display: flex; gap: 8px; align-items: center; padding: 4px 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: var(--fs-2); }
 /* 运行时 degraded 横幅（MISSION §10.3；agora-bgr）：原因原文一行，恢复后自己消失。 */
-.runtime-degraded { padding: 4px 10px; border-bottom: 1px solid var(--border); background: #2a2410; color: var(--warn); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-degraded { padding: 4px 10px; border-bottom: 1px solid var(--border); background: var(--warn-bg); color: var(--warn); font-size: var(--fs-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Header 的节点状态（MISSION §10.3；agora-7ku.12）：本机 + 每个 peer 一枚，在线只有名字和点，
    异常才带原因与"上次见到"。放标题下一行而不挤进标题行：260px 的侧栏放不下 `zuan ✗ 指纹不匹配 · 上次见到 23:10`。 */
-.nodes { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 0 10px 4px; font-size: 12px; color: var(--muted); }
+.nodes { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 0 10px 4px; font-size: var(--fs-2); color: var(--muted); }
 .node-status { display: inline-flex; gap: 4px; align-items: baseline; white-space: nowrap; }
 .node-status .node-name { color: var(--fg); }
 .node-status.ok .dot { color: var(--ok); }
@@ -242,20 +269,20 @@ li.stale > .row:hover, li.stale > .row.selected { opacity: 0.8; }
 /* 解冻落位后短暂高亮换位的行（A51，agora-4yr.4）：冻结期间行不动，指针一走开它们会一次性跳到
    新位置——不给个记号，人只知道"刚才那行不见了"。只闪一下背景而不做滑动动画：要的是"哪几行动了"，
    不是看它们走过去（一屏十几行同时滑动比不滑更难跟）。类由 moved 集合驱动，下一次落位自然清空。 */
-@keyframes row-moved { from { background: #2a3a4f; } to { background: transparent; } }
+@keyframes row-moved { from { background: var(--flash); } to { background: transparent; } }
 li.moved > .row { animation: row-moved 1.2s ease-out; }
 
 /* 「按项目」树视图（A48，agora-uvd.3）：组头是按钮，三层缩进；行由 <li class="tree-row"> 包一层再放
    SidebarRow 自己的 <li>（行的 <li> 归 uvd.7，本任务不改），内层 ul 不再加侧栏的 6px 内边距。
    FINISHED 行不搬家、原位淡显：li.done 与 li.stale 同一组规则，hover / 选中回到可读。 */
-.tree .tree-head { display: flex; gap: 6px; align-items: baseline; width: 100%; background: none; border: 0; padding: 6px 6px 2px; text-align: left; color: var(--fg); cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; }
-.tree .tree-head:hover { background: var(--panel-2); border-radius: 4px; }
+.tree .tree-head { display: flex; gap: 6px; align-items: baseline; width: 100%; background: none; border: 0; padding: 6px 6px 2px; text-align: left; color: var(--fg); cursor: pointer; font-size: var(--fs-2); white-space: nowrap; overflow: hidden; }
+.tree .tree-head:hover { background: var(--panel-2); border-radius: var(--r-2); }
 .tree .tree-caret { flex: none; width: 1em; }
 .tree .tree-label { overflow: hidden; text-overflow: ellipsis; }
-.tree .tree-branch, .tree .tree-main { flex: none; font-size: 11px; }
-.tree .tree-main { border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
-.tree .tree-attention { margin-left: auto; flex: none; color: var(--warn); font-size: 11px; }
-.tree .tree-group.depth-0 .tree-head { padding-top: 10px; font-size: 13px; }
+.tree .tree-branch, .tree .tree-main { flex: none; font-size: var(--fs-1); }
+.tree .tree-main { border: 1px solid var(--border); border-radius: var(--r-1); padding: 0 4px; }
+.tree .tree-attention { margin-left: auto; flex: none; color: var(--warn); font-size: var(--fs-1); }
+.tree .tree-group.depth-0 .tree-head { padding-top: 10px; font-size: var(--fs-3); }
 .tree .tree-group.depth-1 .tree-head { padding-left: 14px; }
 .tree .tree-group.depth-2 .tree-head { padding-left: 26px; }
 /* 组头的就地动作（A48，agora-uvd.4）：按钮排在组头按钮右边（不能嵌在里面——按钮不能套按钮），
@@ -263,18 +290,18 @@ li.moved > .row { animation: row-moved 1.2s ease-out; }
    失败一行灰字占组头下一行。 */
 .tree .tree-head-row { display: flex; align-items: baseline; gap: 2px; }
 .tree .tree-head-row .tree-head { flex: 1; min-width: 0; }
-.tree .tree-action { flex: none; background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 11px; padding: 2px 5px; border-radius: 4px; opacity: 0.6; }
+.tree .tree-action { flex: none; background: none; border: 0; color: var(--muted); cursor: pointer; font-size: var(--fs-1); padding: 2px 5px; border-radius: var(--r-2); opacity: 0.6; }
 .tree .tree-head-row:hover .tree-action, .tree .tree-action:focus-visible { opacity: 1; }
 .tree .tree-action:hover:not(:disabled) { background: var(--panel-2); color: var(--fg); }
 .tree .tree-action:disabled { cursor: default; opacity: 0.3; }
-.tree .tree-shell-error { margin: 0 6px 4px 26px; font-size: 11px; }
+.tree .tree-shell-error { margin: 0 6px 4px 26px; font-size: var(--fs-1); }
 .tree .tree-row > ul { padding: 0; }
 .tree .tree-row.depth-2 > ul { padding-left: 14px; }
 .tree .tree-row.depth-3 > ul { padding-left: 26px; }
 /* 一进程一行（agora-5gg.19）：宿主行下面一枚「历史对话 N」，展开后是几行 superseded 旧行。
    depth-4 只出现在历史行身上（组的深度最多 3），多缩一格表示“挂在上一行下面”。 */
 .tree .tree-row.depth-4 > ul { padding-left: 38px; }
-.tree .tree-history { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; font-size: 11px; padding: 1px 6px 3px 28px; text-align: left; border-radius: 4px; }
+.tree .tree-history { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; font-size: var(--fs-1); padding: 1px 6px 3px 28px; text-align: left; border-radius: var(--r-2); }
 .tree .tree-history:hover, .tree .tree-history:focus-visible { background: var(--panel-2); color: var(--fg); }
 li.done > .row, li.done > ul > li > .row { opacity: 0.55; }
 li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, li.done > ul > li > .row.selected { opacity: 0.8; }
@@ -282,7 +309,7 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 /* New Agent 的 Task 字段（A43，agora-h1k.2）：下拉 / 一句话 + 一行灰字（没装 bd、没有 beads），
    Prompt 是多行框——放在一个格子里叠着，标签列不动。 */
 .form .task-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.form .task-hint { font-size: 12px; }
+.form .task-hint { font-size: var(--fs-2); }
 .form textarea { min-width: 0; font: inherit; resize: vertical; }
 
 /* 只读 diff 终端的连接状态与它的标签页点。 */
@@ -305,21 +332,21 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
      体面；跟上面兜底那三项 1:100 的悬殊比例保证「先吃完全名，再动别人」。
    - 选择器必须写满 `.row .meta > .badge`：上面 `.row .meta > span { flex: none }` 特异性 (0,2,1)，
      光写 `.row .badge` 是 (0,2,0) 会输，徽标一格都不收缩（实测过，state 反而比修之前裁得更多）。 */
-.row .badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 3px; border: 1px solid var(--border); font-size: 11px; padding: 0 4px; color: hsl(var(--hue) 60% 70%); }
+.row .badge { display: inline-flex; align-items: center; gap: 4px; border-radius: var(--r-1); border: 1px solid var(--border); font-size: var(--fs-1); padding: 0 4px; color: hsl(var(--hue) 60% 70%); }
 .row .meta > .badge { flex: 0 100 auto; min-width: 1em; }
 .row .badge-glyph { flex: none; width: 1em; text-align: center; }
 .row .badge-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* 节点 chip = 永不截断的「@」+ 可截断的名字（agora-yaf）。inline-flex 上 text-overflow 不生效，
    名字必须是独立的 block 化 span；chip 的 min-width: 1em 护住「@」，overflow: hidden 只能写在
    .node-label 上——写在 chip 上会把「@」一起削掉（同日徽标踩过，见上面 .badge）。 */
-.row .node.peer { display: inline-flex; align-items: center; gap: 4px; border-radius: 3px; border: 1px solid var(--border); font-size: 11px; padding: 0 4px; color: hsl(var(--hue) 60% 70%); }
-.row .node.local { display: inline-flex; align-items: center; gap: 4px; border-radius: 3px; border: 1px solid var(--muted); font-size: 11px; padding: 0 4px; color: var(--fg); }
+.row .node.peer { display: inline-flex; align-items: center; gap: 4px; border-radius: var(--r-1); border: 1px solid var(--border); font-size: var(--fs-1); padding: 0 4px; color: hsl(var(--hue) 60% 70%); }
+.row .node.local { display: inline-flex; align-items: center; gap: 4px; border-radius: var(--r-1); border: 1px solid var(--muted); font-size: var(--fs-1); padding: 0 4px; color: var(--fg); }
 .row .node-at { flex: none; }
 .row .node-label { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* 行上的「仓库 ⎇ 分支」一行（A49，agora-uvd.8）：meta 之下、预览之上，只有名字与分支，路径在 title。
    树视图不画（组头已说明）。 */
-.row .line-project { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .line-project { font-size: var(--fs-2); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- 手机交互收件箱 /m（MISSION §6.9；agora-thc.5） ----------
 
@@ -383,24 +410,30 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
    Chromium 不同，2026-10-08 实测 80 字符无空格名字在 WebKit 里盒子 1138px、顶出卡片框，
    Chromium 里换行所以看不见），也绝不许画出行的圆角外框。 */
 .mobile-row { display: flex; flex-direction: column; gap: var(--m-1); width: 100%; padding: var(--m-2) var(--m-3); text-align: left; background: var(--panel); border-radius: var(--m-2); overflow: hidden; }
-.mobile-row.selected { background: var(--panel-2); border-color: var(--accent); }
-/* 行头 = 桌面侧栏 meta 的同一套「收缩优先级」（agora-8lb / agora-yaf；手机端 2026-10-08 对齐，
-   agora-nzbu）。规则有四条，少一条都会退化成"文字画到框外"或"被框裁掉"：
-     1. **单行、绝不折**：折行会随字号/宽度变出 3–5 行的头，行高不可预测、一屏装不下几行；
-     2. 每个会被截断的元素**自己**带 overflow: hidden + text-overflow: ellipsis（裁在它自己的盒子里，
-        所以一定看得见省略号；靠祖先 overflow 裁就是"被卡片外框盖住"）;
-     3. 让位顺序固定：徽标 / 节点 chip 先让（可以缩到 0），名字再让（下限 4em），**状态最后让**
-        （下限 4em——"waiting 3m" 是这一行存在的理由，先保住它和名字）；
-     4. symbol（◆）不参与收缩（glyph 锚点，同桌面 .badge-glyph / .node-at）。 */
+.mobile-row.selected { background: var(--sel); border-color: var(--accent); }
+/* 行头（agora-nzbu）：第一行只有两个锚点 + 一个会椭圆的项，优先级**结构性**成立，不靠 flex-shrink
+   比例的巧合：
+     ◆ symbol   不退让（glyph 锚点，同桌面 .badge-glyph / .node-at）
+     name       flex: 0 1 auto + min-width 2em：装不下才省略（省略的是尾巴，看得见 …）
+     status     flex: none：**永不让位**——"waiting 3m" 是这一行存在的理由
+   早些时候把四件套（符号/名字/徽标/节点/状态）塞在一行、用 flex-shrink 100:10:1 分优先级，
+   实测仍然"人人各切一点"（402/m 的 dbs-operator 四个全截）——一行里放的东西越少，优先级越硬。
+   每个会被截断的元素**自己**带 overflow: hidden + text-overflow: ellipsis：裁在自己盒子里才
+   看得见省略号，靠祖先 overflow 裁就是用户报的"被卡片外框盖住"（agora-c03z）。
+   第二行 = 发信人 + 内容：这一行的锚点是徽标与节点 chip（发信人是谁），让位的是**任务文本**
+   （flex: 1 1 auto + min-width: 0，它的 max-content 最大，本来就会吸走绝大部分收缩量）——
+   与第一行同一条道理：锚点定住，内容省略。徽标/节点 flex: none 完全不缩（它们合起来最宽
+   ~120px，最窄的 320px 屏也放得下），任务文本缩到 0 也不会把谁挤出去。 */
 .mobile-row-head, .mobile-card-head { display: flex; align-items: baseline; gap: var(--m-2); min-width: 0; }
 .mobile-row-head > *, .mobile-card-head > * { min-width: 0; }
 .mobile-symbol { flex: none; width: 1em; }
-.mobile-row-name { flex: 0 1 auto; min-width: 4em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mobile-agent { flex: 0 1 auto; min-width: 0; font-size: var(--m-fs-mini); color: hsl(var(--hue, 0) 70% 68%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mobile-node-chip { flex: 0 1 auto; min-width: 0; font-size: var(--m-fs-mini); color: hsl(var(--hue, 0) 60% 70%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mobile-row-name { flex: 0 1 auto; min-width: 2em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mobile-status { flex: none; margin-left: auto; color: var(--muted); white-space: nowrap; }
+.mobile-row-sub { display: flex; align-items: baseline; gap: var(--m-2); min-width: 0; }
+.mobile-agent { flex: none; font-size: var(--m-fs-mini); color: hsl(var(--hue, 0) 70% 68%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mobile-node-chip { flex: none; font-size: var(--m-fs-mini); color: hsl(var(--hue, 0) 60% 70%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mobile-node-chip.local { color: var(--muted); }
-.mobile-status { flex: 0 1 auto; min-width: 4em; margin-left: auto; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mobile-row-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-row-task { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mobile-row-summary { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .mobile-empty { margin: 0; padding: var(--m-1) var(--m-1) var(--m-2); color: var(--muted); }
 .mobile-finished-toggle { display: flex; align-items: baseline; justify-content: space-between; gap: var(--m-2); width: 100%; margin-bottom: var(--m-2); padding: var(--m-2) var(--m-1); color: var(--muted); background: none; border-color: transparent; font-size: var(--m-fs-mini); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -474,9 +507,9 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .dialog.devices { width: 520px; }
 .device-pair { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
 .pair-link { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
-.pair-link code { word-break: break-all; background: var(--panel); padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
-.pair-qr { border: 1px solid var(--border); border-radius: 4px; }
-.device-list table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pair-link code { word-break: break-all; background: var(--panel); padding: 4px 6px; border: 1px solid var(--border); border-radius: var(--r-2); font-size: var(--fs-2); }
+.pair-qr { border: 1px solid var(--border); border-radius: var(--r-2); }
+.device-list table { width: 100%; border-collapse: collapse; font-size: var(--fs-3); }
 .device-list th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; }
 .device-list td { padding: 4px 6px; border-top: 1px solid var(--border); }
 
@@ -484,11 +517,16 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .mobile-gear { margin-left: auto; padding: 0 var(--m-2); }
 .mobile-settings .mobile-section { margin: var(--m-3) calc(var(--m-3) + env(safe-area-inset-right)) var(--m-3) calc(var(--m-3) + env(safe-area-inset-left)); }
 .mobile-push-toggle { min-width: var(--m-5); padding: 0 var(--m-3); }
+/* 字号档位是一组分段按钮：等宽一行放完，选中态用 aria-pressed + accent 边框——与桌面
+   侧栏视图切换（.sidebar-mode button[aria-pressed="true"]）同一条语法，两壳一眼是同一种控件。 */
+.mobile-text-sizes { display: flex; gap: var(--m-2); }
+.mobile-text-sizes button { flex: 1; padding: 0 var(--m-1); }
+.mobile-text-sizes button[aria-pressed="true"] { border-color: var(--accent); color: var(--fg); }
 .mobile-settings .mobile-section > .muted { font-size: var(--m-fs-note); }
-.install-hint { border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+.install-hint { border: 1px solid var(--border); border-radius: var(--r-3); padding: 8px 12px; margin: 8px 0; }
 .install-hint ol { margin: 6px 0 0 18px; }
 .install-hint li { list-style: decimal; }
-.mobile-note.warning { color: var(--warn, #b58900); }
+.mobile-note.warning { color: var(--warn); }
 
 /* 手机门页（未配对 / 被吊销时的那一屏）：与 /m 同一套基准，别让"重新配对"这一屏回到 13px
    （agora-x70t.ten0；.gate-mobile 以前只有类名没有样式）。 */

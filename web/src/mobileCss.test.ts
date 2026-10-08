@@ -72,37 +72,31 @@ describe("手机端溢出与触控（agora-x70t.qz01）", () => {
     for (const sel of [".mobile-note", ".mobile-question"]) {
       expect(has(sel, /overflow-wrap:\s*anywhere/), `${sel} 需要 overflow-wrap: anywhere`).toBe(true);
     }
-    for (const sel of [".mobile-card-task", ".mobile-row-task", ".mobile-row-summary", ".mobile-row-name", ".mobile-status", ".mobile-agent", ".mobile-node-chip"]) {
+    for (const sel of [".mobile-card-task", ".mobile-row-task", ".mobile-row-summary", ".mobile-row-name", ".mobile-agent", ".mobile-node-chip"]) {
       expect(has(sel, /text-overflow:\s*ellipsis/), `${sel} 需要 text-overflow: ellipsis`).toBe(true);
       expect(has(sel, /overflow:\s*hidden/), `${sel} 要把裁切留在自己盒子里（否则就是被祖先框盖住）`).toBe(true);
     }
   });
 
-  it("行头单行不折，且收缩优先级写死（徽标/节点先让 → 名字 → 状态；symbol 不退让）", () => {
-    // 2026-10-08 用户第二次报"文本被卡片外框盖住"：根因是行头一行装不下时没有收缩顺序，
-    // WebKit 干脆不让 flex 项收缩。桌面侧栏解决过同一问题，这里照抄那套优先级。
-    for (const sel of [".mobile-row-head", ".mobile-card-head"]) {
+  it("行头是按结构分的优先级：名字可省略、状态永不让位、symbol 不退让", () => {
+    // 2026-10-08 用户第二次报"文本被卡片外框盖住"：根因是一行塞了五个元素又没有可靠的收缩顺序。
+    // 现在的结构：第一行只有 symbol + 名字（可省略）+ 状态（flex: none），优先级靠结构成立；
+    // 徽标/节点挪到第二行，与任务文本按 100:100:1 顺序让位（同桌面侧栏 agora-8lb）。
+    expect(has(".mobile-row-name", /flex:\s*0 1 auto/), "名字可收缩").toBe(true);
+    expect(has(".mobile-row-name", /min-width:\s*2em/), "名字下限 2em").toBe(true);
+    expect(has(".mobile-status", /flex:\s*none/), "状态不让位").toBe(true);
+    expect(has(".mobile-symbol", /flex:\s*none/), "symbol 不退让").toBe(true);
+    for (const sel of [".mobile-row-head", ".mobile-row-sub"]) {
       expect(has(sel, /display:\s*flex/), sel).toBe(true);
+      expect(has(sel, /min-width:\s*0/), sel).toBe(true);
     }
     // 行头绝不折（收件箱是重复列表，行高要可预测）；卡片头是唯一的那一个，可以折成两行。
     expect(has(".mobile-row-head", /flex-wrap:\s*wrap/), "行头不该折行").toBe(false);
     expect(has(".mobile-card-head", /flex-wrap:\s*wrap/), "卡片头装不下时折行").toBe(true);
-    expect(has(".mobile-symbol", /flex:\s*none/), "symbol 不退让").toBe(true);
-    expect(has(".mobile-row-name", /min-width:\s*4em/), "名字下限 4em").toBe(true);
-    expect(has(".mobile-status", /min-width:\s*4em/), "状态下限 4em").toBe(true);
+    expect(has(".mobile-row-task", /flex:\s*1 1 auto/), "任务文本最后让位（吃剩下的空间）").toBe(true);
     for (const sel of [".mobile-agent", ".mobile-node-chip"]) {
-      expect(has(sel, /min-width:\s*0/), `${sel} 可以让到 0`).toBe(true);
+      expect(has(sel, /flex:\s*none/), `${sel} 不缩（第二行的锚点）`).toBe(true);
     }
-  });
-
-  it("硬夹断与收缩：行/卡片不许有东西画出框外，名字能收缩", () => {
-    // WebKit 与 Chromium 对 flex 项的收缩行为不同（2026-10-08 实测：80 字符无空格名字在 WebKit
-    // 里盒子 1138px 顶出卡片框，Chromium 里会换行），所以除了让文字可折，还要有硬夹断兜底。
-    expect(has(".mobile-row", /overflow:\s*hidden/), ".mobile-row 硬夹断").toBe(true);
-    expect(has(".mobile-card", /overflow-x:\s*hidden/), ".mobile-card 横向硬夹断").toBe(true);
-    expect(has(".mobile-row-head > \*", /min-width:\s*0/), "行头的子项要能收缩").toBe(true);
-    expect(has(".mobile-row-name", /min-width:\s*4em/), "名字能收缩且留住 4em").toBe(true);
-    expect(has(".mobile-bubble-body", /min-width:\s*0/), "气泡正文要能收缩").toBe(true);
   });
 
   it("主要动作的命中高度有触控下限", () => {

@@ -261,6 +261,21 @@ WAITING 的变体：决策原文（等宽逐字、不过 markdown）作为一张
 
 行为：推送点击进 `/m?session=<node>:<id>` 并定位该行（PWA 已开则聚焦；可发送的行把焦点放进 composer）；「看过」沿用每设备 localStorage（与桌面不共享，v1 接受）；承载节点离线时门页显示不可达与上次同步时间，不做离线动作队列。守卫：web/src/Mobile*.test.tsx（新建）与 A52 的 DOM 断言（不含终端 / 创建 / diff / 验收 / 改动列表的 testid）。
 
+## 设计令牌（全局一致性；agora-74nf）
+
+两壳（桌面 13px dense 工作台 / 手机 `--m-fs` 派生）共用同一批**语义令牌**，定义只在 `index.css` 的 `:root` 里，别处一律 `var()`——散着写的字面量正是"手机改了字号、桌面没人比对"的来路（守卫 `web/src/designTokens.test.ts`：`:root` 外不许出现 hex、px 字号、px 圆角，引用的令牌必须都有定义）。
+
+| 组 | 令牌 | 值 / 用途 |
+|---|---|---|
+| 语义色 | `--bg` `--panel` `--panel-2` `--fg` `--muted` `--accent` `--border` `--warn` `--ok` `--bad` | 深色底、两级面板、正文/次要文字、强调蓝、边框、警示/成功/失败 |
+| 状态底 | `--sel` `--danger-border` `--warn-bg` `--flash` | 选中/高亮底（侧栏行、命令面板、手机行）、danger 边框、degraded 横幅底、换位闪一下 |
+| 圆角 | `--r-1..--r-4` = 3 / 4 / 6 / 10px | 徽标 chip 一级小件、按钮/输入、对话框/面板、气泡级大件 |
+| 字号（桌面） | `--fs-1..--fs-4` = 11 / 12 / 13 / 14px | 面板里的注释、meta、正文（`:root` 基准）、页面标题 |
+| 字号（手机） | `--m-fs` + `--m-fs-mini/-note`、`--m-1..--m-5`、`--m-tap` | 见上一节：一个旋钮派生全屏，四档 15/17/19/22 |
+| 间距 | `--s-1..--s-7` = 2 / 4 / 6 / 8 / 10 / 12 / 16px | 新代码从这里取；老代码按语义逐步换 |
+
+两条跨壳约定：**同一控件同一种语法**（选中态一律 `aria-pressed="true"` + accent 边框，如桌面 `.sidebar-mode` 与手机字号档位；danger 一律 `button.danger`）；**同一语义同一个令牌**（`--sel` 管所有"这一条被选中"的底，手机 `.mobile-row.selected` 与桌面 `.row.selected` 同色）。
+
 ## 浏览器通知（MISSION §6.6；A18）
 
 `web/src/notify.ts`（agora-dvh.11）。该不该发是服务端的事（`notification` 事件只在 RUNNING 或 IDLE → WAITING / TURN_DONE / FINISHED / FAILED 上来，`docs/spec/api.md`）；前端只管权限、弹、点击：

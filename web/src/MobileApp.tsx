@@ -267,11 +267,17 @@ function MobileRow({ row, now, localNode, onOpen }: RowProps) {
         data-testid={`mobile-row-${row.id}`}
         onClick={() => onOpen(row.id)}
       >
+        {/* 第一行只有两个锚点：名字（flex:0 1 auto，装不下才省略）与状态（flex:none，永不让位——
+            "waiting 3m" 是这一行存在的理由）。徽标与节点在下一行的开头，跟任务文本一起排：
+            发信人 + 内容，也是 IM 里最熟的那种一行（agora-nzbu）。 */}
         <span className="mobile-row-head">
           <span className="mobile-symbol" aria-hidden="true">
             {statusSymbol(row.status)}
           </span>
           <span className="mobile-row-name">{rowName(row)}</span>
+          <span className="mobile-status">{statusLine(row, now)}</span>
+        </span>
+        <span className="mobile-row-sub">
           <span className="mobile-agent" style={{ "--hue": badge.hue } as CSSProperties}>
             {badge.glyph} {badge.label}
           </span>
@@ -285,9 +291,8 @@ function MobileRow({ row, now, localNode, onOpen }: RowProps) {
               @{row.node}
             </span>
           )}
-          <span className="mobile-status">{statusLine(row, now)}</span>
+          <span className="mobile-row-task">{taskLabel(row)}</span>
         </span>
-        <span className="mobile-row-task">{taskLabel(row)}</span>
         {summary !== "" && <span className="mobile-row-summary">{summary}</span>}
       </button>
     </li>
