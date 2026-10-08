@@ -379,9 +379,16 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .mobile-inbox { flex: 1; overflow-y: auto; padding: var(--m-2) calc(var(--m-3) + env(safe-area-inset-right)) calc(var(--m-5) + env(safe-area-inset-bottom)) calc(var(--m-3) + env(safe-area-inset-left)); }
 .mobile-section h2 { display: flex; align-items: baseline; justify-content: space-between; gap: var(--m-2); margin: 0; padding: var(--m-3) var(--m-1) var(--m-1); color: var(--muted); font-size: var(--m-fs-mini); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 .mobile-section ul { display: flex; flex-direction: column; gap: var(--m-2); margin: 0; padding: 0; list-style: none; }
-.mobile-row { display: flex; flex-direction: column; gap: var(--m-1); width: 100%; padding: var(--m-2) var(--m-3); text-align: left; background: var(--panel); border-radius: var(--m-2); }
+/* overflow: hidden 是**硬夹断**：行里任何元素万一没收缩住（WebKit 对 flex 项的处理与
+   Chromium 不同，2026-10-08 实测 80 字符无空格名字在 WebKit 里盒子 1138px、顶出卡片框，
+   Chromium 里换行所以看不见），也绝不许画出行的圆角外框。 */
+.mobile-row { display: flex; flex-direction: column; gap: var(--m-1); width: 100%; padding: var(--m-2) var(--m-3); text-align: left; background: var(--panel); border-radius: var(--m-2); overflow: hidden; }
 .mobile-row.selected { background: var(--panel-2); border-color: var(--accent); }
-.mobile-row-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--m-2); }
+.mobile-row-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--m-2); min-width: 0; }
+/* 名字与状态是唯一没有省略号/折行保护的两个 flex 项：给它们 min-width: 0 让它收缩得下去，
+   anywhere 让无空格长名（URL / 哈希 / 长目录名）有地方断。 */
+.mobile-row-head > * { min-width: 0; }
+.mobile-row-name, .mobile-status { overflow-wrap: anywhere; }
 .mobile-symbol { width: 1em; flex: none; }
 .mobile-row-name { font-weight: 600; }
 .mobile-agent { flex: none; font-size: var(--m-fs-mini); color: hsl(var(--hue, 0) 70% 68%); }
@@ -395,7 +402,7 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .narrow-guide a { color: var(--accent); }
 
 /* ---------- /m 会话卡（agora-thc.10）：IM 语法——最近一轮两气泡、底部 composer、乐观发送 ---------- */
-.mobile-card { display: flex; flex: 1; flex-direction: column; gap: var(--m-2); min-height: 0; overflow-y: auto; padding: 0 calc(var(--m-3) + env(safe-area-inset-right)) 0 calc(var(--m-3) + env(safe-area-inset-left)); }
+.mobile-card { display: flex; flex: 1; flex-direction: column; gap: var(--m-2); min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 calc(var(--m-3) + env(safe-area-inset-right)) 0 calc(var(--m-3) + env(safe-area-inset-left)); }
 .mobile-card-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--m-2); padding: calc(var(--m-3) + env(safe-area-inset-top)) 0 var(--m-2); border-bottom: 1px solid var(--border); }
 .mobile-back { flex: none; padding: 0 var(--m-2); color: var(--accent); font-size: calc(var(--m-fs) * 1.1); background: none; border-color: transparent; }
 .mobile-card-task { margin: 0; color: var(--muted); }
@@ -405,7 +412,7 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .mobile-bubble.user { justify-content: flex-end; }
 .mobile-bubble.user .mobile-bubble-mark { order: -1; color: var(--accent); }
 .mobile-bubble.user > span:not(.mobile-bubble-mark):not(.mobile-sent-state) { max-width: 85%; padding: var(--m-1) var(--m-2); background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--m-3); white-space: pre-wrap; word-break: break-word; }
-.mobile-bubble-body { min-width: 0; max-width: 90%; padding: var(--m-2) var(--m-3); background: var(--panel); border: 1px solid var(--border); border-radius: var(--m-3); }
+.mobile-bubble-body { min-width: 0; overflow-wrap: anywhere; max-width: 90%; padding: var(--m-2) var(--m-3); background: var(--panel); border: 1px solid var(--border); border-radius: var(--m-3); }
 .mobile-sent-state { align-self: flex-end; color: var(--muted); font-size: var(--m-fs-mini); }
 .mobile-more-line { display: block; margin-top: var(--m-1); padding: 0; color: var(--accent); background: none; border-color: transparent; }
 .mobile-decision { display: flex; flex-direction: column; gap: var(--m-2); padding: var(--m-3); background: var(--panel); border: 1px solid var(--warn); border-radius: var(--m-3); }

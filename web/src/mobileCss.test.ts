@@ -74,6 +74,16 @@ describe("手机端溢出与触控（agora-x70t.qz01）", () => {
     }
   });
 
+  it("硬夹断与收缩：行/卡片不许有东西画出框外，名字能收缩", () => {
+    // WebKit 与 Chromium 对 flex 项的收缩行为不同（2026-10-08 实测：80 字符无空格名字在 WebKit
+    // 里盒子 1138px 顶出卡片框，Chromium 里会换行），所以除了让文字可折，还要有硬夹断兜底。
+    expect(has(".mobile-row", /overflow:\s*hidden/), ".mobile-row 硬夹断").toBe(true);
+    expect(has(".mobile-card", /overflow-x:\s*hidden/), ".mobile-card 横向硬夹断").toBe(true);
+    expect(has(".mobile-row-head > \*", /min-width:\s*0/), "行头的子项要能收缩").toBe(true);
+    expect(has(".mobile-row-name, .mobile-status", /overflow-wrap:\s*anywhere/), "名字/状态可折").toBe(true);
+    expect(has(".mobile-bubble-body", /min-width:\s*0/), "气泡正文要能收缩").toBe(true);
+  });
+
   it("主要动作的命中高度有触控下限", () => {
     for (const sel of [".mobile-back", ".mobile-gear", ".mobile-more-toggle", ".mobile-composer button", ".mobile-decision-actions button", ".mobile-finished-toggle", ".mobile-push-toggle", ".mobile-text-sizes button", ".mobile .dialog button"]) {
       expect(has(sel, /min-height:\s*var\(--m-tap\)/), `${sel} 需要 min-height: var(--m-tap)`).toBe(true);
