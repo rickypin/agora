@@ -528,6 +528,15 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .install-hint li { list-style: decimal; }
 .mobile-note.warning { color: var(--warn); }
 
+/* 布局诊断的描边（agora-x70t）：出框（盒子超出父容器）描红、被裁（内容超出自己的裁剪盒）描黄。
+   正常时一条红线都不该出现——出现了就是那块的 CSS 有病。 */
+.mobile[data-outline] * { outline: 1px solid rgb(88 166 255 / 35%); }
+.mobile[data-outline] [data-overflow] { outline: 2px solid var(--bad); }
+.mobile[data-outline] [data-clip] { outline: 2px dashed var(--warn); }
+.mobile-diag-actions { display: flex; gap: var(--m-2); }
+.mobile-diag-actions button { flex: 1; padding: 0 var(--m-2); }
+.mobile-diag-report { width: 100%; box-sizing: border-box; margin-top: var(--m-2); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--m-fs-note); }
+
 /* 手机门页（未配对 / 被吊销时的那一屏）：与 /m 同一套基准，别让"重新配对"这一屏回到 13px
    （agora-x70t.ten0；.gate-mobile 以前只有类名没有样式）。 */
 .gate-mobile {

@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { InstallHint, iosWithoutStandalone } from "./InstallHint";
+import { copyText, layoutReport, toggleOutline } from "./mobileDebug";
 import { apiFetch } from "./net";
 import { browserPushEnv, disablePush, enablePush, selfCheckPush, type PushEnv, type PushReport } from "./push";
 import {
@@ -61,6 +62,10 @@ export function MobileSettings({ onClose, onRevoked, env, probe, textSize: given
   const [busy, setBusy] = useState(false);
   const [degrade, setDegrade] = useState<{ apple: boolean | null; reason: string | null } | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState(false);
+  // 现场取证（agora-x70t）：手机是唯一跑真 Safari 的机器，"哪块出框 / 被裁"做成能看见、能复制的。
+  const [outlined, setOutlined] = useState(false);
+  const [diagReport, setDiagReport] = useState<string | null>(null);
+  const [diagNote, setDiagNote] = useState<string | null>(null);
   const [textSize, setTextSize] = useState<MobileTextSize>(() => givenText ?? loadMobileTextSize());
 
   function pickText(size: MobileTextSize) {
@@ -159,6 +164,39 @@ export function MobileSettings({ onClose, onRevoked, env, probe, textSize: given
           ))}
         </div>
         <p className="muted">字号只影响这台设备上的 /m；这一档存本机，换一台设备要重选。</p>
+      </section>
+
+      <section className="mobile-section" aria-label="诊断">
+        <h2>
+          <span>诊断</span>
+        </h2>
+        {/* 排障用（agora-x70t）：布局出问题时不靠描述——描边标出出框（红）与被裁（黄）的元素，
+            或者把整个视口的盒子数字复制出来。 */}
+        <div className="mobile-diag-actions">
+          <button
+            type="button"
+            data-testid="mobile-diag-outline"
+            aria-pressed={outlined}
+            onClick={() => setOutlined(toggleOutline())}
+          >
+            {outlined ? "隐藏边框" : "显示边框"}
+          </button>
+          <button
+            type="button"
+            data-testid="mobile-diag-report"
+            onClick={() => {
+              const text = layoutReport();
+              setDiagReport(text);
+              void copyText(text).then((ok) => setDiagNote(ok ? "已复制，粘给我就行" : "复制被拒——长按下面的文字全选复制"));
+            }}
+          >
+            复制布局报告
+          </button>
+        </div>
+        {diagNote && <p className="muted" data-testid="mobile-diag-note">{diagNote}</p>}
+        {diagReport && (
+          <textarea className="mobile-diag-report" data-testid="mobile-diag-text" readOnly rows={8} value={diagReport} />
+        )}
       </section>
 
       <section className="mobile-section" aria-label="本设备">
