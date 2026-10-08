@@ -377,31 +377,32 @@ impl SessionManager {
 
     // ---------- hook 事件 ----------
 
-    /// hook 事件进状态机（立即生效）。`epoch` 是信封里带回的；比库里的旧就丢。
+    /// hook 事件进状态机（立即生效）。`epoch` 是信封里带回的；比库里的旧就拒。
     /// `SessionId` 顺手覆盖 `agent_session_id`（ADR-002 D7：每次命中都覆盖）。
+    ///
+    /// 返回事件有没有被应用：`false` = 旧 epoch（或同一封投递件已消费过）被拒。旧实现用
+    /// `.map(|_| ())` 把这个结果吞掉，调用方分不出「进了状态机」与「静默丢了」（agora-51bo）。
     pub fn apply_hook(
         &self,
         id: &str,
         epoch: i64,
         events: &[AgoraEvent],
-    ) -> Result<(), SessionError> {
+    ) -> Result<bool, SessionError> {
         self.apply_hook_inner(id, epoch, events, None, None, 0)
-            .map(|_| ())
     }
 
     /// 同 [`SessionManager::apply_hook`]，但状态起点与 external 行的 `ended_at` 用给定的 `at`
     /// （unix 秒）。superseded 的结束时刻是**新对话首条事件**的时刻（`AgentProcess::seen_at`），
     /// 不是 daemon 发现两行共用一个进程号的时刻：重启重放时这一条能差几分钟到几小时
-    /// （agora-5gg.3）。
+    /// （agora-5gg.3）。返回值口径同 [`SessionManager::apply_hook`]。
     pub fn apply_hook_at(
         &self,
         id: &str,
         epoch: i64,
         events: &[AgoraEvent],
         at: Option<i64>,
-    ) -> Result<(), SessionError> {
+    ) -> Result<bool, SessionError> {
         self.apply_hook_inner(id, epoch, events, None, at, 0)
-            .map(|_| ())
     }
 
     pub fn apply_delivered_hook(
@@ -426,6 +427,13 @@ impl SessionManager {
     ) -> Result<bool, SessionError> {
         let rec = self.record(id)?;
         if epoch < rec.epoch {
+            tracing::info!(
+                component = "hook",
+                session = id,
+                epoch,
+                current = rec.epoch,
+                "旧 epoch 的 hook 事件被拒"
+            );
             return Ok(false);
         }
         let now = clock::now_secs();
@@ -459,12 +467,14 @@ impl SessionManager {
             m.note_input_channel(input_channel);
             for e in events {
                 if !m.apply_at(e, epoch, now, at) {
-                    tracing::debug!(
-                        component = "status",
+                    // 与开头那条同一件事、同一句话、同一级别：状态机的 epoch 可能比库里的行
+                    // 还新（observe 看到过更大的 epoch），第一道门放过去了，这道拦住。
+                    tracing::info!(
+                        component = "hook",
                         session = id,
                         epoch,
                         current = rec.epoch,
-                        "旧 epoch 的 hook 事件丢弃"
+                        "旧 epoch 的 hook 事件被拒"
                     );
                     return Ok(false);
                 }
@@ -2239,3 +2249,128 @@ pub fn summarize(text: &str, max_chars: usize) -> String {
 }
 
 pub use crate::adapter::text::strip_ansi;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// 只起一个 register_external 用的空运行时：这些单测不碰进程，任何运行时方法真被调到
+    /// 就是测试写错了。
+    struct NoRuntime;
+
+    impl Runtime for NoRuntime {
+        fn kind(&self) -> &'static str {
+            "none"
+        }
+        fn create(&self, _spec: &LaunchSpec) -> Result<RuntimeRef, RuntimeError> {
+            unreachable!("apply_hook 单测不起运行时")
+        }
+        fn list(&self) -> Result<RuntimeScan, RuntimeError> {
+            unreachable!("apply_hook 单测不查运行时")
+        }
+        fn inspect(&self, _reference: &RuntimeRef) -> Result<RuntimeSession, RuntimeError> {
+            unreachable!("apply_hook 单测不查运行时")
+        }
+        fn attach(&self, _reference: &RuntimeRef, _size: Size) -> Result<AttachSpec, RuntimeError> {
+            unreachable!("apply_hook 单测不接终端")
+        }
+        fn capture_tail(
+            &self,
+            _reference: &RuntimeRef,
+            _lines: u32,
+        ) -> Result<Vec<u8>, RuntimeError> {
+            unreachable!("apply_hook 单测不读屏幕")
+        }
+        fn terminate(&self, _reference: &RuntimeRef, _grace: Duration) -> Result<(), RuntimeError> {
+            unreachable!("apply_hook 单测不杀进程")
+        }
+        fn signal(
+            &self,
+            _reference: &RuntimeRef,
+            _sig: TerminateSignal,
+        ) -> Result<(), RuntimeError> {
+            unreachable!("apply_hook 单测不发信号")
+        }
+        fn respawn(&self, _reference: &RuntimeRef, _spec: &LaunchSpec) -> Result<(), RuntimeError> {
+            unreachable!("apply_hook 单测不重启")
+        }
+        fn remove(&self, _reference: &RuntimeRef) -> Result<(), RuntimeError> {
+            unreachable!("apply_hook 单测不删运行时会话")
+        }
+        fn send_input(&self, _reference: &RuntimeRef, _data: &str) -> Result<(), RuntimeError> {
+            unreachable!("apply_hook 单测不写 PTY")
+        }
+    }
+
+    /// 把一个 tracing fmt subscriber 的输出攒进内存，跑完 `f` 后整段交回；只装当前线程
+    /// （`set_default`），不影响同二进制里并行跑的别的测试。抄的 `tests/common::capture_logs`。
+    fn capture_logs(f: impl FnOnce()) -> String {
+        use std::sync::Mutex;
+
+        let buf: Arc<Mutex<Vec<u8>>> = Arc::default();
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl Write for Sink {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let sink = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || Sink(sink.clone()))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        f();
+        let bytes = buf.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    /// 旧 epoch 的 hook 事件必须让调用方看得出「被拒」，并在 daemon.log 留一行 info
+    /// （agora-51bo）：投递箱重放、Dashboard 答复都靠这个结果区分「进了状态机」与
+    /// 「静默丢了」。改坏法：`apply_hook` 再 `.map(|_| ())` / 去掉早期返回的 info → 断言红。
+    #[test]
+    fn stale_epoch_hook_is_rejected_with_a_log_line() {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let m = SessionManager::new(db, Arc::new(NoRuntime));
+        let id = m
+            .register_external(&ExternalSession {
+                // 不写具体 agent 名：arch_boundary 的 ADR-002 D2 守卫只允许它们出现在 src/adapter/。
+                agent_type: "testagent".into(),
+                agent_session_id: "conversation-1".into(),
+                runtime_ref: None,
+                working_directory: Some(PathBuf::from("/tmp")),
+                created_at: None,
+                origin: Origin::External,
+            })
+            .unwrap();
+        let epoch = m.record(&id).unwrap().epoch;
+        // 应用结果不再被吞：旧 epoch 返回 false，不是 Ok(())（agora-51bo）。
+        assert!(
+            m.apply_hook(&id, epoch, &[AgoraEvent::Activity("current".into())])
+                .unwrap(),
+            "当前 epoch 的事件要被应用"
+        );
+        assert!(
+            !m.apply_hook(&id, epoch - 1, &[AgoraEvent::Activity("stale".into())])
+                .unwrap(),
+            "旧 epoch 的事件必须返回被拒"
+        );
+        let logs = capture_logs(|| {
+            m.apply_hook(&id, epoch - 1, &[AgoraEvent::Activity("stale".into())])
+                .unwrap();
+        });
+        assert!(
+            logs.contains("旧 epoch 的 hook 事件被拒"),
+            "旧 epoch 被拒要留一行日志: {logs}"
+        );
+        assert!(
+            logs.contains("INFO"),
+            "这行是 info（排障不用开 debug）: {logs}"
+        );
+    }
+}
