@@ -25,7 +25,7 @@ use agora::hook::{Delivery, Envelope, Inbox, Receiver};
 use agora::local::Response;
 use agora::runtime::Runtime;
 use agora::session::{Db, Origin, SessionManager};
-use agora::status::{ProcessState, Source, Status};
+use agora::status::{EndCause, ProcessState, Source, Status};
 
 use common::{FakeRuntime, Fx, HOST};
 
@@ -1075,6 +1075,60 @@ async fn superseded_external_row_ends_at_the_new_conversation_first_event() {
         None,
         "被取代的是旧行"
     );
+}
+
+#[tokio::test]
+async fn a_new_conversation_supersedes_the_old_row_even_after_the_probe_guessed_it_gone() {
+    // agora-kyh9：hook 进程的钟与 daemon 不一致（信封时刻早于进程启动）时，`agent_process_alive`
+    // 的「进程不得晚于报来它的 hook」会先把这一行判成 process gone——FINISHED，`ended_at` 是探到
+    // 它的那个 tick 的近似值。同一 pid 随后报来新对话（换对话）时，旧行已经在 finished 档上，
+    // `supersede_external_rows` 直接跳过它：同一件事于是有两种说法（探活档 process_gone 与
+    // superseded 档），结束时刻也停在近似值上。
+    // 期望：旧行仍被 supersede，`end_cause = superseded`，`ended_at` = 新对话首条事件的时刻。
+    // 改坏：去掉 `supersede_external_rows` 里 ProcessGone 的改判 → `end_cause` 断言红（停在
+    // process_gone）；改判时不先把状态机从 hook 快照恢复回来 → 第 1 步「进程事实压倒 hook」
+    // 挡住 Superseded 事件，同样红。
+    let (fx, receiver, home) = with_hooks();
+    let env = [("CLAUDE_PID", std::process::id().to_string())];
+    // 两条信封都比本测试进程的启动还早（模拟 hook 进程的钟走得慢），探活因此判号复用。
+    let (old_env, _) = backdate(
+        delivery("sup-skew-old", session_start("sup-skew-old"), &env, &[]),
+        2 * 3600,
+    );
+    let old = ingest(&receiver, home.path(), &old_env).unwrap();
+    // 现实中这一步是每 2 s 的轮询；这里显式看一眼，让探活档先落上。
+    let v = fx.sessions.get(&old).unwrap();
+    assert_eq!(v.assessment.status, Status::Finished);
+    assert_eq!(
+        v.assessment.end_cause,
+        Some(EndCause::ProcessGone),
+        "探活档先到：{:?}",
+        v.assessment
+    );
+    assert!(v.record.ended_at_approximate);
+
+    // 同一进程报来新对话：旧行改判 superseded，结束时刻收回新对话首条事件那一刻。
+    let (new_env, new_at) = backdate(
+        delivery("sup-skew-new", session_start("sup-skew-new"), &env, &[]),
+        3600,
+    );
+    let new = ingest(&receiver, home.path(), &new_env).unwrap();
+    assert_ne!(old, new);
+    let v = fx.sessions.get(&old).unwrap();
+    assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
+    assert_eq!(
+        v.assessment.end_cause,
+        Some(EndCause::Superseded),
+        "同一 pid 槽位换了对话，收敛到 superseded：{:?}",
+        v.assessment
+    );
+    let rec = fx.sessions.record(&old).unwrap();
+    assert_eq!(
+        rec.ended_at.as_deref(),
+        Some(clock::format_utc_secs(new_at).as_str()),
+        "结束时刻用新对话首条事件，不再留着探到的近似 tick"
+    );
+    assert!(!rec.ended_at_approximate, "{rec:?}");
 }
 
 #[tokio::test]

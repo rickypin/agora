@@ -22,8 +22,8 @@ use crate::runtime::{
     RuntimeSession, RuntimeStatus, Size, SocketScanFailure, TerminateSignal,
 };
 use crate::status::{
-    self, AgentProcess, AgoraEvent, Assessment, Liveness, Machine, MachineConfig, Observation,
-    ProcessState, Status, EXTERNAL_SILENT_REASON,
+    self, AgentProcess, AgoraEvent, Assessment, EndCause, Liveness, Machine, MachineConfig,
+    Observation, ProcessState, Status, EXTERNAL_SILENT_REASON,
 };
 use crate::task::{TaskIndex, TaskInfo};
 
@@ -1086,11 +1086,38 @@ impl SessionManager {
             if newest.get(&key).is_some_and(|(n, _)| *n == id) {
                 continue;
             }
-            let finished = lock(&self.machines)
-                .get(&id)
-                .is_some_and(|m| matches!(m.current().status, Status::Finished | Status::Failed));
-            if finished {
-                continue;
+            // 已结束的行不重复结束，只有一个例外（agora-kyh9）：**探活档猜出来的结束**
+            // （`external_process_gone`）可以被后来的 superseded 改写。那一档是「这个进程号
+            // 没了 / 号被复用了」的近似结论（时刻是发现它的那个 tick，`ended_at_approximate`），
+            // 而同一 pid 槽位随后报来新对话时，这件事的真身就是 superseded，结束时刻也该用
+            // 新对话首条事件的时刻。hook 自己说结束的（SessionEnd）与带退出码的进程结束各有
+            // 自己的准确时刻，绝不在这里改写。
+            // 探活档怎么来的：`agent_process_alive` 拿进程启动时刻（本机钟）与 hook 信封时刻
+            // （hook 进程的钟）比大小，两边不一致时判号复用——同一个 pid 的新旧两行在时钟这一
+            // 维上分不开，所以这里不再问探活，只按「同一 (agent_type, pid) 槽位报来了更新的
+            // seen_at」收敛（配对本身已经在上面按 seen_at 定过胜负）。
+            let current = lock(&self.machines).get(&id).map(|m| m.current().clone());
+            if let Some(a) = &current {
+                if matches!(a.status, Status::Finished | Status::Failed) {
+                    if a.end_cause != Some(EndCause::ProcessGone) {
+                        continue;
+                    }
+                    // 状态机第 1 步「进程事实压倒一切」会把结束后的 hook 事件挡掉
+                    // （`Machine::apply_at` 对 Source::Process 的 FINISHED 直接 return），
+                    // 先把这一行从它自己的最后一份 hook 快照恢复回结束前，再喂 Superseded。
+                    // 快照带着两行摘要 / 挂起 / 输入通道，恢复它不丢旧行的面貌（agora-5gg.19
+                    // 的折叠视图要显示旧行的两行摘要）。没有快照（从没收到过 hook 的行）则
+                    // 照旧跳过，不去动一个我们没有 hook 面貌的行。
+                    let snapshot = lock(&self.machines)
+                        .get(&id)
+                        .and_then(|m| m.hook_snapshot().cloned());
+                    let Some(snapshot) = snapshot else {
+                        continue;
+                    };
+                    if let Some(m) = lock(&self.machines).get_mut(&id) {
+                        m.restore_hook(snapshot);
+                    }
+                }
             }
             // 赢家报来这个进程号的那条 hook（= 新对话的首条事件）就是旧行的终点。`seen_at` 是毫秒。
             let at = newest.get(&key).map(|(_, seen)| seen / 1000);
