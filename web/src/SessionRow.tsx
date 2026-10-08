@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { isHandleless, isHeadless, promptRepeatsLabel, taskLabel, unclearStatus } from "./attention";
 import { rowProcess, type SessionRow } from "./events";
-import { RowIdentity } from "./RowIdentity";
+import { RowIdentity, statusClass } from "./RowIdentity";
 
 export { staleSeen } from "./RowIdentity";
 
@@ -137,7 +137,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
         title={`${rowName(row)} (${row.id})`}
         data-testid={`row-${row.id}`}
       >
-        <span className={`dot st-${row.status}`}>{statusSymbol(row.status)}</span>
+        <span className={`dot ${statusClass(row.status)}`}>{statusSymbol(row.status)}</span>
         <span className="row-main">
           <span className="name" data-testid={`label-${row.id}`}>
             {taskLabel(row)}

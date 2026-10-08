@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import { agentBadge } from "./agentBadge";
-import { isHandleless, statusLine } from "./attention";
+import { isHandleless, statusLine, unclearStatus } from "./attention";
 import type { SessionRow } from "./events";
 import { clockText } from "./Header";
 import { nodeHue } from "./nodeColor";
@@ -31,6 +31,23 @@ function hueStyle(hue: number): CSSProperties {
  * 「@ works」，看不出后面还有字。拆成不可截的 `.node-at`（「@」）+ 可截的 `.node-label`（名字
  * block 化走省略号），全名放 chip 的 title。别再合回一个 span。
  */
+
+/**
+ * 状态配色的类名（agora-5gg.23）：发 `st-*` 之前先把「不认识」的状态归一成 `unknown`。
+ *
+ * 行上的 `status` 是 string，服务端 Status 枚举封闭（`src/status/mod.rs` 八种），能出现 SCORE 之外
+ * 的状态名只有版本错位一条路：PWA 的 service worker 缓存着旧前端，daemon 升到加了新状态名那一版。
+ * 这种行仍归 UNCLEAR 段、符号仍是 `?`（与 `unclearStatus` 同一个判据），但 `st-<新名字>` 在 index.css
+ * 里没有任何规则，dot 与 meta state 的颜色会掉回默认前景色——比同屏 IDLE 的 ○ 还亮，把「看不清」说成
+ * 「更值得看」（与 agora-7vu0 修掉的是同一个观感问题，只是触发条件不同）。归一成 7vu0 已落地的
+ * `.st-unknown`（--muted）才是这条行该有的亮度。
+ *
+ * 定义在这里而不是 SessionRow：SessionRow 已经 import 本文件的 `RowIdentity`（行 dot 是它画的），反向
+ * import 会成环。判据只此一份，行 dot 与 meta state 两处引用，守卫 `SessionRow.test.tsx` 逐处点名。
+ */
+export function statusClass(status: string): string {
+  return unclearStatus(status) ? "st-unknown" : `st-${status}`;
+}
 
 /** stale 行 `.meta` 里那一段的文案与 title；非 stale 行返回 null（不占位）。 */
 export function staleSeen(row: SessionRow): { text: string; title: string } | null {
@@ -115,7 +132,7 @@ export function RowIdentity({
             {seen.text}
           </span>
         )}
-        <span className={`state st-${row.status}`} data-testid={`state-${row.id}`}>
+        <span className={`state ${statusClass(row.status)}`} data-testid={`state-${row.id}`}>
           {statusLine(row, now)}
         </span>
       </span>

@@ -104,6 +104,22 @@ it("gives a color to every status in the attention score table, unknown included
   expect(cssRulesWith(".st-unknown").join(" ")).toMatch(/color:\s*var\(--muted\)/);
 });
 
+it("normalizes a status name outside the score table to st-unknown before painting dot and state (agora-5gg.23)", () => {
+  // 旧客户端 × 新 daemon：PWA service worker 缓存着旧前端、daemon 升到加了新状态名那一版时，行上的
+  // `status` 是 SCORE 之外的字符串。这种行仍归 UNCLEAR 段、符号仍是 `?`（`unclearStatus` 同一个判据），
+  // 但 `st-<新名字>` 在 index.css 里没有任何规则，dot 与 state 的颜色会掉回默认前景色——比 IDLE 的
+  // ○ 还亮（与 agora-7vu0 修掉的是同一个观感问题，只是触发条件是版本错位）。发类名之前归一成
+  // `.st-unknown`（7vu0 已给它 --muted 的规则），两处（行 dot / meta state）引用同一份 `statusClass`。
+  mount(row({ id: "n:x", status: "detached" }));
+  expect(screen.getByTestId("row-n:x").querySelector(".dot")?.className).toBe("dot st-unknown");
+  expect(screen.getByTestId("state-n:x").className).toBe("state st-unknown");
+  // 对照组：SCORE 里的状态名原样保留自己的配色类——归一只覆盖「不认识」那一档，不是把每行都涂成 muted。
+  cleanup();
+  mount(row({ id: "n:w", status: "waiting" }));
+  expect(screen.getByTestId("row-n:w").querySelector(".dot")?.className).toBe("dot st-waiting");
+  expect(screen.getByTestId("state-n:w").className).toBe("state st-waiting");
+});
+
 it("splits the badge into a whole glyph and a truncatable label, full name in title (agora-8lb)", () => {
   // 2026-09-09 用户目检：侧栏行徽标成了「✧ Gro」，本机 external 行只剩半个 glyph。根因是 glyph 与
   // label 在同一个 span 里，.meta 的省略号从 label 一路吃到 glyph。jsdom 不做布局，"被裁了几像素"
