@@ -127,7 +127,8 @@ export function layoutReport(): string {
   const report = {
     at: new Date().toISOString(),
     ua: navigator.userAgent,
-    standalone: window.matchMedia("(display-mode: standalone)").matches,
+    // jsdom 没有 matchMedia（诊断本身不该因为环境缺个 API 就炸掉）。
+    standalone: typeof window.matchMedia === "function" ? window.matchMedia("(display-mode: standalone)").matches : false,
     viewport: {
       inner: [window.innerWidth, window.innerHeight],
       visual: vv ? [Math.round(vv.width), Math.round(vv.height), Math.round(vv.offsetTop)] : null,

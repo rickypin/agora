@@ -128,6 +128,36 @@ describe("MobileSettings", () => {
  * `browserPushEnv()` 每次调用返回新对象；如果没有 useMemo，点「设置」会冻结页面（桌面复现 CDP
  * 超时），用户看到的就是"点了没反应"。这里不注入 env，数 browserPushEnv 被调用几次。
  */
+describe("布局诊断（agora-xu12）", () => {
+  it("显示边框可开关，复制布局报告退到 textarea 时内容含行与可疑元素", async () => {
+    // 手机是唯一跑真 Safari 的机器：现场取证靠这两颗按钮——描边看出框/被裁，报告给我盒子数字。
+    render(
+      <MobileSettings
+        onClose={() => {}}
+        onRevoked={() => {}}
+        env={env()}
+        probe={async () => ({ apple: null, reason: null })}
+      />,
+    );
+    await screen.findByTestId("mobile-push-state");
+    const outline = screen.getByTestId("mobile-diag-outline");
+    expect(outline.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(outline);
+    expect(outline.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(outline);
+    expect(outline.getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(screen.getByTestId("mobile-diag-report"));
+    // jsdom 没有 clipboard → copyText 返回 false → 一定退到 textarea（真机上多一步"已复制"提示）。
+    const text = await screen.findByTestId("mobile-diag-text");
+    const value = (text as HTMLTextAreaElement).value;
+    expect(value).toContain('"safeArea"');
+    expect(value).toContain('"rows"');
+    expect(value).toContain('"suspects"');
+    expect(value).toContain('"viewport"');
+  });
+});
+
 describe("手机端字号档位（agora-x70t.xsgz）", () => {
   it("四档都在、当前档有 aria-pressed、点了立刻持久化并回调", async () => {
     // iOS Safari 不把系统"文字大小"暴露给网页，所以这个旋钮得自己给；默认 17px（Apple HIG body，
