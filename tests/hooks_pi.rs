@@ -278,3 +278,104 @@ async fn the_wire_row_names_pi_and_its_origin() {
     assert_eq!(HOST, "127.0.0.1:7680");
     let _ = Duration::from_secs(1);
 }
+
+/// 喂给 node 的驱动：加载渲染后的真扩展，冒充 pi 的 `on` / `sendUserMessage`，让它对着一个真
+/// 队列目录跑一遍 `takeOne`。扩展是 TypeScript，只有 node（type stripping，CI 是 24）能直接执行
+/// ——这个守卫不做"等价逻辑"的复刻，跑的就是生产代码本身。
+const HARNESS: &str = r##"
+import { pathToFileURL } from "node:url";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+const [ext, home, out] = process.argv.slice(2);
+const mod = await import(pathToFileURL(ext).href);
+const handlers = new Map();
+const captured = [];
+mod.default({
+  on(event, fn) { handlers.set(event, fn); },
+  sendUserMessage(text, opts) { captured.push({ text, opts }); },
+});
+
+const session = "guard-session-id";
+const dir = path.join(home, "input", Buffer.from(session, "utf8").toString("hex"));
+fs.mkdirSync(dir, { recursive: true });
+// 队列文件的原文形态：daemon 已经 trim 过尾换行（src/api/sessions.rs 的 queued_data），
+// 扩展必须逐字节透传，一个字符也不许改写。
+fs.writeFileSync(path.join(dir, "0001-1-0.json"), "/quit");
+fs.writeFileSync(path.join(dir, "0002-1-1.json"), "/tmp/foo 看一下");
+
+// session_start 里自己就会 scan() 一次，取件是同步的，不用等 1 s 轮询。
+handlers.get("session_start")({ reason: "startup" }, {
+  cwd: "/tmp",
+  mode: "tui",
+  sessionManager: { getSessionId: () => session, getCwd: () => "/tmp" },
+});
+fs.writeFileSync(out, JSON.stringify({ captured, files: fs.readdirSync(dir).sort() }));
+process.exit(0);
+"##;
+
+/// 注入文本以 `/` 开头时**原样**交给宿主（agora-mukn；ADR-002 D11「边界」）。
+///
+/// 结论来自实测（2026-10-08，pi 1.0.4，隔离 daemon + 真 TUI，经 `POST /input` 注入）：pi 的
+/// `sendUserMessage` 不执行内置斜杠命令，`/quit` 不会杀会话、`/reload` / `/new` 也不生效；
+/// 正例 `/tmp/foo 看一下` 照常当消息送达。这条守卫钉的是扩展这一段不许自作主张——既不许把
+/// `/quit` 拦下 / 加确认 / 转义，也不许拦 `/` 开头的合法消息；将来谁在这里加过滤，先红的是它。
+#[test]
+fn slash_prefixed_queue_text_reaches_the_host_verbatim() {
+    use agora::adapter::{pi::PI, AgentHooks as _};
+
+    // 扩展是 TypeScript，只有 node 能执行它（type stripping）。没有 node 就跳过——与真实
+    // agent 冒烟遇到 `VersionProbe::Missing` 是同一个口径（CI 的 web 步骤本来就装 node 24）。
+    match std::process::Command::new("node").arg("--version").output() {
+        Ok(o) if o.status.success() => {}
+        _ => {
+            eprintln!("node 不在 PATH，跳过斜杠透传守卫（CI 与 web 门禁本来就装 node 24）");
+            return;
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let ext = PI.file_install(&home).expect("pi 走文件式安装").content;
+    let ts = dir.path().join("agora.ts");
+    std::fs::write(&ts, ext).unwrap();
+    let harness = dir.path().join("harness.mjs");
+    std::fs::write(&harness, HARNESS).unwrap();
+    let out = dir.path().join("out.json");
+
+    let status = std::process::Command::new("node")
+        .arg(&harness)
+        .arg(&ts)
+        .arg(&home)
+        .arg(&out)
+        .status()
+        .expect("node 起不来");
+    assert!(status.success(), "harness 退出非零");
+
+    let got: Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+    let captured = got["captured"].as_array().unwrap();
+    let texts: Vec<&str> = captured
+        .iter()
+        .map(|c| c["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        texts,
+        ["/quit", "/tmp/foo 看一下"],
+        "扩展必须把原文逐字节交给 pi.sendUserMessage（/quit 不拦、/ 开头的正例照常）"
+    );
+    for c in captured {
+        assert_eq!(c["opts"]["deliverAs"], "followUp", "投递方式不许变");
+    }
+    let files: Vec<&str> = got["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        files,
+        ["0001-1-0.done", "0002-1-1.done"],
+        "两件都被认领并 ack"
+    );
+}

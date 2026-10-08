@@ -186,6 +186,13 @@ export default function (pi: ExtensionAPI) {
     }
     try {
       // followUp：在跑就排队到这一轮的工具调用之后；空闲时照常起一轮（两种都实测过）。
+      // 以 / 开头的文本**原样**交给 pi，不做任何前缀判断 / 转义（agora-mukn 实测，2026-10-08，
+      // pi 1.0.4，隔离 daemon + 真 TUI，经 POST /input 注入）：`sendUserMessage` 走
+      // `session.prompt({ expandPromptTemplates: false })`，内置命令只在 TUI 编辑器提交那条路上
+      // 分发，所以 `/quit` `/reload` `/new` `/help` 都当普通用户消息进对话、**不执行**；正例
+      // `/tmp/foo 看一下` 照常送达。将来 pi 改了这个语义，是版本表与
+      // `tests/hooks_pi.rs::slash_prefixed_queue_text_reaches_the_host_verbatim` 要重测的事，
+      // 不是在这里加过滤（一刀切会挡死合法消息）。
       pi.sendUserMessage(text, { deliverAs: "followUp" });
       fs.renameSync(claimed, sibling(dir, name, "done"));
     } catch (err) {
