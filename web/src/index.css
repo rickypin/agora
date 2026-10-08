@@ -384,17 +384,22 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
    Chromium 里换行所以看不见），也绝不许画出行的圆角外框。 */
 .mobile-row { display: flex; flex-direction: column; gap: var(--m-1); width: 100%; padding: var(--m-2) var(--m-3); text-align: left; background: var(--panel); border-radius: var(--m-2); overflow: hidden; }
 .mobile-row.selected { background: var(--panel-2); border-color: var(--accent); }
-.mobile-row-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--m-2); min-width: 0; }
-/* 名字与状态是唯一没有省略号/折行保护的两个 flex 项：给它们 min-width: 0 让它收缩得下去，
-   anywhere 让无空格长名（URL / 哈希 / 长目录名）有地方断。 */
-.mobile-row-head > * { min-width: 0; }
-.mobile-row-name, .mobile-status { overflow-wrap: anywhere; }
-.mobile-symbol { width: 1em; flex: none; }
-.mobile-row-name { font-weight: 600; }
-.mobile-agent { flex: none; font-size: var(--m-fs-mini); color: hsl(var(--hue, 0) 70% 68%); }
-.mobile-node-chip { flex: none; font-size: var(--m-fs-mini); color: hsl(var(--hue, 0) 60% 70%); }
+/* 行头 = 桌面侧栏 meta 的同一套「收缩优先级」（agora-8lb / agora-yaf；手机端 2026-10-08 对齐，
+   agora-nzbu）。规则有四条，少一条都会退化成"文字画到框外"或"被框裁掉"：
+     1. **单行、绝不折**：折行会随字号/宽度变出 3–5 行的头，行高不可预测、一屏装不下几行；
+     2. 每个会被截断的元素**自己**带 overflow: hidden + text-overflow: ellipsis（裁在它自己的盒子里，
+        所以一定看得见省略号；靠祖先 overflow 裁就是"被卡片外框盖住"）;
+     3. 让位顺序固定：徽标 / 节点 chip 先让（可以缩到 0），名字再让（下限 4em），**状态最后让**
+        （下限 4em——"waiting 3m" 是这一行存在的理由，先保住它和名字）；
+     4. symbol（◆）不参与收缩（glyph 锚点，同桌面 .badge-glyph / .node-at）。 */
+.mobile-row-head, .mobile-card-head { display: flex; align-items: baseline; gap: var(--m-2); min-width: 0; }
+.mobile-row-head > *, .mobile-card-head > * { min-width: 0; }
+.mobile-symbol { flex: none; width: 1em; }
+.mobile-row-name { flex: 0 1 auto; min-width: 4em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mobile-agent { flex: 0 1 auto; min-width: 0; font-size: var(--m-fs-mini); color: hsl(var(--hue, 0) 70% 68%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mobile-node-chip { flex: 0 1 auto; min-width: 0; font-size: var(--m-fs-mini); color: hsl(var(--hue, 0) 60% 70%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mobile-node-chip.local { color: var(--muted); }
-.mobile-status { margin-left: auto; flex: none; color: var(--muted); }
+.mobile-status { flex: 0 1 auto; min-width: 4em; margin-left: auto; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mobile-row-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mobile-row-summary { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 .mobile-empty { margin: 0; padding: var(--m-1) var(--m-1) var(--m-2); color: var(--muted); }
@@ -403,9 +408,13 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 
 /* ---------- /m 会话卡（agora-thc.10）：IM 语法——最近一轮两气泡、底部 composer、乐观发送 ---------- */
 .mobile-card { display: flex; flex: 1; flex-direction: column; gap: var(--m-2); min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 calc(var(--m-3) + env(safe-area-inset-right)) 0 calc(var(--m-3) + env(safe-area-inset-left)); }
-.mobile-card-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--m-2); padding: calc(var(--m-3) + env(safe-area-inset-top)) 0 var(--m-2); border-bottom: 1px solid var(--border); }
+.mobile-card-head { gap: var(--m-2); padding: calc(var(--m-3) + env(safe-area-inset-top)) 0 var(--m-2); border-bottom: 1px solid var(--border); }
+/* 卡片头是**唯一**的那一个（不是重复的行），装不下可以折成两行：320px + 特大时
+   返回键 + 名字 + 徽标 + 节点 + 状态的最小宽度真的放不下一行（2026-10-08 实测 297 > 269），
+   折行比"把状态挤到框外"好。行头不折——收件箱是重复列表，行高必须可预测。 */
+.mobile-card-head { flex-wrap: wrap; }
 .mobile-back { flex: none; padding: 0 var(--m-2); color: var(--accent); font-size: calc(var(--m-fs) * 1.1); background: none; border-color: transparent; }
-.mobile-card-task { margin: 0; color: var(--muted); }
+.mobile-card-task { margin: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mobile-thread { display: flex; flex: 1; flex-direction: column; gap: var(--m-2); padding: var(--m-2) 0 var(--m-3); }
 .mobile-bubble { display: flex; gap: var(--m-2); line-height: 1.45; }
 .mobile-bubble-mark { flex: none; color: var(--muted); }
@@ -435,16 +444,13 @@ li.done > .row:hover, li.done > .row.selected, li.done > ul > li > .row:hover, l
 .mobile .dialog p { margin: 0 0 var(--m-4); }
 .mobile .dialog button { min-height: var(--m-tap); padding: 0 var(--m-4); }
 
-/* 手机上的无空格长串：任务行 / 说明 / 问题 / 名字都可能是一整条 URL 或路径，不折就会画出卡片外
-   （2026-10-08 量测：.mobile-card-task scrollWidth 2210 / clientWidth 384、overflow-x visible）。
-   anywhere 而不是 break-word：前者在**所有**行盒里都允许断，后者只在不得已时才断。 */
-.mobile-card-task,
+/* 会**换行**的正文（说明 / 问题 / 错误 / 回复）必须可折：无空格长串（URL / 路径 / 哈希）不折
+   就会画出卡片外（2026-10-08 量测：.mobile-card-task scrollWidth 2210 / clientWidth 384）。
+   anywhere 而不是 break-word：前者会影响 min-content，WebKit 才会让 flex 项收缩得下去。
+   单行的那些（任务行、行头四件套）不在这里——它们走 nowrap + ellipsis，规则在上面。 */
 .mobile-note,
 .mobile-error,
-.mobile-question,
-.mobile-card-head .mobile-row-name,
-.mobile-card-head .mobile-agent,
-.mobile-card-head .mobile-node-chip { overflow-wrap: anywhere; }
+.mobile-question { overflow-wrap: anywhere; }
 
 /* 触控下限（agora-x70t.qz01）：手机上"按得准"优先于紧凑；行本身已经 70px 上下，不在此列。 */
 .mobile-back,

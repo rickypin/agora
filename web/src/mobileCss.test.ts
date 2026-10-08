@@ -68,9 +68,30 @@ describe("手机端字号体系（agora-x70t.xsgz）", () => {
 });
 
 describe("手机端溢出与触控（agora-x70t.qz01）", () => {
-  it("长词可折：任务行 / 说明 / 问题 / 卡片头的名字不能画到卡片外", () => {
-    for (const sel of [".mobile-card-task", ".mobile-note", ".mobile-question", ".mobile-card-head .mobile-row-name"]) {
+  it("会换行的正文可折；单行的三行（任务/摘要/行头）一律 nowrap + ellipsis", () => {
+    for (const sel of [".mobile-note", ".mobile-question"]) {
       expect(has(sel, /overflow-wrap:\s*anywhere/), `${sel} 需要 overflow-wrap: anywhere`).toBe(true);
+    }
+    for (const sel of [".mobile-card-task", ".mobile-row-task", ".mobile-row-summary", ".mobile-row-name", ".mobile-status", ".mobile-agent", ".mobile-node-chip"]) {
+      expect(has(sel, /text-overflow:\s*ellipsis/), `${sel} 需要 text-overflow: ellipsis`).toBe(true);
+      expect(has(sel, /overflow:\s*hidden/), `${sel} 要把裁切留在自己盒子里（否则就是被祖先框盖住）`).toBe(true);
+    }
+  });
+
+  it("行头单行不折，且收缩优先级写死（徽标/节点先让 → 名字 → 状态；symbol 不退让）", () => {
+    // 2026-10-08 用户第二次报"文本被卡片外框盖住"：根因是行头一行装不下时没有收缩顺序，
+    // WebKit 干脆不让 flex 项收缩。桌面侧栏解决过同一问题，这里照抄那套优先级。
+    for (const sel of [".mobile-row-head", ".mobile-card-head"]) {
+      expect(has(sel, /display:\s*flex/), sel).toBe(true);
+    }
+    // 行头绝不折（收件箱是重复列表，行高要可预测）；卡片头是唯一的那一个，可以折成两行。
+    expect(has(".mobile-row-head", /flex-wrap:\s*wrap/), "行头不该折行").toBe(false);
+    expect(has(".mobile-card-head", /flex-wrap:\s*wrap/), "卡片头装不下时折行").toBe(true);
+    expect(has(".mobile-symbol", /flex:\s*none/), "symbol 不退让").toBe(true);
+    expect(has(".mobile-row-name", /min-width:\s*4em/), "名字下限 4em").toBe(true);
+    expect(has(".mobile-status", /min-width:\s*4em/), "状态下限 4em").toBe(true);
+    for (const sel of [".mobile-agent", ".mobile-node-chip"]) {
+      expect(has(sel, /min-width:\s*0/), `${sel} 可以让到 0`).toBe(true);
     }
   });
 
@@ -80,7 +101,7 @@ describe("手机端溢出与触控（agora-x70t.qz01）", () => {
     expect(has(".mobile-row", /overflow:\s*hidden/), ".mobile-row 硬夹断").toBe(true);
     expect(has(".mobile-card", /overflow-x:\s*hidden/), ".mobile-card 横向硬夹断").toBe(true);
     expect(has(".mobile-row-head > \*", /min-width:\s*0/), "行头的子项要能收缩").toBe(true);
-    expect(has(".mobile-row-name, .mobile-status", /overflow-wrap:\s*anywhere/), "名字/状态可折").toBe(true);
+    expect(has(".mobile-row-name", /min-width:\s*4em/), "名字能收缩且留住 4em").toBe(true);
     expect(has(".mobile-bubble-body", /min-width:\s*0/), "气泡正文要能收缩").toBe(true);
   });
 
