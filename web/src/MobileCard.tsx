@@ -7,11 +7,12 @@
  * 上方：照它批准是「respond 不经终端」的信任基础。
  *
  * 动作全部走与桌面相同的节点 API（allow/deny 带 pending_decision.request_id、text 经 PTY、
- * Kill / Restart 先不带 confirmed 发、节点说要杀才弹框——MISSION §8）。
+ * Kill / Restart 先不带 confirmed 发、节点说要杀才弹框——MISSION §8）。发送失败时草稿回填回
+ * 输入框、原因按错误码说人话、重试留在失败气泡上（agora-jidm；文案表见 [`sendFailureText`]）。
  */
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { agentBadge } from "./agentBadge";
-import type { SessionApi } from "./api";
+import type { ApiErrorBody, SessionApi } from "./api";
 import { isHandleless, seenKey, seenRelevant, statusLine, taskLabel } from "./attention";
 import { textVia } from "./events";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -39,7 +40,32 @@ interface Props {
 }
 
 type Pending = { kind: "kill" | "restart" } | null;
-type Sent = { text: string; phase: "sending" | "sent" | "failed" };
+type Sent = { text: string; phase: "sending" | "sent" | "failed"; failure?: string };
+
+/**
+ * 发送失败给手机看的一句话（agora-jidm）：按错误码分开说，不把内部话直接扔给用户。
+ *
+ * - `no_runtime` / `runtime_session_not_found` 是**两种不同的处境**，文案也要分开：前者是这一行
+ *   根本没有可写通道（与 `mobile-terminal-only` 同一句人话），后者是 `text_via = runtime` 但 pane
+ *   已经不在（降级 / 陈旧行）——"到桌面看它"与"只能看"是两回事（agora-jidm 的审查注记）。
+ * - `read_only` 是采纳行（agora-prdg.2 修 text_via 之前 / 混版本时的残留）：这一行只能看。
+ * - `host_timeout`（504）与其余未知码：把服务端 / 宿主那句话原样显示，**不加壳**——
+ *   504 的"宿主没来取这条输入…去它的终端里看看"与 502 `host_rejected` 的 `.failed` 原话
+ *   （例如 `pi.sendUserMessage 失败：…`）都比转述准确。出口是失败气泡上的重试：504 时队列里
+ *   那件已被 daemon 删掉，重试不会跑两遍（src/api/sessions.rs 的超时路径）。
+ */
+export function sendFailureText(error: ApiErrorBody): string {
+  switch (error.error) {
+    case "no_runtime":
+      return "这一行没有可写的运行时；回复要到桌面终端。";
+    case "runtime_session_not_found":
+      return "这个会话的终端已经不在了；到桌面看它。";
+    case "read_only":
+      return "这一行只能看不能写。";
+    default:
+      return error.message;
+  }
+}
 
 export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Props) {
   const [expanded, setExpanded] = useState(false);
@@ -136,8 +162,12 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
       setSent({ text, phase: "sent" });
       return;
     }
-    setSent({ text, phase: "failed" });
-    if (!r.needsConfirmation) setError(r.error.error === "no_runtime" ? "这一行没有可写的运行时" : r.error.message);
+    setSent({ text, phase: "failed", failure: r.needsConfirmation ? undefined : sendFailureText(r.error) });
+    if (!r.needsConfirmation) {
+      // 草稿回填（agora-jidm ①）：失败后想改一个字不用重打整句。只在输入框为空时放回去，
+      // 不覆盖请求在途时用户已经打上的新字；失败气泡里的重试仍拿着原来那份文本。
+      setDraft((d) => (d.trim() === "" ? text : d));
+    }
   }
 
   function submit() {
@@ -254,6 +284,14 @@ export function MobileCard({ row, api, now, onBack, onSeen, focusComposer }: Pro
                   </button>
                 )}
               </div>
+            )}
+            {sent?.phase === "failed" && sent.failure && (
+              // 失败的原因贴着失败气泡放（不在卡片底部）：重试按钮就在这一团里，为什么失败
+              // 与"再试一次"是同一个决定的两半（agora-jidm）。.mobile-error 的红色与可换行
+              // 沿用卡 ERROR 槽的旧语义（index.css 里 .mobile-error 已在 anywhere 名单内）。
+              <p className="mobile-error mobile-send-failure" data-testid="mobile-send-failure">
+                {sent.failure}
+              </p>
             )}
             {detail !== "" && (
               <div className="mobile-bubble agent" data-testid="mobile-bubble-agent">

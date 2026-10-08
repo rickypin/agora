@@ -40,6 +40,30 @@ function setup(r: SessionRow, killRequiresConfirm = true, onSeen = vi.fn()) {
   return { ui, requests, onSeen };
 }
 
+/**
+ * 发送失败的桩（agora-jidm）：`/input` 回指定的错误体，其余端点 200。
+ * 手机能不能发是**行上** `text_via` 说了算（服务端的老 / 新看法允许不一致），所以这些用例用
+ * 能开出 composer 的行去撞服务端的 4xx/5xx——这正是日期不一致或运行时刚没的现场。
+ */
+function setupInputFailure(r: SessionRow, status: number, body: { error: string; message: string }) {
+  const requests: { url: string; method: string; body: string | undefined }[] = [];
+  const f: FetchLike = async (url, init) => {
+    const method = init.method ?? "GET";
+    requests.push({ url, method, body: init.body as string | undefined });
+    const json = (payload: unknown, code = 200) =>
+      new Response(JSON.stringify(payload), { status: code, headers: { "content-type": "application/json" } });
+    return url.endsWith("/input") ? json(body, status) : json({});
+  };
+  const ui = render(<MobileCard row={r} api={sessionApi(f)} now={1000} onBack={vi.fn()} onSeen={vi.fn()} />);
+  return { ui, requests };
+}
+
+async function typeAndSend(text: string) {
+  fireEvent.change(screen.getByTestId("mobile-next-input"), { target: { value: text } });
+  fireEvent.click(screen.getByTestId("mobile-send"));
+  await act(async () => {});
+}
+
 afterEach(cleanup);
 
 describe("thread", () => {
@@ -187,6 +211,82 @@ describe("composer", () => {
 
     setup(row("n:b", { status: "turn_done", origin: "external" }));
     expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+  });
+});
+
+describe("send failures (agora-jidm)", () => {
+  const hostRow = (patch: Partial<SessionRow> = {}) =>
+    row("zuan:aa2462", {
+      agent_type: "pi",
+      origin: "external",
+      status: "turn_done",
+      text_via: "host",
+      prompt: "问",
+      detail: "答",
+      ...patch,
+    });
+
+  it("504 host_timeout: the draft comes back and retry stays usable", async () => {
+    // issue ①：失败时草稿不回填，想改一个字要重打整句。②host_timeout 的出口是重试——
+    // 超时时队列里那件已经被 daemon 删掉，重试不会跑两遍（src/api/sessions.rs 的超时路径）。
+    const { requests } = setupInputFailure(hostRow(), 504, {
+      error: "host_timeout",
+      message: "zuan:aa2462 的宿主没来取这条输入（扩展没装 / 旧版 / 没停在提示符上）；去它的终端里看看",
+    });
+    await typeAndSend("再试一句话");
+
+    expect((screen.getByTestId("mobile-next-input") as HTMLInputElement).value).toBe("再试一句话");
+    expect(screen.getByTestId("mobile-send-failure").textContent).toContain("宿主没来取这条输入");
+    fireEvent.click(screen.getByTestId("mobile-retry"));
+    await act(async () => {});
+    expect(requests[1].body).toBe(JSON.stringify({ kind: "text", data: "再试一句话\n" }));
+  });
+
+  it("502 host_rejected: the host's own words are shown without a wrapper", async () => {
+    // 扩展 `.failed` 文件里的原话比任何转述都准：照抄，别加「发送失败：」这类壳。
+    setupInputFailure(hostRow(), 502, {
+      error: "host_rejected",
+      message: "pi.sendUserMessage 失败：当前没有活动会话",
+    });
+    await typeAndSend("跑一下测试");
+    expect(screen.getByTestId("mobile-send-failure").textContent).toBe("pi.sendUserMessage 失败：当前没有活动会话");
+  });
+
+  it("409 no_runtime: the phone is told to go to the desktop", async () => {
+    // 行上还说 runtime（老 view / 刚没），服务端回 409 no_runtime：手机要给与
+    // mobile-terminal-only 同一句人话，不再显示「这一行没有可写的运行时」这种内部话。
+    setupInputFailure(
+      row("zuan:dead", { status: "turn_done", text_via: "runtime", runtime_ref: "tmux:agora:dead" }),
+      409,
+      { error: "no_runtime", message: "会话没有运行时会话: zuan:dead" },
+    );
+    await typeAndSend("你好");
+    const failure = screen.getByTestId("mobile-send-failure").textContent ?? "";
+    expect(failure).toContain("到桌面");
+    expect(failure).not.toContain("没有运行时会话");
+  });
+
+  it("409 read_only: an adopted row says it can only be read", async () => {
+    // 采纳行（agora-prdg.2）：只读与「没有运行时」是两回事，文案分开说，别显示
+    // 「会话不由 agora 管理，拒绝写操作」这种内部话。
+    setupInputFailure(
+      row("zuan:adopt", { status: "turn_done", origin: "adopted", text_via: "runtime", runtime_ref: "tmux:other:x" }),
+      409,
+      { error: "read_only", message: "会话不由 agora 管理，拒绝写操作: tmux:other:x" },
+    );
+    await typeAndSend("你好");
+    expect(screen.getByTestId("mobile-send-failure").textContent).toContain("只能看不能写");
+  });
+
+  it("404 runtime_session_not_found: a dead pane says its terminal is gone", async () => {
+    // issue ③：text_via=runtime 但 pane 已经不在了（降级 / 陈旧行），不能说「会话不存在: <ref>」。
+    setupInputFailure(
+      row("zuan:dead", { status: "turn_done", text_via: "runtime", runtime_ref: "tmux:agora:dead" }),
+      404,
+      { error: "runtime_session_not_found", message: "会话不存在: tmux:agora:dead" },
+    );
+    await typeAndSend("你好");
+    expect(screen.getByTestId("mobile-send-failure").textContent).toContain("终端已经不在了");
   });
 });
 
