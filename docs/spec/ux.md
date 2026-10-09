@@ -1,6 +1,12 @@
 # UX 线框、键位与视觉参考
 
-产品决定在 MISSION §6（四个 screen、attention 表、创建对话框字段）；本文是线框与键位表，随实现改。
+产品决定在 MISSION §6；跨端 token 与组件契约见 [设计系统](design-system.md)。本文描述当前交互与键位，随实现改。早期 ASCII 线框保留结构来历；当前页面骨架、中文文案与密度以「移动端交互收件箱 /m」「设计令牌与桌面工作台重设计」及组件实现为准，不按旧线框恢复旧皮肤。
+
+## 会话名称与已读身份
+
+名称的产品语义见 MISSION §4.5。运行时名由系统生成 `ag-<short-id>`，不随显示名变；用户改名写 `display_name` 并落 `name_locked`，提交相同名称也必须发请求。未锁定时有效 pane title 优先；空白、等于真实主机名 / 其首段、等于运行时名的 title 归一为缺省，回退 display_name。不能用“含点号”猜主机名，`a.py` 可以是合法 agent 标题（agora-gky）。存储字段见 `config.md`。
+
+已读的产品语义见 MISSION §4.6；选中行在内存，已读记号在本设备 localStorage，不是服务端字段。`web/src/attention.ts` 的 `seenKey` 绑定“这一行的这次完成”，优先用 `peer_status_since`，本地用 `status_since`，旧行缺时钟时按 id + status 回退；不可只存裸 id。新轮次必须换记号，即使两条 `turn.ended` / `turn.failed` 之间没有其它事件（agora-8x6）。服务端 `set_new_turn` 按事件时刻更新起点；不能扩成每 tick 刷新，否则无 hook 的行永远显示 0s（agora-385）。守卫 `tests/state_machine.rs::a_second_turn_ended_moves_status_since_so_the_seen_mark_expires`、`tests/state_machine.rs::eventless_ticks_never_move_status_since`、`web/src/attention.test.ts`。
 
 ## 主界面线框
 
@@ -231,7 +237,7 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 - **会话页**：固定头、任务标题、最近一轮的输入与最新回复、下一件待处理、多行回复框。正文保留 Markdown、长回复展开和原有发送/排队/失败重试语义。回复草稿仅留在当前页面内存，切换会话保留、刷新清空；返回收件箱恢复滚动位置。打开会话写入深链，浏览器后退回到收件箱；下一件待处理替换当前会话，不累积历史栈。
 - **新建**：选择预设的一屏按钮，轻点启动，成功后进入新会话；没有自由创建表单。**设置**：按推送、显示、诊断、本设备分组，字号与触控下限保持一致。
 
-视觉使用墨绿背景、薄荷色主动作、琥珀色待批准与独立的危险色；颜色全部在 `:root` 定义共享令牌，桌面与手机共用。卡片留白与字号由 `--m-fs` 派生，主要触控目标至少 44px，输入至少 16px。手机横屏采用两列任务卡片与紧凑概览；桌面布局不变。iOS 26.3 Simulator 的独立字体对照发现 `system-ui` 中文缺字，移动壳显式优先使用 `PingFang SC`（agora-5gy）。
+视觉使用墨绿背景、薄荷色主动作、琥珀色待批准与独立的危险色；颜色全部在 `:root` 定义共享令牌，桌面与手机共用。卡片留白与字号由 `--m-fs` 派生，主要触控目标至少 44px，输入至少 16px。手机横屏采用两列任务卡片与紧凑概览；桌面使用独立的工作台布局（见下文重设计节）。iOS 26.3 Simulator 的独立字体对照发现 `system-ui` 中文缺字，移动壳显式优先使用 `PingFang SC`（agora-5gy）。
 
 兼容基线为 iPhone 16 Pro / iOS 18.5：构建目标显式固定 Safari 18，避免工具升级抬高最低引擎版本。2026-10-09 使用 WebKit 18.5（Playwright 1.53.2）验证 402×874、320×640 与 874×402 视口，筛选、搜索、草稿、多行发送、浏览器后退、大字号和预设启动通过，页面无错误、无横向溢出。
 
@@ -282,10 +288,9 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 四段回答的是「**要不要我管**」，不是「在不在跑」：`working` 段装的是**一切不需要你的行**——`running` /
 `starting` / `idle`，以及看过一次的 `turn_done`（agora-5gg.21 的降段）。真机上用户在「需要我」里点开
 一行只记了「看过」，行没在跑、agent 也没动，段名却写着「在跑」——名不副实。所以手机端的段名改成
-**「暂无需处理」**（只改 `MobileApp` 的 `OPEN_SECTIONS`，桌面四段不动），行上的状态词同时换成中文，词表只
-放在 `web/src/mobileStatus.ts`（不动桌面共用的 `attention.ts` `STATUS_TEXT`）：
+**「暂无需处理」**。最初只改手机；2026-10-09 agora-p7p0 已将该语义与中文状态词接入桌面。两端词表统一在 `web/src/mobileStatus.ts`；`attention.ts` 的 `STATUS_TEXT` 保留兼容输出，不能据此再建一套桌面用户文案：
 
-| 状态 | 手机端的词 | 条件 |
+| 状态 | 两端共用的词 | 条件 |
 |---|---|---|
 | `waiting` | 等你 |  |
 | `waiting` 且 `reason = "permission"` | 等你批准 | 人的动作是照命令批准 / 拒绝，与“回答问题”分开说 |
@@ -347,7 +352,7 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 - `waiting` / `failed` **不设上限**：一条挂起的权限、一次崩掉的运行，三小时后照样是现在的事；
 - `turn_done` / `finished`（"等你回看"的那两种）超过 `ATTENTION_WINDOW_SECS`（12 h）就不占「需要我」——
   现场 8 行里有 6 行是 9/20 与 10/6 的旧账、最老 15 天，把今天真正的事压下去了。降段**不等于消失**：
-  `turn_done` 落到「在跑」段（与"看过一次"同一个去处，agora-5gg.21），`finished` 落到折叠的「已完成」区
+  `turn_done` 落到「暂无需处理」段（与"看过一次"同一个去处，agora-5gg.21），`finished` 落到折叠的「已结束」区
   并进入 Header「Finished N」一键清理的名单（名单按 `sectionOf === "finished"` 算）。手机上同理：降段是
   段位变化，行还在列表里。
 - 时刻取 `peer_status_since ?? status_since`（与「看过」的键同一个口径：peer 行要用 peer 自己那只钟）；
@@ -457,7 +462,7 @@ WAITING 的变体：决策原文（等宽逐字、不过 markdown）作为一张
 - 会话卡：任务标题；**最近一轮用两个气泡**——`❯` 你最后一句（`prompt`，首行）+ `↳` agent 最后回复（`detail`，与桌面同一 markdown 子集，默认折 6 行、**仅最后一条可展开一次**，不做更早消息的翻页）；WAITING 时决策原文（等宽逐字、不过 markdown）作为内联卡片画在 composer 上方；Restart / Kill 收进「更多」（确认框，确认逻辑在所属节点）。
 - composer 与发送：固定在底部（拇指区）。**状态门**：turn_done / idle 开放文本；waiting 只给决定按钮；running / starting 上 `host` 通道**可排队**（见「运行中排队发送」），`runtime` 置灰并说明「它还在跑」。**能不能发看 `textVia(row)` 而不是有没有句柄**（agora-t5kf.3，ADR-002 D11）：`runtime`（有 PTY）与 `host`（无句柄但宿主收文本，目前是 pi 的扩展）都给 composer；`none`（Claude / Codex / Grok、旧扩展、老节点）没有 composer，并给一句说明（`mobile-terminal-only`：在跑时说“它还在跑；只能在桌面终端里回复”、其余说“没有可写的运行时”——agora-71p2，不能让它看着像输入框没画出来）。host 行在跑时 composer 仍在，其下是 `mobile-host-running-note`“它还在跑；发出去会排队，等它跑完这一轮就交进去”——排的是 pi 的 followUp，语义与实测见「运行中排队发送」。发送是**乐观的**：气泡先以「发送中」出现，`POST /api/sessions/:id/input` 成功之后按**发出去的那一刻这一行是否在跑**分两种标签：`host` 且在跑给「已排队」、其余给「已发出」
 （见下面「发送三段」）；失败时文本回填输入框（不覆盖在途时新打的字）、失败气泡上保留「重试」，失败原因贴着气泡按错误码说人话（agora-jidm）：`no_runtime` 与 `mobile-terminal-only` 同一句人话「回复要到桌面终端」、`runtime_session_not_found`（`text_via=runtime` 但 pane 没了）「这个会话的终端已经不在了；到桌面看它」、`read_only`（采纳行）「这一行只能看不能写」；`host_timeout`（504，宿主没来取件）与 `host_rejected`（502，扩展 `.failed` 的原话）把服务端 / 宿主那句话直接显示、不加壳——504 的队列里那件已被 daemon 删掉，重试不会跑两遍。
-- 排版与自适应（agora-x70t，2026-10-08 在 iPhone 16 Pro 上按计算样式与几何量测定的牙）：手机壳用**一套 `--m-fs` 令牌**（`web/src/index.css` 的 `.mobile` / `.gate-mobile`），字号、间距（`--m-1..--m-5`）、触控下限（`--m-tap`）都由它派生——换一档字，行距与留白跟着变，否则字号一大人就觉得挤。基准 **17px**（Apple HIG 的 body；桌面壳仍是 13px 的 dense 工作台，两套不互相牵连），设置屏有四档 **小 15 / 标准 17 / 大 19 / 特大 22**，存 localStorage（键 `agora.mobile-text`，`data-text` 是与 CSS 的接口）；默认档就是 17px，因为"整体偏小"正是这一轮要修的。两条**平台下限是绝对的**、不跟档位缩：输入框 ≥16px（低于它 iOS 一聚焦就整页放大——"点输入框页面就放大"的根因）、可点目标 ≥44pt（Apple 触控下限）。长词与 URL 到处可折（`overflow-wrap: anywhere`；无空格长串以前会画出卡片外，量测 `.mobile-card-task` scrollWidth 2210 / clientWidth 384），收件箱行的单行省略号保留（那是设计）。**引擎差异要有硬夹断兜底**：WebKit（iOS 上唯一的引擎）对没有 `overflow`/`min-width: 0` 的 flex 项不给收缩——80 字符无空格的行名在那里盒子 1138px 直接顶出卡片框，而 Chromium 会换行、量不出来（2026-10-08，agora-c03z：Playwright WebKit 复现）；所以 `.mobile-row` 有 `overflow: hidden`、`.mobile-card` 有 `overflow-x: hidden`、行头子项有 `min-width: 0`，名字/状态再叠 `overflow-wrap: anywhere`。视口：`100dvh`（Safari 工具栏不把 composer 顶出屏幕）、四向 `env(safe-area-inset-*)`（横屏刘海）、`interactive-widget=resizes-content`（Chromium 系键盘缩内容）、`-webkit-text-size-adjust: 100%`（横屏不放大文字），composer 聚焦后 `scrollIntoView({block:"nearest"})` 兜住 iOS 键盘。守卫：`web/src/mobileCss.test.ts`（把 CSS 当数据钉上述不变式）、`mobileText.test.ts`、`MobileSettings.test.tsx` / `MobileApp.test.tsx`（档位读写与 `data-text`）、`MobileCard.test.tsx`（聚焦滚动、失败草稿回填与四类失败文案）。
+- 排版与自适应（agora-x70t，2026-10-08 在 iPhone 16 Pro 上按计算样式与几何量测定的牙）：手机壳用**一套 `--m-fs` 令牌**（`web/src/index.css` 的 `.mobile` / `.gate-mobile`），字号、间距（`--m-1..--m-5`）、触控下限（`--m-tap`）都由它派生——换一档字，行距与留白跟着变，否则字号一大人就觉得挤。基准 **17px**（Apple HIG 的 body；桌面根基准仍为 13px、正文角色为 14px；共享字体与语义色，字号密度按设备适配），设置屏有四档 **小 15 / 标准 17 / 大 19 / 特大 22**，存 localStorage（键 `agora.mobile-text`，`data-text` 是与 CSS 的接口）；默认档就是 17px，因为"整体偏小"正是这一轮要修的。两条**平台下限是绝对的**、不跟档位缩：输入框 ≥16px（低于它 iOS 一聚焦就整页放大——"点输入框页面就放大"的根因）、可点目标 ≥44pt（Apple 触控下限）。长词与 URL 到处可折（`overflow-wrap: anywhere`；无空格长串以前会画出卡片外，量测 `.mobile-card-task` scrollWidth 2210 / clientWidth 384），收件箱行的单行省略号保留（那是设计）。**引擎差异要有硬夹断兜底**：WebKit（iOS 上唯一的引擎）对没有 `overflow`/`min-width: 0` 的 flex 项不给收缩——80 字符无空格的行名在那里盒子 1138px 直接顶出卡片框，而 Chromium 会换行、量不出来（2026-10-08，agora-c03z：Playwright WebKit 复现）；所以 `.mobile-row` 有 `overflow: hidden`、`.mobile-card` 有 `overflow-x: hidden`、行头子项有 `min-width: 0`，名字/状态再叠 `overflow-wrap: anywhere`。视口：`100dvh`（Safari 工具栏不把 composer 顶出屏幕）、四向 `env(safe-area-inset-*)`（横屏刘海）、`interactive-widget=resizes-content`（Chromium 系键盘缩内容）、`-webkit-text-size-adjust: 100%`（横屏不放大文字），composer 聚焦后 `scrollIntoView({block:"nearest"})` 兜住 iOS 键盘。守卫：`web/src/mobileCss.test.ts`（把 CSS 当数据钉上述不变式）、`mobileText.test.ts`、`MobileSettings.test.tsx` / `MobileApp.test.tsx`（档位读写与 `data-text`）、`MobileCard.test.tsx`（聚焦滚动、失败草稿回填与四类失败文案）。
 - 不做：终端（xterm 不加载）、New Agent 自由表单（「新建」= 预设一屏，见上）、diff / 验收 / 改动列表、命令面板与快捷键、多节点切换（只配一个承载节点）、消息流与完整对话历史（Conversation indexing 见 §11，承接 `agora-ghl3`）。
 - `respond_via = terminal`（Grok 权限、AskUserQuestion）显示「需要到桌面」，不提供「打开终端」；不注入键击（MISSION §1.2）。
 

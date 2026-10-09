@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.17（2026-09-06）；变更历史见 beads `agora-90t.1` 注记 |
+| 版本 | v0.17 为 2026-09-06 的编号基线；后续决定按相关节的日期与 beads 留痕，本次一致性回写 2026-10-09（agora-ao39）；早期变更历史见 beads `agora-90t.1` 注记 |
 | 项目类型 | Self-hosted Web Application |
 | 目标平台 | 节点：macOS / Ubuntu Linux / Windows 主机（Windows V1 延期，§11）；客户端：macOS 笔记本、iPhone 与 Android 设备上的现代浏览器（V1 只验收 macOS 笔记本；V2 首批验收 iPhone，Android 延期见 §11，承接 agora-w9ki） |
 | 主要用户 | 单用户 |
@@ -12,11 +12,15 @@
 
 **文档分层**：本文只写决定——问题、边界、不变量、Non-Goal、DoD、施工约束、验收。"为什么"在 `docs/adr/`；实现形状（端点、配置、schema、线框、键位）在 `docs/spec/`，随代码改；路线图、任务与变更历史在 beads。【ADR-00N】= 交给该 ADR 决定。**编号冻结**：本文的章节号与验收编号（A 编号）一经被引用即不重排、不复用；新增内容挂现有节尾或拿新号。
 
+**冲突与回写**：实现必须满足本文与 Accepted ADR；发现违规修实现，不能用“代码为准”改掉边界。在既定决定内，spec 与实现冲突时核实代码并回写 spec；决定本身改变时回写本文 / ADR。`docs/analysis/` 与旧记忆是有日期和适用条件的参考证据，不覆盖现行决定。一个规则只在所属层维护，其它文档链接它。
+
+**阶段用语**：V1 / V2 与 §11 的分组保留范围分配的历史含义，不代表功能仍未实现；当前完成状态以 beads / ROADMAP 为准，当前实现以规格与代码核对。A 编号与 checkbox 是验收定义，不在本文勾选推进进度。
+
 ---
 
 ## 0. 范围边界与当前实例
 
-名词：**节点** = 一个 agora daemon 实例（通常一台机器一个）；**客户端** = 浏览器里的 agora Web；**会话** = 一个 agent 进程及其运行时载体；**任务** = 会话在做的那件事。
+名词：**节点** = 一个 agora daemon 实例（通常一台机器一个）；**客户端** = 浏览器里的 agora Web；**会话** = 一个被 agora 识别的 agent 交互 / 执行单元（可有运行时句柄，也可只有宿主 hook 观测，§4.1）；**任务** = 会话在做的那件事。
 
 ### 0.1 范围边界（远视，MISSION 级）
 
@@ -36,7 +40,7 @@
 
 **MacBook Air**（macOS 节点 + 日常客户端所在）+ **zuan**（Ubuntu 常开节点，承担无人值守的工作；它的资源不是瓶颈，人的注意力才是）。并发 ≤ 30 个会话（本机可达 10、zuan 其余），跨上百个仓库，多 git worktree 并行是常态。Mac 睡眠时其上的 agent 暂停、醒来继续，不算失败；需要无人值守的工作放 zuan。实测清单（硬件、网络、已装 agent）见 `docs/spec/instance.md`——它是各 ADR 的输入，不是上限。
 
-**一天的形态**（任何一步都可以在任何设备上做，下面只是最常见的分工）：
+**一天的形态**（客户端共享状态与 API；能呈现哪些操作按 §6.9 分级，手机创建只选预设。下面是最常见的分工）：
 
 1. 在 Mac 上打开本机的 agora（它把 zuan 作为 peer 并入）；首页跨节点合并、按"需要我"排序：谁在等回答、谁失败了、谁做完了。
 2. 逐个处理：切到会话回答 / 看结果 / 重启失败的会话。
@@ -66,7 +70,7 @@ agora 是一个 **Browser-native、极轻量、Persistent、Agent-aware 的远�
 launch → observe → switch → respond → resume
 ```
 
-**respond 必须可以不经终端完成**：终端是传输层，不是唯一交互层。权限与选择经 hook 返回决定（不注入键击——该敲 `y` 还是 `1` 是 agent 私有的 TUI 行为；agent 的 hook 承载不了的决定，如 V1 的 AskUserQuestion 选项，Dashboard 只提供"打开终端"，ADR-002 D5），自由问答与下一条指令经 PTY 送文本；在 Dashboard 上都是一次点触（§6.3、§7.3）。**respond 含看结果**：TURN_DONE / FINISHED 时先看产出（§6.3）再给下一条——这不是新动词，五个动作不扩。
+**respond 必须可以不经终端完成**：终端是传输层，不是唯一交互层。权限与选择经 hook 返回决定（不注入键击——该敲 `y` 还是 `1` 是 agent 私有的 TUI 行为；agent 的 hook 承载不了的决定，如 V1 的 AskUserQuestion 选项，Dashboard 只提供"打开终端"，ADR-002 D5），自由问答与下一条指令按 `text_via` 经 PTY 或宿主自报的输入通道送文本（ADR-002 D11）；在 Dashboard 上都是一次点触（§6.3、§7.3）。**respond 含看结果**：TURN_DONE / FINISHED 时先看产出（§6.3）再给下一条——这不是新动词，五个动作不扩。
 
 ### 1.3 "管理"是哪一层
 
@@ -110,15 +114,15 @@ MVP 的完成定义不是"可以在浏览器里打开终端"，而是：
 
 1. 已合入主干，CI 绿，commit 引用 issue id
 2. 若改变了决策，MISSION / ADR 已回写——过期的真相源不是真相源
-3. 能在所属 epic 的演示剧本里跑给人看（剧本在 epic 的 design 字段，ROADMAP 视图同步展示）
-4. 关闭按验收条目能否被机器或 agent **等效验证**分三档：**机械**（CI 绿 + 验收里点名的守卫测试通过）与**代检**（演示剧本里的步骤由 agent 用 agent-browser / tmux capture-pane / curl / ssh 等操作，并断言到与人眼相同的事实——DOM 文本、API 响应、pane 内容、进程与文件状态）都由实施 agent 关闭，`bd close --reason` 写明证据（测试名、commit；代检还要写命令与观察到的输出）；**人眼**只留给代检不能等效的条目：浏览器保留加速键（CDP 注入绕过浏览器的加速键处理，自动化会假阳性）、物理动作（拔线、合盖睡眠与唤醒、重启机器、真机手机装 PWA 与收推送）、OS 层呈现（系统通知真的弹出、有声）、没有可断言事实的主观视觉判断。验收里写「人眼」必须点名是哪一条、为什么代检不等效，否则按代检处理；剧本里的人眼步骤加 👁 标记。epic 由人关闭，但人只看 👁 步骤与代检报告，不重跑剧本。人的注意力只花在只有人能验的地方（§0.2）
+3. 能按验收复现结果：属于 epic 的任务使用其 design 演示剧本（ROADMAP 同步展示）；独立任务在自己的 acceptance / notes 写步骤与可观察结果，不为补层级而虚建 epic。
+4. 关闭按验收条目能否被机器或 agent **等效验证**分三档：**机械**（CI 绿 + 验收里点名的守卫测试通过）与**代检**（演示剧本里的步骤由 agent 用 agent-browser / tmux capture-pane / curl / ssh 等操作，并断言到与人眼相同的事实——DOM 文本、API 响应、pane 内容、进程与文件状态）都由实施 agent 关闭，`bd close --reason` 写明证据（测试名、commit；代检还要写命令与观察到的输出）；**人眼**只留给代检不能等效的条目：浏览器保留加速键（CDP 注入绕过浏览器的加速键处理，自动化会假阳性）、物理动作（拔线、合盖睡眠与唤醒、重启机器、真机手机装 PWA 与收推送）、OS 层呈现（系统通知真的弹出、有声）、没有可断言事实的主观视觉判断。验收里写「人眼」必须点名是哪一条、为什么代检不等效，否则按代检处理；剧本里的人眼步骤加 👁 标记。epic 由人关闭：验证 👁 条目、审阅代检报告，并按第 7 条核对目标场景覆盖；已被等效代检证明的步骤不要求重复操作。人的注意力只花在只有人能验的地方（§0.2）
 
-**规划纪律**（2026-09-07 补。反例：New Agent 的 Node 下拉在 M1a 以一句注释「peer 归 M2」延期、没立 issue（事后补的 agora-fna）；拆 M2 只按 §12 的 A 编号机械核对，§6.4「本机 + 在线的 peer」那句没有编号，M2a / M2b 都关了 Mac 上仍不能在 zuan 起会话——A45 是事后补的。§12 是 §6 的有损摘要，机械核对的上限就是它核对的那份清单，下面三条堵的是清单之外的漏）：
+**规划纪律**：验收编号是目标场景的摘要，不能替代对场景与需求正文的走查。历史缺口见 beads `agora-fna`。
 
 5. **延期必须可追踪。** 代码或文档里写下「归 Mx / 留 V2 / V1 只…」的那一行必须带承接它的 issue id（文档里可指向 §11，它是 V2 台账）；`scripts/doc-lint.sh` ④ 守着，CI 红。知道自己在延期的那一刻是唯一可靠的登记点，注释里的承诺没有接收方。
 6. **拆 epic 先走查 §6，再核对编号。** 拆分 issue 的 notes 里放一张映射表：本阶段涉及的 §6 小节逐段列出，每段可操作的句子要么指到 A 编号 / 任务，要么写「延期 → issue id」。A 编号核对只保证自洽（每个编号有任务），走查表保证完备（每句话有编号）；两者缺一不可。
-7. **剧本以 §1 目标场景为骨架，人按场景关闭。** epic 的 design 首行引用 §1「一天的形态」里本阶段兑现的步骤，剧本步骤覆盖那些场景步骤，而不是覆盖任务列表——按任务写的剧本会替缺口找到最省事的证明路径（M2a 剧本在 zuan 本地起会话、Mac 上看到，正好绕开了「选节点」）。人关闭 epic 时除了看 👁 与代检报告，还按引用的场景步骤自己走一遍。
-8. **CI 停跑期间（2026-10-08 起，用户要求）**：第 1 条的「CI 绿」、第 4 条机械档里的「CI 绿」、第 5 条的「CI 红」，一律按**本地门禁**读——`cargo test`、`cargo clippy`、`npm --prefix web test`、`scripts/doc-lint.sh` 全绿即等同，验收里写「本地门禁全绿」。恢复 CI 时删掉本条，并按当时的习惯改回。
+7. **剧本以目标场景为骨架，人按场景关闭。** epic 的 design 首行引用 §0.2「一天的形态」里本阶段兑现的步骤，覆盖场景而不只覆盖任务列表。人关闭 epic 时按场景步骤核对覆盖，实际操作只补 👁 条目和缺少等效证据的步骤。
+8. **CI 停跑期间（2026-10-08 起，用户要求）**：第 1 条的「CI 绿」、第 4 条机械档里的「CI 绿」、第 5 条的「CI 红」，一律按**本地门禁**读，命令与适用范围统一在 README「验收命令」维护；适用项全绿即等同，证据写实际运行项，不冒称远端 CI 通过。恢复 CI 时删掉本条，并按当时的习惯改回。纯文档以引用检查、差异检查与语义核对为机械证据，不重跑未受影响的应用测试。额外代检按受影响行为与风险选择，已点名的验收与守卫不能因范围缩小而省略。
 
 ---
 
@@ -209,6 +213,8 @@ discover 运行时中的 session → read SQLite metadata → reconcile → rebu
 
 **hook 事件在 daemon 不在时不得静默丢失**：投递箱落盘、重启后重放（ADR-002）。磁盘或投递箱预算耗尽时，宿主仍可继续运行，但必须持久标记观测缺口并在健康报告与界面告警；不得把信息不完整报成完整恢复（agora-qf23）。这是 §5.1 "有 hook 的 agent 的 WAITING 只来自 hook"能成立的前提。
 
+恢复本机历史不能拖垮健康 peer（不变量 8）：恢复中与恢复失败应明确呈现，本机尚未恢复的操作不可执行，健康 peer 的观察与操作仍可用。历史审批不恢复为新的可批准请求；恢复完成以重新同步收敛视图。恢复门、状态字段与预算的实现契约见 ADR-002 D3 和 `docs/spec/api.md`（agora-o1tm / agora-qf23）。
+
 ### 3.5 多节点：peer 模型【ADR-004】
 
 - **节点 = daemon + 本机会话**。节点可配置若干 **peer**（地址 + 机器 token + 证书指纹，§9.1）；默认一个也没有。
@@ -230,70 +236,39 @@ discover 运行时中的 session → read SQLite metadata → reconcile → rebu
 
 ### 4.1 Agent Session
 
-每一个 agent session 对应一个 persistent 运行时会话【ADR-001】；浏览器断开不影响运行时中的 agent。agora 只配置自己创建的会话（运行时名、退出后保留输出供读退出码、关掉多余的状态栏）；被 adopt 的会话保持用户原有配置。
+agora 创建 / 从运行时采纳的会话（`agora` / `adopted`）对应 persistent 运行时会话【ADR-001】；`external` / `headless` 经宿主 hook 登记与观测、没有 agora 运行时句柄（§5.5）。浏览器断开不影响 agent；无句柄不等于没有进程，也不等于没有宿主输入能力。agora 只配置自己创建的会话（运行时名、退出后保留输出供读退出码、关掉多余的状态栏）；被 adopt 的会话保持用户原有配置。
 
 ### 4.2 数据模型
 
-概念字段（存储形态见 `docs/spec/config.md`）：
+会话模型区分**身份与关联、观测事实、操作能力**，不能互相代替：
 
-```
-Session {
-    id                 # 本机内唯一；对外 <node>:<id>
-    display_name       # 与 name_locked 配对（§4.5）
-    agent_type         # claude | codex | grok | pi | shell | custom
-    working_directory
-    worktree           # git worktree 路径；可空
-    task_ref           # beads issue id 或首条 prompt 摘要；可空
-    command
-    runtime_ref        # 运行时句柄【ADR-001】；origin = external 时为空
-    agent_session_id   # agent 自报的当前对话 id（§5.6）；Restart 的 resume 依据
-    epoch              # 进程代次：创建为 1，每次 Restart +1；旧代次的 hook 事件丢弃（ADR-002 D1）
-    transcript_path    # agent 自报的 transcript 路径；V1 只存不读（ADR-002 D8）
-    origin             # agora | adopted | external | headless（§5.5）：agora 创建的 / 运行时里采纳的 / 只有 hook 看得见的 / 宿主自己起的无头一次性会话（headless 由裁决 agora-5gg.7 选 B，2026-09-20 agora-5gg.20 落地）
-    created_at         # 这一行的起点；external 行取登记它的那条 hook 信封的时刻，不是 daemon 写库的当下（重启重放会把 46 行都写成重启那一刻）
-    ended_at           # 该行结束的时刻：运行时报的退出时刻 / hook SessionEnd 的事件时刻 / superseded 的新对话首条事件时刻 / 探活发现进程没了的那个 tick（标 ended_at_approximate）；等待时长、attention 与按结束时间的保留 / 折叠 / 淘汰用
-}
-```
-
-`ended_at` 说的是「这一行结束了」而不是「进程退出了」（2026-09-20 修订，agora-5gg.3）——external 行（§5.5）没有进程退出，但有对话结束，所以结束时刻按可得性取四种事实之一：运行时报的退出时刻（准确）→ hook `SessionEnd` 的事件时刻 → 同一进程换了对话时**新对话首条事件**的时刻 → 探活发现进程没了的那个 tick（谁也报不出几点退的，只能标 `ended_at_approximate`）。行又活了就清掉它——hook 的 FINISHED 不是终态（`/resume`、Codex TUI 的 `/new` 之后同一行回 STARTING），与 Restart 清空它是同一条规则。**猜错了同样清掉**（2026-09-22，agora-psj0）：四种事实里只有最后一种是猜的，而"运行时列表里没有它"有一个排不掉的假阳性（socket 文件被清理进程扫掉而 server 还活着，【ADR-001】D4），所以这一档的 `ended_at` 带 `ended_at_from_missing` 记号，下一轮这个会话又在列表里、pane 还活着就当场收回——不必 Restart、不用人动手。按结束时间的保留 / 折叠 / 淘汰（`sessions.external_finished_ttl`）拿它当唯一依据：`status_since` 是状态机的内存时钟，说不了“库里的行什么时候结束的”。
-
-`status / exit_code / last_activity_at` 是运行时与 observer 的实时结果，**不落库**（不变量 7）；SQLite 只存上面的 metadata。`project`（仓库根 / 名字 / worktree / 分支 / 是否主 worktree）是按 `working_directory` 派生的实时字段，与 `status` 同一待遇：异步补齐、按 TTL 重查、**不落库**（不变量 7）——库里只有 `working_directory`，字段形状见 `docs/spec/api.md`（A49，2026-09-09，agora-uvd.1）。
-
-进程一栏同样是实时字段，而且是**三值**：`process: alive | gone | unknown`（裁决 agora-5gg.4 选 A，2026-09-19 agora-5gg.18）。取值规则：有运行时句柄的行按 pane 活性给 `alive | gone`；external 行按检查点里的 agent 进程号探活给 `alive | gone`，没有可信进程号（宿主不报、或报来的是所有对话共用的服务进程）给 `unknown`——**「不知道」是一个取值，不是一个 false**，布尔表达不了它（`docs/analysis/session-status-audit-2026-09-18.md` B1 / B2）；`status` 为 FINISHED / FAILED 时一律 `gone`：对话结束即不再谈进程，哪怕那个 pid 还在跑别的对话。旧的 `alive` 布尔是它的投影（恒等于 `process == alive`），只给未升级的 peer 与页面保留一版，下一版删；形态与兼容规则见 `docs/spec/api.md`「会话形态」「api_version 兼容规则」。
-
-「为什么」同样是实时字段，而且是**两个封闭枚举**，不是句子：`end_cause`（`exit_code | signal | killed_by_user | host_session_end{clear|resume|logout|exit|other} | superseded | process_gone | runtime_gone{session|server}`）说这一行为什么结束了，`unknown_cause`（§4.3 末的封闭清单）说这一行为什么说不清；`reason` 降成只给人看的那一句话，措辞可以随版本改，**程序不得据它判断**（§2.3 规则 10；2026-09-21 修订，agora-5gg.17，落地在 2026-09-20 agora-5gg.6）。动因是词表没封起来之前，通知静音与「这一格该给什么出口」都只能对 `reason` 做前缀匹配，规则 10 在 `src/events.rs` 那里破了一个洞；宿主 `SessionEnd` 自带的 reason 词表随各家版本变，所以**原话不进枚举**（认不出的一律 `other`）、只留在 `reason` 里。守卫 `tests/status_truth_table.rs::cause_wire_vocabulary_is_the_locked_set`、`::every_finished_and_failed_row_names_its_end_cause`、`::every_unknown_row_names_why_it_is_unknown`；裁决与动因见 ADR-002 D1，形态见 `docs/spec/api.md`「会话形态」（随 `api_version` 1.8 只增字段）。
-
-节点身份不进本机模型：每个节点只存自己的 session。对外（浏览器与 peer）会话以 `<node>:<id>` 标识，`node` 是节点 id（§9.1）；peer 的会话并入视图时保留来源节点，绝不改写。
+- SQLite 保存 metadata / preferences / mapping；状态、进程活性、退出码与派生的项目信息来自运行时 / observer，不以数据库旧值证明进程存在（不变量 7）。任务内容与状态从仓库读取，不复制成第二份真相（不变量 12）。
+- `origin` 表示来源，`runtime_ref` 表示可用的运行时句柄；有无句柄与输入能力分别判断（§5.5）。`epoch` 隔离 Restart 前后的进程代次，旧代次事件不得覆盖新代次。
+- 进程活性是 `alive | gone | unknown` 三值：读不到不能报成死亡。FINISHED / FAILED 表示这一行结束；同一宿主进程仍可承载别的对话。合法组合由 `docs/spec/status.md` 的真值表定义。
+- `created_at` / `ended_at` 描述这一行的生命周期，不以重放时间冒充事件时间；近似结束需标明，观测推翻时撤回，重新活跃时清空。状态持续时间与结束时间不能混用。
+- 结束 / 不确定原因使用封闭类型，`reason` 只给人读（§2.3 规则 10）。具体词表、旧检查点兼容与 wire 字段在 `docs/spec/api.md`；持久字段与时钟形态在 `docs/spec/config.md`；裁决理由在 ADR-002 D1。
+- 每个节点只存自己的会话。对外身份为 `<node>:<id>`；peer 行保留来源节点，不改写归属。
 
 ### 4.3 状态定义
 
-| 状态 | UI | 含义 |
-|---|---|---|
-| STARTING | | process created，尚无有效活动。hook 层的 STARTING 最多停 10 s（`startup_grace`）：SessionStart 之后宽限内没有后续事件即归 TURN_DONE（见该行），不许永远钉在这里。**这条衰减不分 origin、也不分有没有可信进程号**（2026-09-19 修订，agora-rkl）：无句柄的 external / headless 行同样衰减——「这行要我给它指令」这件事与谁起的无关，规则原先只写在有 pane 的行能走到的分支里，现场 zuan 的 `ef0e50` 因此钉在 `… starting` 180 h（`docs/analysis/session-status-audit-2026-09-18.md` §3.1 / A1）。真值表 a03 与 x02 两格共用同一条衰减（`Machine::decay_starting`，`docs/spec/status.md`）|
-| RUNNING | ● | 持续产生 output |
-| WAITING | ⚠ | agent 在**一轮之中**停下来等人：提问、权限确认（hook：权限请求与提问类工具的事件，各 agent 的映射见 ADR-002 D2；兜底：文本匹配） |
-| TURN_DONE | ◆ | agent **一轮做完**、等下一条指令（hook：Stop；**也包括宿主自报这一轮出错**——`TurnFailed` / `api_error` 一类原话，含义是「这轮报错，等你」，对 agor 的动作与"做完"一样是看结果 / 给下一条；FAILED 仍**只由进程层**（退出码 ≠ 0）给，2026-10-08 裁决 agora-1puq；**进程仍在，或 agora 说不上它在不在**——`process = unknown`，2026-09-21 修订，agora-5gg.17：无可信进程号的行——Codex Desktop 那些线程的 ppid 是所有对话共用的 app-server、无头会话——与「进程真没了」不能长同一张脸，原来那个布尔把三值压成二值，`alive: false` 既说「死了」又说「不知道」，现场 7 行 `turn_done` + `alive: false` 就是这么来的，见 `docs/analysis/session-status-audit-2026-09-18.md` B2；三值本身见 §4.2 与裁决 agora-5gg.4）。人的动作是看结果 / 给下一步，与 WAITING 的"回答问题"不同。也包括**起好了、还没收到第一条指令**的会话（SessionStart 之后 10 s 内没有后续 hook 事件、进程仍在；reason `awaiting first prompt`；2026-09-05 agora-okr）：人的动作一样是给它指令，startup / resume / clear 三种 SessionStart 都落到提示符等人；compact 发生在一轮中间、紧接着就有 PreToolUse 在宽限内自纠，所以是"宽限后衰减"而不是"SessionStart 直接映射 TURN_DONE" |
-| IDLE | ○ | 长时间无 output 但 process 仍存在，且没有 hook 信息说明原因——只出现在兜底路径（状态从"人要做什么"定义，不从"观察者看见什么"定义） |
-| FINISHED | ✓ | process exit 且 exit code = 0。**结束一行不一定有退出码可拿**（2026-09-21 按代码回写，agora-5gg.17）：无句柄行只有宿主 `SessionEnd`（含换对话的 superseded）与探活发现进程号没了这两种结束，都报 FINISHED 而**永远报不出 FAILED**（没有退出码可分，真值表 x09）；有句柄的行还会因为运行时会话已经不在而报 FINISHED（`end_cause = runtime_gone`，a13，出处 ADR-001 D4） |
-| FAILED | ✕ | process exit 且 exit code ≠ 0（含信号退出；agora 自己 Kill 的算 FINISHED，§4.6 / ADR-002 D1）|
-| UNKNOWN | ? | 看不清，而且必须说清**为什么**看不清、以及人能做什么。允许的原因是一张**封闭清单**（下表，六种），每一种各带一个出口；这一行不再是一串拿「/」连起来的措辞——原先列在这里的 detector failure / 不支持的 agent / 进程信息不一致 在代码里都不对应任何一种 `unknown_cause`，是筐不是原因（2026-09-21 修订，agora-5gg.17）|
+状态从“人下一步做什么”定义；状态来源与置信度按 §5 分层，不由 UI 猜测。
 
-**UNKNOWN 的允许原因（封闭清单）**：UNKNOWN 是唯一一个「说不清」的状态，所以它自带的信息不能只是「说不清」。每一种原因都写清楚它出现在真值表（`docs/spec/status.md`）的哪一格、以及它怎么离开——**离开的方式要么是不用你动手（agora 自己会弄清），要么是一个你按得下去的出口**；两样都没有的原因不许进这张表（`docs/analysis/session-status-audit-2026-09-18.md` §0 第三问：如果 agora 说不清，为什么说不清、我该做什么）。程序读 `unknown_cause`（封闭枚举，形态见 `docs/spec/api.md`「会话形态」），人读 `reason` 那一句。
+| 状态 | 含义 |
+|---|---|
+| STARTING | 正在启动，尚无有效活动；hook 启动宽限后仍无后续事件则归 TURN_DONE，不因 origin 或有无可信 PID 而永远停在这里 |
+| RUNNING | 正在工作；结构化活动或兜底输出提供证据 |
+| WAITING | 一轮之中等人回答或批准；有 hook 的 agent 只认结构化事件 |
+| TURN_DONE | 等下一条指令：包括本轮完成、本轮报错和起好后等首条指令；不等于进程退出，人的动作是看结果 / 给下一步 |
+| IDLE | 进程仍在、长时间无输出且无 hook 说明原因；仅属兜底路径 |
+| FINISHED | 这一行结束：正常退出、用户 Kill、宿主结束 / 换对话或确定进程 / 运行时会话已消失；没有退出码时不猜失败 |
+| FAILED | 进程以非零码或信号退出；用户 Kill 除外。宿主自报的本轮错误仍是 TURN_DONE |
+| UNKNOWN | 证据不足，必须给原因和可行出口；读不到不等于已结束 |
 
-| `unknown_cause` | 什么时候出现（真值表的格）| 出口 |
-|---|---|---|
-| `runtime_unavailable` | 运行时对这一行读不到：整体降级（协议不匹配、版本过低、调用超时），**或只坏了它所在的那一个采纳 socket**（agora-dkv3）（a17）| 顶部横幅说明原因（整体降级那种；只坏一个采纳 socket 时横幅不响，`reason` 点名是哪个 socket）；运行时恢复应答即自愈，不用人做什么。「读不到」**永远不等于**「已经死了」：这一格绝不写 `ended_at`、绝不把 `process` 报成 `gone`（ADR-001 D7）|
-| `hooks_silent_screen` | 声明了 hook 的行沉默满 `hooks.silence_after`（缺省 10 min）而屏幕像在等人（a18）| 打开终端自己看一眼；按行上的 `hooks_unheard` 那句去装 / 信任 hook（ADR-002 D1）。下一条 hook 事件即改写这一格 |
-| `prompt_gone` | 挂着的权限 / 提问从屏幕上消失了，而宿主一个事件都没发（Esc 中断，a18）| 同上：下一条 hook（同工具的 PostToolUse 抬回 RUNNING、`idle_prompt` 落 TURN_DONE）或在终端里继续输入（agora-9cd）|
-| `hooks_silent_no_handle` | 无句柄行没有可信进程号，且距**最近一条 hook 事件自己的时刻**满 `hooks.external_silent_after`（缺省 2 h）（x10）| 下一条 hook 事件；否则满 `sessions.external_unknown_ttl`（缺省 24 h）自动删记录。这一格没有终端可打开、Kill / Restart 都做不了，所以它必须是暂态而不能是终态（agora-e08）；沉默时长按事件时刻算，重启 + 重放不清零（agora-5gg.2）|
-| `no_observation` | 还没有任何可观测事实：有句柄的行只在 STARTING 窗口（< 2 s）里（a23），无句柄的行在等它的**第一条** hook 事件（x12）| 只许短暂：前者下一 tick 落 STARTING / RUNNING，后者第一条事件一到就走。**持续出现 = hook 检查点丢了，属 bug**，不是「这个 agent 不支持」|
-| `exit_status_missing` | 运行时报了进程退了、退出码还没收集到（tmux 3.6 以前的 libutempter 那个坑，ADR-001 D7）（a22）| 下一 tick 补上即落 FINISHED / FAILED；补不上就是会话连同 pane 一起没了，落 a13 的 FINISHED `runtime_gone`。宁可在这里停一下，也不拿「没拿到状态」猜成 FAILED |
-
-清单之外不许新增原因，也不许把已经不算 UNKNOWN 的事实塞回来：**运行时会话不在不是 UNKNOWN**，是 FINISHED `runtime_gone`（a19 ✗ → a13，2026-09-19 据 agora-u5p 修订 ADR-001 D4——pane 随会话一起收 SIGHUP，agent 确定不在，那是事实不是看不清）；**探到进程号没了不是 UNKNOWN**，无句柄行落 FINISHED `process_gone`（x05 ✗ → x07）；**宿主说了结束不是 UNKNOWN**（x08）。守卫：`tests/status_truth_table.rs::every_reachable_cell_is_in_the_table` 把能喂的输入喂一遍，状态机吐出的每一格都要在真值表里找得到，私自多产出一格 UNKNOWN 红在这里；`::cause_wire_vocabulary_is_the_locked_set` 钉住词表本身。
+UNKNOWN 原因只允许现有封闭清单中的类型，每种必须能通过新观测自愈、有限期清理或用户可执行的动作离开；不能成为无限期堆积的兜底筐。**确认运行时会话消失、可信进程消失或宿主已结束，不属于 UNKNOWN。** 具体原因、条件、时钟、出口与守卫统一维护在 `docs/spec/status.md` 和 `docs/spec/api.md`，不在本文复制词表与测试名称。新增类型先更新 ADR-002 的裁决与这份契约，再改实现；事故证据保留在 ADR 与关联 beads。
 
 ### 4.4 状态机
 
-必须显式实现状态机，而不是让 UI 自己猜。
+必须显式实现状态机，而不是让 UI 自己猜。下图仅示主要交互路径，不是完整迁移表；UNKNOWN、无句柄结束与恢复等分支以 `docs/spec/status.md` 和 ADR-002 为准。
 
 ```
                  process created
@@ -330,14 +305,7 @@ STARTING 还有一条图上没画的边到 TURN_DONE：SessionStart 之后宽限
 
 ### 4.5 Session 命名
 
-系统生成运行时名 `ag-<short-id>`，而不是直接用 Display Name（避免空格 / unicode / 重名 / 改名复杂度）：
-
-```
-Display Name:  sglog parser refactor
-runtime:       ag-a81c28
-```
-
-Display name 可任意修改，运行时身份不变。一行显示的名字有两个来源：用户存的 `display_name`，和 agent 自己设的 pane title（OSC 2）。**没改过名时 title 赢**——它更新鲜；**改过名之后 `display_name` 永远赢**，这就是 `name_locked`。因此"改名"是两件事：存一个名字，*并且*把 agent 的 title 挡在外面；**包括改成和原来一模一样的字符串**也要落锁。客户端不得因"名字没变"而跳过请求。**"缺省 title"不算 agent 设过标题**：tmux 的 pane title 缺省填的是主机名而不是空串，shell 与任何不发 OSC 2 的 agent 都停在那个值上；运行时把它归一成"没有 title"（等于 `#{host}` / 其首段、等于运行时名 `ag-…`、或空白三种），这时显示 `display_name`。判定拿真实主机名比对，不用"含点号就算主机名"这类启发式——agent 完全可能把 `a.py` 设成标题（agora-gky）。
+显示名称与运行时身份分离。未手动改名时使用 agent 提供的有效标题；用户一旦改名即锁定用户名称，包括提交相同字符串。运行时默认标题不是 agent 标题，不能遮盖任务名称。字段见 `docs/spec/config.md`，显示与归一化规则见 `docs/spec/ux.md`「会话名称与已读身份」。
 
 ### 4.6 生命周期语义
 
@@ -352,11 +320,11 @@ Display name 可任意修改，运行时身份不变。一行显示的名字有�
 | **Delete Metadata** | 移除 agora metadata，但不杀运行时会话 |
 | **Restart** | kill 现有进程 + 在**同一个运行时会话**内重建，并 resume 原对话——依据是 agent 自报的当前对话 id（§5.6），**绝不用 `--continue` / `--last`**（那会静默恢复成另一段对话）。只在真的会杀掉正在运行的 agent 时才必须显式确认（§8） |
 
-**已退出会话的清理**：FINISHED / FAILED / 被 Kill 的运行时会话在用户看过之后清理（Dashboard 里确认或 Delete Metadata 时一并清掉保留的输出）。这不是 kill——进程已经不在——所以不需要确认，但不得在用户看到结果之前发生；V1 不做定时回收。external 行没有运行时会话与输出，只有 agora 的两行记录；FINISHED 超过 `sessions.external_finished_ttl` 自动删记录，不算回收。无句柄那一档（external / headless）的出口是两条，不再有无出口的行（2026-09-21 修订，agora-5gg.17）：FINISHED 满 `sessions.external_finished_ttl`（缺省 24 h）删，无可信进程号的行落进 `hooks_silent_no_handle` 那一格 UNKNOWN 后满 `sessions.external_unknown_ttl`（缺省 24 h）走 DELETE 同一条路径删（§4.3 的 UNKNOWN 清单；agora-e08）——那一格既没有终端可打开也做不了 Kill / Restart，不删就是永远挂在那儿的一行 `?`（Mac 2026-09-18：4 行 UNKNOWN 沉默 55–63 h 无出口）。`headless` 只有一条且**不论状态**：它常常连 SessionEnd 都没有，拿状态当门槛就永远清不掉（agora-5gg.20）。策略细节见 ADR-001 D4。
+**已退出会话的清理**：默认保留运行时输出供用户查看，由用户主动清理 / Delete Metadata 才释放已死 pane；不定时回收运行时会话。客户端已读记号不是删除权限门：用户可以明确清理因新鲜度降段的旧结果（§6.3）；降段本身不删除记录或输出（ADR-001 D4）。无句柄行只清理 metadata：FINISHED 与无可信进程的沉默 UNKNOWN 按各自保留期删除，headless 不论状态按保留期删除，不能无限堆积。保留期与清理路径见 `docs/spec/config.md`、`docs/spec/status.md` 和 ADR-001 D4。
 
-**「看过」的三条证据**（A46；上一段的"用户看过"与 §6.3 的 Finished 折叠区都按这里判。2026-09-19 起这套判据管两种状态：FINISHED 看过之后进折叠区，TURN_DONE 看过一次降到中段——见 §6.3，agora-5gg.21）：① 该行在 Dashboard 里被选中过一次（展开区已并入主区面板，A50：选中一行就是把它的回答 / 结果面板画在主区，判定不变）——这是浏览器的视图状态（选中集合与主区选中行是同一个，只在内存；「看过」集合另存 localStorage，刷新不丢），不是服务端字段，换个浏览器就从头算。**TURN_DONE 也走这条**（决策 agora-5gg.10 选 B 为主）：它看过之后降进中段而**不是** Finished 折叠区——折叠区的行是 Header「Finished N」一键清理的删除对象，而 TURN_DONE 那一行 pane 里的进程还活着、下一条指令随时要发；② 人在终端里自己结束了会话——`external` 行的 SessionEnd（bd memories `external-exit-hooks-ctrlc-vs-hup` 的实测表：Claude 两次 Ctrl+C 与关窗口、Grok 两种、Codex 两次 Ctrl+C 都发；Codex 关窗口不发、只能靠进程探活变 process gone），这类会话的工作面从来不在 agora 里，结束即视为看过，不按 reason 分（这条只把 **FINISHED** 的 external 行直接收起：external 行的 TURN_DONE 进程还在，谈不上"人在终端里自己结束了会话"，照证据 ① 判）；③ TURN_DONE 之后又来了新 prompt——人已经读过上一轮的结果才会接着说，已隐含在 TURN_DONE → RUNNING 的转换里，不另记；同一条转换顺带让证据 ① 的记号作废（记号是 `<id>@<status_since>`，跟着"这一次完成"走），所以下一次 TURN_DONE 又算没看过、重新回到 NEEDS ATTENTION（agora-5gg.21）。**记号的作废不靠中间那一下**（2026-09-22 修订，agora-8x6）：连着两条 `turn.ended`、中间没有 prompt 也没有任何别的状态变化的路径同样要让第二轮的结果回到 NEEDS ATTENTION，因此 `turn.ended` / `turn.failed` 自带轮次边界——状态没换也把 `status_since` 记成事件自己的时刻（`src/status/machine.rs` 的 `set_new_turn`；守卫 `tests/state_machine.rs::a_second_turn_ended_moves_status_since_so_the_seen_mark_expires`、`web/src/attention.test.ts`）。这条只放宽给这两个事件：放宽成"每次写入都刷新起点"会让无 hook 的行每 tick 漂一次起点（侧栏永远 "idle 0s"、排序拿不到等待时长、事件流每 tick 一条 `status_changed`，agora-385），反向守卫 `tests/state_machine.rs::eventless_ticks_never_move_status_since` 钉着这一条。
+**「看过」的三条证据**（A46）：① 在 Dashboard 选中本轮结果；② external 的 FINISHED 视为用户在其它工作面结束，不按 reason 再分；③ 新 prompt 表明上一轮已被接续。已读属于客户端，不能代替服务端状态；每次新结果须重新可见，即使两次完成之间没有其它状态。TURN_DONE 看过后降到中段，不进入可清理的 Finished 区。记号、持久化与轮次边界见 `docs/spec/ux.md`「会话名称与已读身份」。
 
-主区显示的是侧栏当前选中行的终端，这是浏览器的视图状态，而不是 agent 生命周期；页面只有这一个选中集合——曾经的顶栏 Tabs 是第二个选中集合（标签页管主区、侧栏行管展开区，二者可不一致），用户 2026-09-07 反馈"只有左侧栏时很容易上手，加上顶栏就不知道该如何操作"，去掉（agora-a46）。切换行 / 关闭终端视图不允许：restart session、recreate 运行时会话、丢失 agent 状态、终止 PTY 拥有的进程。
+页面只有一套会话选中状态，主区跟随侧栏。切换行 / 关闭终端视图只 detach，不得 restart、重建运行时、丢失 agent 状态或终止进程。
 
 ---
 
@@ -366,7 +334,7 @@ Display name 可任意修改，运行时身份不变。一行显示的名字有�
 
 ### 5.1 分层 State Source（V1）
 
-三个一等 agent（Claude Code、Codex、Grok Build）的 hook / notify 都是文档化的稳定接口（Grok 2026-09-02 实测证实，细节见 ADR-002）；文本兜底只服务 generic shell 与采纳的未知会话。因此分层来源是 V1 的架构，不是 V2 的愿望（论证见 ADR-002）：
+一等 agent 通过各自文档化的结构化接口接入（Claude Code、Codex、Grok Build 的 hook / notify，pi 的扩展事件；覆盖与实测见 ADR-002）；文本兜底只服务 generic shell 与采纳的未知会话。因此分层来源是 V1 的架构，不是 V2 的愿望（论证见 ADR-002）：
 
 ```
 Agent State Source（高 → 低）
@@ -382,11 +350,11 @@ Agent State Source（高 → 低）
 - 无 hook 的 agent（generic shell、采纳的未知会话）：文本启发式 → WAITING（模式清单见 ADR-002 D6）；有 hook 的 agent 长时间无事件而屏幕像在等人 → UNKNOWN，不猜 WAITING（ADR-002 D1）；持续 output → RUNNING；长时间无 output 但进程在 → IDLE。
 - 所有 agent：process exit 且 exit code = 0 / ≠ 0 → FINISHED / FAILED。
 - 状态机带驻留时间，避免 hook 与轮询交错造成抖动。
-- 每个状态值带 `source` 与 `confidence`（§5.3）。`source` 的取值是 `hook | process | text | activity | none`（2026-09-21 按代码回写，agora-5gg.17：上面那张表的第四层叫 Activity Heuristic，代码里的 `Source` 就取它的名而**不是** `heuristic`；第五个值 `none` 说的是「这一层此刻说不出结论」——运行时整体读不到、还一条观测没有的那几格，它只能与 UNKNOWN 同现，见真值表 a17 / a23 / x12）；`confidence` 与 `reason`、两个封闭枚举的形态见 `docs/spec/api.md`「会话形态」，哪些格说得通见 `docs/spec/status.md`。
+- 每个状态值保留来源与置信度（§5.3）；wire 词表在 `docs/spec/api.md`，合法组合在 `docs/spec/status.md`。
 
 hook 还带来第二个能力：它看得见**这台机器上该 agent 的所有会话**，不管是不是在 agora 的运行时里起的——这是 §5.5 采纳手动会话的唯一途径。因此 hook 装在**用户自己的** agent 配置里，经用户一次确认安装（幂等、可卸载、装前显示 diff）；agora 起的会话不再重复注入，避免同一事件送两次。
 
-**hook 事件在 daemon 不在时不得丢失**（投递箱落盘、重启后重放，§3.4）：否则 daemon 重启的几秒里 agent 停下来提问，事件丢失，而上面的规则又禁止文本把它抬成 WAITING——它会永远显示 RUNNING。
+**hook 事件在 daemon 不在时不得静默丢失**（投递箱落盘、重启后重放；超预算 / 写盘失败的观测缺口按 §3.4 持续告警）：否则 daemon 重启的几秒里 agent 停下来提问，事件丢失，而上面的规则又禁止文本把它抬成 WAITING——它会永远显示 RUNNING。
 
 ### 5.2 Adapter 架构
 
@@ -410,11 +378,18 @@ UI MVP 不一定显示 confidence，但必须保留该字段便于 debug。Detec
 
 ### 5.5 Existing Session Discovery 与 Adoption
 
-agora 不应只能管理自己创建的 session。启动后扫描运行时中现存 session；未注册的显示为 Unknown Agent，允许 **Adopt**：配置 Display Name / Project / Agent Type。
+agora 同时观察自己创建与用户自行启动的会话。启动后扫描运行时，未注册会话可由用户 Adopt；其它工作面中的 agent 经 hook 登记。
 
-有 hook 的 agent 在**任何地方**起的会话（Terminal.app、IDE 终端、别的 tmux）都会经 session.started 事件出现在列表里。会话来源只有四种（`origin`，§4.2）：`agora`——agora 创建的；`adopted`——在可采纳的运行时里、由用户采纳的，有终端与全部 respond；`external`——不在任何运行时里、只有 hook 看得见的，没有终端，状态、两行、通知照常，经挂起 hook 的 allow / deny 也照常（挂起不依赖终端，ADR-002 D3）。**文本（下一条指令）不再是无条件的“没有”**（2026-10-07，agora-t5kf；ADR-002 D11）：宿主自己会执行文本的（pi 的扩展：`pi.sendUserMessage`）在载荷里自报 `input_channel`，行上 `text_via = host`，手机上/主区照常给输入框（daemon 写 `<AGORA_HOME>/input` 队列、宿主取件注入、`.done` 是 ack）；自报不出通道的（Claude / Codex / Grok、旧扩展）才是 `text_via = none`，只读到那个宿主自己的终端。这是手动起的 agent 被管起来的唯一途径。
+| 来源 | 含义与能力 |
+|---|---|
+| agora | agora 创建的运行时会话 |
+| adopted | 用户采纳的运行时会话，有终端与相应操作能力 |
+| external | 只有 hook 观测、没有 agora 终端；状态、预览、通知与 hook 可承载的审批仍可用 |
+| headless | 无句柄的一次性工作分档；不发通知、所有状态均折叠、到期删 metadata |
 
-`headless`——**external 这一档里的分档，不是第四种句柄形态**（裁决 agora-5gg.7 选 B；2026-09-20 agora-5gg.20）：宿主自己起的一次性会话——`claude -p` 的工人、宿主内部的子代理（安全审查、标题生成）。它们确实在跑、偶尔还会挂权限，但不是一条等人回看的会话，一次 handoff 就能在 NEEDS ATTENTION 里堆七行把人的会话冲掉（`docs/analysis/session-status-audit-2026-09-18.md` 的 C1 / C2）。判据**只用载荷结构**：登记它那一条投递件的 `SessionStart` 缺交互模式才带的键（`model` / `scratchpad_dir` / `permission_mode` / `effort` 四个都不在）才算无头——不看环境变量、不看进程树、不猜 prompt 文本（§2.3 规则 10）；录不出结构差异的宿主不猜，照常按 `external` 登记。与 external 的差别只有三处：不发通知、侧栏一律进折叠区（不看状态，因为「等你回看」在它身上不成立）、满 `sessions.external_finished_ttl` **不论状态**即删（它常常连 SessionEnd 都没有，拿状态当门槛就永远清不掉）。无句柄的语义（探活、supersede、`ended_at`、归档重建）两档共用，代码里一律问 `Origin::is_handleless()`；口径与守卫见 `docs/spec/api.md`「external 与 headless」与 `docs/spec/status.md` §5。
+来源不决定文本能力。按 `text_via` 区分运行时输入、宿主自报输入通道与无输入能力；宿主通道的 ack 只证明收件，不代表执行完成（ADR-002 D11）。不能因没有终端而隐藏已存在的宿主回复能力。
+
+headless 只根据宿主载荷中的结构化证据识别，不猜 prompt、环境变量或进程树；不能证明差异的宿主仍按 external 登记。两者共用无句柄的探活、换对话、恢复与清理语义。字段、宿主判据和守卫见 `docs/spec/api.md`「external 与 headless」、`docs/spec/status.md`；宿主实现留在 Adapter。
 
 ### 5.6 Hook 事件的最小集合
 
@@ -440,7 +415,7 @@ MVP 依赖运行时 scrollback，不自行构建 terminal transcript database。
 
 ### 6.1 主界面
 
-侧栏是 agent 列表，**两种视图可切换**（A47）：**「需要我」**（默认，§6.3 的 attention 排序）与**「按项目」**（节点 → 仓库 → worktree → 会话的树，行的位置只随创建 / 删除变、不随状态变，A48）。每一行都明示自己的身份（A49）：状态符号 + 任务 + agent 品牌 + 节点（**本机也标**）+ 仓库与分支 + 一行活动——「按项目」视图里仓库与分支由组头给出，不在行上重复。主区是当前会话的终端，header 显示本机与每个 peer 的状态。线框、切换入口与键位见 `docs/spec/ux.md`。
+侧栏是 agent 列表，**两种视图可切换**（A47）：**「需要我」**（默认，§6.3 的 attention 排序）与**「按项目」**（节点 → 仓库 → worktree → 会话的树，行的位置只随创建 / 删除变、不随状态变，A48）。每一行都明示自己的身份（A49）：状态符号 + 任务 + agent 品牌 + 节点（**本机也标**）+ 仓库与分支 + 一行活动——「按项目」视图里仓库与分支由组头给出，不在行上重复。未选中会话时主区呈现待处理概览；选中后呈现任务、状态、回应 / 结果与可用的终端，header 显示本机与每个 peer 的状态。线框、切换入口与键位见 `docs/spec/ux.md`。
 
 ### 6.2 MVP Screens（只需要 4 个）
 
@@ -453,21 +428,16 @@ MVP 依赖运行时 scrollback，不自行构建 terminal transcript database。
 
 ### 6.3 Attention Dashboard
 
-首页不是 Terminal，而是 Agent Attention Dashboard（线框见 `docs/spec/ux.md`）。内部计算 Attention Score：
+首页回答“现在谁需要我”，以待处理事项为主，所有客户端复用相同判据。
 
-```
-FAILED 100   WAITING 90   TURN_DONE 85   FINISHED 80   UNKNOWN 40   IDLE 30   STARTING 20   RUNNING 10
-```
+- **分区与优先级**：需要处理 → 状态待确认 → 暂无需处理 → 已结束折叠区。基础关注顺序为 FAILED > WAITING > TURN_DONE > FINISHED > UNKNOWN > IDLE > STARTING > RUNNING；同分先按任务优先级。WAITING / FAILED 等待越久越靠前，TURN_DONE 新结果在前。数值与排序实现统一在 `web/src/attention.ts`，不从可见文案推导状态。
+- **已读与来源**（A46）：FINISHED 的 external 行、已读的 agora / adopted 行进入折叠区；headless 不论状态均折叠。TURN_DONE 已读后只降到暂无需处理，不进入可清理区；新一轮结果重新进入关注。已读身份见 §4.6。
+- **新鲜度**（agora-82x7）：WAITING / FAILED 不因年久退出关注；TURN_DONE / FINISHED 超窗后降段，分别进入暂无需处理 / 已结束。降段不改会话状态、不标已读、不杀进程；窗口与时钟契约见 `docs/spec/ux.md`。
+- **内容优先级**：任务（issue 标题 > 首条 prompt 摘要 > display name）优先于进程名。预览显示最近输入与最新回复 / 活动，来自 hook；无 hook 才用 pane preview，不解析 transcript（ADR-002 D8）。
+- **看结果与就地回应**（A50）：主区能阅读结果、回答 WAITING、给出下一条指令。命令审批展示逐字符原文；下一条指令入口放在长回复之前。结果包括只读改动列表与 beads 验收标准，diff 复用只读终端；不新增 git 写操作或 diff 产品（§1.4、§11）。手机无终端逃生口，不可承载的回复明确提示到桌面（§6.9）。
+- **稳定的位置**（A47 / A48 / A51）：「需要我」视图在人查看 / 操作时冻结重排；「按项目」树按节点 → 仓库 → worktree 分组，会话按创建顺序，状态变化不搬行，FINISHED 也留原组。折叠不改变序号，组头显示关注数并可就地创建会话；清理集合与所选视图无关。
 
-原则：**凡是卡在人身上的（FAILED / WAITING / TURN_DONE / FINISHED）都高于不需要人的（RUNNING / STARTING）**——跑着的 agent 什么都不需要，做完的 agent 正在等你；UNKNOWN 排中间（看不清，值得瞟一眼）。FINISHED 再分来源（A46）：`external` 来源的（§5.5，工作面在别的窗口、人在终端里自己结束的）不算"等你"，直接进侧栏末尾默认折叠的 Finished 区；`agora` / `adopted` 来源的在用户**看过**（§4.6 的三条证据）之后才进去；折叠与否不改变 Alt/Option+N 的序号（§6.5）。`headless` 走同一个折叠判据但**不看状态**——停在 TURN_DONE / UNKNOWN 也收起，因为「等你回看」在它身上一条证据都不成立（§5.5，agora-5gg.20）。侧栏一共四段：NEEDS ATTENTION → UNCLEAR（说不清的行，带原因与出口）→ WORKING → FINISHED 折叠区（agora-5gg.11，2026-09-19 已落地；分数表不动），段名要说清这一行的状态而不是给筐起别名（`docs/spec/ux.md`）。**TURN_DONE 看过即降**（决策 agora-5gg.10 选 B 为主，agora-5gg.21）：选中看过一次的那一行降到 WORKING 段（四段名见上一段，agora-5gg.11），新一次 TURN_DONE 靠新的 `status_since` 回到这里——它**不进** Finished 折叠区，因为折叠区是 Header「Finished N」一键清理逐行发 DELETE 的对象，而这一行的进程还活着。同分先按任务优先级（bd 的 P0–P4；无 bd 视为 P2），再按等待时长、状态变化与未读通知微调；等待时长的方向分状态（决策 agora-5gg.10 的可选项目 A，agora-5gg.21）：WAITING / FAILED 升序（等得久的在前），TURN_DONE **倒序**（新完成在前——"等得久的在前"套到"这一轮做完了等你回看"上语义是反的，zuan 的 capmaster 三行 208–255 h 的旧完成会永远压在刚做完的行上面）。用户打开页面最先看到**需要自己处理的 agent**，而不是最近创建的。
-
-每一行的第一列是**任务**而不是进程名：issue id + 标题 > 首条 prompt 摘要 > display name。行下面再带两行，回答"它现在到哪了"：`❯` 是用户最后输入的那一条；`↳` 是 agent 正在做什么或它最后说了什么，两者互为兜底。这两行读自 **agent 的 hook 事件**（`prompt.submitted`、`turn.ended` 的最后一条回复、`activity` 的当前工具，ADR-002 D8），不读 pane，也不解析 transcript（V1 只存路径）；没有 hook 的会话保持一行 pane preview。所有客户端形态用同一条规则渲染同样的两行。
-
-**看结果**（A50）：选中 TURN_DONE / FINISHED 的行，主区回答面板之下是**结果面板**——该 worktree 的改动文件列表（`git status --short`），旁边是任务的验收标准（读自 beads，不复制）供对照，两段各自可折叠、默认展开；"看 diff"在会话所在 worktree 开一个只读终端跑 `git --no-pager diff`——复用现有终端，不做 diff 组件（§11）；diff 视图下回答面板隐藏、结果面板留着与 diff 并排对照。git 写操作是 Git GUI（唯一例外见 §1.4）。
-
-**就地 respond**（A50）：选中行之后，主区 crumb 之下、终端之上是**回答面板**——WAITING 显示问题（hook 的文本，兜底为最后几行 pane）与选项按钮 / 输入框；TURN_DONE 的"下一条指令"输入框**在面板最上面**，不必滚过整段回复才够得着，其下才是最后一条回复。回复与问题文本按自写的 **markdown 子集**排版，默认只渲染前 12 行、超过给一个单向的「展开全文」按钮（**例外**：`reason = permission` 那条 summary 是一行命令，逐字符原样、等宽、不过 markdown——人照着它批准）。提交即 `POST /api/sessions/:id/input`（§7.3）。侧栏行不再展开，只剩行本身。这是桌面与手机共同的主路径——手机上没有终端这一层逃生口，`respond_via = terminal` 的问题在手机上标注「需要到桌面」（§6.9、A52）。**重排时机**：「需要我」视图在人看 / 操作侧栏时不重排，按 A51 的冻结规则落位。
-
-**「按项目」视图**（A47 / A48；2026-09-08 用户反馈"行随状态自己换位置，人跟不上"）：上面的排序原则只属于「需要我」视图；同一批会话的另一种摆法是**不排序、只分组**的树。分组键固定三层，不自适应：节点（本机第一）→ 仓库 → worktree（主 worktree 第一，组头带分支），组内会话行**按创建顺序**，位置只随创建 / 删除变、不随状态变——一行进 WAITING 只换状态符号，要按紧急程度看它就切回「需要我」。不在任何 git 仓库里的会话归该节点下的「其它目录」组。组可折叠且记住，**折叠只是不画不是不数**：序号仍按树的顺序数（与 A46 的 Finished 区同一条规则，§6.5），折叠的组头显示组内需要关注的行数。**FINISHED 行不搬家**——留在原组原位淡显，这个视图里没有 Finished 折叠区；但 header 的一键清理与视图无关，清理对象始终是折叠区的那批行（§4.6「看过」）。worktree 组头可以就地起会话（§6.4）：树本身就是那份"最近用过的仓库与 worktree"清单。线框与规则见 `docs/spec/ux.md`。
+具体排序、树规则、冻结时机、预览降级、面板布局和格式在 `docs/spec/ux.md`；视觉角色在 `docs/spec/design-system.md`。
 
 ### 6.4 创建 Session 与 Quick Launch
 
@@ -512,7 +482,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 
 **能力同源、呈现分级**（不变量 9）：所有客户端经同一套节点 API，没有客户端专用后门（守卫见 A36 的 `tests/arch_boundary.rs`）；界面按设备形态分档。
 
-- **桌面（全功能工作台）**：终端、创建、详情与树视图、快捷键（§6.1–§6.5）；桌面优先优化终端与创建。
+- **桌面（全功能工作台）**：终端、创建、详情与树视图、快捷键（§6.1–§6.5）；桌面按五个动作优化发现待处理事项、阅读结果、回应、切换与创建；终端是保真操作通道。
 - **手机（交互收件箱，V2 首批为 iPhone）**：只做「看谁在等我 + 当场处置」——收件箱、会话卡（状态、任务标签、最近一轮的两个气泡、决策原文、底部 composer）、预设「新建」（一屏按钮、点一下直接起、零打字；能起什么冻结在桌面侧的 `agora preset`——预设只读，手机上不定义、不改）、allow / deny、Kill / Restart（确认）、推送深链。交互语法沿用即时消息的熟悉形态（固定 composer、气泡、乐观发送），但**不做消息流与完整对话历史**（§11 的 Conversation indexing，承接 agora-ghl3）；**没有终端、没有自由表单（新建只有预设按钮）、没有 diff / 验收 / 改动列表、没有命令面板与快捷键**（A52）。手机不是节点：不装 daemon / tmux / hooks、不跑 agent，只配对一个承载节点（通常是常开的 zuan），经 peer 一跳看与操作全部节点（§3.5、§6.6）。
 - **`respond_via = terminal` 的问题**（Grok 权限、AskUserQuestion 类）在手机上显示「需要到桌面」，不提供"打开终端"、不注入键击（§1.2）。
 - **无句柄行有没有 composer 看 `text_via`**（§5.5、ADR-002 D11：`runtime` | `host` | `none`）：`host`（宿主自报输入通道，目前是 pi 的扩展）与有终端的一样能给下一条指令——只是不经 PTY，走节点上的 `input/` 队列由宿主自己执行；`none` 才是 `mobile-terminal-only`「到桌面」（agora-t5kf.3）。
@@ -521,7 +491,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 
 ### 6.10 视觉方向
 
-关键词：**fast、dense、keyboard-first、low visual noise、dark-mode-first**；不演化为传统 enterprise dashboard。参考与组件库见 `docs/spec/ux.md`。
+视觉层级服务于“谁需要我、下一步做什么”：任务 → 状态 → 动作 → 环境身份。桌面紧凑、键盘可达，手机可读、触控可达；共享语义 token 与反馈，按设备调整密度。低噪音与暗色优先不能牺牲对比度、焦点和不确定性的可见性，不演化为传统 enterprise dashboard。设计契约见 `docs/spec/design-system.md`，布局与键位见 `docs/spec/ux.md`（agora-d0r / agora-p7p0）。
 
 ---
 
@@ -539,7 +509,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 
 - **每个节点同一套 API，两种调用方**：浏览器（已配对设备的 session cookie，loopback 也不例外）与 peer 节点（`Authorization: Bearer <机器 token>`，只在 TLS 监听器上被接受，§8）。没有 peer 专用端点。
 - **会话 id 一律 `<node>:<id>`**；本机会话与并入的 peer 会话同列，每条带 `node`；对 peer 会话的写操作与终端流由本节点经一跳转发（§3.5）。
-- **respond 有两种语义**：结构化决定（权限——经挂起的 hook 返回，有 hook 且 hook 能承载决定的 agent 走这条；选择题 V1 只能在终端答，ADR-002 D5）与原始文本（经 PTY——自由问答、下一条指令、无 hook 的 agent）。
+- **respond 有两种语义**：结构化决定（权限——经挂起的 hook 返回，有 hook 且 hook 能承载决定的 agent 走这条；选择题 V1 只能在终端答，ADR-002 D5）与原始文本（自由问答、下一条指令、无 hook 的 agent；按 `text_via` 经运行时 PTY 或宿主输入通道，`none` 则不提供文本回复能力，ADR-002 D11）。
 - **DELETE metadata 与 kill process 是两个端点、两个语义**；不能因为删除 metadata 而误杀运行时会话。
 - **API 版本**：`GET /api/system` 返回 `api_version`；调用方版本不一致时必须识别并降级或提示，不得静默错读。
 - **hook 投递不经 HTTP**：agent 的 hook 命令把事件写进投递箱文件、经 unix socket（仅属主可访问 + 对端 uid 校验）唤醒 daemon；没有 hook 端点，也就没有要守的凭据（ADR-002 D3）。
@@ -649,7 +619,7 @@ RBAC                         Teams                        Cloud service
 
 **Artifact Viewer（文件路径变体）**：渲染 session 自己指名的那**一个**文件 / 页面。界线：≠ File Explorer——不列目录、不树形导航、不编辑、不提供自由路径输入；URL 抓取路径是 Non-Goal（§1.4）。
 
-**Archive**：从默认 Dashboard 隐藏、保留运行时会话（§6.3 的表）；V1 没有它，FINISHED 行靠 Delete metadata 与 cleanup 收。
+**Archive**：从默认 Dashboard 隐藏、保留运行时会话（§4.6 的表）；V1 没有它，FINISHED 行靠 Delete metadata 与 cleanup 收。
 
 **Multi-host 的 V1 之外**：**peer 历史**（常开节点持久化其它节点的快照与事件历史）；**反向拨号**（工作节点主动拨出到常开节点、本机零监听——只在 peer 从外网不可达时才需要）；**多跳转发**。
 

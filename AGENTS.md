@@ -1,100 +1,41 @@
 # agora — Agent Instructions
 
-本文件是 Claude Code 与 Codex **共用的唯一指令文件**；`CLAUDE.md` 是指向它的符号链接（Claude Code 只读 CLAUDE.md，Codex 只读 AGENTS.md）。仅 Claude 需要的规则放 `.claude/rules/`，不要改动 CLAUDE.md 本体。
+本文件是 coding agent 的唯一项目执行入口；`CLAUDE.md` 只保留指向它的符号链接，Claude 专属宿主规则放 `.claude/rules/`。面向用户一律中文，代码、命令、路径原样。
 
-## agora 项目约定
+## 1. 领任务
 
-- 开工先读 `MISSION.md`（北极星、层次定位、施工规则）；设计决策先对照 `docs/adr/`（ADR-001 运行时、ADR-002 状态来源、ADR-003 认证、ADR-004 拓扑），devcenter 报告（`docs/analysis/devcenter/`）只是 ADR 的引文与历史分析。
-- 规划分层的地图见 MISSION 文首"文档分层"（唯一出处）。操作规则：`ROADMAP.md` 由 `scripts/roadmap-view.sh` 生成，不手改、不放 checkbox；`docs/spec/` 随代码改，与代码冲突时以代码为准并回写 spec；文档改完跑 `scripts/doc-lint.sh`（§引用、epic 的 A 编号、相对链接与仓内路径；CI 也跑）；beads 里阶段 = epic、阶段门 = blocks、验收 = `--acceptance`、演示剧本 = epic 的 `--design`（ROADMAP 视图同步展示）。
-- 任务纪律（本文件是唯一出处；"一个 issue 做完"的定义见 MISSION §1.5）：issue 的 `acceptance_criteria` 必须非空且能按 MISSION §1.5 的三档验证，claim 前先补；`bd update <id> --claim` 后才动手；commit subject 末尾带 `(agora-xxxx)`；干活中发现的问题 `bd create ... --deps discovered-from:<id>` 另立；任务超出一个会话能承载的范围就 `bd create --parent=<id>` 拆子任务并在 notes 写交接，提交保持小切片、提交信息写测试数与本次打开的守卫；关闭：按 MISSION §1.5 三档——机械（CI 绿——停跑期间以本地门禁为准，见 MISSION §1.5；+ 验收点名的守卫测试通过）与代检（agent 按演示剧本用 agent-browser / tmux capture-pane / curl / ssh 操作并断言到与人眼相同的事实）都由实施 agent `bd close --reason` 关闭并写明证据（测试名、commit；代检加命令、观察到的输出与工具版本），代检前先 `bd memories agent-browser` 看已知假阳性坑，代检脚本自身的失败先怀疑工具再怀疑 agora；只有 §1.5 点名的人眼条目（剧本里标 👁）与 epic 由人关闭，验收里写「人眼」必须点名条目并说明为什么代检不等效；commit message 用叙事句说"为什么"而不只是"改了什么"；非显然的决定（绕坑、反直觉写法）在注释里带实测日期与反例，防后来者好心改回去。
-- 并行施工（多个 agent 同时开工时；第一波编排见各任务 notes 的「文件归属 / 接缝」）：一任务一 worktree（`git worktree add ../agora-wt/<id> -b <id> main`，与 `worktree_root` 约定一致；beads 库经 git common dir 自动共享，worktree 里直接用 `bd`），提交前 `git rebase main`，切片小到一次 rebase 解决得了；用 Claude Code 的 Workflow / Agent worktree 隔离起 agent 之前，编排者先把本地仓库推干净——`git status --porcelain` 为空、`git log origin/main..main` 为空，push 要先向用户要授权——因为隔离 worktree 基于 origin/main 而不是本地 HEAD（2026-09-06 第一批实测：三个 agent 都差了 3 个未 push 的提交开工），否则 agent 从历史代码起步、集成时才发现；agent 自己开工第一步仍要 `git merge --ff-only main` 并核对 HEAD == main，新 worktree 里先 `npm --prefix web run build` 再 cargo（rust-embed 编译期读 web/dist，gitignore 只留 .gitkeep）；web/node_modules 两个平台都从主仓拷而不是 `npm --prefix web ci`（ci 走网络、几十秒起，拷贝是秒内的事），target 要不要克隆按平台分。**Linux 不克隆 target**，让第一次门禁自己编：GNU cp 没有 `-c`，ext4 也没有 reflink，`cp -a --reflink=auto` 会退化成全量复制、把一份 9 G 多的产物再写一遍，而开发机（112 核）从零 `cargo test --no-run` 只要 21.8 秒（2026-09-18 实测，cargo 1.98.1，编出全部测试二进制 8866 文件 / 9.4 G；别拿 `cargo check` 的 12.5 秒当依据，门禁跑的是 cargo test，账要按测试二进制算），克隆省不出时间还多一份要清的产物。Linux 不克隆的代价不在时间在磁盘：每个 worktree 从零编出 9.4 G，`max_parallel` 开 5 就是 47 G，开并行度前先看 `df`。Linux 的 prepare 就两行、可直接抄进 handoff：`cp -rf {{repo}}/web/node_modules web/node_modules` 与 `npm --prefix web run build`，不写 cargo build（2026-09-18 实测 node_modules 2978 文件 / 127 M：`cp -rf` 0.11 秒、`cp -al` 0.02 秒；选 `cp -rf` 而不是硬链接，是因为硬链接要求 worktree 与主仓在同一文件系统，`worktree_root` 落到别的盘会整批报 Invalid cross-device link，而普通拷贝只多 0.1 秒；target 无论如何别硬链接，cargo 会原地改写产物、把主仓缓存一起污染）。起 lane agent 用 pi 时给 pi 加 `-ne`（或显式 `-e` 只加载需要的扩展）：agora 的 pi 扩展按**固定 URL** 注册，`AGORA_HOME` 隔离不住它——2026-10-08 首波实测：9 个 lane agent 的 pi 进程在真 daemon 上各登记了一行 external/headless 会话（还会在收件箱里闪一下、可能触发推送），事后得逐条 `DELETE /api/sessions/:id` 清。
-**macOS 克隆 target**：编译缓存用 `cp -Rc` 从主仓克隆 target 与 node_modules——`cp -Rc` 走 clonefile 不复制数据块，慢的是 per-file 系统调用，耗时只跟文件数走而与体积无关：清过的 target 1.6 万文件克隆 2.3 秒、node_modules 另 0.4 秒；仍然克隆而不是从零编译，是因为 macOS 开发机从零 `cargo test --no-run` 要 25 秒、是克隆的十倍；想让克隆过去的 target 自带测试二进制，主仓 sweep 之后先跑一次 `cargo test --no-run` 再建 worktree。但 macOS 的 worktree 里别再跑 `cargo sweep -t`：`cp -Rc` 会连 mtime 一起克隆（普通 `cp` 才刷新时间戳），刚拷过去、正要复用的缓存在 sweep 眼里就是陈旧产物，会被精准删掉、把省下的编译时间原样赔回去（2026-09-09 实测：克隆后 build 命中缓存，sweep 仍删光依赖产物，再 build 全部重编），非跑不可就先补 `find target -exec touch {} +`。两个平台的主仓都要定期 `cargo sweep -t 1`（没装先 `cargo install cargo-sweep`），macOS 上更是克隆前必做：target 六天不清会攒到 48.5 万文件（97% 是 cargo 永不回收的历史 hash 副本，同一个 crate 能堆 141 份 agora、87 份 libagora），克隆要几分钟；清完只剩 1.6 万文件（2026-09-09 macOS 实测：485481 文件 / 20G 对 16192 文件 / 3.1G；Linux 开发机 2026-09-14 也攒到过 11 G）；手工起 daemon 用独立 `AGORA_HOME`、`server.listen` 端口与 `runtime.tmux.socket`（并把 `adopt_sockets` 设成 `[]`）——socket 沿用默认的 `agora` 会和开发机上真的 daemon 共用一个 tmux server、把它的会话列成 unregistered（2026-09-06 第七批 agora-oir 踩过，幸而只读），别碰开发机上真的 agora；集成测试自身同样要隔离，不只是手工起的 daemon——fixture 的 tmux socket 名与 AGORA_HOME 从 `tests/common/isolate.rs` 取（只带 pid 会在 pid 回绕后与另一个测试进程撞名，撞上不报错、只是安静地连上别人的 tmux server），端口一律 `:0`，Drop 走 `isolate::kill_tmux` 把 socket 文件一起删（2026-09-10 macOS 实测 `/tmp/tmux-501/`——501 是 macOS 的 uid，Linux 上是 `/tmp/tmux-$(id -u)/`——里躺着 1361 个测试留下的死 socket），等外部进程的上限用 `isolate::PROC` 而不是 5 s（满载时 fork+exec 一次就可能超过 5 s，2026-09-06 与 2026-09-09 两批并行假红都是这个形状）；`tests/test_isolation.rs` 是这几条的守卫，自己拼名字 / Drop 里裸 kill-server / 绑固定端口 / `adopt_sockets` 采纳 default 各红一条；热点文件规矩：`docs/spec/api.md` 只在自己端点的小节里追加，侧栏行 / Header / New Agent 对话框谁先碰谁先把那块抽成独立组件（抽取单独一个 commit、不改行为、立刻 push），后来者只改新组件；要改别人归属的文件先看对方分支有没有未合入的改动。集成者每合入一批就重跑 `scripts/roadmap-view.sh` 重生成 ROADMAP.md 并随本批一起提交——beads 里关了、视图没更新，看 ROADMAP 的人会以为任务还开着（2026-09-06 第一批踩过）。
-- 同步授权：本仓库**明确授权** agent 在会话结束时执行 `bd dolt push`（仅同步 beads 数据，覆盖下方 Beads 块的 Conservative 默认）；`git commit` / `git push` 仍需用户当次明确授权。
-- ADR 约定见 `docs/adr/README.md`，模板 `docs/adr/TEMPLATE.md`；被否决的 ADR 保留全文。
-- 依赖方向：`bd dep add <被阻塞> <阻塞者>`；`bd create --deps blocks:X` 表示"新 issue 阻塞 X"，要表达"被 X 阻塞"请建完后用 `bd dep add`。
-- 记忆：`bd remember` 只存本文件与 MISSION 没有的、干活中学到的项目事实（排障经验、环境怪癖）；Claude Code 的用户级 auto-memory 只放用户偏好，不放项目事实。
-- UI/UX：改前先读 `docs/spec/design-system.md`（第一性原理、跨设备 token 与组件契约）和 `docs/spec/ux.md`；`web/src/index.css` 的 `:root` 是 token 值的唯一来源，壳内不得另造配色，终端也消费同源 token。
-- 语言：面向用户的输出一律中文；代码、命令、路径原样。
+先看 `git status --short`，不覆盖别人的改动。首次进入或上下文丢失时先读 MISSION 文首、§1、§2，再定义验收。用户已指定 issue 就 `bd show <id> --json`；否则先查 beads，复用匹配任务，没有才 `bd create`。所有任务用 beads，不另建 TodoWrite / TaskCreate / Markdown TODO 账本。补齐可验证的 acceptance 后 `bd update <id> --claim`，再改文件；claim 冲突时核实归属，不抢占。工具入口见文末。
 
-## Non-Interactive Shell Commands
+## 2. 按需读取
 
-**ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts.
+按本次改动只读相关章节与代码，跨领域取相关入口的并集；已读且未变的不重复读。产品 / 架构改变说明目标、边界与事实依据；局部修复引用现有契约即可。
 
-Shell commands like `cp`, `mv`, and `rm` may be aliased to include `-i` (interactive) mode on some systems, causing the agent to hang indefinitely waiting for y/n input.
+| 本次改动 | 按需入口 |
+|---|---|
+| 运行时 / 生命周期 | `docs/adr/ADR-001-runtime.md`、`docs/spec/architecture.md` |
+| 状态 / hook / 恢复 / 输入能力 | `docs/adr/ADR-002-state-source-layering.md`、`docs/spec/status.md`、`docs/spec/api.md` |
+| 认证 / 危险操作 / 推送 | `docs/adr/ADR-003-node-authentication.md`、`docs/spec/api.md` |
+| peer / stale / 时钟 | `docs/adr/ADR-004-node-topology.md`、`docs/spec/architecture.md` |
+| UI / token / 交互 | `docs/spec/design-system.md`、`docs/spec/ux.md` |
+| 配置 / 部署 | `docs/spec/config.md`、`docs/spec/instance.md` |
 
-**Use these forms instead:**
-```bash
-# Force overwrite without prompting
-cp -f source dest           # NOT: cp source dest
-mv -f source dest           # NOT: mv source dest
-rm -f file                  # NOT: rm file
+## 3. 实施与验证
 
-# For recursive operations
-rm -rf directory            # NOT: rm -r directory
-cp -rf source dest          # NOT: cp -r source dest
-```
+实施限定在本任务范围。范围外发现用 `bd create ... --deps discovered-from:<id>`；跨会话工作用 `--parent=<id>` 拆分，notes 写文件归属、接缝与交接。依赖方向为 `bd dep add <被阻塞> <阻塞者>`，`--deps blocks:X` 是新任务阻塞 X。
 
-**Other commands that may prompt:**
-- `scp` - use `-o BatchMode=yes` for non-interactive
-- `ssh` - use `-o BatchMode=yes` to fail instead of prompting
-- `apt-get` - use `-y` flag
-- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
+DoD 与证据要求按 MISSION §1.5，守卫反证按 §2.3；基础门禁命令见 README，UI 的额外代检范围见设计系统。纯文档按 README 的文档检查行执行。不把跳过或未运行的检查报成通过。
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
-## Beads Issue Tracker
+启动测试实例 / 并行施工前读 README「开发验证」，隔离真实 daemon 与会话。文件命令用 `cp -f` / `mv -f` / `rm -f`（递归加 `-r`，macOS clonefile 用 `cp -Rfc`）；ssh / scp 加 `-o BatchMode=yes`，apt-get 加 `-y`，brew 用 `HOMEBREW_NO_AUTO_UPDATE=1`。非交互参数不构成修改授权。
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+## 4. 回写唯一来源
 
-### Quick Reference
+按 MISSION 文首的分层与冲突规则，只回写本次变化所属的文档，不到处复制规则。回写完成再跑文档检查；若又改了实现，重验受影响检查，再进入交付。非显然实现决定在注释留日期与反例；文档未覆盖的项目经验用 `bd remember`，注明日期与条件，旧记忆冲突先核实。用户级 auto-memory 只放用户偏好。
 
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
+## 5. 交付与记录
 
-### Rules
+`git commit` / `git push` 需用户当次明确授权，已有授权覆盖的动作不重复询问。小切片提交，subject 用叙事句说明为什么、末尾带 `(agora-xxxx)`，正文记实际验证与守卫反证（不适用时说明）。未合入 / 未验完保持 in_progress；关闭权限按 MISSION §1.5。
 
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
-
-## Agent Context Profiles
-
-The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
-
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
-
-## Session Completion
-
-This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
-
-1. **File issues for remaining work** - Create beads for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
-   ```bash
-   # Conservative/minimal/default: report status and proposed commands; wait for approval.
-   git status
-
-   # Team-maintainer opt-in only, unless current instructions forbid it:
-   git pull --rebase
-   bd dolt push
-   git push
-   git status
-   ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
-
-**Critical rules:**
-- Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
-- If a required sync or push is blocked, stop and report the exact command and error.
-<!-- END BEADS INTEGRATION -->
+beads 保存阶段（epic）、阶段门（blocks）、验收（acceptance）、演示剧本（design）及交付证据。集成一批后运行 `scripts/roadmap-view.sh`，生成变更随本批提交，不手改 ROADMAP。会话结束已授权 `bd dolt push`（仅 beads 数据，优先于工具默认策略）。交付说明改动、验证、issue 状态以及提交 / 推送 / 部署的实际结果。
 
 <!-- BEGIN BEADS CODEX SETUP: generated by bd setup codex -->
 ## Beads Issue Tracker
