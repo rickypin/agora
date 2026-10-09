@@ -64,13 +64,17 @@ export function TerminalView({ sessionId, connect, focusRef, readOnly = false, r
     if (!el) return;
     setLink("connecting");
     setExit(null);
+    const tokens = getComputedStyle(document.documentElement);
     const term = new Terminal({
       scrollback: SCROLLBACK,
       cursorBlink: !readOnly,
       disableStdin: readOnly,
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-      fontSize: 13,
-      theme: { background: "#0e1116", foreground: "#d6dbe3" },
+      fontFamily: tokens.getPropertyValue("--font-mono").trim(),
+      fontSize: Number.parseFloat(tokens.getPropertyValue("--terminal-font-size")),
+      theme: {
+        background: tokens.getPropertyValue("--terminal-bg").trim(),
+        foreground: tokens.getPropertyValue("--terminal-fg").trim(),
+      },
     });
     const fit = new FitAddon();
     term.loadAddon(fit);

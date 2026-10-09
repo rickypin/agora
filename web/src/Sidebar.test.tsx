@@ -97,12 +97,12 @@ it("collapses the Finished section by default with a count, and NEEDS ATTENTION 
   // 两条 external FINISHED 收起来了：NEEDS ATTENTION 里只有 waiting 与 agora 来源的 FINISHED；折叠区标题带计数。
   expect(listOrder()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-working", "row-n:run", "section-finished"]);
   const head = screen.getByTestId("section-finished");
-  expect(head.textContent).toBe("▸ FINISHED 2");
+  expect(head.textContent).toBe("▸ 已结束 2");
   expect(head.getAttribute("aria-expanded")).toBe("false");
   expect(screen.queryByTestId("row-n:ext1")).toBeNull();
   expect(screen.queryByTestId("row-n:ext2")).toBeNull();
   // Header 的计数行不变：Finished 仍按状态数（变按钮是 agora-j4w.2）。
-  expect(screen.getByTestId("counts").textContent).toBe("Running 1 · Needs Input 1 · Finished 3");
+  expect(screen.getByTestId("counts").textContent).toBe("运行中 1 · 等你回应 1 · 已结束 3");
 });
 
 // agora-2x3z：计数与侧栏可见性同源——在跑的 origin=headless 行画在 FINISHED 折叠区里，计数也只进
@@ -110,9 +110,9 @@ it("collapses the Finished section by default with a count, and NEEDS ATTENTION 
 // 状态清单，两者不追求相等（agora-l4r3），唯一的例外就是无头行。
 it("counts a running headless row as Finished, where the row is actually drawn (agora-2x3z)", () => {
   mount([row("n:run", "running"), row("n:hl", "running", { origin: "headless" })]);
-  expect(screen.getByTestId("counts").textContent).toBe("Running 1 · Finished 1");
+  expect(screen.getByTestId("counts").textContent).toBe("运行中 1 · 已结束 1");
   // 计数说的 Finished 那一段里确实有它：折叠区标题在，展开后这一行画出来。
-  expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
+  expect(screen.getByTestId("section-finished").textContent).toBe("▸ 已结束 1");
   fireEvent.click(screen.getByTestId("section-finished"));
   expect(screen.getByTestId("row-n:hl")).toBeTruthy();
 });
@@ -137,7 +137,7 @@ it("anchors row durations on the node clock, not the page clock (agora-au5)", ()
       serverClock={{ now: nodeNow, at: 1_900_000_000 }}
     />,
   );
-  expect(screen.getByTestId("state-n:wait").textContent).toBe("waiting 3m");
+  expect(screen.getByTestId("state-n:wait").textContent).toBe("等你 3m");
 });
 
 it("anchors with the live wall clock, not the 30 s tick state (agora-o975.5)", () => {
@@ -157,18 +157,18 @@ it("anchors with the live wall clock, not the 30 s tick state (agora-o975.5)", (
     serverClock: { now: nodeNow, at: T / 1000 },
   };
   const ui = render(<Sidebar {...props} />);
-  expect(screen.getByTestId("state-n:wait").textContent).toBe("waiting 1m");
+  expect(screen.getByTestId("state-n:wait").textContent).toBe("等你 1m");
   // 20 s 过去：30 s 的心跳还没到，但「现在」必须跟着墙钟走（旧写法用 30 s 粒度的状态 → 还是 1m）
   vi.mocked(Date.now).mockReturnValue(T + 20_000);
   ui.rerender(<Sidebar {...props} />);
-  expect(screen.getByTestId("state-n:wait").textContent).toBe("waiting 2m");
+  expect(screen.getByTestId("state-n:wait").textContent).toBe("等你 2m");
 });
 
 it("expands the Finished section on click; rows keep attention order, stay selectable and keep their ordinals", () => {
   const { onOpen, visible } = mount(ROWS);
   fireEvent.click(screen.getByTestId("section-finished"));
   const head = screen.getByTestId("section-finished");
-  expect(head.textContent).toBe("▾ FINISHED 2");
+  expect(head.textContent).toBe("▾ 已结束 2");
   expect(head.getAttribute("aria-expanded")).toBe("true");
   // 展开后的顺序 = sortByAttention 的顺序（status_since 早的在前），排在 WORKING 段之后。
   expect(listOrder()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-working", "row-n:run", "section-finished", "row-n:ext1", "row-n:ext2"]);
@@ -182,13 +182,13 @@ it("expands the Finished section on click; rows keep attention order, stay selec
   // 再点标题收回去，行不在 DOM 里，标题还在。
   fireEvent.click(screen.getByTestId("section-finished"));
   expect(screen.queryByTestId("row-n:ext1")).toBeNull();
-  expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 2");
+  expect(screen.getByTestId("section-finished").textContent).toBe("▸ 已结束 2");
 });
 
 it("moves an agora FINISHED row into the Finished section once it is in the seen set; running-only lists get no Finished head", () => {
   mount(ROWS, new Set(["n:own@20"]));
   expect(listOrder()).toEqual(["section-attention", "row-n:wait", "section-working", "row-n:run", "section-finished"]);
-  expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 3");
+  expect(screen.getByTestId("section-finished").textContent).toBe("▸ 已结束 3");
   cleanup();
   // 没有 FINISHED 行就没有折叠区标题；只有一段时也没有 WORKING 标题（原行为不变，段名换了规则没换）。
   mount([row("n:a", "running"), row("n:b", "idle")]);
@@ -197,7 +197,7 @@ it("moves an agora FINISHED row into the Finished section once it is in the seen
   // 只有 external FINISHED：没有 NEEDS ATTENTION 标题、没有 WORKING 标题、只有折叠区。
   mount([row("n:e", "finished", { origin: "external" })]);
   expect(listOrder()).toEqual(["section-finished"]);
-  expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
+  expect(screen.getByTestId("section-finished").textContent).toBe("▸ 已结束 1");
 });
 
 // agora-5gg.21（决策 agora-5gg.10 选 B）：A46 的「看过」扩到 TURN_DONE。记号由 Workspace 在**离开**那一行时
@@ -271,8 +271,8 @@ it("draws the four section headings and no heading for an empty section (agora-5
     "row-n:run",
     "section-finished",
   ]);
-  expect(screen.getByTestId("section-unclear").textContent).toBe("UNCLEAR");
-  expect(screen.getByTestId("section-working").textContent).toBe("WORKING");
+  expect(screen.getByTestId("section-unclear").textContent).toBe("状态待确认");
+  expect(screen.getByTestId("section-working").textContent).toBe("暂无需处理");
   // 旧段名不再出现：RUNNING 这个标题既骗人（段里有 ? 与 …）又和计数行的 `Running`（含 starting）对不上。
   expect(screen.queryByTestId("section-running")).toBeNull();
   expect(document.querySelector("aside.sidebar")?.textContent).not.toMatch(/\bRUNNING\b/);
@@ -318,9 +318,9 @@ it("the Finished count clears the collapsed section after confirmation: one DELE
   const visible = partitionByAttention(sortByAttention(rows), seen);
   render(<Sidebar rows={visible} seen={seen} all={rows} total={rows.length} active={null} onOpen={() => {}} filter="" onFilter={() => {}} onDeleteMetadata={onDeleteMetadata} />);
   // 计数行文字不变，Finished 那一段是按钮。
-  expect(screen.getByTestId("counts").textContent).toBe("Running 1 · Needs Input 1 · Finished 4");
+  expect(screen.getByTestId("counts").textContent).toBe("运行中 1 · 等你回应 1 · 已结束 4");
   const btn = screen.getByTestId("clear-finished");
-  expect(btn.textContent).toBe("Finished 4");
+  expect(btn.textContent).toBe("已结束 4");
   // 取消：不发。
   fireEvent.click(btn);
   const dialog = screen.getByRole("dialog");
@@ -343,12 +343,12 @@ it("dragging the resizer sets --sidebar-w and stores it; double-click restores t
   mount(ROWS);
   const resizer = screen.getByTestId("sidebar-resizer");
   expect(document.documentElement.style.getPropertyValue("--sidebar-w")).toBe(`${DEFAULT}px`);
-  fireEvent.pointerDown(resizer, { clientX: 260, pointerId: 1 });
-  fireEvent.pointerMove(resizer, { clientX: 460, pointerId: 1 });
-  expect(document.documentElement.style.getPropertyValue("--sidebar-w")).toBe("460px");
+  fireEvent.pointerDown(resizer, { clientX: DEFAULT, pointerId: 1 });
+  fireEvent.pointerMove(resizer, { clientX: DEFAULT + 100, pointerId: 1 });
+  expect(document.documentElement.style.getPropertyValue("--sidebar-w")).toBe(`${DEFAULT + 100}px`);
   expect(document.body.style.userSelect).toBe("none");
   fireEvent.pointerUp(resizer, { pointerId: 1 });
-  expect(localStorage.getItem(SIDEBAR_WIDTH_KEY)).toBe("460");
+  expect(localStorage.getItem(SIDEBAR_WIDTH_KEY)).toBe(String(DEFAULT + 100));
   expect(document.body.style.userSelect).toBe("");
   fireEvent.doubleClick(resizer);
   expect(document.documentElement.style.getPropertyValue("--sidebar-w")).toBe(`${DEFAULT}px`);
@@ -369,7 +369,7 @@ it("no resizer below the desktop breakpoint (agora-uvd.5)", () => {
 it("no clear button without deletable rows or without the DELETE callback", () => {
   // 只有没看过的 agora FINISHED：折叠区是空的，Finished 计数只是文字。
   mount([row("n:own", "finished", { origin: "agora" })]);
-  expect(screen.getByTestId("counts").textContent).toBe("Finished 1");
+  expect(screen.getByTestId("counts").textContent).toBe("已结束 1");
   expect(screen.queryByTestId("clear-finished")).toBeNull();
   cleanup();
   // 没给 onDeleteMetadata（mount 不传）：external FINISHED 也不出按钮。
@@ -449,7 +449,7 @@ it("the Finished clear count is the same in both modes: clearing is defined by t
   expect(titleA).toContain("3 行");
   rerender(<Sidebar rows={treeOrder(ROWS, undefined, "n")} mode="tree" seen={seen} all={ROWS} total={ROWS.length} active={null} onOpen={() => {}} filter="" onFilter={() => {}} onDeleteMetadata={onDeleteMetadata} />);
   expect(screen.getByTestId("clear-finished").getAttribute("title")).toBe(titleA);
-  expect(screen.getByTestId("clear-finished").textContent).toBe("Finished 3");
+  expect(screen.getByTestId("clear-finished").textContent).toBe("已结束 3");
 });
 
 it("the sidebar DOM never contains respond-, acceptance- or changes- testids in either mode (A50)", () => {

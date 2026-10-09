@@ -5,6 +5,7 @@
  * 硬包成令牌只是给数字改名，等真按档位改的时候再收）。
  */
 import { describe, expect, it } from "vitest";
+import { DEFAULT } from "./sidebarWidth";
 import css from "./index.css?raw";
 
 const rootMatch = css.match(/:root\s*\{[^}]*\}/);
@@ -46,5 +47,54 @@ describe("设计令牌（agora-74nf）", () => {
     const runtime = new Set(["--hue", "--sidebar-w"]);
     const missing = [...used].filter((n) => !defined.has(n) && !runtime.has(n));
     expect(missing, `用了没定义的令牌：${missing.join(", ")}`).toEqual([]);
+  });
+});
+
+describe("跨设备设计契约（agora-p7p0）", () => {
+  it("CSS 原文确实加载，壳不能再分叉基础语义色", () => {
+    expect(css.length).toBeGreaterThan(1000);
+    expect(root).toContain("--on-accent:");
+    expect(root).toContain(`--layout-sidebar: ${DEFAULT}px`);
+    expect(rest).not.toMatch(/--(?:bg|panel|panel-2|fg|muted|accent|warn|ok|bad|sel|focus)\s*:/);
+    expect(css).not.toContain("--mobile-accent");
+    expect(rest).not.toMatch(/rgba?\(\s*\d/);
+  });
+
+  it("可阅读前景在各表面至少 4.5:1；焦点与输入边界至少 3:1", () => {
+    const values = new Map([...root.matchAll(/(--[\w-]+):\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+    const value = (key: string): string => {
+      const v = values.get(key) ?? "";
+      const alias = v.match(/^var\((--[\w-]+)\)$/);
+      return alias ? value(alias[1]) : v;
+    };
+    const luminance = (key: string) => {
+      const hex = value(key);
+      expect(hex, key).toMatch(/^#[\da-f]{6}$/i);
+      const rgb = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+        .map((c) => c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+      return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+    };
+    const contrast = (a: string, b: string) => {
+      const x = luminance(a), y = luminance(b);
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    };
+    for (const bg of ["--bg", "--panel", "--panel-2", "--sel"]) {
+      for (const fg of ["--fg", "--muted", "--accent", "--warn", "--bad", "--ok"]) {
+        expect(contrast(fg, bg), `${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+      }
+      expect(contrast("--focus", bg), `focus on ${bg}`).toBeGreaterThanOrEqual(3);
+    }
+    expect(contrast("--on-accent", "--accent")).toBeGreaterThanOrEqual(4.5);
+    for (const bg of ["--bg", "--panel"]) expect(contrast("--control-border", bg)).toBeGreaterThanOrEqual(3);
+  });
+
+  it("键盘焦点是共享的，终端读同一份颜色和字体", async () => {
+    expect(css).toContain(":focus-visible");
+    expect(css).toContain("outline: 2px solid var(--focus)");
+    const source = (await import("./TerminalView.tsx?raw")).default;
+    for (const token of ["--terminal-bg", "--terminal-fg", "--terminal-font-size", "--font-mono"]) {
+      expect(source).toContain(`getPropertyValue("${token}")`);
+    }
+    expect(source).not.toMatch(/(?:background|foreground):\s*"#/);
   });
 });

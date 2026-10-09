@@ -1,3 +1,4 @@
+import { useDialogFocus } from "./useDialogFocus";
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "./net";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -51,6 +52,7 @@ export function QrSvg({ qr, module = 4 }: { qr: { size: number; rows: string[] }
  * 不一致的编码。
  */
 export function DeviceDialog({ onClose }: { onClose: () => void }) {
+  const dialogRef = useDialogFocus(onClose);
   const [devices, setDevices] = useState<Device[] | null>(null);
   const [link, setLink] = useState<PairLink | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -97,7 +99,7 @@ export function DeviceDialog({ onClose }: { onClose: () => void }) {
     <div className="overlay" role="presentation" onClick={onClose}>
       <div
         className="dialog wide devices"
-        role="dialog"
+        ref={dialogRef} tabIndex={-1} role="dialog"
         aria-modal="true"
         aria-labelledby="devices-title"
         onClick={(e) => e.stopPropagation()}

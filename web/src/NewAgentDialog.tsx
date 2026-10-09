@@ -1,3 +1,4 @@
+import { useDialogFocus } from "./useDialogFocus";
 import { useEffect, useRef, useState } from "react";
 import type {
   AgentInfo,
@@ -98,6 +99,7 @@ export function describeTasksReason(reason: string): string | null {
  * 不是受控 prop：三项都只生效一次，用户改选之后 initial 再也不出现（换节点、换项目都不回头）。
  */
 export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreated }: Props) {
+  const dialogRef = useDialogFocus(onClose);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
@@ -323,7 +325,7 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
     <div className="overlay" role="presentation" onClick={onClose}>
       <div
         className="dialog wide"
-        role="dialog"
+        ref={dialogRef} tabIndex={-1} role="dialog"
         aria-modal="true"
         aria-labelledby="new-agent-title"
         onClick={(e) => e.stopPropagation()}
@@ -331,7 +333,7 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
           if (e.key === "Escape") onClose();
         }}
       >
-        <h2 id="new-agent-title">New Agent</h2>
+        <h2 id="new-agent-title">新建会话</h2>
         <form
           className="form"
           onSubmit={(e) => {
@@ -339,7 +341,7 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
             if (canCreate) void create();
           }}
         >
-          <label htmlFor="na-node">Node</label>
+          <label htmlFor="na-node">节点</label>
           {/* 本机 + 已配置的 peer（MISSION §6.4、A45）：离线 / 版本不兼容的列出来但不可选，选中的 peer 经一跳转发执行。 */}
           <select id="na-node" value={node ?? localName} onChange={(e) => pickNode(e.target.value)} disabled={busy}>
             <option value={localName}>{localName || "本机"}</option>
@@ -350,7 +352,7 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
             ))}
           </select>
 
-          <label htmlFor="na-project">Project</label>
+          <label htmlFor="na-project">项目</label>
           <input
             id="na-project"
             list="na-projects"
@@ -368,7 +370,7 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
             ))}
           </datalist>
 
-          <label htmlFor="na-worktree">Worktree</label>
+          <label htmlFor="na-worktree">工作区</label>
           <WorktreeSelect
             worktrees={worktrees}
             value={worktree}
@@ -394,7 +396,7 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
             <option value={CUSTOM}>{CUSTOM}</option>
           </select>
 
-          <label htmlFor="na-task">Task</label>
+          <label htmlFor="na-task">任务</label>
           <div className="task-field">
             {tasks.length > 0 ? (
               <>
@@ -435,7 +437,7 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
             )}
           </div>
 
-          <label htmlFor="na-name">Name</label>
+          <label htmlFor="na-name">名称</label>
           <input
             id="na-name"
             value={name}
@@ -446,7 +448,7 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
             disabled={busy}
           />
 
-          <label htmlFor="na-command">Command</label>
+          <label htmlFor="na-command">启动命令</label>
           <input
             id="na-command"
             value={command}
@@ -460,7 +462,7 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
 
           {agentAcceptsPrompt && (
             <>
-              <label htmlFor="na-prompt">Prompt</label>
+              <label htmlFor="na-prompt">首条指令</label>
               <textarea
                 id="na-prompt"
                 rows={4}
@@ -477,10 +479,10 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
 
           <div className="dialog-actions span">
             <button type="button" onClick={onClose} disabled={busy}>
-              Cancel
+              取消
             </button>
-            <button type="submit" disabled={!canCreate} data-testid="create">
-              Create
+            <button className="primary" type="submit" disabled={!canCreate} data-testid="create">
+              创建会话
             </button>
           </div>
         </form>

@@ -1,3 +1,4 @@
+import { seenKey } from "./attention";
 import { useEffect, useMemo, useState } from "react";
 import type { SessionApi } from "./api";
 import { needsAttention, type SeenSet } from "./attention";
@@ -315,6 +316,7 @@ export function SidebarTree({
             <ul>
               <SidebarRow
                 row={r}
+                seen={seen?.has(seenKey(r))}
                 active={r.id === active}
                 ordinal={e.ordinal}
                 onOpen={onOpen}

@@ -29,7 +29,7 @@ describe("Header 节点状态", () => {
     expect(c.title).toBe(`在线，上次见到 ${SEEN}`);
     // 标题行原样还在。
     expect(screen.getByRole("heading").textContent).toBe("agora");
-    expect(screen.getByText("AGENTS 3")).toBeTruthy();
+    expect(screen.getByText("会话 3")).toBeTruthy();
   });
 
   it("stale: offline peer keeps its last view and says when it was last seen (A29; invariant 8)", () => {
@@ -127,6 +127,6 @@ describe("Header 节点状态", () => {
   it("renders no node row at all when nodes are not given (the pre-7ku.12 shape)", () => {
     render(<Header agents="2/5" />);
     expect(screen.queryByTestId("nodes")).toBeNull();
-    expect(screen.getByText("AGENTS 2/5")).toBeTruthy();
+    expect(screen.getByText("会话 2/5")).toBeTruthy();
   });
 });

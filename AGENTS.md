@@ -13,6 +13,7 @@
 - ADR 约定见 `docs/adr/README.md`，模板 `docs/adr/TEMPLATE.md`；被否决的 ADR 保留全文。
 - 依赖方向：`bd dep add <被阻塞> <阻塞者>`；`bd create --deps blocks:X` 表示"新 issue 阻塞 X"，要表达"被 X 阻塞"请建完后用 `bd dep add`。
 - 记忆：`bd remember` 只存本文件与 MISSION 没有的、干活中学到的项目事实（排障经验、环境怪癖）；Claude Code 的用户级 auto-memory 只放用户偏好，不放项目事实。
+- UI/UX：改前先读 `docs/spec/design-system.md`（第一性原理、跨设备 token 与组件契约）和 `docs/spec/ux.md`；`web/src/index.css` 的 `:root` 是 token 值的唯一来源，壳内不得另造配色，终端也消费同源 token。
 - 语言：面向用户的输出一律中文；代码、命令、路径原样。
 
 ## Non-Interactive Shell Commands

@@ -357,3 +357,9 @@ it("marks the rows whose process agora cannot speak of, and only those (Q4, agor
   mount(row({ status: "finished", alive: false }) as SessionRow);
   expect(screen.queryByTestId("proc-n:a")).toBeNull();
 });
+
+it("审批预览展示待批准的原命令，优先于内部 reason 代码（agora-p7p0）", () => {
+  mount(row({ status: "waiting", reason: "permission", pending_decision: { request_id: "r", epoch: 1, summary: "npm run build" } }));
+  expect(screen.getByTestId("preview-n:a").textContent).toBe("npm run build");
+  expect(screen.getByTestId("row-n:a").getAttribute("aria-current")).toBe("true");
+});

@@ -1,9 +1,9 @@
 /**
  * 手机端的状态词与行文案（agora-o975.4 / agora-o975.3；MISSION §6.9；docs/spec/ux.md「移动端交互收件箱 /m」）。
  *
- * 桌面共用的 `attention.ts` `STATUS_TEXT` 是英文（waiting / turn done / working），手机上读不懂
- * 「看过没看过、排队没排队」；「在跑」那个段名更把「点开看过一次、其实没在跑」的行说成在跑。
- * 所以手机自己一份：词表只在这里，**桌面一个字不动**（attention.test.ts 的既有用例照旧断言英文）。
+ * 两端共享这份用户文案（agora-p7p0）。文件名为兼容既有 import 保留；
+ * attention.ts 的 STATUS_TEXT 只保留底层兼容输出，组件不得再另造一份状态词表。
+ * 桌面与收件箱用 minutes，手机会话卡片用 seconds；已读由调用方传入。
  *
  * 「已读」不是从行上读的：它是本设备的视图状态（MISSION §4.6 证据 ①），调用方把
  * `seen.has(seenKey(row))` 算成 boolean 传进来——记号跟着「这一次完成」走（agora-5gg.21）。

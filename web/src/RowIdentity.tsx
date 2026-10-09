@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
+import { mobileStatusLine } from "./mobileStatus";
 import { agentBadge } from "./agentBadge";
-import { isHandleless, statusLine, unclearStatus } from "./attention";
+import { isHandleless, unclearStatus } from "./attention";
 import type { SessionRow } from "./events";
 import { clockText } from "./Header";
 import { nodeHue } from "./nodeColor";
@@ -88,14 +89,16 @@ export function RowIdentity({
   localNode,
   now,
   showProject = true,
+  seen = false,
 }: {
   row: SessionRow;
   localNode?: string;
   now: number;
+  seen?: boolean;
   /** attention 视图 true；树视图（agora-uvd.3 SidebarTree）传 false——组头已说明仓库与分支，行上再画是噪音。 */
   showProject?: boolean;
 }) {
-  const seen = staleSeen(row);
+  const stale = staleSeen(row);
   const agentType = String(row.agent_type ?? "");
   const badge = agentBadge(agentType);
   const local = localNode !== undefined && row.node === localNode;
@@ -127,13 +130,13 @@ export function RowIdentity({
         {/* 无句柄的行才标 origin：agora 起的行不需要解释自己从哪来。headless 也标出来，
             否则一行被 24 h 自动删的会话在侧栏里长得和一条终端会话一样（agora-5gg.20）。 */}
         {isHandleless(row) && <span className="origin">{String(row.origin)}</span>}
-        {seen && (
-          <span className="stale-seen" data-testid={`row-stale-${row.id}`} title={seen.title}>
-            {seen.text}
+        {stale && (
+          <span className="stale-seen" data-testid={`row-stale-${row.id}`} title={stale.title}>
+            {stale.text}
           </span>
         )}
         <span className={`state ${statusClass(row.status)}`} data-testid={`state-${row.id}`}>
-          {statusLine(row, now)}
+          {mobileStatusLine(row, seen, now, "minutes")}
         </span>
       </span>
       {project && (

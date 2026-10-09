@@ -139,6 +139,7 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
 
   return (
     <section className="respond-panel" data-testid={`respond-panel-${row.id}`} ref={rootRef}>
+      <div className="panel-heading"><span className={waiting ? "st-waiting" : "st-turn_done"}>{waiting ? "需要你回应" : "本轮结果"}</span><span className="muted">Alt / Option + R</span></div>
       {waiting &&
         (canDecide ? (
           // 权限请求的 summary 是**一行命令**（`src/adapter/hooks.rs permission_summary`：工具名 +
@@ -164,11 +165,11 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
         <div className="respond-actions">
           {canDecide && (
             <>
-              <button disabled={busy} data-testid="allow" onClick={() => void decide("allow")}>
-                Allow
+              <button className="primary" disabled={busy} data-testid="allow" onClick={() => void decide("allow")}>
+                允许
               </button>
               <button disabled={busy} data-testid="deny" className="danger" onClick={() => void decide("deny")}>
-                Deny
+                拒绝
               </button>
             </>
           )}
@@ -214,7 +215,7 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
                   else (e.target as HTMLInputElement).blur();
                 }}
               />
-              <button type="submit" disabled={busy || !text.trim()} data-testid="next-send">
+              <button className="primary" type="submit" disabled={busy || !text.trim()} data-testid="next-send">
                 发送
               </button>
             </form>

@@ -99,7 +99,7 @@ export function Header({ agents, nodes }: Props) {
     <>
       <div className="sidebar-head">
         <h1>agora</h1>
-        <span className="muted">AGENTS {agents}</span>
+        <span className="muted">会话 {agents}</span>
       </div>
       {nodes && (
         <div className="nodes" data-testid="nodes">

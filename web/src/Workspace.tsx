@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
 import { isHandleless, isHeadless, loadSeen, sectionOf, seenKey, seenRelevant, storeSeen, type Section } from "./attention";
+import { DesktopOverview } from "./DesktopOverview";
+import { SessionHeading } from "./SessionHeading";
 import { ChangesApiContext } from "./Changes";
 import { CommandPalette } from "./CommandPalette";
 import { nodeStatuses } from "./Header";
@@ -523,7 +525,8 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
         api={api}
         onCreated={setPendingOpen}
       />
-      <section className="main">
+      <section className="main" aria-label="会话工作区">
+        <div className="workspace-toolbar"><span>工作台 <span className="muted">/ {active ? "当前会话" : "概览"}</span></span><button onClick={() => setPaletteOpen(true)}>搜索与命令 <kbd>⌘ / Ctrl K</kbd></button></div>
         {degraded !== null && (
           <div className="runtime-degraded" data-testid="runtime-degraded" role="status" title={degraded}>
             ⚠ 节点状态：{degraded}
@@ -550,19 +553,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
                   </button>
                 </>
               ) : (
-                <>
-                  <span data-testid="crumb">
-                    {rowName(active)} / {String(active.agent_type ?? "")} @ {active.node}
-                  </span>
-                  <span className="crumb-actions">
-                    <button onClick={() => setSettingsOpen((v) => !v)} aria-pressed={settingsOpen}>
-                      Settings
-                    </button>
-                    <button onClick={closeView} data-testid="close-view" title="只关闭这个终端视图（detach）；agent 继续运行">
-                      关闭
-                    </button>
-                  </span>
-                </>
+                <SessionHeading row={active} seen={seen.has(seenKey(active))} settingsOpen={settingsOpen} onSettings={() => setSettingsOpen((v) => !v)} onClose={closeView} />
               )}
             </div>
             {/* crumb 之下、终端之上的两个面板（A50）：回答面板（agora-4yr.1）+ 看结果面板
@@ -626,7 +617,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
             </div>
           </>
         ) : (
-          <p className="muted empty">{rows.length ? "从左侧选一个 agent。" : "还没有会话。"}</p>
+          <DesktopOverview rows={rows} seen={seen} serverClock={serverClock} onOpen={openFromSidebar} onNewAgent={() => openNewAgent()} onPalette={() => setPaletteOpen(true)} />
         )}
       </section>
       {devicesOpen && <DeviceDialog onClose={() => setDevicesOpen(false)} />}

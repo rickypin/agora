@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
 import type { AdoptBody, SessionApi, WriteResult } from "./api";
-import { anchoredNow, countByStatus, isHandleless, sectionOf, type SeenSet, type Section, type ServerClock } from "./attention";
+import { anchoredNow, countByStatus, isHandleless, sectionOf, seenKey, type SeenSet, type Section, type ServerClock } from "./attention";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow, UnregisteredRow, UnreadableSocket } from "./events";
 import { Header, type NodeStatus } from "./Header";
@@ -36,22 +36,22 @@ function useNowSeconds(periodMs = 30_000): number {
 function CountsLine({ rows, clearable, onClear }: { rows: SessionRow[]; clearable: number; onClear?: () => void }) {
   const c = countByStatus(rows);
   const parts: [string, number][] = [
-    ["Running", c.running],
-    ["Needs Input", c.needsInput],
-    ["Turn Done", c.turnDone],
-    ["Finished", c.finished],
-    ["Failed", c.failed],
-    ["Idle", c.idle],
-    ["Unknown", c.unknown],
+    ["运行中", c.running],
+    ["等你回应", c.needsInput],
+    ["本轮完成", c.turnDone],
+    ["已结束", c.finished],
+    ["失败", c.failed],
+    ["空闲", c.idle],
+    ["状态待确认", c.unknown],
   ];
   const shown = parts.filter(([, n]) => n > 0);
   return (
     <p className="counts muted" data-testid="counts">
-      {shown.length === 0 && "no agents"}
+      {shown.length === 0 && "暂无会话"}
       {shown.map(([label, n], i) => (
         <Fragment key={label}>
           {i > 0 && " · "}
-          {label === "Finished" && clearable > 0 && onClear ? (
+          {label === "已结束" && clearable > 0 && onClear ? (
             <button type="button" className="clear-finished" data-testid="clear-finished" title={`清理 Finished 区里的 ${clearable} 行（删记录，不 kill）`} onClick={onClear}>
               {label} {n}
             </button>
@@ -321,6 +321,7 @@ export function Sidebar({
   }
   return (
     <aside className="sidebar" onPointerEnter={onPointerEnter} onPointerLeave={onPointerLeave}>
+      <div className="sidebar-top">
       <Header agents={filter ? `${rows.length}/${total}` : total} nodes={nodes} />
       <CountsLine rows={all} clearable={clearable.length} onClear={onDeleteMetadata ? () => setClearAsk(true) : undefined} />
       <div className="sidebar-mode" role="group" aria-label="侧栏视图">
@@ -359,7 +360,7 @@ export function Sidebar({
         ref={filterRef}
         className="filter"
         value={filter}
-        placeholder="过滤（Cmd/Ctrl+F）"
+        placeholder="搜索任务、节点、agent"
         aria-label="过滤侧栏"
         data-testid="sidebar-filter"
         onChange={(e) => onFilter(e.target.value)}
@@ -375,14 +376,11 @@ export function Sidebar({
         }}
       />
       {/* 不写成 onClick={onNewAgent}：那会把 MouseEvent 当预填传进去（agora-uvd.4 加了参数之后）。 */}
-      <button className="new-agent" onClick={() => onNewAgent?.()}>
-        + New Agent
+      <button className="new-agent primary" onClick={() => onNewAgent?.()}>
+        + 新建会话
       </button>
-      {onDevices && (
-        <button className="devices-open" data-testid="open-devices" onClick={onDevices}>
-          设备
-        </button>
-      )}
+      </div>
+      <div className="sidebar-list">
       {total === 0 && unregistered.length === 0 && unreadableSockets.length === 0 && (
         <p className="muted pad">还没有会话。</p>
       )}
@@ -395,7 +393,7 @@ export function Sidebar({
       {total > 0 && rows.length === 0 && <p className="muted pad">没有匹配的会话。</p>}
       {showSections && hasAttention && (
         <div className="sidebar-head section" data-testid="section-attention">
-          <span className="muted">NEEDS ATTENTION</span>
+          <span className="muted">需要处理</span>
         </div>
       )}
       {mode === "tree" ? (
@@ -420,13 +418,13 @@ export function Sidebar({
             {showSections && hasBoundary && i === firstUnclear && (
               <li className="section-row" data-testid="section-unclear">
                 <span className="muted" title="说不清状态的行：行上带原因与下一步">
-                  UNCLEAR
+                  状态待确认
                 </span>
               </li>
             )}
             {showSections && hasBoundary && i === firstWorking && (
               <li className="section-row" data-testid="section-working">
-                <span className="muted">WORKING</span>
+                <span className="muted">暂无需处理</span>
               </li>
             )}
             {showSections && i === firstFinished && (
@@ -439,13 +437,14 @@ export function Sidebar({
                   title={finishedOpen ? "收起已完成的会话" : "展开已完成的会话"}
                   onClick={() => setFinishedOpen((v) => !v)}
                 >
-                  {finishedOpen ? "▾" : "▸"} FINISHED {finishedCount}
+                  {finishedOpen ? "▾" : "▸"} 已结束 {finishedCount}
                 </button>
               </li>
             )}
             {showSections && sections[i] === "finished" && !finishedOpen ? null : (
             <SidebarRow
               row={r}
+              seen={seen?.has(seenKey(r))}
               active={r.id === active}
               ordinal={i + 1}
               onOpen={onOpen}
@@ -471,6 +470,15 @@ export function Sidebar({
           </ul>
         </>
       )}
+      </div>
+      <footer className="sidebar-footer">
+      {onDevices && (
+        <button className="devices-open" data-testid="open-devices" onClick={onDevices}>
+          设备
+        </button>
+      )}
+        <span className="muted">Alt / Option + 1…9 切换</span>
+      </footer>
       {isDesktop() && (
         <div
           className="sidebar-resizer"

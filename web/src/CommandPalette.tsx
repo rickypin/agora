@@ -1,3 +1,4 @@
+import { useDialogFocus } from "./useDialogFocus";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentInfo, CatalogApi, ProjectInfo, SessionApi } from "./api";
 import type { SessionRow } from "./events";
@@ -40,6 +41,7 @@ interface Props {
 }
 
 export function CommandPalette({ rows, api, catalog, nodes, onOpen, onNewAgent, onToggleMode, onCreated, onClose }: Props) {
+  const dialogRef = useDialogFocus(onClose);
   const [query, setQuery] = useState("");
   const [cursor, setCursor] = useState(0);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
@@ -167,7 +169,7 @@ export function CommandPalette({ rows, api, catalog, nodes, onOpen, onNewAgent, 
     <div className="overlay" role="presentation" onClick={onClose}>
       <div
         className="dialog palette"
-        role="dialog"
+        ref={dialogRef} tabIndex={-1} role="dialog"
         aria-modal="true"
         aria-label="Command Palette"
         onClick={(e) => e.stopPropagation()}

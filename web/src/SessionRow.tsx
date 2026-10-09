@@ -87,6 +87,7 @@ export function rowHaystack(s: SessionRow): string {
 interface RowProps {
   row: SessionRow;
   active: boolean;
+  seen?: boolean;
   /** 1…9 显示成 Alt/Option 跳转的序号；其余不显示（MISSION §6.5）。 */
   ordinal: number;
   onOpen: (id: string) => void;
@@ -103,7 +104,7 @@ interface RowProps {
 }
 
 /** memo：行对象引用没变就不重渲染（store.ts）。 */
-export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpen, onRender, now, localNode, showProject, moved }: RowProps) {
+export const SidebarRow = memo(function SidebarRow({ row, active, seen = false, ordinal, onOpen, onRender, now, localNode, showProject, moved }: RowProps) {
   onRender?.(row.id);
   const prompt = str(row.prompt);
   const progress = str(row.progress);
@@ -125,7 +126,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
   // pane preview；两者都没有时退回状态理由（MISSION §6.3；ADR-002 D8）。
   // UNKNOWN 行不走最后那一级退路：reason 由下面那块 `unclear-<id>` 连同出口一起画，走这里会把同一句
   // 话画两遍（agora-5gg.11）。
-  const lines = prompt || progress ? null : preview || (unclear ? "" : String(row.reason ?? ""));
+  const lines = prompt || progress ? null : str(row.pending_decision?.summary) || preview || (unclear ? "" : String(row.reason ?? ""));
   return (
     // data-ordinal 挂在 <li> 上而不是只靠行里那个 span（agora-5ri）：span 从来只画 1…9，第 10 行往后
     // 渲染的是空字符串，代检按 `.ord` 文本读序号在 2026-09-08 现场那种 58 行的列表里直接读不到。
@@ -133,6 +134,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
     <li className={rowClasses(active, row.stale, moved)} data-ordinal={ordinal}>
       <button
         className={active ? "row selected" : "row"}
+        aria-current={active ? "true" : undefined}
         onClick={() => onOpen(row.id)}
         title={`${rowName(row)} (${row.id})`}
         data-testid={`row-${row.id}`}
@@ -142,7 +144,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, ordinal, onOpe
           <span className="name" data-testid={`label-${row.id}`}>
             {taskLabel(row)}
           </span>
-          <RowIdentity row={row} localNode={localNode} now={now} showProject={showProject} />
+          <RowIdentity row={row} seen={seen} localNode={localNode} now={now} showProject={showProject} />
           {prompt && !promptRepeatsLabel(row) && (
             <span className="preview line-prompt" data-testid={`prompt-${row.id}`}>
               <span className="muted">❯ </span>

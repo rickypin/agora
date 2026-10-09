@@ -233,7 +233,7 @@ describe("Workspace", () => {
     fireEvent.click(screen.getByTestId("row-n:a"));
     const main = t.ui.container.querySelector("section.main")!;
     // 2026-09-10（agora-4yr.3）多了一层 .panels：回答面板与看结果面板合计限高 50vh，终端至少留一半。
-    expect(Array.from(main.children).map((el) => el.className)).toEqual(["crumb", "panels", "pane"]);
+    expect(Array.from(main.children).map((el) => el.className)).toEqual(["workspace-toolbar", "crumb", "panels", "pane"]);
     expect(screen.getByTestId("respond-panel-n:a")).toBe(main.querySelector(".respond-panel"));
     expect(main.querySelector(".panels")!.firstElementChild).toBe(screen.getByTestId("respond-panel-n:a"));
     // 输入框在最后一条回复之上（用户明确要求；限高 40vh 是布局事实，归代检）。
@@ -281,7 +281,7 @@ describe("Workspace", () => {
     fireEvent.click(screen.getByTestId("row-n:a"));
     await flush();
     const main = t.ui.container.querySelector("section.main")!;
-    expect(Array.from(main.children).map((el) => el.className)).toEqual(["crumb", "panels", "pane"]);
+    expect(Array.from(main.children).map((el) => el.className)).toEqual(["workspace-toolbar", "crumb", "panels", "pane"]);
     expect(Array.from(main.querySelector(".panels")!.children).map((el) => el.className)).toEqual(["respond-panel", "result-panel"]);
     // 面板内也按这个顺序，且三段都排在终端之前。
     const seq = [
@@ -429,7 +429,7 @@ describe("Workspace", () => {
     fireEvent.click(screen.getByTestId("close-view"));
     expect(screen.queryByTestId("term-n:b")).toBeNull();
     expect(screen.queryByTestId("crumb")).toBeNull();
-    expect(screen.getByText("从左侧选一个 agent。")).toBeTruthy();
+    expect(screen.getByTestId("desktop-overview")).toBeTruthy();
     expect(unmounted).toEqual(["n:a", "n:b"]);
     // 侧栏行都还在：关掉的只是视图。
     expect(screen.getAllByTestId(/^row-n:/).length).toBe(2);
@@ -449,7 +449,7 @@ describe("Workspace", () => {
       await new Promise((r) => setTimeout(r, 5));
     });
     expect(screen.queryByTestId("term-n:a")).toBeNull();
-    expect(screen.getByText("从左侧选一个 agent。")).toBeTruthy();
+    expect(screen.getByTestId("desktop-overview")).toBeTruthy();
     expect(unmounted).toEqual(["n:a"]);
   });
 
@@ -478,7 +478,7 @@ describe("Workspace", () => {
     const t = setup([row("n:a")]);
     await online(t);
     fireEvent.click(screen.getByTestId("row-n:a"));
-    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("会话设置"));
     t.setKill(() => ({ status: 409, body: { error: "needs_confirmation", message: "会杀" } }));
     fireEvent.click(screen.getByTestId("kill"));
     await flush();
@@ -508,7 +508,7 @@ describe("Workspace", () => {
     const t = setup([row("n:a")]);
     await online(t);
     fireEvent.click(screen.getByTestId("row-n:a"));
-    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("会话设置"));
     t.setKill(() => ({ status: 409, body: { error: "needs_confirmation", message: "会杀" } }));
     fireEvent.click(screen.getByTestId("kill"));
     await flush();
@@ -535,7 +535,7 @@ describe("Workspace", () => {
     const t = setup([{ ...row("n:a"), origin: "adopted", command: null }]);
     await online(t);
     fireEvent.click(screen.getByTestId("row-n:a"));
-    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("会话设置"));
     expect(screen.getByRole("button", { name: "Restart" })).toHaveProperty("disabled", true);
     expect(screen.getByTestId("kill")).toHaveProperty("disabled", false);
   });
@@ -545,7 +545,7 @@ describe("Workspace", () => {
     // （列表里还没有这一行），用户看到的是"创建了但没打开"。
     const t = setup([]);
     await online(t);
-    fireEvent.click(screen.getByText("+ New Agent"));
+    fireEvent.click(screen.getAllByText("+ 新建会话")[0]);
     await flush();
     fireEvent.click(screen.getByTestId("create"));
     await flush();
@@ -564,7 +564,7 @@ describe("Workspace", () => {
     const t = setup([row("n:a")]);
     await online(t);
     fireEvent.click(screen.getByTestId("row-n:a"));
-    fireEvent.click(screen.getByText("Settings"));
+    fireEvent.click(screen.getByText("会话设置"));
     fireEvent.click(screen.getByText("Rename"));
     await flush();
     fireEvent.click(screen.getByText("Delete metadata"));
@@ -583,7 +583,7 @@ describe("Workspace", () => {
     ]);
     await online(t);
     // own 没看过：折叠区只有 ext 一行。
-    expect(screen.getByTestId("clear-finished").textContent).toBe("Finished 2");
+    expect(screen.getByTestId("clear-finished").textContent).toBe("已结束 2");
     fireEvent.click(screen.getByTestId("clear-finished"));
     fireEvent.click(screen.getByText("Delete 1"));
     await flush();
@@ -647,7 +647,7 @@ describe("Workspace", () => {
     // 第一列是任务：issue id + 标题。
     expect(screen.getByTestId("label-n:p1").textContent).toBe("x-1 高");
     expect(screen.getByTestId("label-n:run").textContent).toBe("run");
-    expect(screen.getByTestId("counts").textContent).toBe("Running 1 · Needs Input 2 · Turn Done 1 · Failed 1");
+    expect(screen.getByTestId("counts").textContent).toBe("运行中 1 · 等你回应 2 · 本轮完成 1 · 失败 1");
     // Alt/Option+N 跳的是显示顺序里的第 N 条：第 2 条是 p1。
     fireEvent.keyDown(window, { code: "Digit2", altKey: true });
     expect(screen.getByTestId("term-n:p1")).toBeTruthy();
@@ -670,7 +670,7 @@ describe("Workspace", () => {
         .map((el) => el.getAttribute("data-testid")!)
         .filter((id) => id.startsWith("section-") || (id.startsWith("row-") && !id.startsWith("row-node-") && !id.startsWith("row-stale-")));
     expect(order()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-working", "row-n:run", "section-finished"]);
-    expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
+    expect(screen.getByTestId("section-finished").textContent).toBe("▸ 已结束 1");
     // 点开 own：它还在 NEEDS ATTENTION（主区开着它的终端，侧栏不能让它消失进折叠区）。
     fireEvent.click(screen.getByTestId("row-n:own"));
     expect(screen.getByTestId("term-n:own")).toBeTruthy();
@@ -680,7 +680,7 @@ describe("Workspace", () => {
     fireEvent.click(screen.getByTestId("row-n:wait"));
     await settle();
     expect(order()).toEqual(["section-attention", "row-n:wait", "section-working", "row-n:run", "section-finished"]);
-    expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 2");
+    expect(screen.getByTestId("section-finished").textContent).toBe("▸ 已结束 2");
     expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:own@finished"]);
     // Alt/Option+N 的序号跟着三段拼接走：折叠区收着时第 3 条仍是 ext（wait, run, ext, own）。
     fireEvent.keyDown(window, { code: "Digit3", altKey: true });
@@ -825,7 +825,7 @@ describe("Workspace", () => {
     await settle();
     // 只有 external 的 TURN_DONE 进集合：external 的 FINISHED 不看 seen 就已经收起，记它只是攒垃圾。
     expect(JSON.parse(localStorage.getItem("agora.seen-finished") ?? "[]")).toEqual(["n:ext@100"]);
-    expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
+    expect(screen.getByTestId("section-finished").textContent).toBe("▸ 已结束 1");
     const order = () =>
       Array.from(screen.getByTestId("section-attention").parentElement!.querySelectorAll("[data-testid]"))
         .map((el) => el.getAttribute("data-testid")!)
@@ -882,7 +882,7 @@ describe("Workspace", () => {
     expect(screen.getByTestId("prompt-n:h").textContent).toBe("❯ 把 sidebar 换掉");
     expect(screen.getByTestId("progress-n:h").textContent).toBe("↳ Edit Sidebar.tsx");
     expect(screen.queryByTestId("preview-n:h")).toBeNull();
-    expect(screen.getByTestId("state-n:h").textContent).toBe("waiting 3m");
+    expect(screen.getByTestId("state-n:h").textContent).toBe("等你 3m");
     expect(screen.getByTestId("preview-n:s").textContent).toBe("$ cargo test");
     // status_changed 带来的新预览就地替换；没带的字段沿用。
     await act(async () => {
@@ -953,7 +953,7 @@ describe("Workspace", () => {
     expect(t.store.snapshot()).toHaveLength(2);
     expect(screen.queryByTestId("row-n:a")).toBeNull();
     expect(screen.queryByTestId("row-n:b")).toBeNull();
-    expect(screen.queryByText("从左侧选一个 agent。")).toBeNull();
+    expect(screen.queryByTestId("desktop-overview")).toBeNull();
     expect(mounted).toEqual([]);
     // 横幅在 runtime-degraded 那一条的位置与样式上，不是第二套。
     expect(banner.className).toBe("runtime-degraded");
@@ -1006,7 +1006,7 @@ describe("Workspace", () => {
     const t = setup([{ ...row("n:hl", "turn_done"), origin: "headless", status_since: 10 }]);
     await online(t);
     // 折叠：不看状态，也不等人选中看过一次；NEEDS ATTENTION 里没有它。
-    expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
+    expect(screen.getByTestId("section-finished").textContent).toBe("▸ 已结束 1");
     expect(screen.queryByTestId("section-attention")).toBeNull();
     // 展开折叠区看它的标签，再选中它。
     fireEvent.click(screen.getByTestId("section-finished"));
@@ -1106,7 +1106,7 @@ describe("Workspace · 重排稳定（A51，agora-4yr.4）", () => {
     const dot = screen.getByTestId("row-n:c").querySelector(".dot")!;
     expect(dot.textContent).toBe("⚠");
     expect(dot.classList.contains("st-waiting")).toBe(true);
-    expect(screen.getByTestId("counts").textContent).toBe("Running 2 · Needs Input 1");
+    expect(screen.getByTestId("counts").textContent).toBe("运行中 2 · 等你回应 1");
     // 冻结期间没有任何一行是"刚落位"的，不该有高亮。
     expect(document.querySelectorAll("li.moved")).toHaveLength(0);
   });
@@ -1201,12 +1201,12 @@ describe("Workspace · 重排稳定（A51，agora-4yr.4）", () => {
     fireEvent.click(screen.getByTestId("row-n:wait"));
     // 冻结期间：own 还在原位、还在 DOM 里（「不许在冻结期间隐藏行」），三段表头与计数一个字没变。
     expect(sectioned()).toEqual(["section-attention", "row-n:wait", "row-n:own", "section-working", "row-n:run", "section-finished"]);
-    expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 1");
+    expect(screen.getByTestId("section-finished").textContent).toBe("▸ 已结束 1");
     expect(rowLi("n:own").getAttribute("data-ordinal")).toBe("2");
     // 3 s 落位之后才收进折叠区，计数才跟着变。
     await settle();
     expect(sectioned()).toEqual(["section-attention", "row-n:wait", "section-working", "row-n:run", "section-finished"]);
-    expect(screen.getByTestId("section-finished").textContent).toBe("▸ FINISHED 2");
+    expect(screen.getByTestId("section-finished").textContent).toBe("▸ 已结束 2");
   });
 
   it("<StrictMode> still reports the rows that moved: prev order is written in the commit phase (A51)", async () => {
@@ -1250,7 +1250,7 @@ describe("Workspace · 看 diff（MISSION §6.3 看结果；A41，agora-h1k.5）
     fireEvent.click(screen.getByTestId("diff-n:a"));
     // 主区切成 diff：crumb 是 `git diff / a` 且没有 Settings；终端以 diff socket 只读挂载，会话终端已卸载。
     expect(screen.getByTestId("crumb-diff").textContent).toBe("git diff / a");
-    expect(screen.queryByText("Settings")).toBeNull();
+    expect(screen.queryByText("会话设置")).toBeNull();
     expect(screen.getByTestId("term-diff-n:a")).toBeTruthy();
     expect(mounted).toEqual(["n:a", "n:a"]);
     expect(unmounted).toEqual(["n:a"]);
@@ -1310,6 +1310,6 @@ describe("Workspace · 看 diff（MISSION §6.3 看结果；A41，agora-h1k.5）
     });
     expect(screen.queryByTestId("term-diff-n:b")).toBeNull();
     expect(screen.queryByTestId("crumb-diff")).toBeNull();
-    expect(screen.getByText("从左侧选一个 agent。")).toBeTruthy();
+    expect(screen.getByTestId("desktop-overview")).toBeTruthy();
   });
 });
