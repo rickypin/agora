@@ -128,6 +128,21 @@ export interface ChangesInfo {
   reason: string | null;
 }
 
+/**
+ * `GET /api/sessions/:id/turns`（A53，agora-2mff；docs/spec/api.md「轮次」）的一轮：节点从 hook 事件记下的
+ * 人话与最终回复。`prompt` 为 null 是注入的一轮（`injected`）或没有 prompt 的半轮；`outcome` 的
+ * `no_reply` = 下一轮已开始、这一轮没收到结束事件。时刻是 unix 秒。
+ */
+export interface TurnInfo {
+  prompt: string | null;
+  injected: boolean;
+  reply: string | null;
+  outcome: "open" | "done" | "failed" | "no_reply";
+  failure: string | null;
+  started_at: number | null;
+  ended_at: number | null;
+}
+
 async function call<T>(
   fetchImpl: FetchLike,
   method: string,
@@ -186,6 +201,12 @@ export function sessionApi(fetchImpl: FetchLike = apiFetch) {
     presets: () => call<{ presets: PresetInfo[] }>(fetchImpl, "GET", "/api/presets"),
     /** 采纳未登记的运行时会话（§5.5）；201 的响应体就是新会话那一行。 */
     adopt: (body: AdoptBody) => call<{ id: string }>(fetchImpl, "POST", "/api/sessions/adopt", body),
+    /**
+     * 最近 `limit` 轮（旧在前，节点夹到 1..=20；A53，agora-2mff）。没有这个端点的老节点 GET 落到 SPA 兜底，
+     * 回空 body 的 404——调用方对任何非 ok 都按「没有上文」处理，不报错。
+     */
+    turns: (id: string, limit: number) =>
+      call<{ turns: TurnInfo[]; keep: number }>(fetchImpl, "GET", `${enc(id)}/turns?limit=${limit}`),
     /** 该会话工作目录的改动文件（§6.3 看结果；A41，agora-h1k.5）：只读的 git status，200 + 类型原因而非错误。 */
     changes: (id: string) => call<ChangesInfo>(fetchImpl, "GET", `${enc(id)}/changes`),
   };

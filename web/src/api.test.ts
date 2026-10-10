@@ -69,6 +69,17 @@ describe("sessionApi", () => {
     const r = await sessionApi(f).uploadImage("n:x", "AA==");
     expect(r).toEqual({ ok: false, needsConfirmation: false, error: { error: "unknown", message: "HTTP 405" }, status: 405 });
   });
+
+  it("turns GETs /turns with the limit; an older node's empty 404 is just not ok (agora-2mff)", async () => {
+    const turn = { prompt: "p", injected: false, reply: "r", outcome: "done", failure: null, started_at: 1, ended_at: 2 };
+    const { f, calls } = fakeFetch((u) => (u.startsWith("/api/sessions/n%3Ax/") ? { status: 200, body: { turns: [turn], keep: 20 } } : { status: 404 }));
+    const r = await sessionApi(f).turns("n:x", 4);
+    expect(r).toEqual({ ok: true, value: { turns: [turn], keep: 20 } });
+    expect(calls[0].url).toBe("/api/sessions/n%3Ax/turns?limit=4");
+    expect(calls[0].init.method).toBe("GET");
+    const old = await sessionApi(f).turns("old:y", 4);
+    expect(old.ok).toBe(false);
+  });
 });
 
 import { restartNoteOf } from "./SessionSettings";

@@ -100,7 +100,7 @@ describe("手机端溢出与触控（agora-x70t.qz01）", () => {
   });
 
   it("主要动作的命中高度有触控下限", () => {
-    for (const sel of [".mobile-back", ".mobile-gear", ".mobile-more-toggle", ".mobile-composer button", ".mobile-decision-actions button", ".mobile-finished-toggle", ".mobile-push-toggle", ".mobile-text-sizes button", ".mobile .dialog button"]) {
+    for (const sel of [".mobile-back", ".mobile-gear", ".mobile-more-toggle", ".mobile-composer button", ".mobile-decision-actions button", ".mobile-finished-toggle", ".mobile-push-toggle", ".mobile-text-sizes button", ".mobile .dialog button", ".mobile-earlier-toggle", ".mobile-earlier .mobile-more-line"]) {
       expect(has(sel, /min-height:\s*var\(--m-tap\)/), `${sel} 需要 min-height: var(--m-tap)`).toBe(true);
     }
   });

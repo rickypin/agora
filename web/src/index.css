@@ -758,6 +758,14 @@ li.done > .row.selected .name, li.done > ul > li > .row.selected .name { color: 
 .mobile-attachment-remove > span { display: inline-grid; place-items: center; width: 1.5em; height: 1.5em; border-radius: var(--r-pill); background: var(--bg); border: 1px solid var(--border); }
 .mobile-bubble-images { display: flex; align-items: flex-start; flex-wrap: wrap; gap: var(--m-1); margin-top: var(--m-1); }
 .mobile-bubble-images img { display: block; height: 4em; width: auto; max-width: 8em; object-fit: cover; border-radius: var(--r-2); }
+/* 更早 N 轮（A53，agora-2mff）：收起时只是一行次要的文字按钮，不与最近一轮抢视线；展开后每轮一组，
+   回复去掉底色——最近一轮仍是唯一有底色的那条回复。与最近一轮之间一条分隔线。 */
+.mobile-earlier { display: flex; flex-direction: column; gap: var(--m-2); padding-bottom: var(--m-3); border-bottom: 1px solid var(--border); }
+.mobile-earlier-toggle { align-self: flex-start; min-height: var(--m-tap); padding: 0 var(--m-1); color: var(--accent); background: none; border-color: transparent; font-size: var(--m-fs-note); }
+.mobile-earlier-list { display: flex; flex-direction: column; gap: var(--m-4); margin: 0; padding: 0; list-style: none; }
+.mobile-earlier-turn { display: flex; flex-direction: column; gap: var(--m-2); }
+.mobile-earlier .mobile-bubble-body { background: transparent; }
+.mobile-earlier .mobile-more-line { min-height: var(--m-tap); }
 
 .mobile-card-heading { flex: 1; min-width: 0; }
 .mobile-title-row, .mobile-card-meta { display: flex; align-items: center; min-width: 0; gap: var(--m-2); }

@@ -32,6 +32,8 @@ function row(id: string, patch: Partial<SessionRow> = {}): SessionRow {
 function setup(r: SessionRow, killRequiresConfirm = true, onSeen = vi.fn()) {
   const requests: { url: string; method: string; body: string | undefined }[] = [];
   const f: FetchLike = async (url, init) => {
+    // 卡片打开就在后台 GET /turns（A53）：只读、与这些用例要钉的写序列无关——回老节点那种空 404、不记。
+    if (url.includes("/turns")) return new Response(null, { status: 404 });
     const method = init.method ?? "GET";
     requests.push({ url, method, body: init.body as string | undefined });
     const json = (body: unknown, status = 200) =>
@@ -53,6 +55,8 @@ function setup(r: SessionRow, killRequiresConfirm = true, onSeen = vi.fn()) {
 function setupInputFailure(r: SessionRow, status: number, body: { error: string; message: string }) {
   const requests: { url: string; method: string; body: string | undefined }[] = [];
   const f: FetchLike = async (url, init) => {
+    // 卡片打开就在后台 GET /turns（A53）：只读、与这些用例要钉的写序列无关——回老节点那种空 404、不记。
+    if (url.includes("/turns")) return new Response(null, { status: 404 });
     const method = init.method ?? "GET";
     requests.push({ url, method, body: init.body as string | undefined });
     const json = (payload: unknown, code = 200) =>
@@ -734,6 +738,7 @@ describe("composer 附图（agora-lmz2）", () => {
     let ni = 0;
     let nt = 0;
     const f: FetchLike = async (url, init) => {
+      if (url.includes("/turns")) return new Response(null, { status: 404 });
       requests.push({ url, method: init.method ?? "GET", body: init.body as string | undefined });
       if (url.endsWith("/images")) return images(++ni);
       if (url.endsWith("/input")) return input(++nt);
@@ -849,5 +854,153 @@ describe("composer 附图（agora-lmz2）", () => {
     expect(ok).toBe(true);
     const onlyImage = pasteImages([png()]);
     expect(onlyImage).toBe(false);
+  });
+});
+
+describe("更早 N 轮（A53，agora-2mff）", () => {
+  type T = import("./api").TurnInfo;
+  const turn = (prompt: string | null, reply: string | null, patch: Partial<T> = {}): T => ({
+    prompt,
+    injected: prompt === null,
+    reply,
+    outcome: reply === null ? "no_reply" : "done",
+    failure: null,
+    started_at: 100,
+    ended_at: 101,
+    ...patch,
+  });
+
+  /** `/turns` 由 `answer` 决定；其余端点 200 `{}`。返回同一个 api 好让 rerender 不换实例。 */
+  function setupTurns(r: SessionRow, answer: () => Response | Promise<Response>) {
+    const requests: string[] = [];
+    const f: FetchLike = async (url) => {
+      requests.push(url);
+      if (url.includes("/turns")) return answer();
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const api = sessionApi(f);
+    const ui = render(<MobileCard row={r} api={api} now={1000} onBack={vi.fn()} onSeen={vi.fn()} />);
+    const rerender = (next: SessionRow) => ui.rerender(<MobileCard row={next} api={api} now={1000} onBack={vi.fn()} onSeen={vi.fn()} />);
+    return { ui, requests, rerender };
+  }
+  const ok = (turns: T[]) => () => new Response(JSON.stringify({ turns, keep: 20 }), { status: 200, headers: { "content-type": "application/json" } });
+  const earlierTexts = () => screen.getAllByTestId("mobile-earlier-turn").map((li) => li.textContent ?? "");
+
+  it("默认收起「更早 3 轮」，展开后旧在前，最近一轮不重复", async () => {
+    const turns = [turn("一", "回一"), turn("二", "回二"), turn("三", "回三"), turn("跑一下", null, { outcome: "open" })];
+    const { requests } = setupTurns(row("n:a", { prompt: "跑一下", status: "running" }), ok(turns));
+    const toggle = await screen.findByTestId("mobile-earlier-toggle");
+    expect(requests).toContain("/api/sessions/n%3Aa/turns?limit=8");
+    expect(toggle.textContent).toBe("更早 3 轮");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("mobile-earlier-list")).toBeNull();
+
+    fireEvent.click(toggle);
+    const texts = earlierTexts();
+    expect(texts).toHaveLength(3);
+    expect(texts[0]).toContain("一");
+    expect(texts[0]).toContain("回一");
+    expect(texts[2]).toContain("回三");
+    expect(texts.join("|")).not.toContain("跑一下");
+    expect(screen.getByTestId("mobile-earlier-toggle").textContent).toBe("收起更早 3 轮");
+  });
+
+  it("超过 3 轮只取锚点之前最近的 3 轮", async () => {
+    const turns = ["1", "2", "3", "4", "5"].map((p) => turn(p, `回${p}`)).concat(turn("现在", "好"));
+    setupTurns(row("n:a", { prompt: "现在", detail: "好" }), ok(turns));
+    fireEvent.click(await screen.findByTestId("mobile-earlier-toggle"));
+    const texts = earlierTexts();
+    expect(texts).toHaveLength(3);
+    expect(texts[0]).toContain("回3");
+    expect(texts[2]).toContain("回5");
+  });
+
+  it("锚点是最后一个有人话的轮：之后注入的轮属于最近一轮，不进「更早」", async () => {
+    const turns = [turn("先看看", "看完了"), turn("跑一下", "跑完"), turn(null, "后台任务也完成了")];
+    setupTurns(row("n:a", { prompt: "跑一下", detail: "后台任务也完成了" }), ok(turns));
+    const toggle = await screen.findByTestId("mobile-earlier-toggle");
+    expect(toggle.textContent).toBe("更早 1 轮");
+    fireEvent.click(toggle);
+    expect(earlierTexts()).toEqual([expect.stringContaining("看完了")]);
+  });
+
+  it("失败、没收到回复、宿主注入的轮各说一句", async () => {
+    const turns = [
+      turn("a", null, { outcome: "failed", failure: "rate limit" }),
+      turn("b", null),
+      turn(null, "注入那一轮的回复"),
+      turn("最新", null, { outcome: "open" }),
+    ];
+    setupTurns(row("n:a", { prompt: "最新", status: "running" }), ok(turns));
+    fireEvent.click(await screen.findByTestId("mobile-earlier-toggle"));
+    const notes = screen.getAllByTestId("mobile-earlier-note").map((n) => n.textContent);
+    expect(notes).toEqual(["这一轮失败了：rate limit", "没有收到这一轮的回复（下一轮已经开始）"]);
+    const third = earlierTexts()[2];
+    expect(third).toContain("宿主自己发起的一轮");
+    expect(third).toContain("注入那一轮的回复");
+    expect(screen.getAllByTestId("mobile-earlier-user")).toHaveLength(2);
+  });
+
+  it("开始记录之前就在跑的那一轮只有回复：说清楚人话没记下，不让「你」气泡看着像丢了", async () => {
+    // 2026-10-10 真机：升级那一刻这一轮已经在跑，日志里只有 turn.ended——第一轮没有「你」气泡。
+    const turns = [turn(null, "升级后才结束的回复", { injected: false }), turn("服务重启过了吗？", "重启过了"), turn("测试", null, { outcome: "open" })];
+    setupTurns(row("n:a", { prompt: "测试", status: "running" }), ok(turns));
+    fireEvent.click(await screen.findByTestId("mobile-earlier-toggle"));
+    const [first, second] = earlierTexts();
+    expect(first).toContain("这一轮开始时还没在记录，你说的话没有留下");
+    expect(first).toContain("升级后才结束的回复");
+    expect(second).not.toContain("没有留下");
+    expect(screen.getAllByTestId("mobile-earlier-no-prompt")).toHaveLength(1);
+  });
+
+  it("长的人话 / 回复按 6 行折，一轮一个展开键", async () => {
+    const long = Array.from({ length: 10 }, (_, i) => `第 ${i + 1} 行`).join("\n");
+    setupTurns(row("n:a", { prompt: "q", detail: "a" }), ok([turn("x", long), turn("q", "a")]));
+    fireEvent.click(await screen.findByTestId("mobile-earlier-toggle"));
+    const reply = screen.getByTestId("mobile-earlier-reply");
+    expect(reply.textContent).toContain(`第 ${FOLD_LINES} 行`);
+    expect(reply.textContent).not.toContain("第 10 行");
+    fireEvent.click(screen.getByTestId("mobile-earlier-expand"));
+    expect(screen.getByTestId("mobile-earlier-reply").textContent).toContain("第 10 行");
+    expect(screen.queryByTestId("mobile-earlier-expand")).toBeNull();
+  });
+
+  it("没有上文不占位：只有一轮、老节点的空 404、取数失败、body 不像样", async () => {
+    const answers: Array<() => Response | Promise<Response>> = [
+      ok([turn("q", "a")]),
+      () => new Response(null, { status: 404 }),
+      () => Promise.reject(new TypeError("network down")),
+      () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
+    ];
+    for (const answer of answers) {
+      const { requests, ui } = setupTurns(row("n:a", { prompt: "q", detail: "a" }), answer);
+      await waitFor(() => expect(requests.some((u) => u.includes("/turns"))).toBe(true));
+      await act(async () => {});
+      expect(screen.queryByTestId("mobile-earlier")).toBeNull();
+      expect(screen.queryByTestId("mobile-send-failure")).toBeNull();
+      expect(screen.getByTestId("mobile-bubble-agent").textContent).toContain("a");
+      ui.unmount();
+    }
+  });
+
+  it("❯ 变了就重新取：上一轮被挤进「更早」", async () => {
+    let turns = [turn("第一句", "回一")];
+    const { requests, rerender } = setupTurns(row("n:a", { prompt: "第一句", detail: "回一" }), () => ok(turns)());
+    await waitFor(() => expect(requests.filter((u) => u.includes("/turns"))).toHaveLength(1));
+    expect(screen.queryByTestId("mobile-earlier")).toBeNull();
+
+    turns = [turn("第一句", "回一"), turn("第二句", null, { outcome: "open" })];
+    rerender(row("n:a", { prompt: "第二句", status: "running" }));
+    expect((await screen.findByTestId("mobile-earlier-toggle")).textContent).toBe("更早 1 轮");
+    expect(requests.filter((u) => u.includes("/turns")).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("展开之后 A52 的禁止名单仍然一个都没有", async () => {
+    const turns = [turn("一", "回一"), turn("二", "回二")];
+    const { ui } = setupTurns(row("n:a", { prompt: "二", detail: "回二" }), ok(turns));
+    fireEvent.click(await screen.findByTestId("mobile-earlier-toggle"));
+    for (const selector of ['[data-testid^="mobile-stream"]', '[data-testid="mobile-load-more"]', ".mobile-stream", ".mobile-history", '[data-testid^="term"]']) {
+      expect(ui.container.querySelectorAll(selector), selector).toHaveLength(0);
+    }
   });
 });

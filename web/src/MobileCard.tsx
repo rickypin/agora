@@ -2,8 +2,9 @@
  * /m 的会话卡（agora-thc.10；MISSION §6.9；docs/spec/ux.md「移动端交互收件箱」第三屏）。
  *
  * 交互语法是即时消息：最近一轮两个气泡（`❯` 你最后一句 / `↳` agent 最后回复）、固定在底部的
- * composer、乐观发送、回复默认折 6 行且**只允许最后一条展开一次**——不做更早消息的翻页（消息流
- * 是 §11 的 Conversation indexing，手机不做，A52）。等待决定时决策原文等宽逐字内联在 composer
+ * composer、乐观发送、回复默认折 6 行。最近一轮上方是默认收起的「更早 N 轮」（N ≤ 3，节点自记的
+ * 轮次日志，A53，见 [`./MobileEarlier`]）；再往前不翻页（消息流是 §11 的 Conversation indexing，
+ * 手机不做，A52）。等待决定时决策原文等宽逐字内联在 composer
  * 上方：照它批准是「respond 不经终端」的信任基础。
  *
  * 动作全部走与桌面相同的节点 API（allow/deny 带 pending_decision.request_id、text 经 PTY、
@@ -24,6 +25,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { composeWire, displayPrompt, imagesFromClipboard, MAX_IMAGES, prepareImage } from "./imageAttach";
 import type { SessionRow } from "./events";
 import { MarkdownView } from "./MarkdownView";
+import { MobileEarlier } from "./MobileEarlier";
 import { MobileIcon } from "./MobileIcon";
 import { nodeHue } from "./nodeColor";
 import { KILL_BODY, RESTART_BODY, restartNoteOf } from "./SessionSettings";
@@ -460,6 +462,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
           </div>
         ) : (
           <>
+            <MobileEarlier row={row} api={api} />
             {(userText !== "" || userThumbs.length > 0) && (
               <div className="mobile-bubble user" data-testid="mobile-bubble-user">
                 <span className="mobile-bubble-mark" aria-hidden="true">
