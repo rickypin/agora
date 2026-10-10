@@ -1111,7 +1111,7 @@ impl Receiver {
         // 宿主文本通道的队列：结算过的（done / failed / claimed）与残留的 .part 收回；
         // 还在等取件的 .json 不碰（那属于某个正在等的请求）。
         crate::hook::input::sweep(&self.input_dir, self.done_retention);
-        // 无行的 hook 检查点：没有行就没人会加载它们（`restore_hook_checkpoints` 按行迭代），删了
+        // 无行的 hook 检查点与轮次日志（agora-2mff 起同一趟）：没有行就没人会加载它们（`restore_hook_checkpoints` 按行迭代），删了
         // 不丢东西——它们已经不可恢复。只在内存里判不出来源，所以这一行要能把文件名交给排障的人。
         // 失败只 warn：下一轮 sweep 还走这条路，不值得报事故。
         match self.sessions.prune_orphan_hook_checkpoints() {
@@ -1119,7 +1119,7 @@ impl Receiver {
                 tracing::info!(
                     component = "hook",
                     files = ?files,
-                    "hooks/state/ 里没有对应行的检查点已删（文件名是 id 的逐字节 hex）"
+                    "没有对应行的 hook 检查点（hooks/state/*.json）与轮次日志（turns/*.jsonl）已删（文件名是 id 的逐字节 hex）"
                 );
             }
             Ok(_) => {}

@@ -383,6 +383,54 @@ async fn image_upload_forwarded_to_owner() {
     assert_eq!(std::fs::read(path).unwrap(), png);
 }
 
+/// 轮次日志（agora-2mff）：A 问 `b:<id>/turns`，B 从它自己的 `<AGORA_HOME>/turns/` 读；`limit` 随转发路径
+/// 到 B。A 自己没装配 home——答案只可能来自 B。
+#[tokio::test]
+async fn turns_forwarded_to_owner() {
+    use agora::status::AgoraEvent;
+    let (a, b, _c, _) = chain();
+    let home = tempfile::tempdir().unwrap();
+    b.state.sessions.enable_hook_checkpoints(home.path());
+    let s = b.create_session("talk").await;
+    let gid = gid_of(&s);
+    let local = s["local_id"].as_str().unwrap();
+    for (i, e) in [
+        AgoraEvent::PromptSubmitted("第一句".into()),
+        AgoraEvent::TurnEnded(Some("第一句的回复".into())),
+        AgoraEvent::PromptSubmitted("第二句".into()),
+    ]
+    .iter()
+    .enumerate()
+    {
+        b.state
+            .sessions
+            .apply_delivered_hook(
+                local,
+                1,
+                std::slice::from_ref(e),
+                &format!("{}-1.json", 1_000 + i),
+                0,
+            )
+            .unwrap();
+    }
+
+    let r = a
+        .call(
+            Method::GET,
+            &format!("/api/sessions/{gid}/turns?limit=1"),
+            None,
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["turns"].as_array().unwrap().len(), 1, "{}", r.body);
+    assert_eq!(r.body["turns"][0]["prompt"], "第二句");
+
+    let r = a
+        .call(Method::GET, &format!("/api/sessions/{gid}/turns"), None)
+        .await;
+    assert_eq!(r.body["turns"][0]["reply"], "第一句的回复", "{}", r.body);
+}
+
 /// PATCH / cleanup / DELETE 同样经 A 到 B；B 的校验（400 bad_request、409 still_alive、404 not_found）
 /// 原样回来，B 的库与运行时是唯一被改的地方。
 #[tokio::test]
@@ -533,6 +581,7 @@ async fn unknown_node_is_rejected() {
             Some(json!({ "display_name": "x" })),
         ),
         (Method::DELETE, "/api/sessions/nobody:1", None),
+        (Method::GET, "/api/sessions/nobody:1/turns", None),
     ] {
         let r = a.call(method.clone(), path, body).await;
         assert_eq!(

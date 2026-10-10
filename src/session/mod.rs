@@ -11,6 +11,7 @@ pub mod manager;
 pub mod model;
 pub mod preset;
 pub mod throttle;
+pub mod turns;
 
 pub use db::{Db, DbError};
 pub use manager::{

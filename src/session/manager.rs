@@ -270,6 +270,8 @@ pub struct SessionManager {
     hook_state_dir: Mutex<Option<PathBuf>>,
     /// 宿主文本通道的队列根（`<AGORA_HOME>/input`，agora-t5kf.1）；与 `hook_state_dir` 同一处装配。
     input_dir: Mutex<Option<PathBuf>>,
+    /// 轮次日志（`<AGORA_HOME>/turns`，agora-2mff）；同一处装配。没装配（库与 API 层的测试）就不记。
+    turns_dir: Mutex<Option<PathBuf>>,
     /// 「hook 没接上」的提示要分档，得知道去哪儿看 agent 的配置文件：(AGORA_HOME, 用户 HOME)。
     /// 带 30 s 缓存，免得每 tick 每个 unheard 会话都去 stat + 解析一遍 JSON（agora-rip）。
     hook_install_homes: Mutex<Option<(PathBuf, PathBuf)>>,
@@ -310,6 +312,7 @@ impl SessionManager {
             hook_state_dir: Mutex::new(None),
             recovery: std::sync::atomic::AtomicU8::new(0),
             input_dir: Mutex::new(None),
+            turns_dir: Mutex::new(None),
             hook_install_homes: Mutex::new(None),
             hook_installed_cache: Mutex::new(HashMap::new()),
             decisions: Mutex::new(HashMap::new()),
@@ -522,6 +525,22 @@ impl SessionManager {
                     _ => {}
                 }
             }
+            // 轮次日志（agora-2mff）：状态机放行之后、检查点落盘之前记——崩在两者之间，重放会再走
+            // 一遍这几条，日志按事件时刻去重；反过来先落检查点就会把这几条永远漏掉。时刻用投递件
+            // 文件名里的毫秒：同一秒里先后两条 hook 很常见，秒级会让第二条被当成重放。
+            if let Some(dir) = lock(&self.turns_dir).as_ref() {
+                let at_ms = delivery
+                    .and_then(crate::hook::inbox::delivery_time_ms)
+                    .unwrap_or_else(|| u64::try_from(at).unwrap_or(0) * 1000);
+                for entry in events
+                    .iter()
+                    .filter_map(|e| super::turns::Entry::from_event(e, at_ms))
+                {
+                    if let Err(err) = super::turns::append(dir, id, &entry) {
+                        tracing::warn!(component = "session", session = id, %err, "写轮次日志失败");
+                    }
+                }
+            }
             // 对话结束了，external 行得有个结束时刻（MISSION §4.2；agora-5gg.3）。external 行
             // `runtime_ref` 恒 NULL，`exit` / `kill` / `cleanup` / `reconcile` 那些写 ended_at 的路
             // 一条都够不着它（它们拿的是运行时报的退出时刻），库里因此攒了一堆 ended_at 全空的
@@ -576,6 +595,7 @@ impl SessionManager {
     pub fn enable_hook_checkpoints(&self, home: &std::path::Path) {
         *lock(&self.hook_state_dir) = Some(home.join("hooks/state"));
         *lock(&self.input_dir) = Some(home.join("input"));
+        *lock(&self.turns_dir) = Some(home.join("turns"));
         if let Some(user_home) = std::env::var_os("HOME") {
             *lock(&self.hook_install_homes) = Some((home.to_owned(), PathBuf::from(user_home)));
         }
@@ -719,7 +739,22 @@ impl SessionManager {
             .into_iter()
             .map(|rec| rec.id)
             .collect::<Vec<_>>();
-        Ok(super::hook_state::prune_orphans(&dir, ids))
+        let mut removed = super::hook_state::prune_orphans(&dir, ids.clone());
+        // 轮次日志同一条判据、同一趟（agora-2mff）：行删了而 `remove` 失败、或写在删行之后的那一条。
+        if let Some(turns) = lock(&self.turns_dir).clone() {
+            removed.extend(super::turns::prune_orphans(&turns, ids));
+        }
+        Ok(removed)
+    }
+
+    /// 一个会话最近 `limit` 轮（`GET /api/sessions/:id/turns`，agora-2mff）。行不存在 → NotFound；
+    /// 没装配日志目录或还没记过 → 空。
+    pub fn turns(&self, id: &str, limit: usize) -> Result<Vec<super::turns::Turn>, SessionError> {
+        self.record(id)?;
+        match lock(&self.turns_dir).as_ref() {
+            Some(dir) => Ok(super::turns::load(dir, id, limit)?),
+            None => Ok(Vec::new()),
+        }
     }
 
     pub fn add_pending_decision(&self, id: &str, pending: PendingDecision) {
@@ -910,6 +945,10 @@ impl SessionManager {
                 |r| r.get(0),
             )?;
             if !exists {
+                // 已删会话遗留的轮次日志不能在 id 被复用时成为新会话的「更早几轮」（agora-2mff）。
+                if let Some(dir) = lock(&self.turns_dir).as_ref() {
+                    super::turns::remove(dir, &id)?;
+                }
                 return Ok(id);
             }
         }
@@ -1763,6 +1802,12 @@ impl SessionManager {
         if let Some(dir) = lock(&self.hook_state_dir).as_ref() {
             if let Err(err) = super::hook_state::remove(dir, id) {
                 tracing::warn!(component = "hook", session = id, %err, "清理 hook 检查点失败");
+            }
+        }
+        // 轮次日志里是对话正文：行删了它就得跟着走（agora-2mff；external 结束 24 h 的自动删也走这里）。
+        if let Some(dir) = lock(&self.turns_dir).as_ref() {
+            if let Err(err) = super::turns::remove(dir, id) {
+                tracing::warn!(component = "session", session = id, %err, "清理轮次日志失败");
             }
         }
         Ok(())

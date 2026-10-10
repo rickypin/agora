@@ -179,9 +179,23 @@ D5 的 respond 只解决"答挂起"：文本（下一条指令）一直只有一
   - **`text_via = host` 是「当真过的能力」，不会回退**：`Machine::note_input_channel`（`src/status/machine.rs:317`）只增不减（注释原话"能力不会因一次旧载荷的缺失而倒退"），检查点里的 `input_channel` 也不推进 `HOOK_SNAPSHOT_VERSION`（旧检查点读成 0、老二进制忽略新字段，`src/session/hook_state.rs::a_checkpoint_from_before_the_input_channel_reads_as_no_channel`）。所以扩展被降级 / 换回没有这一步的旧版后，行上仍是 `host`，那时发送会落到 504 `host_timeout`。行为可接受——有回执、不静默，行上说的是"宿主自报过"而不是"此刻还能收"；这一版不做能力探活。
 - 守卫：`tests/api_input.rs::{host_text_channel_queues_the_prompt_and_waits_for_the_extension_ack,host_text_channel_times_out_when_the_extension_does_not_take_it,a_handleless_row_without_an_input_channel_still_says_no_runtime}`、`src/hook/input.rs` 单测、`src/session/hook_state.rs::a_checkpoint_from_before_the_input_channel_reads_as_no_channel`、`src/adapter/pi.rs::the_extension_advertises_its_input_channel`。
 
+### D12 有界轮次日志：只记 hook 已经交来的人话与最终回复（agora-2mff，2026-10-10）
+
+问题：手机会话卡只看得到最近一轮（D8 的两行预览、`Machine` 里那一份 `prompt` / `detail`），人隔一阵回来接着说，不知道前两轮说到哪了；而 hook 检查点只存当前状态，`done/` 里的投递件 24 h 就清，transcript 只存路径（D7），节点上没有任何地方留着上文。
+
+决定：节点在 `apply_hook` 里把四种事件顺手追加进每会话一个 JSONL（`<AGORA_HOME>/turns/<hex(id)>.jsonl`，0700 / 0600）——`prompt.submitted`（全文）、`prompt.injected`（只记发生过）、`turn.ended`（最终回复）、`turn.failed`（原因）；读的时候折叠成轮。形状与端点见 `docs/spec/api.md`「轮次」。
+
+- **为什么不读 transcript**：transcript 是各宿主的私有格式、又大又含全部工具过程，解析它就是 §11 的 Conversation indexing（`agora-ghl3`）；这里要的「人说了什么 / agent 最后答了什么」hook 本来就交到了，D8 用的就是同一份事实，不新增任何宿主耦合。
+- **为什么不进 SQLite**：不推 schema 版本，降级回老 binary 不受影响（老版本只是不读 `turns/`）；对话正文跟 hook 检查点一样是「hook 观测」，与 `hooks/state/` 同一层，不与会话元数据混。
+- **有界**：每会话只留最近 20 轮，单条正文截到 16 KB；文件涨到 80 条压缩一次（`.part` + rename）。它不是档案：要完整历史去宿主自己的 transcript。
+- **幂等**：条目带投递件名里的毫秒时刻；比最后一条早或与它完全相同就不写。追加在检查点之前，崩在两者之间的那条会被重放、被这条判据挡掉；归档重建同理。
+- **跟着行走**：`delete_metadata` 删文件（包括 external 结束 24 h 的自动删除与身份交接删行），新会话复用旧 id 时先清遗留，receiver sweep 清孤儿。轮次日志里是对话正文，行不在了它就不该在。
+- **只给手机卡用**：桌面主区仍只读最后一条回复（A50）；手机最多展开 3 轮（MISSION §6.9 / A53），不做翻页、搜索、工具过程。
+- 守卫：`tests/api_turns.rs`、`tests/forward.rs::turns_forwarded_to_owner`、`src/session/turns.rs` 单测（反证：去掉重放判据 → `reapplied_deliveries_do_not_duplicate_turns` 红；删行不删文件 → `deleting_the_row_deletes_its_turns` 红；不压缩不封顶 → `keeps_the_newest_turns_and_compacts_without_changing_them` 红）。
+
 ## Non-Goals
 
-- 不解析 transcript 做状态或预览（V1 只存路径）；不做对话索引、摘要、token / 成本（§11）。
+- 不解析 transcript 做状态或预览（V1 只存路径）；不做对话索引、摘要、token / 成本（§11）。D12 的轮次日志只记 hook 已交来的人话与最终回复、有界、随行删除，不是对话索引。
 - 不替 agent 做 TUI 选择题（AskUserQuestion 的选项）；不注入任何键击当作 respond。
 - 不暴露 `updatedInput`、权限模式切换等"替用户改 agent 行为"的能力。
 - 不定义 peer 之间的事件传播（ADR-004 已定：只导出本机会话，事件随 `/api/events` 走）。
@@ -198,6 +212,7 @@ D5 的 respond 只解决"答挂起"：文本（下一条指令）一直只有一
 - **Adapter 解析 `--help` 或错误文本** → 规则 10 失守。守卫：源码扫描 Adapter 目录没有 `--help` 字面量 → `tests/arch_boundary.rs`。
 - **核心层知道某个 agent 的 payload 键** → 规则 5 失守。守卫：`session/` `status/` 目录不得引用 `hook_event_name` / `hookEventName` 等键名 → `tests/arch_boundary.rs`。
 - **投递箱被其他用户写入或读取** → 伪造事件 / 泄漏 prompt。守卫：`<state_dir>/hooks` 与 socket 0700 / 0600，启动时校验权限否则拒绝读 → `tests/hooks_inbox.rs::rejects_wrong_permissions`。
+- **轮次日志变成无界的对话档案、或比行活得久** → 磁盘里留着已删会话的对话正文。守卫：每会话 20 轮上限与压缩 → `src/session/turns.rs::keeps_the_newest_turns_and_compacts_without_changing_them`；删行即删 → `tests/api_turns.rs::deleting_the_row_deletes_its_turns`；文件 0600 → `src/session/turns.rs::files_are_private_and_removed_with_the_row`（D12）。
 - **挂起无上限** → 恶意或失控 agent 开成百上千 hook 进程。守卫：每会话 8、节点 256，超限 exit 0 → `tests/hook_cmd.rs::hold_cap`。
 
 ## Consequences

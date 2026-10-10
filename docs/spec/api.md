@@ -11,6 +11,7 @@ GET    /api/sessions/:id
 GET    /api/sessions/:id/changes   # 该会话工作目录的改动文件 { files: [{ path, status }], branch, reason }：git status --porcelain=v2 只读；不是仓库 / 目录不在 / 没 git / 超时 → 200 + 空列表 + 类型原因（文末「只读产出」；A41）
 PATCH  /api/sessions/:id           # { display_name }：改名即落锁（§4.5）；其它 Session Settings 字段随前端落地
 POST   /api/sessions/:id/input     # { kind: "text", data } / { kind: "decision", decision: "allow"|"deny", message?, request_id?, tool_use_id? }：不经终端的 respond；WAITING 与 TURN_DONE 的主路径（M1b）
+GET    /api/sessions/:id/turns     # ?limit=1..20（缺省 20）→ { turns: [{ prompt, injected, reply, outcome, failure, started_at, ended_at }], keep: 20 }：节点从 hook 事件记下的最近几轮，旧在前（文末「轮次」，agora-2mff）
 POST   /api/sessions/:id/images    # { data }（图片字节的标准 base64）→ 201 { path }：图落进会话工作目录下自我忽略的 .agora-uploads/，路径由调用方接进下一条 text（文末「附图」，agora-lmz2）
 POST   /api/sessions/:id/restart   # body 可选 { confirmed: bool }；会杀且未确认 → 409 needs_confirmation；响应多一个 restart 字段（见下）
 POST   /api/sessions/:id/kill      # 同上；确认跟着"杀"走（MISSION §8）：FINISHED / FAILED / 会话已不在 → 直接执行。发 SIGTERM 后最多同步等 1 s：agent 退了响应里的行就是 FINISHED；没退（交互式 shell 忽略 TERM）立即返回仍 alive 的行（killed_at 已写），5 s 宽限满后 daemon 后台 SIGKILL，行经事件流变 FINISHED——不这样经 peer 转发的 Kill 会撞上 5 s 转发超时报 502（agora-284；守卫 tests/invariants_peer.rs::forwarded_kill_returns_before_the_grace_period）
@@ -133,6 +134,7 @@ GET /api/system
 - `1.15`（2026-10-08，agora-prdg.4）：只增——新端点 `GET /api/presets`（只读；没有写端点，非 GET 一律 405 METHOD_NOT_ALLOWED）与新错误类型 `preset_unknown`（404，未知预设）；`POST /api/sessions` 的 body 加可选 `preset`（节点展开成 `agent_type` / `working_directory` / `command` / `launch_args` / 首句，`display_name` 缺省是预设名；与 `node` 或任何显式字段同给 → 400 `bad_request` 不猜，`preset + node` 在转发之前拒——预设只在本机展开；文末「预设」）。老调用方不发 `preset` 就完全看不到变化；老节点不认识这个字段，新页面对它发 `{preset}` 会得到 422（旧二进制的 JSON 提取器说缺 `display_name` 等），不会静默起错会话。顺带把显式路径的三个必填字段（`display_name` / `agent_type` / `working_directory`）从"缺字段 → axum 的 422 纯文本"改成 400 `bad_request` JSON：无 `preset` 的请求不受影响（页面每次都带齐），只有拼错的调用方会吃这个差异——换来的错误形态与本文档的统一契约一致（这是本文档从未承诺过 422、也不把 422 当契约的理由；真要严格读"改状态码"就该 major，但那条说的是已承诺的 2xx/4xx 语义，不是未文档化的提取器行为）。`/api/system` 本身不变。
 - `1.17`（2026-10-09，agora-o1tm / agora-qf23）：health 增加恢复状态与观测缺口；恢复中会话列表与 503 语义见 Health 小节。
 - `1.18`（2026-10-10，agora-lmz2）：只增——新端点 `POST /api/sessions/:id/images` 与四个错误类型 `bad_image` / `image_too_large` / `no_working_directory` / `unsafe_upload_dir`（文末「附图」）。老调用方看不到变化；老节点没有这个端点，对 POST 走 SPA 兜底回 405（正文不是 JSON），新页面据此说「那台节点版本旧」，不会把图静默丢掉只发文字——这正是附图不做成 `input` 新字段的原因（老节点的 `input` 会忽略不认识的字段）。`/api/system` 本身不变。
+- `1.19`（2026-10-10，agora-2mff）：只增——新端点 `GET /api/sessions/:id/turns`（文末「轮次」）。老调用方看不到变化；老节点不认识这个子路径，GET 落到 SPA 兜底回空 body 的 404，新页面对任何非 2xx 都按「没有上文」处理、只画最近一轮，不报错。`/api/system` 本身不变。
 - `1.16`（2026-10-08，agora-86nk / ohvn 等）：只增——`end_cause` 的 `kind` 加一档 `checkpoint_unrecorded`（旧版（3）hook 检查点里没记结束原因的行，恢复后不再读成 `null`；新节点才发得出这一档，老调用方按未知 kind 落到「没说」那一支即可，旧的 `null` 语义照旧兼容）。同批 `5gg` 状态一窝还修了 `ProcessState` 的 STARTING 窗口假 `gone`（`86nk`，格子内部口径，wire 不变）、无句柄 UNKNOWN 的 TTL 起点与检查点回拨窗口（`5oce` / `do8`，都在检查点文件里、不进 wire）。`/api/system` 本身不变。
 - `1.12`（2026-10-07，agora-t5kf.1）：只增——会话行加 `text_via`（`runtime | host | none`，ADR-002 D11）；`POST /input` 的 text 在 `host` 行上改走宿主队列，没人 ack 回 504 `host_timeout`、宿主拒绝回 502 `host_rejected`（两个 error type 是新词）。老调用方不发 text 到无句柄行就看不到新行为；老节点上页面读不到 `text_via`，按 `runtime_ref` 退（无句柄行仍是旧口径"到终端"）。`/api/system` 本身不变。
 - `1.11`（2026-10-07，agora-ebfa）：只增——`GET /api/sessions` 顶层加 `unregistered_unreadable`（这次没扫成的采纳 socket 的 `{socket, reason}` 列表；`unregistered` 可能不完整时的说明）。老调用方不读它，看到的仍是原来的 `unregistered`；老节点不发它，新页面读成空数组 = 「这一次全都扫到了」，与升级前行为一致。`/api/system` 本身不变。
@@ -316,3 +318,14 @@ New Agent 的 Node 下拉选了 peer 之后，对话框的四个下拉与两个�
 - 清理：每次上传顺手删掉同目录里 7 天前、且名字是本端点形态的普通文件（`session::images::RETENTION`），别人放进去的文件与 `.gitignore` 不动；不另起清理任务。
 - 交给 agent 的写法由客户端定（`web/src/imageAttach.ts`）：全部图传完拿到路径，再把 `[image: <路径>]` 接在文字同一行末尾走 `input` 的 text（只发图时就只有引用）。传图失败什么都不发；文字那一步失败可以重发同一串，不重传图。手机卡片回显 `prompt` 时把引用显示为「［图片］」。客户端在发前把大图缩到长边 ≤ 2000 并转 JPEG（> 1.5 MB 或不是那四种格式时），为的是 peer 一跳转发的 5 s 总时限。
 - 守卫：`tests/api_images.rs`（落点与自我忽略、拒非图片 / 坏 base64 / 超限 / 符号链接目录 / 无文本通道的行、未知子路径的 405）、`tests/forward.rs::image_upload_forwarded_to_owner`、`src/session/images.rs` 单测（魔数、清理只删本层的旧文件）；前端 `web/src/MobileCard.test.tsx`「composer 附图」与 `web/src/imageAttach.test.ts`。
+
+## 轮次（MISSION §6.9 / A53；ADR-002 D12；agora-2mff，2026-10-10）
+
+手机会话卡在最近一轮上方能展开「更早 N 轮」（N ≤ 3）。数据不来自 transcript：节点在应用 hook 事件时顺手把「人说的」与「agent 最终回复」记进每会话一个有界的 JSONL，宿主的私有 transcript 格式与工具过程一概不读（ADR-002 Non-Goals）。
+
+- `GET /api/sessions/:id/turns?limit=N` → 200 `{ "turns": [...], "keep": 20 }`，旧在前、最多 `min(N, 20)` 轮；`limit` 缺省 20，夹到 1..=20。行不在 → 404 `not_found`；还没记过的行、没有装配 `AGORA_HOME` 的进程 → 200 空数组。peer 会话同 `input` 一样经「一跳转发」到所属节点读（`limit` 随转发路径带过去）；目标节点未配置 → 404 `node_unknown`。
+- 一轮的形状：`prompt`（人说的全文，或 null——注入的 prompt 与没有 prompt 的半轮）、`injected`（这一轮由 `prompt.injected` 开头：宿主替人塞的，正文宿主不报）、`reply`（`turn.ended` 带来的最终回复，或 null）、`outcome`（`open` 还在跑 / `done` / `failed` / `no_reply`：下一轮已开始、这一轮没收到结束事件）、`failure`（`turn.failed` 的原因）、`started_at` / `ended_at`（unix 秒，取投递件落盘时刻）。
+- 从哪来：`prompt.submitted` / `prompt.injected` 开一轮，`turn.ended` / `turn.failed` 收一轮（`session::turns::Entry::from_event`）；其它事件不记。prompt 与回复各自截到 16 KB（字符边界，尾注「超过 16 KB 的部分没有保存」）。
+- 落点 `<AGORA_HOME>/turns/<hex(会话 id)>.jsonl`（目录 0700、文件 0600）。追加写；文件涨到约 80 条时压缩成最近 20 轮（先写 `.part` 再 rename）。条目带投递件名里的毫秒时刻，比最后一条早或完全相同就不写——检查点没挡住的重放（崩在追加与检查点之间、归档重建）不会多出一份。
+- 删除：行删了文件跟着删（`delete_metadata`；external 行结束 24 h 的自动删除也走它）；新会话拿到一个曾被用过的 id 时先清掉遗留文件；receiver 的周期 sweep 清掉不属于任何行的孤儿文件（与无行的 hook 检查点同一趟，`prune_orphan_hook_checkpoints`）。
+- 守卫：`tests/api_turns.rs`（先后与 limit、重启后仍在、重放不重复、删行即删、空行与老节点形态）、`tests/forward.rs::turns_forwarded_to_owner`（含 `unknown_node_is_rejected` 的 GET）、`src/session/turns.rs` 单测（折叠规则、压缩不改结果、截断在字符边界、0600 与删除、坏尾行不遮住前文）。

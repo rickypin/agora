@@ -439,8 +439,12 @@ pub fn now_unix_ms() -> u64 {
 /// 状态机的"从什么时候起"（`status_since`，"waiting 3m"）要用它而不是重放的当下（A42；
 /// agora-h1k.4，2026-09-06）。名字不是这个形态（手写的、别的来源）→ None，调用方退回"现在"。
 pub fn delivery_time_secs(name: &str) -> Option<i64> {
-    let ms: u64 = name.split('-').next()?.parse().ok()?;
-    i64::try_from(ms / 1000).ok()
+    i64::try_from(delivery_time_ms(name)? / 1000).ok()
+}
+
+/// 同上，毫秒：轮次日志按它判重放（同一秒里先后两条 hook 很常见，agora-2mff）。
+pub fn delivery_time_ms(name: &str) -> Option<u64> {
+    name.split('-').next()?.parse().ok()
 }
 
 /// `2026-09-04T10:22:33+0800`——hook 进程的本地时间，给人看。

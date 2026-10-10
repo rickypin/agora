@@ -18,6 +18,7 @@ mod push;
 mod sessions;
 mod spa;
 mod terminal;
+mod turns;
 pub mod version;
 
 use std::collections::BTreeMap;
@@ -218,6 +219,7 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/sessions/{id}/images"),
     ("GET", "/api/sessions/{id}/terminal"),
     ("GET", "/api/sessions/{id}/changes"),
+    ("GET", "/api/sessions/{id}/turns"),
     ("GET", "/api/sessions/{id}/diff"),
     ("GET", "/api/projects"),
     ("GET", "/api/projects/worktrees"),
@@ -265,6 +267,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/{id}/terminal", get(terminal::upgrade))
         // 只读产出（MISSION §6.3 看结果；A41，agora-h1k.5）：改动文件列表 + 只读 diff 终端。
         .route("/api/sessions/{id}/changes", get(changes::list))
+        .route("/api/sessions/{id}/turns", get(turns::list))
         .route("/api/sessions/{id}/diff", get(changes::diff))
         // 静态段先于 `{id}`：`worktrees` 不会被当成项目路径。
         .route(

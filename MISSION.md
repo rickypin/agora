@@ -483,7 +483,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 **能力同源、呈现分级**（不变量 9）：所有客户端经同一套节点 API，没有客户端专用后门（守卫见 A36 的 `tests/arch_boundary.rs`）；界面按设备形态分档。
 
 - **桌面（全功能工作台）**：终端、创建、详情与树视图、快捷键（§6.1–§6.5）；桌面按五个动作优化发现待处理事项、阅读结果、回应、切换与创建；终端是保真操作通道。
-- **手机（交互收件箱，V2 首批为 iPhone）**：只做「看谁在等我 + 当场处置」——收件箱、会话卡（状态、任务标签、最近一轮的两个气泡、决策原文、底部 composer）、预设「新建」（一屏按钮、点一下直接起、零打字；能起什么冻结在桌面侧的 `agora preset`——预设只读，手机上不定义、不改）、allow / deny、Kill / Restart（确认）、推送深链。交互语法沿用即时消息的熟悉形态（固定 composer、气泡、乐观发送；composer 可附图——截图粘贴或从相册选，图落到会话所在节点的会话工作目录、路径随文字交给 agent，契约见 `docs/spec/api.md`「附图」，agora-lmz2），但**不做消息流与完整对话历史**（§11 的 Conversation indexing，承接 agora-ghl3）；**没有终端、没有自由表单（新建只有预设按钮）、没有 diff / 验收 / 改动列表、没有命令面板与快捷键**（A52）。手机不是节点：不装 daemon / tmux / hooks、不跑 agent，只配对一个承载节点（通常是常开的 zuan），经 peer 一跳看与操作全部节点（§3.5、§6.6）。
+- **手机（交互收件箱，V2 首批为 iPhone）**：只做「看谁在等我 + 当场处置」——收件箱、会话卡（状态、任务标签、最近一轮的两个气泡与默认收起的「更早 N 轮」、决策原文、底部 composer）、预设「新建」（一屏按钮、点一下直接起、零打字；能起什么冻结在桌面侧的 `agora preset`——预设只读，手机上不定义、不改）、allow / deny、Kill / Restart（确认）、推送深链。交互语法沿用即时消息的熟悉形态（固定 composer、气泡、乐观发送；composer 可附图——截图粘贴或从相册选，图落到会话所在节点的会话工作目录、路径随文字交给 agent，契约见 `docs/spec/api.md`「附图」，agora-lmz2）；最近一轮上方可展开更早的至多 3 轮人话与最终回复——来自节点为每个会话记下的有界轮次日志（ADR-002 D12，A53），但**不做消息流、翻页与完整对话历史**（§11 的 Conversation indexing，承接 agora-ghl3）；**没有终端、没有自由表单（新建只有预设按钮）、没有 diff / 验收 / 改动列表、没有命令面板与快捷键**（A52）。手机不是节点：不装 daemon / tmux / hooks、不跑 agent，只配对一个承载节点（通常是常开的 zuan），经 peer 一跳看与操作全部节点（§3.5、§6.6）。
 - **`respond_via = terminal` 的问题**（Grok 权限、AskUserQuestion 类）在手机上显示「需要到桌面」，不提供"打开终端"、不注入键击（§1.2）。
 - **无句柄行有没有 composer 看 `text_via`**（§5.5、ADR-002 D11：`runtime` | `host` | `none`）：`host`（宿主自报输入通道，目前是 pi 的扩展）与有终端的一样能给下一条指令——只是不经 PTY，走节点上的 `input/` 队列由宿主自己执行；`none` 才是 `mobile-terminal-only`「到桌面」（agora-t5kf.3）。
 - **桌面窄屏**（< 700 px）不再叠出第二套全功能布局：给「用手机面板打开」的引导；iPad 等中间形态走桌面。
@@ -615,7 +615,7 @@ RBAC                         Teams                        Cloud service
 
 （Git integration 与 Diff visualization 的**只读观察形态**——改动列表、canned `git diff` 终端——已进基线（§6.3、§12）；留在这里的是 git 写操作、diff 组件、Token / Cost、LLM summary。）
 
-**Conversation indexing（会话时间线）**：手机端不做消息流与历史翻页（§6.9、A52）；transcript 索引的触发条件与设计承接在 `agora-ghl3`（P4 评估），结论回填本节。
+**Conversation indexing（会话时间线）**：手机端不做消息流与历史翻页（§6.9、A52）——会话卡折叠的「更早 ≤3 轮」读的是节点自记的有界轮次日志（hook 交来的人话与最终回复，ADR-002 D12，A53），不是 transcript 索引；transcript 索引的触发条件与设计承接在 `agora-ghl3`（P4 评估），结论回填本节。
 
 **Artifact Viewer（文件路径变体）**：渲染 session 自己指名的那**一个**文件 / 页面。界线：≠ File Explorer——不列目录、不树形导航、不编辑、不提供自由路径输入；URL 抓取路径是 Non-Goal（§1.4）。
 
@@ -632,7 +632,8 @@ RBAC                         Teams                        Cloud service
 - [ ] **A28** 从 iPhone 经 zuan 回答 Mac 上的 WAITING、Kill / Restart，并看到行状态同步（一跳转发）；不 attach 终端
 - [ ] **A35** 节点以 HTTPS 提供服务，iPhone 可安装 PWA（ADR-003 证书路径至少一条走通）
 - [ ] **A37** iPhone 浏览器能看收件箱、回答 WAITING、确认危险操作；可安装为 PWA
-- [ ] **A52** 手机面板是无终端的交互子集：独立入口、DOM 不含终端、创建自由表单（「新建」只有预设按钮这一屏，整屏无 input / textarea）、diff / 验收 / 改动列表，也不含消息流与历史翻页；动作全部走与桌面相同的节点 API（有守卫）
+- [ ] **A52** 手机面板是无终端的交互子集：独立入口、DOM 不含终端、创建自由表单（「新建」只有预设按钮这一屏，整屏无 input / textarea）、diff / 验收 / 改动列表，也不含消息流与历史翻页（会话卡默认收起的「更早 ≤3 轮」不算，A53）；动作全部走与桌面相同的节点 API（有守卫）
+- [ ] **A53** 手机会话卡显示最近几轮上文：节点为每个会话保留有界的轮次日志（hook 交来的人话与最终回复），daemon 重启后仍在、删行即删；卡片在最近一轮上方默认收起「更早 N 轮」（N ≤ 3），展开按时间顺序看到每轮的人话与回复；老节点没有这份日志时不显示、不报错（有守卫）
 
 **TUI 桌面客户端**：同一套节点 API 的第二种客户端形态，桌面专用。V1 只有浏览器——它是三类设备唯一共有的运行环境（§0.1）。
 
@@ -691,6 +692,6 @@ MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终�
 - [ ] **A50** 就地 respond 搬进主区：主区结构是 crumb → 回答面板 → 终端；WAITING 的问题与 Allow / Deny / 打开终端、TURN_DONE 的最后一条回复（按 markdown 排版：标题 / 列表 / 代码块 / 表格，不渲染 HTML）与「下一条指令」输入框（在面板顶部、不用滚到底）、验收标准与改动列表都在这个面板里，可折叠、有高度上限；侧栏行不再展开，只剩行本身；手机阶段用它的交互子集（A52、§6.9），A50 只约束桌面（§6.2、§6.3；§1 第 2 步。agora-03k：窄列里塞几百行 markdown 读不了）（守卫：`web/src/Workspace.test.tsx`「clicking a turn_done row shows the respond panel in the main area between crumb and pane, and the sidebar row has no respond- testid (A50; agora-03k)」「a turn_done row with a task shows respond, acceptance and changes panels in that order above the terminal (A50)」、`web/src/RespondPanel.test.tsx`「the next-command input renders above the last reply (A50)」「a long reply is folded to 12 lines with an expand button; a short one has no button (A50)」、`web/src/Sidebar.test.tsx`「the sidebar DOM never contains respond-, acceptance- or changes- testids in either mode (A50)」）
 - [ ] **A51** 「需要我」视图的重排让人跟得上：指针在侧栏内或最近一次侧栏交互后的短暂窗口内不重排（新行仍插入、状态符号照变），窗口过后再按 attention 顺序落位，换了位置的行短暂高亮；Alt/Option+N 按冻结期间眼睛看到的顺序跳（§6.3、§6.5；§1 第 1 步）（守卫：`web/src/Workspace.test.tsx`「while the pointer is over the sidebar a status change does not reorder rows but updates the symbol (A51)」「after leaving the sidebar and 3 s (fake timers) the row moves and carries the moved class (A51)」「Alt/Option+2 during a freeze jumps to the second row as displayed (A51)」、`web/src/stableOrder.test.ts`「frozen freezes the section of every row and keeps the three sections contiguous (A51)」）
 
-编号全局唯一、不复用：A13 / A19 / A28 / A35 / A37 / A52 在 §11 手机条目。
+编号全局唯一、不复用：A13 / A19 / A28 / A35 / A37 / A52 / A53 在 §11 手机条目。
 
 开发阶段划分、里程碑与测试策略见 `ROADMAP.md`（由 beads 生成）。
