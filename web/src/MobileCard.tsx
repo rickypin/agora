@@ -10,7 +10,8 @@
  * Kill / Restart 先不带 confirmed 发、节点说要杀才弹框——MISSION §8）。发送失败时草稿回填回
  * 输入框、原因按错误码说人话、重试留在失败气泡上（agora-jidm；文案表见 [`sendFailureText`]）。
  * 只读行（采纳 socket / 死 pane）不给 composer 与「更多」：可写性看 `writableRuntime`
- * （agora-prdg.2）。
+ * （agora-prdg.2）。composer 能附图（粘贴或选图，agora-lmz2）：图先传到节点、路径接进文字再发，
+ * 规则见 [`./imageAttach`]。
  */
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { agentBadge } from "./agentBadge";
@@ -20,8 +21,10 @@ import { textVia } from "./events";
 import { activityPhraseForProgress, MOBILE_ACTIVITY_NO_TOKEN } from "./mobileActivity";
 import { mobileStatusLine } from "./mobileStatus";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { composeWire, displayPrompt, imagesFromClipboard, MAX_IMAGES, prepareImage } from "./imageAttach";
 import type { SessionRow } from "./events";
 import { MarkdownView } from "./MarkdownView";
+import { MobileIcon } from "./MobileIcon";
 import { nodeHue } from "./nodeColor";
 import { KILL_BODY, RESTART_BODY, restartNoteOf } from "./SessionSettings";
 import { rowName, statusSymbol, str } from "./SessionRow";
@@ -49,7 +52,21 @@ interface Props {
 }
 
 type Pending = { kind: "kill" | "restart" } | null;
-type Sent = { text: string; phase: "sending" | "sent" | "failed"; queued?: boolean; failure?: string };
+/**
+ * 一次发送。`wire` 是真正交给 `input` 的那一串（带图时是文字 + 图的引用），回显比对与重试都用它；
+ * `thumbs` 是气泡里的缩略图。`stage: "upload"` = 图没传上去，文字与图已放回 composer，气泡不给重试。
+ */
+type Sent = {
+  text: string;
+  wire?: string;
+  thumbs?: string[];
+  phase: "sending" | "sent" | "failed";
+  queued?: boolean;
+  failure?: string;
+  stage?: "upload";
+};
+/** composer 里待发的一张图；`url` 是缩略图用的 object URL。 */
+type Attachment = { key: number; file: Blob; url: string };
 
 /**
  * 发送失败给手机看的一句话（agora-jidm）：按错误码分开说，不把内部话直接扔给用户。
@@ -76,6 +93,24 @@ export function sendFailureText(error: ApiErrorBody): string {
   }
 }
 
+/**
+ * 传图失败给手机看的一句话（agora-lmz2）。405 是老节点没有 `images` 端点（正文不是 JSON，只有状态码
+ * 说得清）；其余按错误码，未知的原样显示服务端那句话。
+ */
+export function imageFailureText(error: ApiErrorBody, status?: number): string {
+  if (status === 405) return "那台节点版本旧，还不收图片；升级它，或只发文字。";
+  switch (error.error) {
+    case "bad_image":
+      return "这张图读不出来（只收 PNG / JPEG / GIF / WebP）。";
+    case "image_too_large":
+      return "图太大了，换一张小一点的。";
+    case "no_working_directory":
+      return "这个会话没有工作目录，图没处放。";
+    default:
+      return sendFailureText(error);
+  }
+}
+
 export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusComposer, initialDraft = "", onDraftChange, onNext }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [more, setMore] = useState(false);
@@ -86,6 +121,17 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   const [draft, setDraft] = useState(initialDraft);
   useEffect(() => { onDraftChange?.(draft); }, [draft, onDraftChange]);
   const [sent, setSent] = useState<Sent | null>(null);
+  const [images, setImages] = useState<Attachment[]>([]);
+  const imageKey = useRef(0);
+  const fileRef = useRef<HTMLInputElement>(null);
+  // 建过的缩略图 URL：气泡里的缩略图与 composer 共用同一批，卸载时统一放掉。
+  const thumbUrls = useRef<string[]>([]);
+  useEffect(
+    () => () => {
+      for (const url of thumbUrls.current) URL.revokeObjectURL(url);
+    },
+    [],
+  );
   // 「等它接手…」20 s 还没动静的兜底（agora-o975.2 审查修订，2026-10-08）：ack 回来了、
   // row.prompt 没回显、状态也没离开 turn_done/idle——再等下去没有新信息，补一句出口话，
   // 别让一句进度提示永远挂着。
@@ -124,6 +170,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   useEffect(() => {
     setSent(null);
     setDraft(initialDraft);
+    setImages([]);
     setError(null);
     setNote(null);
     setMore(false);
@@ -132,7 +179,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   useEffect(() => {
     if (!sent || sent.phase === "failed") return;
     const first = str(row.prompt).split("\n")[0]?.trim();
-    if (first && first === sent.text.split("\n")[0]?.trim()) setSent(null);
+    if (first && first === (sent.wire ?? sent.text).split("\n")[0]?.trim()) setSent(null);
   }, [row.prompt, sent]);
 
   const badge = agentBadge(String(row.agent_type ?? ""));
@@ -179,7 +226,8 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   const canRestart = writableRuntime && typeof row.command === "string" && row.command.trim() !== "";
   const detail = str(row.detail);
   const prompt = str(row.prompt).split("\n")[0] ?? "";
-  const userText = sent?.text ?? prompt;
+  const userText = sent?.text ?? displayPrompt(prompt);
+  const userThumbs = sent?.thumbs ?? [];
   // 活动 token（agora-dflx）：优先 `progress`——活动层写的就是它（机器在 prompt 提交时清空，
   // 正好避开把自己的话当成回复），它是「现在到哪了」那一路。缺 `progress` 的旧节点退回
   // `detail`，但 `detail` 与本行 prompt 首行相同（刚提交、活动还没来）时按「没有活动」处理。
@@ -200,7 +248,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   const promptEchoed = (() => {
     if (!sent || sent.phase !== "sent") return false;
     const first = str(row.prompt).split("\n")[0]?.trim();
-    return first !== "" && first === sent.text.split("\n")[0]?.trim();
+    return first !== "" && first === (sent.wire ?? sent.text).split("\n")[0]?.trim();
   })();
   const awaitingTakeover = sent?.phase === "sent" && idleOrDone && !promptEchoed;
   // 20 s 兜底用墙上钟的 setTimeout（这一段行已经不在跑，没有 1 s 心跳可借）：提示一撤
@@ -218,19 +266,56 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   const folded = !expanded && replyLines.length > FOLD_LINES;
   const replyShown = folded ? replyLines.slice(0, FOLD_LINES).join("\n") : detail;
 
-  async function sendText(text: string) {
+  /**
+   * 发一条：带图时先逐张传到节点（agora-lmz2），全部拿到路径再把引用接进文字走 `input`。
+   * 传图失败什么都没发出去——文字与图放回 composer，气泡只报原因、不给重试；文字那一步失败
+   * 沿用原来的失败气泡 + 重试（图已落盘，重试只重发 `wire`，不重传）。
+   */
+  async function sendText(text: string, attached: Attachment[] = []) {
     if (row.stale) return;
     setError(null);
+    if (attached.length === 0) {
+      await deliver(text, text, []);
+      return;
+    }
+    const thumbs = attached.map((a) => a.url);
+    setSent({ text, thumbs, phase: "sending" });
+    const paths: string[] = [];
+    for (const a of attached) {
+      let data: string;
+      try {
+        data = await prepareImage(a.file);
+      } catch {
+        uploadFailed(text, attached, "这张图在手机上就读不出来，换一张试试。");
+        return;
+      }
+      const r = await api.uploadImage(row.id, data);
+      if (!r.ok) {
+        uploadFailed(text, attached, r.needsConfirmation ? undefined : imageFailureText(r.error, r.status));
+        return;
+      }
+      paths.push(r.value.path);
+    }
+    await deliver(text, composeWire(text, paths), thumbs);
+  }
+
+  function uploadFailed(text: string, attached: Attachment[], failure: string | undefined) {
+    setSent({ text, thumbs: attached.map((a) => a.url), phase: "failed", failure, stage: "upload" });
+    setDraft((d) => (d.trim() === "" ? text : d));
+    setImages((cur) => (cur.length === 0 ? attached : cur));
+  }
+
+  async function deliver(text: string, wire: string, thumbs: string[]) {
     // 「排队 / 没排队」按**发出去的那一刻**这一行是否在跑：ack 回来时 hook 可能已经把它改成别的
     // 状态，标签要跟着这一次发送走，不回头看。
     const queued = hostText && running;
-    setSent({ text, phase: "sending" });
-    const r = await api.input(row.id, { kind: "text", data: `${text}\n` });
+    setSent({ text, wire, thumbs, phase: "sending" });
+    const r = await api.input(row.id, { kind: "text", data: `${wire}\n` });
     if (r.ok) {
-      setSent({ text, phase: "sent", queued });
+      setSent({ text, wire, thumbs, phase: "sent", queued });
       return;
     }
-    setSent({ text, phase: "failed", failure: r.needsConfirmation ? undefined : sendFailureText(r.error) });
+    setSent({ text, wire, thumbs, phase: "failed", failure: r.needsConfirmation ? undefined : sendFailureText(r.error) });
     if (!r.needsConfirmation) {
       // 草稿回填（agora-jidm ①）：失败后想改一个字不用重打整句。只在输入框为空时放回去，
       // 不覆盖请求在途时用户已经打上的新字；失败气泡里的重试仍拿着原来那份文本。
@@ -238,14 +323,43 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
     }
   }
 
+  function retry(failed: Sent) {
+    if (row.stale) return;
+    setError(null);
+    void deliver(failed.text, failed.wire ?? failed.text, failed.thumbs ?? []);
+  }
+
+  function addImages(files: Blob[]) {
+    if (files.length === 0) return;
+    const room = MAX_IMAGES - images.length;
+    if (files.length > room) setNote(`一条最多带 ${MAX_IMAGES} 张图。`);
+    const added = files.slice(0, Math.max(0, room)).map((file) => {
+      const url = URL.createObjectURL(file);
+      thumbUrls.current.push(url);
+      return { key: imageKey.current++, file, url };
+    });
+    if (added.length > 0) setImages([...images, ...added]);
+  }
+
+  function removeImage(key: number) {
+    const gone = images.find((a) => a.key === key);
+    if (gone) {
+      URL.revokeObjectURL(gone.url);
+      thumbUrls.current = thumbUrls.current.filter((u) => u !== gone.url);
+    }
+    setImages(images.filter((a) => a.key !== key));
+  }
+
   function submit() {
     const text = draft.trim();
-    if (!text || row.stale) return;
+    if ((!text && images.length === 0) || row.stale) return;
     // 在途防重（agora-o975.2 审查修订，2026-10-08）：输入框在途仍可编辑（能接着打下一句），
     // 所以 Enter 提交还会进门——这里挡住第二次；挡的时候草稿留在框里（等 ack 回来还能发）。
     if (sent?.phase === "sending") return;
+    const attached = images;
     setDraft("");
-    void sendText(text);
+    setImages([]);
+    void sendText(text, attached);
   }
 
   async function decide(kind: "allow" | "deny") {
@@ -346,19 +460,28 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
           </div>
         ) : (
           <>
-            {userText !== "" && (
+            {(userText !== "" || userThumbs.length > 0) && (
               <div className="mobile-bubble user" data-testid="mobile-bubble-user">
                 <span className="mobile-bubble-mark" aria-hidden="true">
                   你
                 </span>
-                <span>{userText}</span>
+                <span>
+                  {userText}
+                  {userThumbs.length > 0 && (
+                    <span className="mobile-bubble-images" data-testid="mobile-bubble-images">
+                      {userThumbs.map((url, i) => (
+                        <img key={url} src={url} alt={`第 ${i + 1} 张图`} />
+                      ))}
+                    </span>
+                  )}
+                </span>
                 {sent && sent.phase !== "failed" && (
                   <span className="mobile-sent-state" data-testid="mobile-sent-state">
                     {sent.phase === "sending" ? "发送中…" : sent.queued ? "已排队" : "已发出"}
                   </span>
                 )}
-                {sent?.phase === "failed" && (
-                  <button className="mobile-retry" data-testid="mobile-retry" disabled={row.stale === true} onClick={() => void sendText(sent.text)}>
+                {sent?.phase === "failed" && sent.stage !== "upload" && (
+                  <button className="mobile-retry" data-testid="mobile-retry" disabled={row.stale === true} onClick={() => retry(sent)}>
                     重试
                   </button>
                 )}
@@ -427,7 +550,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
                   : "这一行没有可写的运行时；回复要到桌面终端。"}
               </p>
             )}
-            {writableRuntime && userText === "" && detail === "" && !running && (
+            {writableRuntime && userText === "" && userThumbs.length === 0 && detail === "" && !running && (
               <p className="mobile-note" data-testid="mobile-empty-thread">
                 还没有可显示的内容；回一条就会出现在这里。
               </p>
@@ -468,6 +591,48 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
             submit();
           }}
         >
+          {images.length > 0 && (
+            <div className="mobile-attachments" data-testid="mobile-attachments">
+              {images.map((a, i) => (
+                <span className="mobile-attachment" key={a.key}>
+                  <img src={a.url} alt={`待发的第 ${i + 1} 张图`} />
+                  <button
+                    type="button"
+                    className="mobile-attachment-remove"
+                    aria-label={`移除第 ${i + 1} 张图`}
+                    data-testid="mobile-attachment-remove"
+                    onClick={() => removeImage(a.key)}
+                  >
+                    <span aria-hidden="true">×</span>
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          {/* 选图（agora-lmz2）：iOS 上这是拿截图最稳的一条路——相册里点选；粘贴走 textarea 的 onPaste。 */}
+          <button
+            type="button"
+            className="mobile-attach"
+            aria-label="添加图片"
+            data-testid="mobile-attach"
+            disabled={busy || row.stale === true || images.length >= MAX_IMAGES}
+            onClick={() => fileRef.current?.click()}
+          >
+            <MobileIcon name="image" />
+          </button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            data-testid="mobile-attach-input"
+            onChange={(e) => {
+              addImages(Array.from(e.currentTarget.files ?? []));
+              // 清空，同一张图删掉后还能再选一次（同值不触发 change）。
+              e.currentTarget.value = "";
+            }}
+          />
           <textarea
             rows={2}
             ref={composerRef}
@@ -478,8 +643,15 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
             disabled={busy || row.stale === true}
             onChange={(e) => setDraft(e.target.value)}
             onFocus={(e) => keepAboveKeyboard(e.currentTarget)}
+            onPaste={(e) => {
+              const files = imagesFromClipboard(e.clipboardData);
+              if (files.length === 0) return;
+              addImages(files);
+              // 只有图（截图「拷贝」）时别让浏览器再往框里塞一个文件名或空串；图文混贴文字照常进框。
+              if (!e.clipboardData.getData("text/plain")) e.preventDefault();
+            }}
           />
-          <button type="submit" data-testid="mobile-send" disabled={!draft.trim() || sent?.phase === "sending" || row.stale === true}>
+          <button type="submit" data-testid="mobile-send" disabled={(!draft.trim() && images.length === 0) || sent?.phase === "sending" || row.stale === true}>
             {sent?.phase === "sending" && <span className="mobile-spinner" aria-hidden="true" />}
             {sent?.phase === "sending" ? "发送中…" : "发送"}
           </button>

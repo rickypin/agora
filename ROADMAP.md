@@ -2,7 +2,7 @@
 
 > **由 `scripts/roadmap-view.sh` 生成，不要手改。** 真相源是 beads：阶段 = epic，阶段门 = epic 之间的 `blocks` 依赖，验收标准 = epic 的 `--acceptance`，演示剧本 = epic 的 `--design`（下方"演示剧本"一节）。
 > 本文件不放任务 checkbox（避免 devcenter 式双轨，见 `docs/analysis/beads/README.md` §6.3 / §8.2）。任务级细节：`bd ready`、`bd dep tree <epic>`。
-> 生成时间：2026-10-09
+> 生成时间：2026-10-10
 
 | 阶段 | epic | 目标 | 阶段门（被谁阻塞） | 验收要点 | 状态 / 进度 |
 |---|---|---|---|---|---|
@@ -11,7 +11,7 @@
 | M1b | `agora-dvh` | Agent 感知 | `agora-xqa` | MISSION §12：A14–A18、A22、A23、A32；另接过 A1 的未登记会话那一半（Unknown Agent 的侧栏展示与采纳入口，A22 的前置，agora-dvh.12 / agora-7cu），A1 两半都做完才算过；补 A36 中不变量 10 的测试。逐条可打勾；每条对应 epic 内至少一个 issue。 | closed  |
 | M2a | `agora-7ku` | peer 核心 | `agora-dvh` | MISSION §12：A27、A30、A31、A33、A34、A38。（agora-7ku.12 是 A29 的策略半边，A29 本身由 M2b 认领；A36 不变量 8、11 的收口在 M2b。） | closed  |
 | M2b | `agora-s4r` | 安装运维与收口 | `agora-dvh` | MISSION §12：A26、A29、A39；补齐 A36 中不变量 8、11 的测试。 | closed  |
-| M2c | `agora-3j0` | 在 peer 上起会话（New Agent 选节点） | `agora-s4r`, `agora-7ku` | MISSION §12：A45。 | closed  |
+| M2c | `agora-3j0` | 在 peer 上起会话（New Agent 选节点） | `agora-7ku`, `agora-s4r` | MISSION §12：A45。 | closed  |
 | M3 | `agora-h1k` | 产出与起会话增强 | `agora-dvh` | MISSION §12：A40–A44。 | closed  |
 | M3b | `agora-j4w` | 侧栏收纳（FINISHED 行看过即收、external 行自动过期） | `agora-h1k` | MISSION §12：A46。 | closed  |
 | M4a | `agora-uvd` | 侧栏树视图（节点 / 仓库 / worktree）、视图切换与行身份 | `agora-j4w` | MISSION §12：A47、A48、A49。 | closed  |

@@ -350,6 +350,8 @@ describe("attention", () => {
       "agora-1 写 MISSION",
     );
     expect(taskLabel(row("a", "running", { task_ref: "修 migration 回滚", name: "s" }))).toBe("修 migration 回滚");
+    // 首条 prompt 补出来的 task_ref 带图的引用（agora-lmz2）：标题里只留短记号，不画整段路径。
+    expect(taskLabel(row("a", "running", { task_ref: "看这里 [image: /w/.agora-uploads/1-abcdef.png]", name: "s" }))).toBe("看这里 ［图片］");
     expect(taskLabel(row("a", "running", { name: "sglog", display_name: "x" }))).toBe("sglog");
     expect(taskLabel(row("n:abc", "running"))).toBe("n:abc");
   });

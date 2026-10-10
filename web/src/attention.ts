@@ -10,6 +10,7 @@
  * 新一次完成再回来——但它降进的是 WORKING 段，**不是** Finished 折叠区（理由见 `needsAttention`）。
  */
 import type { SessionRow } from "./events";
+import { displayPrompt } from "./imageAttach";
 
 export const SCORE: Record<string, number> = {
   failed: 100,
@@ -313,7 +314,9 @@ function safeStorage(): Storage | null {
 export function taskLabel(row: SessionRow): string {
   const t = taskOf(row);
   if (t) return `${t.id} ${t.title}`.trim();
-  if (typeof row.task_ref === "string" && row.task_ref.trim()) return row.task_ref.trim();
+  // 没填任务的行，节点拿首条 prompt 的首行补 task_ref：带图的那句里有 `[image: <路径>]`，
+  // 当标题时换成短记号（agora-lmz2；2026-10-10 WebKit 代检：整段路径占了卡片标题五行）。
+  if (typeof row.task_ref === "string" && row.task_ref.trim()) return displayPrompt(row.task_ref.trim());
   return String(row.name ?? row.display_name ?? row.id);
 }
 

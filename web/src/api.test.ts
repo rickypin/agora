@@ -48,11 +48,26 @@ describe("sessionApi", () => {
     );
     const api = sessionApi(f);
     const r = await api.restart("n:x");
-    expect(r).toEqual({ ok: false, needsConfirmation: false, error: { error: "no_runtime", message: "external" } });
+    expect(r).toEqual({ ok: false, needsConfirmation: false, error: { error: "no_runtime", message: "external" }, status: 409 });
     const d = await api.deleteMetadata("n:x");
     expect(d.ok).toBe(true);
     expect(calls[1].init.method).toBe("DELETE");
     expect(calls[1].url).toBe("/api/sessions/n%3Ax");
+  });
+
+  it("uploadImage posts base64 to /images and hands back the node's path (agora-lmz2)", async () => {
+    const { f, calls } = fakeFetch(() => ({ status: 201, body: { path: "/w/.agora-uploads/1-abcdef.png" } }));
+    const r = await sessionApi(f).uploadImage("n:x", "iVBORw0KGgo=");
+    expect(r).toEqual({ ok: true, value: { path: "/w/.agora-uploads/1-abcdef.png" } });
+    expect(calls[0].url).toBe("/api/sessions/n%3Ax/images");
+    expect(calls[0].init.method).toBe("POST");
+    expect(calls[0].init.body).toBe(JSON.stringify({ data: "iVBORw0KGgo=" }));
+  });
+
+  it("an older node without /images answers 405 with no JSON: the status is what tells it apart", async () => {
+    const { f } = fakeFetch(() => ({ status: 405 }));
+    const r = await sessionApi(f).uploadImage("n:x", "AA==");
+    expect(r).toEqual({ ok: false, needsConfirmation: false, error: { error: "unknown", message: "HTTP 405" }, status: 405 });
   });
 });
 

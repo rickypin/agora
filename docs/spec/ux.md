@@ -416,6 +416,16 @@ PTY 没有队列，键击直接落进 TUI 的输入区，各家对「跑着的�
 20 s 兜底 + 失败用例照旧）与 `web/src/mobileCss.test.ts`（转圈 / 动态点的具名动画与 reduced-motion
 覆盖）。
 
+### composer 附图（agora-lmz2，2026-10-10）
+
+用户在手机上看到问题、想把截图交给 agent，以前只能回桌面——composer 是纯文字。现在会话卡的 composer 能带图（改善 respond：不离开手机就能把「看这里」交出去）：
+
+- 两个入口：输入行左侧的图标按钮「添加图片」（`mobile-attach`，点开隐藏的 `<input type="file" accept="image/*" multiple>`，iOS 上弹相册 / 拍照，是拿截图最稳的一条路），以及在输入框里粘贴（`onPaste` 取 `clipboardData` 里的图片文件；只有图时 `preventDefault`，图文混贴时文字照常进框）。
+- 待发的图在输入行**上方**排成一条缩略图（`mobile-attachments`；composer `flex-wrap: wrap`、缩略图条 `order: -1` 独占一行），每张角上一个移除键（命中区是整块 `--m-tap` 方格，看得见的只是角上的小圆）。一条最多 4 张，多了给一句「一条最多带 4 张图」；满了选图按钮置灰。有图没字也能发。
+- 发送：先逐张 `POST /api/sessions/:id/images`（>1.5 MB 或不是 PNG / JPEG / GIF / WebP 的先在手机上缩到长边 ≤ 2000、转 JPEG），全拿到路径再把 `[image: <路径>]` 接在文字同一行末尾走原来的 `input`（契约见 api.md「附图」）。乐观气泡画文字 + 缩略图，不画路径；`row.prompt` 回显比对用真正发出去的那一串，回显后气泡里的引用显示为「［图片］」。
+- 失败：**图没传上去就什么都不发**——文字与图放回 composer，气泡下报原因，不给重试（内容已经回到框里，重试会发两遍）；老节点没有这个端点（405）说「那台节点版本旧，还不收图片；升级它，或只发文字」，不静默只发文字。文字那一步失败沿用「发送三段」的失败气泡与重试，重试只重发同一串、不重传图。
+- 守卫：`web/src/MobileCard.test.tsx`「composer 附图」（粘贴与移除、选图与 4 张上限、先 images 后 input 与 data 拼接、传图失败不调 input 且回填、405 文案、文字失败重试不重传、图文混贴不吞文字）、`web/src/imageAttach.test.ts`。
+
 ### 按钮上的 flex 必须自己写 align-items（agora-x70t，2026-10-08）
 
 手机端收件箱的每一行是一个 `<button class="mobile-row">`，里面是列方向的 flex（第一行名字+状态、

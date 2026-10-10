@@ -11,6 +11,7 @@ pub mod changes;
 mod events;
 pub mod forward;
 mod health;
+mod images;
 mod presets;
 mod projects;
 mod push;
@@ -25,7 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::connect_info::ConnectInfo;
-use axum::extract::{FromRef, FromRequestParts, Request};
+use axum::extract::{DefaultBodyLimit, FromRef, FromRequestParts, Request};
 use axum::http::request::Parts;
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
@@ -214,6 +215,7 @@ pub const ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/sessions/{id}/restart"),
     ("POST", "/api/sessions/{id}/cleanup"),
     ("POST", "/api/sessions/{id}/input"),
+    ("POST", "/api/sessions/{id}/images"),
     ("GET", "/api/sessions/{id}/terminal"),
     ("GET", "/api/sessions/{id}/changes"),
     ("GET", "/api/sessions/{id}/diff"),
@@ -255,6 +257,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/sessions/{id}/restart", post(sessions::restart))
         .route("/api/sessions/{id}/cleanup", post(sessions::cleanup))
         .route("/api/sessions/{id}/input", post(sessions::input))
+        // 附图（agora-lmz2）：只有这一条放宽请求体上限，其余端点仍是 axum 默认的 2 MB。
+        .route(
+            "/api/sessions/{id}/images",
+            post(images::upload).layer(DefaultBodyLimit::max(images::BODY_LIMIT)),
+        )
         .route("/api/sessions/{id}/terminal", get(terminal::upgrade))
         // 只读产出（MISSION §6.3 看结果；A41，agora-h1k.5）：改动文件列表 + 只读 diff 终端。
         .route("/api/sessions/{id}/changes", get(changes::list))

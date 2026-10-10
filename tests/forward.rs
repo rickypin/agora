@@ -348,6 +348,41 @@ async fn input_and_restart_forwarded_to_owner() {
     assert!(a.rt.respawns.lock().unwrap().is_empty());
 }
 
+/// 附图（agora-lmz2）：A 上看到的 B 会话，图经一跳落进 **B 那台机器上**会话的工作目录，
+/// 响应里的路径是 B 的路径；A 自己不建任何目录。
+#[tokio::test]
+async fn image_upload_forwarded_to_owner() {
+    use base64::Engine;
+    let (a, b, _c, _) = chain();
+    let wd = tempfile::tempdir().unwrap();
+    let r = b
+        .call(
+            Method::POST,
+            "/api/sessions",
+            Some(json!({
+                "display_name": "shots",
+                "agent_type": "shell",
+                "working_directory": wd.path(),
+                "command": "sleep 300",
+            })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let gid = gid_of(&r.body);
+    let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+    let r = a
+        .call(
+            Method::POST,
+            &format!("/api/sessions/{gid}/images"),
+            Some(json!({ "data": base64::engine::general_purpose::STANDARD.encode(png) })),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let path = std::path::Path::new(r.body["path"].as_str().unwrap());
+    assert_eq!(path.parent().unwrap(), wd.path().join(".agora-uploads"));
+    assert_eq!(std::fs::read(path).unwrap(), png);
+}
+
 /// PATCH / cleanup / DELETE 同样经 A 到 B；B 的校验（400 bad_request、409 still_alive、404 not_found）
 /// 原样回来，B 的库与运行时是唯一被改的地方。
 #[tokio::test]
@@ -486,6 +521,11 @@ async fn unknown_node_is_rejected() {
             Method::POST,
             "/api/sessions/nobody:1/input",
             Some(json!({ "kind": "text", "data": "x" })),
+        ),
+        (
+            Method::POST,
+            "/api/sessions/nobody:1/images",
+            Some(json!({ "data": "iVBORw0KGgo=" })),
         ),
         (
             Method::PATCH,

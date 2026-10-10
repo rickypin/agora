@@ -747,6 +747,17 @@ li.done > .row.selected .name, li.done > ul > li > .row.selected .name { color: 
 
 .mobile-composer textarea { box-sizing: border-box; flex: 1; min-width: 0; min-height: var(--m-tap); max-height: 28dvh; resize: vertical; padding: var(--m-2) var(--m-3); font: inherit; font-size: max(16px, var(--m-fs)); line-height: 1.5; color: var(--fg); background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-card); }
 .mobile-composer button { align-self: center; }
+/* 附图（agora-lmz2）：composer 折行，缩略图条排在输入行之上；选图与移除是图标按钮，不吃发送键的
+   强调色。移除键的命中区是整块 --m-tap 方格，看得见的只是角上的小圆。 */
+.mobile-composer { flex-wrap: wrap; }
+.mobile-attachments { order: -1; flex: 1 0 100%; display: flex; align-items: flex-start; gap: var(--m-2); overflow-x: auto; }
+.mobile-attachment { position: relative; flex: none; }
+.mobile-attachment img { display: block; height: 4.5em; width: auto; max-width: 9em; object-fit: cover; border: 1px solid var(--border); border-radius: var(--r-2); }
+.mobile-composer .mobile-attach { flex: none; display: inline-grid; place-items: center; min-width: var(--m-tap); padding: 0; background: var(--panel); color: var(--fg); border: 1px solid var(--border); font-weight: inherit; }
+.mobile-composer .mobile-attachment-remove { position: absolute; top: 0; right: 0; display: grid; place-items: start end; width: var(--m-tap); min-height: var(--m-tap); padding: var(--m-1); background: transparent; color: var(--fg); border: 0; font-weight: inherit; line-height: 1; }
+.mobile-attachment-remove > span { display: inline-grid; place-items: center; width: 1.5em; height: 1.5em; border-radius: var(--r-pill); background: var(--bg); border: 1px solid var(--border); }
+.mobile-bubble-images { display: flex; align-items: flex-start; flex-wrap: wrap; gap: var(--m-1); margin-top: var(--m-1); }
+.mobile-bubble-images img { display: block; height: 4em; width: auto; max-width: 8em; object-fit: cover; border-radius: var(--r-2); }
 
 .mobile-card-heading { flex: 1; min-width: 0; }
 .mobile-title-row, .mobile-card-meta { display: flex; align-items: center; min-width: 0; gap: var(--m-2); }

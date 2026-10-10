@@ -6,6 +6,7 @@
 
 pub mod db;
 mod hook_state;
+pub mod images;
 pub mod manager;
 pub mod model;
 pub mod preset;

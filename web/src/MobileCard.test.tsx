@@ -3,8 +3,8 @@
  * /m 会话卡（agora-thc.10）：IM 语法（两气泡 / 底部 composer / 乐观发送）、composer 状态门、
  * WAITING 三种分支、Kill / Restart 的两步确认、A52 的 DOM 预算。
  */
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sessionApi, type FetchLike } from "./api";
 import type { SessionRow } from "./events";
 import { FOLD_LINES, MobileCard } from "./MobileCard";
@@ -703,4 +703,151 @@ it("a failed reply cannot be retried after its node goes offline (agora-d0r)", a
   expect((screen.getByTestId("mobile-retry") as HTMLButtonElement).disabled).toBe(true);
   fireEvent.click(screen.getByTestId("mobile-retry"));
   expect(input).toHaveBeenCalledTimes(1);
+});
+
+describe("composer 附图（agora-lmz2）", () => {
+  const PATH = "/w/.agora-uploads/1700000000000-abcdef.png";
+  // jsdom 没有 object URL：缩略图只要一个可比的 src。
+  const created: string[] = [];
+  const original = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
+  beforeEach(() => {
+    created.length = 0;
+    let n = 0;
+    URL.createObjectURL = vi.fn(() => {
+      const url = `blob:thumb-${++n}`;
+      created.push(url);
+      return url;
+    });
+    URL.revokeObjectURL = vi.fn();
+  });
+  afterEach(() => {
+    URL.createObjectURL = original.create;
+    URL.revokeObjectURL = original.revoke;
+  });
+
+  const png = (name = "shot.png") => new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])], name, { type: "image/png" });
+  const PNG_B64 = btoa(String.fromCharCode(0x89, 0x50, 0x4e, 0x47, 1, 2, 3));
+
+  /** `/images` 与 `/input` 各自回什么由用例给；其余端点 200。 */
+  function setupImages(images: (n: number) => Response, input: (n: number) => Response = () => json({})) {
+    const requests: { url: string; method: string; body: string | undefined }[] = [];
+    let ni = 0;
+    let nt = 0;
+    const f: FetchLike = async (url, init) => {
+      requests.push({ url, method: init.method ?? "GET", body: init.body as string | undefined });
+      if (url.endsWith("/images")) return images(++ni);
+      if (url.endsWith("/input")) return input(++nt);
+      return json({});
+    };
+    const renderCard = (r: SessionRow) => <MobileCard row={r} api={sessionApi(f)} now={1000} onBack={vi.fn()} onSeen={vi.fn()} />;
+    const ui = render(renderCard(row("n:a")));
+    return { ui, requests, renderCard };
+  }
+  function json(body: unknown, status = 200) {
+    return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  }
+  const pasteImages = (files: File[], text = "") =>
+    fireEvent.paste(screen.getByTestId("mobile-next-input"), {
+      clipboardData: { files, items: [], getData: (t: string) => (t === "text/plain" ? text : "") },
+    });
+  const thumbs = () => screen.queryByTestId("mobile-attachments")?.querySelectorAll("img") ?? [];
+  const sendButton = () => screen.getByTestId("mobile-send") as HTMLButtonElement;
+
+  it("粘贴截图出缩略图、可移除；只有图也能发", () => {
+    setupImages(() => json({ path: PATH }, 201));
+    expect(sendButton().disabled).toBe(true);
+    pasteImages([png()]);
+    expect(thumbs()).toHaveLength(1);
+    expect(thumbs()[0].getAttribute("src")).toBe(created[0]);
+    expect(sendButton().disabled).toBe(false);
+    fireEvent.click(screen.getByTestId("mobile-attachment-remove"));
+    expect(screen.queryByTestId("mobile-attachments")).toBeNull();
+    expect(sendButton().disabled).toBe(true);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(created[0]);
+  });
+
+  it("选图按钮走隐藏的 file input；一条最多 4 张", () => {
+    setupImages(() => json({ path: PATH }, 201));
+    const input = screen.getByTestId("mobile-attach-input") as HTMLInputElement;
+    expect(input.type).toBe("file");
+    expect(input.accept).toBe("image/*");
+    fireEvent.change(input, { target: { files: [png("1.png"), png("2.png"), png("3.png"), png("4.png"), png("5.png")] } });
+    expect(thumbs()).toHaveLength(4);
+    expect(screen.getByTestId("mobile-card-note").textContent).toContain("最多带 4 张");
+    expect((screen.getByTestId("mobile-attach") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("先 /images 再 /input：input 的 data 接上节点交回的路径，气泡画文字与缩略图、不画路径", async () => {
+    const { ui, requests, renderCard } = setupImages(() => json({ path: PATH }, 201));
+    pasteImages([png()]);
+    fireEvent.change(screen.getByTestId("mobile-next-input"), { target: { value: "看这张图" } });
+    fireEvent.click(screen.getByTestId("mobile-send"));
+    await waitFor(() => expect(requests.some((r) => r.url.endsWith("/input"))).toBe(true));
+
+    expect(requests.map((r) => r.url)).toEqual(["/api/sessions/n%3Aa/images", "/api/sessions/n%3Aa/input"]);
+    expect(JSON.parse(requests[0].body ?? "")).toEqual({ data: PNG_B64 });
+    expect(JSON.parse(requests[1].body ?? "")).toEqual({ kind: "text", data: `看这张图 [image: ${PATH}]\n` });
+    const bubble = screen.getByTestId("mobile-bubble-user");
+    expect(bubble.textContent).toContain("看这张图");
+    expect(bubble.textContent).not.toContain(".agora-uploads");
+    expect(screen.getByTestId("mobile-bubble-images").querySelectorAll("img")).toHaveLength(1);
+    expect(screen.queryByTestId("mobile-attachments")).toBeNull();
+    expect((screen.getByTestId("mobile-next-input") as HTMLTextAreaElement).value).toBe("");
+
+    // 服务端把整句收进 prompt：回显按 wire 比对，「等它接手」撤掉；气泡里的图引用说成［图片］。
+    expect(screen.getByTestId("mobile-await-takeover")).toBeTruthy();
+    ui.rerender(renderCard(row("n:a", { prompt: `看这张图 [image: ${PATH}]` })));
+    expect(screen.queryByTestId("mobile-await-takeover")).toBeNull();
+    expect(screen.getByTestId("mobile-bubble-user").textContent).toContain("看这张图 ［图片］");
+  });
+
+  it("图没传上去就什么都不发：文字与图回到 composer，气泡报原因、不给重试", async () => {
+    const { requests } = setupImages(() => json({ error: "bad_image", message: "只收 PNG / JPEG / GIF / WebP 图片" }, 400));
+    pasteImages([png()]);
+    fireEvent.change(screen.getByTestId("mobile-next-input"), { target: { value: "这张" } });
+    fireEvent.click(screen.getByTestId("mobile-send"));
+    await waitFor(() => expect(screen.queryByTestId("mobile-send-failure")).toBeTruthy());
+
+    expect(requests.filter((r) => r.url.endsWith("/input"))).toHaveLength(0);
+    expect(screen.getByTestId("mobile-send-failure").textContent).toContain("读不出来");
+    expect(screen.queryByTestId("mobile-retry")).toBeNull();
+    expect((screen.getByTestId("mobile-next-input") as HTMLTextAreaElement).value).toBe("这张");
+    expect(thumbs()).toHaveLength(1);
+  });
+
+  it("老节点没有 /images（405、正文不是 JSON）：说那台节点版本旧，不静默只发文字", async () => {
+    const { requests } = setupImages(() => new Response(null, { status: 405 }));
+    pasteImages([png()]);
+    fireEvent.change(screen.getByTestId("mobile-next-input"), { target: { value: "带图" } });
+    fireEvent.click(screen.getByTestId("mobile-send"));
+    await waitFor(() => expect(screen.queryByTestId("mobile-send-failure")).toBeTruthy());
+    expect(screen.getByTestId("mobile-send-failure").textContent).toContain("版本旧");
+    expect(requests.filter((r) => r.url.endsWith("/input"))).toHaveLength(0);
+  });
+
+  it("文字那一步失败：重试只重发同一串，不重传图", async () => {
+    const { requests } = setupImages(
+      () => json({ path: PATH }, 201),
+      (n) => (n === 1 ? json({ error: "host_timeout", message: "宿主没来取" }, 504) : json({})),
+    );
+    pasteImages([png()]);
+    fireEvent.click(screen.getByTestId("mobile-send"));
+    await waitFor(() => expect(screen.queryByTestId("mobile-retry")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("mobile-retry"));
+    await waitFor(() => expect(requests.filter((r) => r.url.endsWith("/input"))).toHaveLength(2));
+
+    expect(requests.filter((r) => r.url.endsWith("/images"))).toHaveLength(1);
+    const inputs = requests.filter((r) => r.url.endsWith("/input")).map((r) => JSON.parse(r.body ?? ""));
+    expect(inputs[0]).toEqual({ kind: "text", data: `[image: ${PATH}]\n` });
+    expect(inputs[1]).toEqual(inputs[0]);
+  });
+
+  it("图文混贴：图进缩略图，文字照常进框（不 preventDefault）", () => {
+    setupImages(() => json({ path: PATH }, 201));
+    const ok = pasteImages([png()], "一段文字");
+    expect(thumbs()).toHaveLength(1);
+    expect(ok).toBe(true);
+    const onlyImage = pasteImages([png()]);
+    expect(onlyImage).toBe(false);
+  });
 });

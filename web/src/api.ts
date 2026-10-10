@@ -16,7 +16,8 @@ import { apiFetch, type FetchLike } from "./net";
 export type WriteResult<T = unknown> =
   | { ok: true; value: T }
   | { ok: false; needsConfirmation: true }
-  | { ok: false; needsConfirmation: false; error: ApiErrorBody };
+  /** `status` 是 HTTP 状态码：老节点没有某个端点时只有它说得清（405，正文不是 JSON）。 */
+  | { ok: false; needsConfirmation: false; error: ApiErrorBody; status?: number };
 
 export type { FetchLike } from "./net";
 
@@ -150,7 +151,7 @@ async function call<T>(
   if (resp.status === 409 && err.error === "needs_confirmation") {
     return { ok: false, needsConfirmation: true };
   }
-  return { ok: false, needsConfirmation: false, error: err };
+  return { ok: false, needsConfirmation: false, error: err, status: resp.status };
 }
 
 const enc = (id: string) => `/api/sessions/${encodeURIComponent(id)}`;
@@ -170,6 +171,11 @@ export function sessionApi(fetchImpl: FetchLike = apiFetch) {
     deleteMetadata: (id: string) => call(fetchImpl, "DELETE", enc(id)),
     /** 就地 respond：decision 经挂起的 hook 返回，text 经 PTY（MISSION §7.3）。 */
     input: (id: string, body: InputBody) => call(fetchImpl, "POST", `${enc(id)}/input`, body),
+    /**
+     * 附图（agora-lmz2）：图落进会话工作目录，201 交回绝对路径，由调用方把引用接进下一条 text。
+     * 没有这个端点的老节点回 405（SPA 兜底只收 GET）——调用方据此说「那台节点版本旧」，不静默丢图。
+     */
+    uploadImage: (id: string, data: string) => call<{ path: string }>(fetchImpl, "POST", `${enc(id)}/images`, { data }),
     /** New Agent 对话框的创建（§6.4）；201 的响应体就是新会话那一行。 */
     create: (body: CreateSessionBody) =>
       call<{ id: string }>(fetchImpl, "POST", "/api/sessions", body),

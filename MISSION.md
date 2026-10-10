@@ -483,7 +483,7 @@ Sidebar 显示最近一行或简化 activity。必须：strip ANSI escape sequen
 **能力同源、呈现分级**（不变量 9）：所有客户端经同一套节点 API，没有客户端专用后门（守卫见 A36 的 `tests/arch_boundary.rs`）；界面按设备形态分档。
 
 - **桌面（全功能工作台）**：终端、创建、详情与树视图、快捷键（§6.1–§6.5）；桌面按五个动作优化发现待处理事项、阅读结果、回应、切换与创建；终端是保真操作通道。
-- **手机（交互收件箱，V2 首批为 iPhone）**：只做「看谁在等我 + 当场处置」——收件箱、会话卡（状态、任务标签、最近一轮的两个气泡、决策原文、底部 composer）、预设「新建」（一屏按钮、点一下直接起、零打字；能起什么冻结在桌面侧的 `agora preset`——预设只读，手机上不定义、不改）、allow / deny、Kill / Restart（确认）、推送深链。交互语法沿用即时消息的熟悉形态（固定 composer、气泡、乐观发送），但**不做消息流与完整对话历史**（§11 的 Conversation indexing，承接 agora-ghl3）；**没有终端、没有自由表单（新建只有预设按钮）、没有 diff / 验收 / 改动列表、没有命令面板与快捷键**（A52）。手机不是节点：不装 daemon / tmux / hooks、不跑 agent，只配对一个承载节点（通常是常开的 zuan），经 peer 一跳看与操作全部节点（§3.5、§6.6）。
+- **手机（交互收件箱，V2 首批为 iPhone）**：只做「看谁在等我 + 当场处置」——收件箱、会话卡（状态、任务标签、最近一轮的两个气泡、决策原文、底部 composer）、预设「新建」（一屏按钮、点一下直接起、零打字；能起什么冻结在桌面侧的 `agora preset`——预设只读，手机上不定义、不改）、allow / deny、Kill / Restart（确认）、推送深链。交互语法沿用即时消息的熟悉形态（固定 composer、气泡、乐观发送；composer 可附图——截图粘贴或从相册选，图落到会话所在节点的会话工作目录、路径随文字交给 agent，契约见 `docs/spec/api.md`「附图」，agora-lmz2），但**不做消息流与完整对话历史**（§11 的 Conversation indexing，承接 agora-ghl3）；**没有终端、没有自由表单（新建只有预设按钮）、没有 diff / 验收 / 改动列表、没有命令面板与快捷键**（A52）。手机不是节点：不装 daemon / tmux / hooks、不跑 agent，只配对一个承载节点（通常是常开的 zuan），经 peer 一跳看与操作全部节点（§3.5、§6.6）。
 - **`respond_via = terminal` 的问题**（Grok 权限、AskUserQuestion 类）在手机上显示「需要到桌面」，不提供"打开终端"、不注入键击（§1.2）。
 - **无句柄行有没有 composer 看 `text_via`**（§5.5、ADR-002 D11：`runtime` | `host` | `none`）：`host`（宿主自报输入通道，目前是 pi 的扩展）与有终端的一样能给下一条指令——只是不经 PTY，走节点上的 `input/` 队列由宿主自己执行；`none` 才是 `mobile-terminal-only`「到桌面」（agora-t5kf.3）。
 - **桌面窄屏**（< 700 px）不再叠出第二套全功能布局：给「用手机面板打开」的引导；iPad 等中间形态走桌面。
@@ -636,7 +636,7 @@ RBAC                         Teams                        Cloud service
 
 **TUI 桌面客户端**：同一套节点 API 的第二种客户端形态，桌面专用。V1 只有浏览器——它是三类设备唯一共有的运行环境（§0.1）。
 
-**Android 客户端与手机终端 ergonomics**：Android 的 Web Push（FCM 可达性）、安装提示、通知按钮，以及软键盘 Ctrl / Esc、手势、剪贴板、文件上传——Android 整体延期（承接 agora-w9ki），手机终端不做（§6.9）。
+**Android 客户端与手机终端 ergonomics**：Android 的 Web Push（FCM 可达性）、安装提示、通知按钮，以及软键盘 Ctrl / Esc、手势、剪贴板、文件上传——Android 整体延期（承接 agora-w9ki），手机终端不做（§6.9）。iPhone composer 的附图不在此列，已随 §6.9 落地（2026-10-10，agora-lmz2）。
 
 ---
 
