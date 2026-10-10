@@ -17,6 +17,7 @@ import { agentBadge } from "./agentBadge";
 import type { ApiErrorBody, SessionApi } from "./api";
 import { isHandleless, seenKey, seenRelevant, taskLabel } from "./attention";
 import { textVia } from "./events";
+import { activityPhraseForProgress, MOBILE_ACTIVITY_NO_TOKEN } from "./mobileActivity";
 import { mobileStatusLine } from "./mobileStatus";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow } from "./events";
@@ -179,6 +180,18 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   const detail = str(row.detail);
   const prompt = str(row.prompt).split("\n")[0] ?? "";
   const userText = sent?.text ?? prompt;
+  // 活动 token（agora-dflx）：优先 `progress`——活动层写的就是它（机器在 prompt 提交时清空，
+  // 正好避开把自己的话当成回复），它是「现在到哪了」那一路。缺 `progress` 的旧节点退回
+  // `detail`，但 `detail` 与本行 prompt 首行相同（刚提交、活动还没来）时按「没有活动」处理。
+  const activityToken = (() => {
+    const progress = str(row.progress).trim();
+    if (progress !== "") return progress;
+    const detailFirst = detail.split("\n")[0]?.trim() ?? "";
+    return detailFirst !== "" && detailFirst !== prompt.trim() ? detailFirst : "";
+  })();
+  // 在跑的行画活动行而非「最新回复」：工具名不是回复（2026-10-10 真机反馈的 pi bash/read）。
+  // 进度文本不是工具名（自由文本）时同样落「正在处理…」，不把一句话说成工具。
+  const activity = running ? (activityPhraseForProgress(activityToken) ?? MOBILE_ACTIVITY_NO_TOKEN) : null;
 
   // 发送三段（agora-o975.2，2026-10-08 真机反馈第 2 条）：宿主 ack 最长等 10 s，ack 回来时 hook
   // 往往还没到（行状态仍停在 turn_done / idle）——「已发出，等它接手…」要撑到 **row.prompt 首行
@@ -376,7 +389,18 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
                 {sent.failure}
               </p>
             )}
-            {detail !== "" && (
+            {activity !== null && (
+              <div className="mobile-bubble agent working" data-testid="mobile-activity" aria-live="polite">
+                <span className="mobile-bubble-mark" aria-hidden="true">
+                  ●
+                </span>
+                <div className="mobile-bubble-body">
+                  <span className="mobile-reply-label">进行中</span>
+                  <p className="mobile-activity-text">{activity}</p>
+                </div>
+              </div>
+            )}
+            {activity === null && detail !== "" && (
               <div className="mobile-bubble agent" data-testid="mobile-bubble-agent">
                 <span className="mobile-bubble-mark" aria-hidden="true">
                   ↳

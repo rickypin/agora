@@ -24,6 +24,7 @@ import { anchoredNow, isHandleless, loadSeen, sectionOf, seenKey, sortByAttentio
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { SessionRow } from "./events";
 import { HealthWatcher, VersionWatcher } from "./health";
+import { activityPhraseForProgress } from "./mobileActivity";
 import { MobileIcon } from "./MobileIcon";
 import { MobileCard } from "./MobileCard";
 import { MobileSettings } from "./MobileSettings";
@@ -71,7 +72,15 @@ export function groupSections(rows: SessionRow[], seen: SeenSet): Record<Section
 export function mobileSummary(row: SessionRow): string {
   // Structured reasons are state codes, not message previews. Keep human-readable legacy reasons.
   const reason = str(row.reason);
-  const raw = str(row.pending_decision?.summary) || str(row.progress) || str(row.detail) || (/^[a-z_]+$/.test(reason) ? "" : reason);
+  const pending = str(row.pending_decision?.summary);
+  // 在跑的行：活动层给的 `progress` 是工具名（bash/read），先说成人话再进摘要——列表上「bash」
+  // 不是一个能读的进展（2026-10-10 真机反馈；与卡片的活动行共用 `mobileActivity` 那份文案）。
+  // 还没活动的在跑行 progress 为空，落到下面用 detail / prompt 继续说明它在做的那件事。
+  if (pending === "" && (row.status === "running" || row.status === "starting")) {
+    const phrase = activityPhraseForProgress(str(row.progress));
+    if (phrase !== null) return phrase;
+  }
+  const raw = pending || str(row.progress) || str(row.detail) || (/^[a-z_]+$/.test(reason) ? "" : reason);
   const line = raw.split("\n").find((l) => l.trim() !== "")?.trim().replace(/^#{1,6}\s+/, "") ?? "";
   return line.length > 80 ? `${line.slice(0, 79)}…` : line;
 }

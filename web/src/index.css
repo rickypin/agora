@@ -487,6 +487,9 @@ li.done > .row.selected .name, li.done > ul > li > .row.selected .name { color: 
    prefers-reduced-motion 的用户关掉——状态词与秒级时长还在，不动的东西也不是没信号。 */
 @keyframes mobile-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 .mobile-symbol.live { animation: mobile-pulse 1.2s ease-in-out infinite; }
+/* 活动行的脉冲（agora-dflx）：在跑的行 agent 槽是一句动作而不是消息，小圆点与符号同一条脉动；
+   reduced-motion 与上面几处一起关掉。 */
+.mobile-bubble.working .mobile-bubble-mark { color: var(--ok); animation: mobile-pulse 1.2s ease-in-out infinite; }
 /* 发送在途的转圈与「等它接手」的动态点（agora-o975.2，2026-10-08 真机反馈第 2 条）：宿主 ack
    最长 10 s，转圈告诉人「在路上」，动态点告诉人「已交给它、等它动」。 */
 @keyframes mobile-spin { to { transform: rotate(360deg); } }
@@ -494,6 +497,7 @@ li.done > .row.selected .name, li.done > ul > li > .row.selected .name { color: 
 .mobile-pending-dot { display: inline-block; margin-right: 0.3em; animation: mobile-pulse 1.2s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
   .mobile-symbol.live,
+  .mobile-bubble.working .mobile-bubble-mark,
   .mobile-spinner,
   .mobile-pending-dot,
   li.moved > .row { animation: none; }
@@ -548,6 +552,7 @@ li.done > .row.selected .name, li.done > ul > li > .row.selected .name { color: 
 .mobile-bubble.user .mobile-bubble-mark { order: -1; color: var(--accent); }
 .mobile-bubble.user > span:not(.mobile-bubble-mark):not(.mobile-sent-state) { max-width: 85%; padding: var(--m-1) var(--m-2); background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--m-3); white-space: pre-wrap; word-break: break-word; }
 .mobile-bubble-body { min-width: 0; overflow-wrap: anywhere; max-width: 90%; padding: var(--m-2) var(--m-3); background: var(--panel); border: 1px solid var(--border); border-radius: var(--m-3); }
+.mobile-activity-text { margin: 0; }
 .mobile-sent-state { align-self: flex-end; color: var(--muted); font-size: var(--m-fs-mini); }
 .mobile-more-line { display: block; margin-top: var(--m-1); padding: 0; color: var(--accent); background: none; border-color: transparent; }
 .mobile-decision { display: flex; flex-direction: column; gap: var(--m-2); padding: var(--m-3); background: var(--panel); border: 1px solid var(--warn); border-radius: var(--m-3); }

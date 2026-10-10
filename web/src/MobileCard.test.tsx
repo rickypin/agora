@@ -128,6 +128,60 @@ describe("运行动态信号（agora-o975.3）", () => {
   });
 });
 
+describe("在跑的行画活动行、不把工具名当「最新回复」（agora-dflx）", () => {
+  it("running + progress=bash：说人话，工具名不再出现在 agent 槽；用户自己的话仍是气泡", () => {
+    setup(row("n:run", { status: "running", prompt: "跑一下测试", progress: "bash", detail: "bash" }));
+    const activity = screen.getByTestId("mobile-activity");
+    expect(activity.textContent).toContain("进行中");
+    expect(activity.textContent).toContain("正在运行命令");
+    expect(activity.textContent).not.toContain("bash");
+    expect(screen.queryByTestId("mobile-bubble-agent")).toBeNull();
+    expect(screen.getByTestId("mobile-bubble-user").textContent).toContain("跑一下测试");
+  });
+
+  it("缺 progress 的旧节点退回 detail；detail 等于 prompt 首行时按没有活动处理", () => {
+    setup(row("n:old", { status: "running", progress: null, detail: "read" }));
+    expect(screen.getByTestId("mobile-activity").textContent).toContain("正在读取文件");
+    cleanup();
+    // prompt 刚提交、活动还没来：detail 就是用户自己的话，不能再画一遍
+    setup(row("n:echo", { status: "running", prompt: "把配置迁到 yaml", detail: "把配置迁到 yaml" }));
+    expect(screen.getByTestId("mobile-activity").textContent).toContain("正在处理…");
+    expect(screen.queryByTestId("mobile-bubble-agent")).toBeNull();
+    cleanup();
+    // 没有活动 token（generic / 采纳的 shell）：也是「正在处理…」，不是空槽；starting 同理
+    setup(row("n:none", { status: "running" }));
+    expect(screen.getByTestId("mobile-activity").textContent).toContain("正在处理…");
+    cleanup();
+    setup(row("n:start", { status: "starting" }));
+    expect(screen.getByTestId("mobile-activity").textContent).toContain("进行中");
+  });
+
+  it("未列出的工具保留原名", () => {
+    setup(row("n:mcp", { status: "running", progress: "mcp__github__search" }));
+    expect(screen.getByTestId("mobile-activity").textContent).toContain("正在使用 mcp__github__search");
+  });
+
+  it("turn_done 的真回复仍是「最新回复」气泡，不画活动行", () => {
+    setup(row("n:done", { status: "turn_done", prompt: "问", detail: "答" }));
+    expect(screen.queryByTestId("mobile-activity")).toBeNull();
+    const agent = screen.getByTestId("mobile-bubble-agent");
+    expect(agent.textContent).toContain("最新回复");
+    expect(agent.textContent).toContain("答");
+  });
+
+  it("waiting 分支不动：决策区之外没有活动行", () => {
+    setup(row("n:w", {
+      status: "waiting",
+      reason: "permission",
+      respond_via: "hook",
+      detail: "Bash: rm -rf build",
+      pending_decision: { request_id: "r1", summary: "Bash: rm -rf build", epoch: 1 },
+    }));
+    expect(screen.queryByTestId("mobile-activity")).toBeNull();
+    expect(screen.getByTestId("mobile-decision")).toBeTruthy();
+  });
+});
+
 describe("发送链路（agora-o975.2）", () => {
   /**
    * 可控的假 api：`/input` 的响应挂着不收，直到 `release()`——把「在途」定格。真机上宿主 ack 最长

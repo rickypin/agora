@@ -286,6 +286,16 @@ describe("mobile information budget (A52)", () => {
     expect(s.endsWith("…")).toBe(true);
     expect(s.length).toBe(80);
   });
+
+  it("在跑的行的摘要把工具名说成人话（agora-dflx）", () => {
+    expect(mobileSummary(row("x", { status: "running", progress: "bash" }))).toBe("正在运行命令");
+    expect(mobileSummary(row("x", { status: "starting", progress: "read" }))).toBe("正在读取文件");
+    expect(mobileSummary(row("x", { status: "running", progress: "mcp__x__y" }))).toBe("正在使用 mcp__x__y");
+    // 还没活动（progress 空）的在跑行仍用 detail 说它在做的那件事，不硬填「正在处理…」
+    expect(mobileSummary(row("x", { status: "running", detail: "把配置迁到 yaml" }))).toBe("把配置迁到 yaml");
+    // 跑完的 progress 是回复首行，不翻译
+    expect(mobileSummary(row("x", { status: "turn_done", progress: "刚才的回复" }))).toBe("刚才的回复");
+  });
 });
 
 describe("mobile push entry (agora-thc.7)", () => {
