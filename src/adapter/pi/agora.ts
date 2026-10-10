@@ -229,6 +229,12 @@ export default function (pi: ExtensionAPI) {
   const inputTimer = setInterval(scan, INPUT_POLL_MS);
   (inputTimer as { unref?: () => void }).unref?.();
 
+  // 已收到、但还没交进对话的排队用户消息（`input` 的 `streamingBehavior = followUp`）。
+  // pi 的 followUp 只在“这一轮不再有工具调用”之后把消息作为 user 消息交进对话，**不会再发
+  // `before_agent_start`**（2026-10-10 实测，pi 1.1.0）；只靠 before_agent_start 报 prompt 的话，
+  // ❯ 行会永远停在第一条、第二条的回复配到第一条上（agora-7ysb）。见下面的 input / message_end。
+  const queuedPrompts: string[] = [];
+
   pi.on("session_start", (e, ctx) => {
     try {
       const id = (session(ctx) as { session_id?: unknown }).session_id;
@@ -240,11 +246,29 @@ export default function (pi: ExtensionAPI) {
     emit("session_start", { reason: e.reason, idle: idleOf(ctx) }, ctx);
   });
   pi.on("before_agent_start", (e, ctx) => emit("before_agent_start", { prompt: e.prompt ?? "" }, ctx));
+  // 排队用户消息先记下，等它真的作为 user 消息落地再报（`message_end`）：
+  pi.on("input", (e) => {
+    const behavior = (e as { streamingBehavior?: unknown }).streamingBehavior;
+    const text = String((e as { text?: unknown }).text ?? "").trim();
+    if (behavior === "followUp" && text) queuedPrompts.push(text);
+  });
+  pi.on("message_end", (e, ctx) => {
+    const msg = (e as { message?: { role?: string; content?: unknown } }).message;
+    if (msg?.role !== "user" || queuedPrompts.length === 0) return;
+    // 文本对不上说明不是我们记的那条（别的扩展注入 / pi 自己的用户消息）——不消费。
+    const text = textOf(msg.content).trim();
+    const head = queuedPrompts[0];
+    if (text === "" || !(text === head || text.includes(head) || head.includes(text))) return;
+    queuedPrompts.shift();
+    emit("prompt_started", { prompt: head }, ctx);
+  });
   pi.on("tool_execution_start", (e, ctx) => emit("tool_execution_start", { tool_name: e.toolName ?? "tool" }, ctx));
   // agent_settled = pi 不会再自动继续（重试 / 压缩 / 排队都做完了）——这就是 TURN_DONE 的边界；
-  // turn_end 每个模型轮都发，一轮里会有多次，不能拿来当"这一轮做完了"。
-  pi.on("agent_settled", (_e, ctx) =>
-    emit("agent_settled", { last_assistant_message: lastAssistant(ctx).slice(0, 8000) }, ctx),
-  );
+  // turn_end 每个模型轮都发，一轮里会有多次，不能拿来当“这一轮做完了”。settle 时清掉未交付的
+  // 排队残件（中止 / 没送进去），不留给下一轮。
+  pi.on("agent_settled", (_e, ctx) => {
+    queuedPrompts.length = 0;
+    emit("agent_settled", { last_assistant_message: lastAssistant(ctx).slice(0, 8000) }, ctx);
+  });
   pi.on("session_shutdown", (e, ctx) => emit("session_shutdown", { reason: e.reason }, ctx));
 }

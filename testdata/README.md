@@ -164,6 +164,8 @@ before_agent_start → agent_settled → session_shutdown(quit)）的顶层键�
 1.1.0 的 OSC 7501 只对支持该协议的终端发报告（且经 tmux 到不了，见 agora-dg1x），与 hook 载荷无关。七个交互
 场景没重录，交互真录基线仍是 `pi/1.0.4/`。
 
+另有一个**合成件** `queued_followup.jsonl`（agora-7ysb，2026-10-10）：不是本次真录的第八个场景，而是按 2026-10-10 在 pi 1.1.0 上的**真事件序**（隔离 HOME + 日志扩展，见 `bd show agora-7ysb`）合成的——A 跑着时经 `input/` 队列注入第二条（`streamingBehavior = followUp`），pi 不给它第二条 `before_agent_start`，消息在 A 最终文本后作为 user 消息落地；扩展在那时报 `prompt_started`。回放钉住：❯ 从 A 换成 B、状态不经过 `turn_done`、结束时 `prompt = B` 且 `detail = B 的回复`（配对正确）。1.0.4 的扩展没有 `prompt_started`（新事件），本文件不冒充任何一次真录。
+
 ## generic/pane
 
 文本兜底（ADR-002 D6）的屏幕 fixture：首行 `# expect: waiting [secret] | none`，其余是屏幕内容

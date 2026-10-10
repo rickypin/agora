@@ -16,6 +16,10 @@
 //!   prompt 当位置参数（`pi '<prompt>'`）。
 //! - 扩展自报 `mode` ∈ `tui | rpc | json | print`：`print` / `json` 是无头一次性（判 `headless`，
 //!   收进折叠区、不通知、满 24 h 删），`tui` / `rpc` 照常按 `external` 登记。
+//! - 排队交付：跑着时经 `input/` 队列注入的文本走 `sendUserMessage(..., { deliverAs: "followUp" })`，
+//!   pi 在“这一轮不再有工具调用”之后把它作为 user 消息交进对话，**不会再发 `before_agent_start`**
+//!   （2026-10-10 pi 1.1.0 实测）；扩展在 `input` 时记下、在 user 消息落地时报 `prompt_started`，
+//!   本 adapter 当一次 `prompt.submitted`——❯ 行与回复的配对靠它（agora-7ysb）。
 //! - 扩展是**旁观者**：没有权限代答的能力（pi 的工具调用默认不问人），`decision_via_hook()` 为
 //!   false（ADR-002 D2「没有的能力就写没有」）；无运行时句柄，手机侧的深链与状态照常，回复要回终端。
 //! - 登记即空闲：扩展在 `session_start` 里报 `ctx.isIdle()`（/reload 或启动后停在提示符），行直接
@@ -241,6 +245,13 @@ impl AgentHooks for Pi {
                     str_of(payload, &["prompt"]).unwrap_or_default(),
                 ));
             }
+            // 排队消息真正开始的那一刻（agora-7ysb）：扩展在 user 消息落地时报的，语义就是一次
+            // prompt 提交——常态化走 before_agent_start，这条只补 followUp 交付（pi 不再发 before_agent_start）。
+            Some("prompt_started") => {
+                if let Some(text) = str_of(payload, &["prompt"]) {
+                    out.push(hooks::prompt_event(text));
+                }
+            }
             Some("tool_execution_start") => {
                 out.push(AgoraEvent::Activity(
                     str_of(payload, &["tool_name"]).unwrap_or("tool").to_owned(),
@@ -329,6 +340,15 @@ mod tests {
         assert_eq!(
             PI.parse(&p),
             vec![AgoraEvent::PromptSubmitted("把 config 迁到 yaml".into())]
+        );
+        // 排队消息开始（agora-7ysb）：与 before_agent_start 同一条状态路径。
+        let mut p = payload("prompt_started");
+        p["prompt"] = json!("第二条：把 7 加 1，只回结果");
+        assert_eq!(
+            PI.parse(&p),
+            vec![AgoraEvent::PromptSubmitted(
+                "第二条：把 7 加 1，只回结果".into()
+            )]
         );
         let mut p = payload("tool_execution_start");
         p["tool_name"] = json!("bash");

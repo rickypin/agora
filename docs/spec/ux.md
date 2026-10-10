@@ -381,7 +381,7 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 pi 的 followUp 语义，不是"一个工具批次"**：pi 只在 agent 不再有工具调用、这一轮跑完之后才把排队的
 消息交进去（`steer` 才是"当前 assistant turn 的工具批次之后"），中途不会有 `agent_settled`，也不会
 再发一条 `before_agent_start`；若写成「等它做完这一步」，说的其实是 `steer` 的时机，与本实现不符
-（ADR-002 D11，2026-10-08 两次真 TUI 实测 + pi 1.0.4 的 SDK 注释）。`runtime`（PTY）的行**不动**：
+（ADR-002 D11，2026-10-08 两次真 TUI 实测 + pi 1.0.4 的 SDK 注释）。**被交进去的那一刻 ❯ 换成第二条**（扩展的 `prompt_started`，agora-7ysb）：状态不经过 turn_done，第一条的回复随之被最近一轮覆盖——手机只显示最近一轮，上一条的回复不落任何事件（不解析 transcript），这是现状边界。`runtime`（PTY）的行**不动**：
 PTY 没有队列，键击直接落进 TUI 的输入区，各家对「跑着的时候打字」解释不同（Claude 会排队、别的可能
 当快捷键），继续是 `mobile-running-note`「它还在跑，等它停下来或回完这一轮再发」；`waiting` 也沿用
 状态门（只给决定按钮，不给排队）。守卫 `web/src/MobileCard.test.tsx`（host+running 开 composer 且
