@@ -43,7 +43,7 @@ CI 的执行状态与 DoD 见 MISSION §1.5。合入验收按下表取适用项�
 
 ## 开发方法
 
-任务跟踪用 [beads](https://github.com/gastownhall/beads)（`brew install beads`），新克隆执行 `bd bootstrap`。贡献流程统一见 [AGENTS](AGENTS.md)，完成定义见 MISSION §1.5。
+任务跟踪用 [beads](https://github.com/gastownhall/beads)（`brew install beads`），库在 zuan 的 Dolt 服务器上：新机器口令进 `~/.config/beads/credentials`、`.beads/.env` 写服务器连接，不跑 `bd bootstrap`。贡献流程统一见 [AGENTS](AGENTS.md)，完成定义见 MISSION §1.5。
 
 ## 开发验证
 
@@ -58,7 +58,7 @@ CI 的执行状态与 DoD 见 MISSION §1.5。合入验收按下表取适用项�
 
 ### 并行工作区
 
-- 一任务一 worktree：`git worktree add ../agora-wt/<id> -b <branch> main`，分支按宿主约定；beads 经 common dir 共享，不复制库。新建且尚未施工的 worker 先 `git merge --ff-only main` 并核对 HEAD == main；已有工作的 worktree 先保存进度，不重置到 main。获授权保存本任务提交后、集成前 `git rebase main`，有未提交改动时先处理，不为 rebase 丢弃改动。
+- 一任务一 worktree：`git worktree add ../agora-wt/<id> -b <branch> main`，分支按宿主约定；beads 库在服务器上，不复制库；worktree 用自己检出的 `.beads` 连库，基于 2026-10-10 切换前提交的找不到库，先 merge main。新建且尚未施工的 worker 先 `git merge --ff-only main` 并核对 HEAD == main；已有工作的 worktree 先保存进度，不重置到 main。获授权保存本任务提交后、集成前 `git rebase main`，有未提交改动时先处理，不为 rebase 丢弃改动。
 - Claude Workflow / Agent 隔离曾从 origin/main 起步（2026-09-06 实测）；启用前 `git fetch origin` 核实基线，确保工作区干净且 `git rev-list --left-right --count main...origin/main` 为 `0 0`；单看未推送提交为空不能排除本地落后。push 仍按授权。文件归属写 issue notes，改共享文件先看其它分支未合入改动；复用已有组件，必要的共享抽取单独提交并按授权推送。
 - node_modules 与 lockfile 一致时从主仓复制，否则按 lockfile 安装；先 `npm --prefix web run build` 再 cargo（rust-embed 编译期读取 `web/dist`）。Linux 用 `cp -rf` 拷 node_modules，不克隆 target，先查磁盘再定并行度；macOS 用 `cp -Rfc` 克隆 node_modules / target。target 不硬链接。
 - worktree 内不跑 `cargo sweep -t`（clonefile 保留 mtime，会误删复用缓存）；主仓按膨胀实况清理，清后需克隆测试产物则先 `cargo test --no-run`。排障依据查 `bd memories cargo-sweep`，不把历史性能数字当永久门槛。

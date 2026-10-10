@@ -33,6 +33,7 @@ Thumbs.db
 *.db
 .beads-credential-key
 .beads/proxieddb/
+*.gate.lock*
 
 # Rust
 target/

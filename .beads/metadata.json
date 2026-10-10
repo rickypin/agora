@@ -1,7 +1,9 @@
 {
   "database": "dolt",
   "backend": "dolt",
-  "dolt_mode": "embedded",
+  "dolt_mode": "server",
+  "dolt_server_host": "zuan.tail5fb9b.ts.net",
+  "dolt_server_user": "ricky",
   "dolt_database": "agora",
   "project_id": "b76ca480-c114-4308-92b4-1dc9ff3289e3"
 }
