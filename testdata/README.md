@@ -14,8 +14,8 @@ fixture 驱动测试的数据（ADR-002 D10）。
   文件不存在写到位，已存在写成 `.jsonl.new` 供人工比对。正常模式的冒烟只比对 SessionStart 与 Stop 的顶层键集合，
   agent 版本不在表里、目录里没 fixture、键集合漂移都红并提示录新 fixture；没装的 agent 跳过。
 - **版本目录只长两种样子**（规则与兜底在 `tests/fixtures_replay.rs`）：**实测目录**七个场景一个不缺（下面的
-  claude/2.1.260、claude/2.1.261、claude/2.1.291、codex/0.152.1、grok/1.0.13）；或**冒烟-only 目录**——除 `headless.jsonl`
-  外一条都没有（下面的 claude/2.1.270、codex/0.153.4、grok/1.0.30）。这么分是因为冒烟守卫按**精确版本号**
+  claude/2.1.260、claude/2.1.261、claude/2.1.291、codex/0.152.1、grok/1.0.13、pi/1.0.4）；或**冒烟-only 目录**——除 `headless.jsonl`
+  外一条都没有（下面的 claude/2.1.270、claude/2.1.296、codex/0.153.4、grok/1.0.30、grok/1.0.50、pi/1.1.0）。这么分是因为冒烟守卫按**精确版本号**
   点名要 fixture，而补录七个真交互场景是一个 epic 的量：不给这一档，agent 每次小版本升级都要花掉一整天的
   录制才能消红灯，结果就是红灯一直红（2026-09-14）。录新冒烟 fixture 时把 `expect` 行照上一版本补上（值用
   `<prompt>` / `<last_assistant_message>` 占位），于是回放测试会拿新版本的**真 payload** 再过一遍状态机——
@@ -99,6 +99,15 @@ PostToolUse / PostToolUseFailure，挂起要等下一条 prompt 的 UserPromptSu
 `tests/hook_smoke.rs::copy_settings_without_hooks`：只搬删掉 `hooks` 键的那一份 settings.json——整份复制会把
 用户自己的 hook 条目（指向 `~/.agora`）带进临时 HOME，这一轮假会话就会投到开发机上真的 daemon 里。
 
+## claude/2.1.296
+
+冒烟-only。2026-10-10 在 **zuan** 上录的 `claude -p` 一轮：四个事件（SessionStart → UserPromptSubmit → Stop →
+SessionEnd）的顶层键集合与 claude/2.1.291（以及 2.1.270）的 headless 逐键一致——无头仍不带 `model` /
+`scratchpad_dir`，Stop 仍有 `background_tasks` / `session_crons`、`effort` 仍是 `{"level"}` 对象。2.1.295 / 2.1.296
+的 hook 侧变化（新增 `onFailure: "block"` 选项、修复 hook 输出中像 plugin hint tag 的文本被改写）没有改
+hook 载荷形状，所以七个交互场景没重录——交互真录基线仍是 `claude/2.1.291/`（Mac 上录），本目录只加冒烟。
+Linux 登录态走 settings.json 的 `env`（见 2.1.270 一节），录制隔离与冒烟入口同其余版本。
+
 ## codex/0.153.4
 
 冒烟-only。2026-09-14 本机 0.153.4（`gpt-6-astra`）录的 `codex exec --skip-git-repo-check
@@ -113,6 +122,13 @@ stop(end_turn) → session_end(shutdown) → 退出时再一次 stop(shutdown)�
 首选键 `hookEventName` 仍是小写蛇形——Grok 在向 Claude 的配置形态靠。`src/adapter/grok.rs::event_key` 本来就是
 “去掉 `_` 再小写”归一，两种写法进同一个事件；新 fixture 的 `expect` 行就是这件事的守卫（回放跑的是本次
 真录的 payload，不只是键集合）。七个交互场景没重录。
+
+## grok/1.0.50
+
+冒烟-only。2026-10-10 在 **zuan** 上录的 `grok -p` 一轮：序列与 grok/1.0.30 相同（session_start(new) →
+user_prompt_submit → stop(end_turn) → session_end(shutdown) → 退出时再一次 stop(shutdown)），五个事件的顶层
+键集合逐键一致；别名键两种形态也没变（`hook_event_name` = PascalCase、`hookEventName` = 小写蛇形），
+`src/adapter/grok.rs::event_key` 的归一守卫照旧。七个交互场景没重录。
 
 ## pi/1.0.4
 
@@ -138,6 +154,15 @@ stop(end_turn) → session_end(shutdown) → 退出时再一次 stop(shutdown)�
 fixture 里也补上了——无句柄的 pi 行因此 `text_via = host`，是这个键把“只能到终端”改成“手机上能发话”的。
 冒烟见 `tests/hook_smoke.rs::pi`（键集合基线 `headless.jsonl`）与 `::pi_input_channel`
 （真 pi + 真 tmux：往队列里写一件 → TUI 里出现那句话 → `.done` = ack）。
+
+## pi/1.1.0
+
+冒烟-only。2026-10-10 在 **zuan** 上录的 `pi -p` 一轮：四个事件（session_start(idle=true) →
+before_agent_start → agent_settled → session_shutdown(quit)）的顶层键集合与 pi/1.0.4 逐键一致——1.1.0 给
+扩展 / JSON 事件新增的 `aborted` 没有进 hook 载荷，载荷仍带 `input_channel: 1`。同一版本上
+`tests/hook_smoke.rs::pi_input_channel`（真 pi + 真 tmux 的宿主注入端到端）也通过：扩展通道在 1.1.0 上仍工作。
+1.1.0 的 OSC 7501 只对支持该协议的终端发报告（且经 tmux 到不了，见 agora-dg1x），与 hook 载荷无关。七个交互
+场景没重录，交互真录基线仍是 `pi/1.0.4/`。
 
 ## generic/pane
 

@@ -391,13 +391,15 @@ mod tests {
         assert_eq!(
             headless,
             vec![
-                // 四条真录的无头会话：2.1.270 冒烟、2.1.261 冒烟、2.1.291 冒烟（agora-5gg.22，
-                // 与上两版逐键一致），以及 2.1.261 用 `claude -p` 录的后台任务通知
+                // 五条真录的无头会话：2.1.270 冒烟、2.1.261 冒烟、2.1.291 冒烟（agora-5gg.22，
+                // 与上两版逐键一致）、2.1.296 冒烟（agora-jlso，2026-10-10 在 zuan 上录，同样逐键一致），
+                // 以及 2.1.261 用 `claude -p` 录的后台任务通知
                 // （头注：“无头模式 payload 没有 scratchpad_dir”）。
                 "claude/2.1.261/hooks/headless.jsonl",
                 "claude/2.1.261/hooks/task_notification.jsonl",
                 "claude/2.1.270/hooks/headless.jsonl",
                 "claude/2.1.291/hooks/headless.jsonl",
+                "claude/2.1.296/hooks/headless.jsonl",
             ],
             "被判成无头的 fixture 名单变了：新录了无头场景就补进来；如果是真交互录制被判成了\
              无头，那是误判——headless 行不通知、满 24 h 不论状态即删"
