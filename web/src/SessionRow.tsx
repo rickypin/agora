@@ -1,7 +1,7 @@
 import { memo } from "react";
 import { isHandleless, isHeadless, promptRepeatsLabel, taskLabel, unclearStatus } from "./attention";
 import { rowProcess, type SessionRow } from "./events";
-import { RowIdentity, statusClass } from "./RowIdentity";
+import { projectName, RowIdentity, statusClass } from "./RowIdentity";
 
 export { staleSeen } from "./RowIdentity";
 
@@ -51,6 +51,16 @@ export function statusSymbol(status: string): string {
 
 export function rowName(s: SessionRow): string {
   return String(s.name ?? s.display_name ?? s.id);
+}
+
+/**
+ * 手机行头 / 会话页页头的身份：项目名，没有项目才退回 rowName（agora-rd5v，2026-10-10）。
+ * 不直接画 rowName：未改名时 `name` 是 pane title，agora 自己起的行会被 agent 改的终端标题
+ * （「✳ 手机端截图粘贴支持」）顶掉，而 hook 登记的 external 行没有 pane、显示目录名——同一列表
+ * 第一行一半是项目一半是任务。桌面侧栏的身份行与推送标题也都不拿 pane title 当身份。
+ */
+export function identityName(s: SessionRow): string {
+  return projectName(s) ?? rowName(s);
 }
 
 export function str(v: unknown): string {

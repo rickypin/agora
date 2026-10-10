@@ -808,3 +808,36 @@ describe("移动工作台的关注与切换（agora-d0r）", () => {
     expect(mobileSummary(row("x", {detail: "## 最新进展"}))).toBe("最新进展");
   });
 });
+
+describe("行头与会话页页头画项目身份（agora-rd5v）", () => {
+  // 2026-10-10 iPhone 截图：hook 登记的 external 行头是目录名（erhai），agora 自己起的行头却是
+  // Claude Code 改的终端标题（「✳ 手机端截图粘贴支持」）——服务端 name 未改名时取 pane title。
+  const project = (name: string, worktree: string, main = true) => ({ repo: `/home/u/code/${name}`, name, worktree, branch: "main", main });
+  const rows = [
+    row("n:own", { origin: "agora", name: "✳ 手机端截图粘贴支持", display_name: "claude-agora", working_directory: "/home/u/code/agora", project: project("agora", "/home/u/code/agora") }),
+    row("n:ext", { origin: "external", name: "erhai", display_name: "erhai", working_directory: "/home/u/code/erhai", project: project("erhai", "/home/u/code/erhai") }),
+    row("n:wt", { name: "✳ 修侧栏", working_directory: "/home/u/wt/agora-03k", project: project("agora", "/home/u/wt/agora-03k", false) }),
+    row("n:dir", { name: "✳ 草稿", working_directory: "/tmp/scratch/", project: null }),
+    row("n:none", { name: "孤行" }),
+  ];
+  const identity = (id: string) => screen.getByTestId(`mobile-identity-${id}`).textContent;
+
+  it("行头一律是项目：仓库名、linked worktree 加末段、不是仓库退回目录末段，什么都没有才用会话名", async () => {
+    const t = setup(rows);
+    await online(t);
+    expect(identity("n:own")).toBe("agora");
+    expect(identity("n:ext")).toBe("erhai");
+    expect(identity("n:wt")).toBe("agora / agora-03k");
+    expect(identity("n:dir")).toBe("scratch");
+    expect(identity("n:none")).toBe("孤行");
+    // agent 的标题不丢：没有任务的行，它仍是任务行（taskLabel 的最后一档）。
+    expect(screen.getByTestId("mobile-row-n:own").querySelector(".mobile-row-task")?.textContent).toBe("✳ 手机端截图粘贴支持");
+  });
+
+  it("会话页页头与列表同一个身份", async () => {
+    const t = setup(rows);
+    await online(t);
+    fireEvent.click(screen.getByTestId("mobile-row-n:own"));
+    expect(screen.getByTestId("mobile-card-identity").textContent).toBe("agora");
+  });
+});

@@ -35,7 +35,7 @@ import { mobileStatusLine } from "./mobileStatus";
 import { loadMobileTextSize, storeMobileTextSize, type MobileTextSize } from "./mobileText";
 import { browserPushEnv, selfCheckPush, type PushEnv } from "./push";
 import { nodeHue } from "./nodeColor";
-import { rowName, statusSymbol, str } from "./SessionRow";
+import { identityName, rowName, statusSymbol, str } from "./SessionRow";
 import { SessionStore, useServerClock, useSessions } from "./store";
 
 /** 前三段固定顺序（与 attention.ts 的 partitionByAttention 同一顺序）；已完成是折叠的一段。
@@ -614,7 +614,7 @@ function MobileRow({ row, now, localNode, seen, onOpen }: RowProps) {
           <span className={`mobile-symbol${live ? " live" : ""}`} aria-hidden="true">
             {statusSymbol(row.status)}
           </span>
-          <span className="mobile-row-name">{rowName(row)}</span>
+          <span className="mobile-row-name" data-testid={`mobile-identity-${row.id}`}>{identityName(row)}</span>
           <span className="mobile-status">{status}</span>
         </span>
         <span className="mobile-row-sub">

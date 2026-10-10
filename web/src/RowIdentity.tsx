@@ -74,14 +74,22 @@ function lastSegment(path: string): string {
  * 只显示名字与分支，完整路径放 title。
  */
 export function projectLine(row: SessionRow): { text: string; title: string } | null {
+  const name = projectName(row);
+  if (name === null) return null;
   const p = row.project;
-  if (p) {
-    const where = p.main ? p.name : `${p.name} / ${lastSegment(p.worktree)}`;
-    return { text: `${where} ⎇ ${p.branch ?? "detached"}`, title: p.worktree };
-  }
+  if (p) return { text: `${name} ⎇ ${p.branch ?? "detached"}`, title: p.worktree };
+  return { text: name, title: String(row.working_directory) };
+}
+
+/**
+ * 「在哪个项目」这一个名字，不带分支：projectLine 的前半，手机行头与会话页页头也画它（agora-rd5v）。
+ * 两者都没有 → null，调用方自己决定退回什么。
+ */
+export function projectName(row: SessionRow): string | null {
+  const p = row.project;
+  if (p) return p.main ? p.name : `${p.name} / ${lastSegment(p.worktree)}`;
   const dir = typeof row.working_directory === "string" ? row.working_directory : "";
-  if (dir) return { text: lastSegment(dir), title: dir };
-  return null;
+  return dir ? lastSegment(dir) : null;
 }
 
 export function RowIdentity({

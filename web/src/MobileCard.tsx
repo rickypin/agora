@@ -27,7 +27,7 @@ import { MarkdownView } from "./MarkdownView";
 import { MobileIcon } from "./MobileIcon";
 import { nodeHue } from "./nodeColor";
 import { KILL_BODY, RESTART_BODY, restartNoteOf } from "./SessionSettings";
-import { rowName, statusSymbol, str } from "./SessionRow";
+import { identityName, rowName, statusSymbol, str } from "./SessionRow";
 
 /** 回复默认露出的行数（docs/spec/ux.md：手机端默认折 6 行）。 */
 export const FOLD_LINES = 6;
@@ -405,7 +405,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
             <span className={`mobile-symbol${running ? " live" : ""}`} aria-hidden="true">
               {statusSymbol(row.status)}
             </span>
-            <span className="mobile-row-name">{rowName(row)}</span>
+            <span className="mobile-row-name" data-testid="mobile-card-identity">{identityName(row)}</span>
           </div>
           <div className="mobile-card-meta">
             <span className="mobile-agent" style={{ "--hue": badge.hue } as CSSProperties}>
