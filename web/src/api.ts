@@ -149,24 +149,53 @@ async function call<T>(
   path: string,
   body?: unknown,
 ): Promise<WriteResult<T>> {
-  const resp = await fetchImpl(path, {
-    method,
-    headers: body === undefined ? {} : { "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (resp.status === 204) return { ok: true, value: undefined as T };
-  let parsed: unknown = null;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // 2026-10-11: a disconnected response must leave the busy state too. Never auto-retry a write:
+  // the server may have accepted it before the connection was lost (agora-fmsd).
   try {
-    parsed = await resp.json();
+    const request = async (): Promise<WriteResult<T>> => {
+      const resp = await fetchImpl(path, {
+        signal: controller.signal,
+        method,
+        headers: body === undefined ? {} : { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      if (resp.status === 204) return { ok: true, value: undefined as T };
+      let parsed: unknown = null;
+      try {
+        parsed = await resp.json();
+      } catch (error) {
+        if (resp.ok || controller.signal.aborted) throw error;
+        parsed = null;
+      }
+      if (resp.ok) return { ok: true, value: parsed as T };
+      const err = (parsed as ApiErrorBody | null) ?? { error: "unknown", message: `HTTP ${resp.status}` };
+      if (resp.status === 409 && err.error === "needs_confirmation") {
+        return { ok: false, needsConfirmation: true };
+      }
+      return { ok: false, needsConfirmation: false, error: err, status: resp.status };
+    };
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error("request_timeout"));
+      }, 30_000);
+    });
+    return await Promise.race([request(), deadline]);
   } catch {
-    parsed = null;
+    return {
+      ok: false, needsConfirmation: false,
+      error: {
+        error: controller.signal.aborted ? "request_timeout" : "network_error",
+        message: method === "GET"
+          ? "网络连接中断或请求超时，请检查连接后重试。"
+          : "连接中断或请求超时，无法确认操作是否完成。请先查看会话状态，再决定是否重试，以免重复执行。",
+      },
+    };
+  } finally {
+    clearTimeout(timer);
   }
-  if (resp.ok) return { ok: true, value: parsed as T };
-  const err = (parsed as ApiErrorBody | null) ?? { error: "unknown", message: `HTTP ${resp.status}` };
-  if (resp.status === 409 && err.error === "needs_confirmation") {
-    return { ok: false, needsConfirmation: true };
-  }
-  return { ok: false, needsConfirmation: false, error: err, status: resp.status };
 }
 
 const enc = (id: string) => `/api/sessions/${encodeURIComponent(id)}`;

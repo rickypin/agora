@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { sessionApi, type FetchLike } from "./api";
 
 function fakeFetch(handler: (url: string, init: RequestInit) => { status: number; body?: unknown }) {
@@ -89,5 +89,41 @@ describe("restartNoteOf", () => {
     expect(restartNoteOf({ restart: { resumed: true, agent_session_id: "conv-1" } })).toContain("conv-1");
     expect(restartNoteOf({ restart: { resumed: false, reason: "版本不可解析" } })).toContain("版本不可解析");
     expect(restartNoteOf({})).toBe("已 Restart。");
+  });
+});
+
+
+describe("transport failures (agora-fmsd)", () => {
+  it("returns recoverable errors for text, decisions, images, presets and reads without retrying", async () => {
+    const fetcher = vi.fn<FetchLike>(async () => { throw new TypeError("Failed to fetch"); });
+    const api = sessionApi(fetcher);
+    for (const request of [
+      () => api.input("n:a", {kind: "text", data: "hello"}),
+      () => api.input("n:a", {kind: "decision", decision: "allow"}),
+      () => api.uploadImage("n:a", "AA=="),
+      () => api.create({preset: "review"}),
+    ]) {
+      expect(await request()).toMatchObject({ok: false, needsConfirmation: false,
+        error: {error: "network_error", message: expect.stringContaining("无法确认操作是否完成")}});
+    }
+    expect(await api.presets()).toMatchObject({ok: false, error: {message: expect.stringContaining("检查连接")}});
+    expect(fetcher).toHaveBeenCalledTimes(5);
+  });
+
+  it.each([false, true])("bounds a stalled request including its response body (body=%s)", async (body) => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | null | undefined;
+      const fetcher = vi.fn<FetchLike>((_url, init) => {
+        signal = init.signal;
+        return body ? Promise.resolve({ok: true, status: 200, json: () => new Promise(() => {})} as Response)
+          : new Promise(() => {});
+      });
+      const result = sessionApi(fetcher).input("n:a", {kind: "text", data: "hello"});
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await result).toMatchObject({ok: false, error: {error: "request_timeout"}});
+      expect(signal?.aborted).toBe(true);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
   });
 });
