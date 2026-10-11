@@ -99,3 +99,11 @@
 改进后截图：[iPhone 首屏](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-after/ios-home.png)、[窄桌面创建](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-after/desktop-create-700.png)、[预设节点](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-after/ios-presets.png)、[诊断展开](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-after/ios-diagnostics.png)、[键盘](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-after/ios-keyboard.png)。
 
 门禁：`npm --prefix web test` 52文件/569通过；`cargo test` 758通过/5忽略/0失败；`cargo clippy --all-targets -- -D warnings`、typecheck、build、doc-lint、diff检查通过。构建保留原有大chunk提示。新增行为断言覆盖stale/在线出口、普通创建默认折叠、custom自动展开、节点身份与退出确认；未改不变量、安全或认证守卫，拆守卫反证不适用。`scripts/roadmap-view.sh` 成功运行，生成内容无差异。源码既有未提交改动保留，本轮未提交、推送或部署；四项实施issue因未合入保持in_progress。
+
+## 提交与部署（2026-10-11）
+
+用户授权后，本轮改动单独提交为 `babfb9f` 并推送 `origin/main`，其他任务的未提交内容保留。分离后的干净源码重验：前端52文件/561通过，Rust756通过/5忽略/0失败，typecheck、build、clippy、doc-lint均通过。数量与上节工作区验证不同，是因为本次没有带入其他任务的测试和实现。未运行远端CI。
+
+Mac 保留开发二进制链接，从持久化的干净源码目录 `~/.agora/builds/babfb9f` 构建；zuan 在干净仓库 fast-forward 后构建 release，以 `agora upgrade --from target/release/agora` 升级。Mac前端构建号 `2026-10-11T06:57Z`，zuan `2026-10-11T06:58Z`。两个节点 `/api/health` 正常，实际 `/m` 引用的JS/CSS SHA256与各自构建逐项一致；zuan HTTPS正常，二进制SHA256 `8d109656eed21946c33df20dedcdbb6e3e0e9f641b06a0faeae5e9c48c49f4c9`。zuan 的既有tmux pane `%0` PID `1742241` 在重启前后不变；Mac当时没有自管tmux会话。部署检查为只读健康与资源校验，不冒称新增真实宿主交互验收。
+
+评估及四项局部实施任务按上述代检与主干门禁证据关闭；预设父任务 `agora-prdg.5` 的剩余范围仍开放。上文“未提交/部署”是当时阶段记录，以本节为交付状态。
