@@ -617,7 +617,7 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
             </div>
           </>
         ) : (
-          <DesktopOverview rows={rows} seen={seen} serverClock={serverClock} onOpen={openFromSidebar} onNewAgent={() => openNewAgent()} onPalette={() => setPaletteOpen(true)} />
+          <DesktopOverview rows={rows} seen={seen} serverClock={serverClock} onOpen={openFromSidebar} onNewAgent={() => openNewAgent()} />
         )}
       </section>
       {devicesOpen && <DeviceDialog onClose={() => setDevicesOpen(false)} />}

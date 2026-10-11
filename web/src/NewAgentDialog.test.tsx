@@ -125,6 +125,7 @@ it("defaults to the most recently used project and the first agent's command", a
   expect(field("na-agent").value).toBe("a1");
   expect(field("na-command").value).toBe("a1");
   expect(field("na-node").value).toBe("mac");
+  expect(field("na-name").closest("details")?.open).toBe(false);
 
   fireEvent.click(screen.getByTestId("create"));
   await waitFor(() => expect(onCreated).toHaveBeenCalledWith("mac:new1"));
@@ -170,6 +171,7 @@ it("custom needs a command before Create is enabled", async () => {
   setup();
   await waitFor(() => expect(field("na-agent").value).toBe("a1"));
   fireEvent.change(field("na-agent"), { target: { value: "custom" } });
+  expect(field("na-command").closest("details")?.open).toBe(true);
   expect(field("na-command").value).toBe("");
   expect((screen.getByTestId("create") as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(field("na-command"), { target: { value: "my-agent" } });

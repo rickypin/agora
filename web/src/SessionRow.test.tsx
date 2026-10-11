@@ -363,3 +363,13 @@ it("审批预览展示待批准的原命令，优先于内部 reason 代码（ag
   expect(screen.getByTestId("preview-n:a").textContent).toBe("npm run build");
   expect(screen.getByTestId("row-n:a").getAttribute("aria-current")).toBe("true");
 });
+
+it("离线未知行先说明可达性，恢复在线后才提供终端出口", () => {
+  mount(row({ status: "unknown", stale: true, reason: "hooks_silent_no_handle" }));
+  const hint = screen.getByTestId("unclear-n:a");
+  expect(hint.textContent).toBe("节点离线 · 保留上次状态 · 恢复连接后再处理");
+  expect(hint.getAttribute("title")).toContain("hooks_silent_no_handle");
+  cleanup();
+  mount(row({ status: "unknown", stale: false, reason: "hooks silent" }));
+  expect(screen.getByTestId("unclear-n:a").textContent).toContain("打开它的终端");
+});

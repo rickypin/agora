@@ -150,12 +150,10 @@ export function WorktreeSelect({
         {/*
           空项无条件渲染（agora-tl5）：value === "" 是「没选中任何 worktree」，而它以前只在
           列表为空时才有匹配项——列表非空时 select 找不到 value，浏览器落到第一项，DOM 上写着
-          「main」而内部状态是空串，写断言会被骗。文案仍是 —（不是「仓库根目录」）：空串的意思
-          是「没选」，cwd 由 NewAgentDialog 落回 Project 那个目录，而项目本身可以是一个 linked
-          worktree（用过一次就进 projects 表，docs/spec/api.md），那时「仓库根目录」是假话；
-          常见情形下它又与列表里的主 worktree 指同一处，一个下拉里两项说同一件事只是噪音。
+          「main」而内部状态是空串，写断言会被骗。2026-10-11（agora-ydmo）用「使用项目目录」
+          明示空值；不能写「仓库根目录」，因为所选项目也可以是 linked worktree。
         */}
-        <option value="">—</option>
+        <option value="">使用项目目录</option>
         {worktrees.map((w) => (
           <option key={w.path} value={w.path}>
             {(w.branch ?? w.path) + (w.main ? "" : " ↗")}

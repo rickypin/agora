@@ -193,75 +193,75 @@ export function MobileSettings({ onClose, onRevoked, env, probe, probeWeb, textS
       </section>
 
       <section className="mobile-section" aria-label="诊断">
-        <h2>
-          <span>诊断</span>
-        </h2>
-        {/* 排障用（agora-x70t）：布局出问题时不靠描述——描边标出出框（红）与被裁（黄）的元素，
-            或者把整个视口的盒子数字复制出来。 */}
-        <div className="mobile-diag-actions">
-          <button
-            type="button"
-            data-testid="mobile-diag-outline"
-            aria-pressed={outlined}
-            onClick={() => {
-              const on = !outlined;
-              setOutlined(on);
-              toggleOutline();
-            }}
-          >
-            {outlined ? "隐藏边框" : "显示边框"}
-          </button>
-          <button
-            type="button"
-            data-testid="mobile-diag-report"
-            onClick={() => {
-              const text = clipboardReport();
-              setDiagReport(text);
-              void copyText(text).then((ok) => setDiagNote(ok ? "已复制，粘给我就行" : "复制被拒——长按下面的文字全选复制"));
-            }}
-          >
-            复制布局报告
-          </button>
-        </div>
-        {/* 前端构建号摆在设置页底：升级后一眼能看出手机跑的是不是新包（iOS 主屏 PWA 会把
-            start_url 钉在缓存里，光看行为看不出来）。 */}
-        <p className="muted" data-testid="mobile-build">
-          前端 {webBuild()}
-          {webVerdict?.kind === "stale" ? ` · 服务端 ${webVerdict.served}` : ""} ·{" "}
-          <button
-            type="button"
-            className="link"
-            data-testid="mobile-reload"
-            onClick={() => {
-              // 硬刷新：iOS 主屏 PWA 从任务切换器回来常常是"恢复旧页面"（不重新导航），光
-              // location.reload() 也可能落在同一份缓存条目上——所以先清 Cache Storage，再用
-              // 带随机查询串的地址重新导航（同 scope，仍留在 PWA 里；下次冷启又回到 start_url）。
-              void (async () => {
-                try {
-                  for (const key of await caches.keys()) await caches.delete(key);
-                } catch {
-                  /* 没有 caches（非安全上下文 / 单测）就算了 */
-                }
-                try {
-                  location.replace(`/m?r=${Date.now()}`);
-                } catch {
-                  /* 单测里没有 location.replace */
-                }
-              })();
-            }}
-          >
-            重新加载
-          </button>
-        </p>
+        <details className="mobile-diagnostics">
+          <summary>诊断与版本</summary>
+          {/* 排障用（agora-x70t）：布局出问题时不靠描述——描边标出出框（红）与被裁（黄）的元素，
+              或者把整个视口的盒子数字复制出来。 */}
+          <div className="mobile-diag-actions">
+            <button
+              type="button"
+              data-testid="mobile-diag-outline"
+              aria-pressed={outlined}
+              onClick={() => {
+                const on = !outlined;
+                setOutlined(on);
+                toggleOutline();
+              }}
+            >
+              {outlined ? "隐藏边框" : "显示边框"}
+            </button>
+            <button
+              type="button"
+              data-testid="mobile-diag-report"
+              onClick={() => {
+                const text = clipboardReport();
+                setDiagReport(text);
+                void copyText(text).then((ok) => setDiagNote(ok ? "已复制，粘给我就行" : "复制被拒——长按下面的文字全选复制"));
+              }}
+            >
+              复制布局报告
+            </button>
+          </div>
+          {/* 前端构建号摆在设置页底：升级后一眼能看出手机跑的是不是新包（iOS 主屏 PWA 会把
+              start_url 钉在缓存里，光看行为看不出来）。 */}
+          <p className="muted" data-testid="mobile-build">
+            前端 {webBuild()}
+            {webVerdict?.kind === "stale" ? ` · 服务端 ${webVerdict.served}` : ""} ·{" "}
+            <button
+              type="button"
+              className="link"
+              data-testid="mobile-reload"
+              onClick={() => {
+                // 硬刷新：iOS 主屏 PWA 从任务切换器回来常常是"恢复旧页面"（不重新导航），光
+                // location.reload() 也可能落在同一份缓存条目上——所以先清 Cache Storage，再用
+                // 带随机查询串的地址重新导航（同 scope，仍留在 PWA 里；下次冷启又回到 start_url）。
+                void (async () => {
+                  try {
+                    for (const key of await caches.keys()) await caches.delete(key);
+                  } catch {
+                    /* 没有 caches（非安全上下文 / 单测）就算了 */
+                  }
+                  try {
+                    location.replace(`/m?r=${Date.now()}`);
+                  } catch {
+                    /* 单测里没有 location.replace */
+                  }
+                })();
+              }}
+            >
+              重新加载
+            </button>
+          </p>
+          {diagNote && <p className="muted" data-testid="mobile-diag-note">{diagNote}</p>}
+          {diagReport && (
+            <textarea className="mobile-diag-report" data-testid="mobile-diag-text" readOnly rows={8} value={diagReport} />
+          )}
+        </details>
         {webVerdict?.kind === "stale" && (
           // 只在服务端明确报了另一份构建号时才提示——宁可少提示，也不要让用户天天点"重新加载"。
           <p className="mobile-note warning" data-testid="mobile-stale-web">
-            有新版本（服务端已是 {webVerdict.served}）：点上面的「重新加载」拿到新界面
+            有新版本（服务端已是 {webVerdict.served}）：展开「诊断与版本」，点「重新加载」拿到新界面
           </p>
-        )}
-        {diagNote && <p className="muted" data-testid="mobile-diag-note">{diagNote}</p>}
-        {diagReport && (
-          <textarea className="mobile-diag-report" data-testid="mobile-diag-text" readOnly rows={8} value={diagReport} />
         )}
       </section>
 
@@ -270,7 +270,7 @@ export function MobileSettings({ onClose, onRevoked, env, probe, probeWeb, textS
           <span>本设备</span>
         </h2>
         <button type="button" className="danger" data-testid="mobile-revoke-self" onClick={() => setConfirmRevoke(true)}>
-          吊销本设备
+          退出此设备
         </button>
         <p className="muted">吊销后这台设备要重新配对：终端跑 agora pair 扫码，或在门页粘贴配对链接。</p>
       </section>
@@ -278,9 +278,9 @@ export function MobileSettings({ onClose, onRevoked, env, probe, probeWeb, textS
       {confirmRevoke && (
         <ConfirmDialog
           cancelLabel="取消"
-          title="吊销本设备？"
+          title="退出此设备？"
           body="这台设备上的凭据马上失效，页面会回到配对页；它登记的推送订阅也随之停发。"
-          confirmLabel="吊销"
+          confirmLabel="退出并取消配对"
           onConfirm={() => void revoke()}
           onCancel={() => setConfirmRevoke(false)}
         />

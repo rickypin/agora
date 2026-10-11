@@ -115,9 +115,10 @@ describe("MobileSettings", () => {
       />,
     );
     fireEvent.click(await screen.findByTestId("mobile-revoke-self"));
-    expect(screen.getByText("吊销本设备？")).toBeTruthy();
+    expect(screen.getByText("退出此设备？")).toBeTruthy();
+    expect(document.querySelector<HTMLDetailsElement>(".mobile-diagnostics")?.open).toBe(false);
     expect(net.logout).toBe(0);
-    fireEvent.click(screen.getByText("吊销", { selector: ".dialog-actions .danger" }));
+    fireEvent.click(screen.getByText("退出并取消配对", { selector: ".dialog-actions .danger" }));
     await waitFor(() => expect(net.logout).toBe(1));
     await waitFor(() => expect(revoked).toEqual([true]));
   });

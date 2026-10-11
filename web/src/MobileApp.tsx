@@ -440,7 +440,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
           <h1>开始一件事</h1>
         </header>
         <div className="mobile-inbox" data-testid="mobile-preset-screen">
-          <div className="mobile-page-intro"><span className="mobile-eyebrow">准备就绪，轻点开始</span><h2>选择一个预设</h2><p>在节点上启动，随时回来查看进展。</p></div>
+          <div className="mobile-page-intro"><h2>选择一个预设</h2><p>{localNode ? <>在 <strong>{localNode}</strong> 上启动</> : "正在确认启动节点…"}</p></div>
           {presetError !== null && (
             <p className="mobile-error" data-testid="mobile-preset-error" role="alert">
               {presetError}
@@ -491,15 +491,9 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
       </header>
       <div className="mobile-inbox mobile-home-inbox" ref={inboxRef}>
         {nodeWarning && <p className="mobile-note warning" role="status" data-testid="mobile-node-warning">{nodeWarning}</p>}
-        <section className="mobile-overview" aria-label="会话概览">
-          <span className="mobile-eyebrow">你的移动工作台</span>
-          <h2>{sections.attention.length > 0 ? <>有 <strong>{sections.attention.length}</strong> 件事需要你</> : "暂时没有待办"}</h2>
-          <p>{sections.attention.length > 0 ? "看看结果，给个决定，让工作继续。" : "工作留在节点上，进展随时在这里。"}</p>
-          <div className="mobile-overview-meta"><span>{rows.length} 个会话</span><span>{sections.working.length} 个暂无需处理</span></div>
-        </section>
         {nodes.reachable === false && <p className="mobile-note warning" role="status">暂时连不上节点，当前显示上次收到的状态。</p>}
         <div className="mobile-filter" role="group" aria-label="筛选会话">
-          <button type="button" aria-pressed={filter === "all"} onClick={() => setFilter("all")}>全部</button>
+          <button type="button" aria-pressed={filter === "all"} onClick={() => setFilter("all")}>全部 <span>{rows.length}</span></button>
           <button type="button" aria-pressed={filter === "attention"} onClick={() => setFilter("attention")}>需要我 <span>{sections.attention.length}</span></button>
           <button type="button" aria-pressed={filter === "working"} onClick={() => setFilter("working")}>无需处理</button>
         </div>

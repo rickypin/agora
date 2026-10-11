@@ -131,6 +131,7 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
   const [tasksReason, setTasksReason] = useState<string | null>(null);
   const [taskPick, setTaskPick] = useState(FREE_TEXT);
 
+  const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -261,6 +262,7 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
 
   function pickAgent(next: string) {
     setAgent(next);
+    if (next === CUSTOM) setAdvanced(true);
     if (!commandEdited.current) {
       setCommand(agents.find((a) => a.name === next)?.command ?? "");
     }
@@ -396,8 +398,9 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
             <option value={CUSTOM}>{CUSTOM}</option>
           </select>
 
-          <label htmlFor="na-task">任务</label>
+          <label htmlFor="na-task">任务关联</label>
           <div className="task-field">
+            <span className="muted task-hint">可选：关联已有任务或填写标签；首条指令是发给 agent 的具体要求。</span>
             {tasks.length > 0 ? (
               <>
                 {/* 有 bd 的仓库：从 `bd ready` 选；第一项回到一句话。 */}
@@ -437,29 +440,6 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
             )}
           </div>
 
-          <label htmlFor="na-name">名称</label>
-          <input
-            id="na-name"
-            value={name}
-            onChange={(e) => {
-              nameEdited.current = true;
-              setName(e.target.value);
-            }}
-            disabled={busy}
-          />
-
-          <label htmlFor="na-command">启动命令</label>
-          <input
-            id="na-command"
-            value={command}
-            placeholder={agent === CUSTOM ? "自己填（必填）" : ""}
-            onChange={(e) => {
-              commandEdited.current = true;
-              setCommand(e.target.value);
-            }}
-            disabled={busy}
-          />
-
           {agentAcceptsPrompt && (
             <>
               <label htmlFor="na-prompt">首条指令</label>
@@ -476,6 +456,35 @@ export function NewAgentDialog({ api, catalog, initial, nodes, onClose, onCreate
               />
             </>
           )}
+
+          <details className="span create-advanced" open={advanced} onToggle={(e) => setAdvanced(e.currentTarget.open)}>
+            <summary>高级选项 · 名称与启动命令</summary>
+            <div className="form">
+              <label htmlFor="na-name">名称</label>
+              <input
+                id="na-name"
+                value={name}
+                onChange={(e) => {
+                  nameEdited.current = true;
+                  setName(e.target.value);
+                }}
+                disabled={busy}
+              />
+
+              <label htmlFor="na-command">启动命令</label>
+              <input
+                id="na-command"
+                value={command}
+                placeholder={agent === CUSTOM ? "自己填（必填）" : ""}
+                onChange={(e) => {
+                  commandEdited.current = true;
+                  setCommand(e.target.value);
+                }}
+                disabled={busy}
+              />
+
+            </div>
+          </details>
 
           <div className="dialog-actions span">
             <button type="button" onClick={onClose} disabled={busy}>

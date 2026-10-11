@@ -432,6 +432,7 @@ describe("手机端「新建」（预设，agora-prdg.4；A52 回写）", () => 
 
     // 只读：打开这一屏只发生一次 GET /api/presets，没有别的请求。
     expect(requests).toEqual([{ url: "/api/presets", method: "GET", body: null }]);
+    expect(screen.getByText(/上启动/).textContent).toBe("在 zuan 上启动");
     const list = screen.getByTestId("mobile-preset-list");
     expect([...list.querySelectorAll("button")].map((b) => b.getAttribute("data-testid"))).toEqual([
       "mobile-preset-pktmask",
@@ -801,7 +802,7 @@ describe("移动工作台的关注与切换（agora-d0r）", () => {
     fireEvent.click(screen.getByRole("button", {name: "需要我 1"}));
     expect(screen.queryByTestId("mobile-row-n:run")).toBeNull();
     expect(screen.getByTestId("mobile-row-n:wait")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", {name: "全部"}));
+    fireEvent.click(screen.getByRole("button", {name: /^全部/}));
     fireEvent.change(screen.getByLabelText("搜索会话"), {target: {value: "mac"}});
     expect(screen.getByTestId("mobile-row-n:run")).toBeTruthy();
     expect(screen.queryByTestId("mobile-row-n:wait")).toBeNull();

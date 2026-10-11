@@ -74,6 +74,7 @@ export function str(v: unknown): string {
  * 「为什么说不清」不在这——那是 reason 的活，`unknown_cause` 封闭枚举归 5gg.6。
  */
 export function unclearExit(row: SessionRow): string {
+  if (row.stale) return "恢复连接后再处理";
   if (isHeadless(row)) return "宿主自己起的一次性会话：只能等它的下一条 hook";
   return isHandleless(row) ? "等下一条 hook，或去它自己的窗口看" : "选中它，打开它的终端看一眼";
 }
@@ -178,7 +179,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, seen = false, 
               data-testid={`unclear-${row.id}`}
               title={`为什么说不清：${why || "节点没给原因"}\n出口：${unclearExit(row)}`}
             >
-              {why || "说不清它在做什么"}
+              {row.stale ? "节点离线 · 保留上次状态" : why || "说不清它在做什么"}
               <span className="unclear-exit"> · {unclearExit(row)}</span>
             </span>
           )}
