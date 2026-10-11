@@ -26,6 +26,7 @@ import type { SessionRow } from "./events";
 import { HealthWatcher, VersionWatcher } from "./health";
 import { activityPhraseForProgress } from "./mobileActivity";
 import { MobileIcon } from "./MobileIcon";
+import { MobileComposer } from "./mobileComposer";
 import { MobileCard } from "./MobileCard";
 import { MobileSettings } from "./MobileSettings";
 import { applyOutline, rememberLayout } from "./mobileDebug";
@@ -144,7 +145,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
       if (!session) return;
       const at = session.indexOf(":");
       if (at <= 0) return;
-      setSelected(session);
+      selectSession(session);
       setFocusComposerFor(session);
     };
     navigator.serviceWorker.addEventListener("message", onMessage);
@@ -178,46 +179,74 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   }, [rows, target]);
   const [selected, setSelected] = useState<string | null>(null);
   // Drafts stay in this page's memory only, so switching sessions never loses an unfinished reply.
-  const drafts = useRef<Record<string, string>>({});
+  const composers = useRef(new Map<string, MobileComposer>());
+  useEffect(() => () => { composers.current.forEach((composer) => composer.dispose()); }, []);
+  const selectSession = (id: string | null) => {
+    if (id && !composers.current.has(id)) composers.current.set(id, new MobileComposer());
+    setSelected(id);
+  };
+  const screenVisit = useRef(0);
   const inboxScroll = useRef(0);
   const inboxRef = useRef<HTMLDivElement>(null);
   const openRow = (id: string) => {
     inboxScroll.current = inboxRef.current?.scrollTop ?? 0;
     const url = new URL(window.location.href);
+    url.searchParams.delete("screen");
     url.searchParams.set("session", id);
     window.history.pushState({ agoraMobileCard: true }, "", url);
-    setSelected(id);
+    selectSession(id);
+  };
+  const openScreen = (screen: "settings" | "new") => {
+    screenVisit.current += 1;
+    inboxScroll.current = inboxRef.current?.scrollTop ?? inboxScroll.current;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("session");
+    url.searchParams.set("screen", screen);
+    window.history.pushState({ agoraMobileCard: true }, "", url);
+    setSettingsOpen(screen === "settings");
+    setNewOpen(screen === "new");
   };
   const closeCard = () => {
-    setSelected(null);
+    screenVisit.current += 1;
+    selectSession(null);
+    setSettingsOpen(false);
+    setNewOpen(false);
+    setPendingNew(null);
+    setStarting(null);
     if (window.history.state?.agoraMobileCard) window.history.back();
     else {
       const url = new URL(window.location.href);
       url.searchParams.delete("session");
+      url.searchParams.delete("screen");
       window.history.replaceState(null, "", url);
     }
   };
   useEffect(() => {
     const restore = () => {
-      const value = new URL(window.location.href).searchParams.get("session");
-      setSelected(value && rows.some((r) => r.id === value) ? value : null);
+      screenVisit.current += 1;
+      inboxScroll.current = inboxRef.current?.scrollTop ?? inboxScroll.current;
+      const params = new URL(window.location.href).searchParams;
+      const value = params.get("session");
+      selectSession(value && rows.some((r) => r.id === value) ? value : null);
+      setSettingsOpen(params.get("screen") === "settings");
+      setNewOpen(params.get("screen") === "new");
+      setPendingNew(null);
+      setStarting(null);
     };
     window.addEventListener("popstate", restore);
     return () => window.removeEventListener("popstate", restore);
   }, [rows]);
-  useEffect(() => {
-    if (selected === null && inboxRef.current) inboxRef.current.scrollTop = inboxScroll.current;
-  }, [selected]);
   const [finishedOpen, setFinishedOpen] = useState(false);
   const [filter, setFilter] = useState<"all" | "attention" | "working">("all");
   const [query, setQuery] = useState("");
   const matches = (row: SessionRow) => `${rowName(row)} ${taskLabel(row)} ${row.node} ${row.agent_type} ${row.project?.name ?? ""} ${row.project?.branch ?? ""} ${mobileSummary(row)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-  // 手机版的一键清理（agora-off0）：与桌面同一条链——对象是「已完成」段里的全部行（`sectionOf === "finished"`，
+  // 手机版的一键清理（agora-off0）：与桌面同一条链——对象是「已完成」段里匹配搜索的行（`sectionOf === "finished"`，
   // 与 Sidebar.tsx 的 clearable 同一判据）、逐行 DELETE /api/sessions/:id（MISSION §11 不引入批量端点）、
   // 跳过 peer stale 的行（一跳转发到不了）。文案与桌面有意差一处（2026-10-08 口径修正时定）：手机报
   // **实际会删的行数**（去掉 stale），桌面确认框报的是 clearable.length（含 stale，属已知小瑕）；
   // 「其中 N 行是 agora 起的会话」也只从实际会删的行里数——stale 的行根本不会被删，不该被算进去。
-  const clearable = sections.finished;
+  // 2026-10-11: search limits both the visible count and deletion scope.
+  const clearable = sections.finished.filter(matches);
   const deletable = clearable.filter((r) => !r.stale);
   const ownClearable = deletable.filter((r) => !isHandleless(r)).length;
   const [clearAsk, setClearAsk] = useState(false);
@@ -247,23 +276,19 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
 
   // 「新建」：每次打开重新拉一遍列表（终端里刚加 / 删的预设下次打开就是新的），拉失败把节点那句话
   // 留在屏上（"正在读…"同时收掉，不留一个停不下来的转圈）。
-  async function openNew() {
-    setNewOpen(true);
-    setPresets(null);
-    setPresetError(null);
-    const r = await api.presets();
-    if (r.ok) setPresets(r.value.presets);
-    else if (!r.needsConfirmation) setPresetError(r.error.message);
-  }
+  function openNew() { openScreen("new"); }
 
   // 点一条即起：**不要第二段确认**——预设本身就是"预先批准"，确认反倒与"少点几下"的初衷相悖
   // （epic agora-hxva 的设计要点，2026-10-08）。失败留在原屏 + 节点给的中文错误（未知预设 /
   // 目录不存在 / 起不来），不落卡片、不猜。
   async function startPreset(preset: PresetInfo) {
     if (starting !== null) return;
+    const visit = screenVisit.current;
     setStarting(preset.name);
     setPresetError(null);
     const r = await api.create({ preset: preset.name });
+    // 2026-10-11: leaving New must not let a late response navigate away from the current screen.
+    if (visit !== screenVisit.current) return;
     if (!r.ok) {
       setStarting(null);
       setPresetError(r.needsConfirmation ? "节点要求确认，但起会话没有确认语义；重试一次" : r.error.message);
@@ -273,12 +298,12 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     // "跳到卡片"）。按钮上保持"正在起…"，pendingNew 的 effect 一行到就关屏落卡片。
     setPendingNew(r.value.id);
   }
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(() => new URLSearchParams(location.search).get("screen") === "settings");
   // 新建一屏（agora-prdg.4；epic agora-hxva）：收件箱底部导航 →「新建」→ 预设按钮 → 点一下直接起。
   // **零打字**：这一屏只有按钮（名称 / agent 徽标 / 目录 / 参数摘要 / 首句），没有任何 input /
   // textarea——DOM 守卫在 MobileApp.test.tsx。这是 agora-uqpi 的拍板：手机要能"开始一件事"，
   // 但"能起什么"冻结在桌面侧的 CLI 预设里，被临时拿到的手机只能选已经批准过的那几条。
-  const [newOpen, setNewOpen] = useState(false);
+  const [newOpen, setNewOpen] = useState(() => new URLSearchParams(location.search).get("screen") === "new");
   // null = 还没拉到（打开时才拉，终端里改了预设下次打开就是新的）。
   const [presets, setPresets] = useState<PresetInfo[] | null>(null);
   const [presetError, setPresetError] = useState<string | null>(null);
@@ -287,6 +312,18 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   // 起成功但新行还没进列表（201 先于 `session_created` 到达，与 Workspace 的 pendingOpen 同一条 race）：
   // 行一到就选中它。不在这里乐观插行——列表的真相在事件流。
   const [pendingNew, setPendingNew] = useState<string | null>(null);
+  useEffect(() => {
+    if (!newOpen) return;
+    let cancelled = false;
+    setPresets(null);
+    setPresetError(null);
+    void api.presets().then((result) => {
+      if (cancelled) return;
+      if (result.ok) setPresets(result.value.presets);
+      else if (!result.needsConfirmation) setPresetError(result.error.message);
+    });
+    return () => { cancelled = true; };
+  }, [newOpen, api]);
   // 字号档位（agora-x70t.xsgz）：存 localStorage，`data-text` 是它与 CSS 的接口（--m-fs 一族）。
   const [textSize, setTextSize] = useState<MobileTextSize>(() => loadMobileTextSize());
   const changeTextSize = useCallback((size: MobileTextSize) => {
@@ -304,13 +341,13 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     // （agora-f068；5c745f9 起就是“找到才置位”，这条守卫钉住别退成一次性尝试）。
     if (!targetRow) return;
     deepLinked.current = true;
-    setSelected(targetRow.id);
+    selectSession(targetRow.id);
     // 可发送的行（turn_done / idle）把焦点放进 composer——推送点开就是要你回话（ux.md）。
     if (targetRow.status === "turn_done" || targetRow.status === "idle") setFocusComposerFor(targetRow.id);
   }, [targetRow]);
   useEffect(() => {
     // 选中的行没了（被删 metadata）：回到收件箱。
-    if (selected !== null && !rows.some((r) => r.id === selected)) setSelected(null);
+    if (selected !== null && !rows.some((r) => r.id === selected)) selectSession(null);
   }, [rows, selected]);
   useEffect(() => {
     // 预设起的会话到了：关掉新建屏、落在它的卡片；可发送（turn_done / idle）时把焦点放进卡片现成的
@@ -318,7 +355,11 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     if (pendingNew === null || !rows.some((r) => r.id === pendingNew)) return;
     setNewOpen(false);
     setStarting(null);
-    setSelected(pendingNew);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("screen");
+    url.searchParams.set("session", pendingNew);
+    window.history.replaceState(window.history.state, "", url);
+    selectSession(pendingNew);
     setFocusComposerFor(pendingNew);
     setPendingNew(null);
   }, [rows, pendingNew]);
@@ -327,6 +368,12 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   // 真机实测：节点侧已过 5 s、页面还写 0s）。`clock` 仍留着当重渲染的信号。
   const nowSeconds = now ?? (serverClock ? anchoredNow(serverClock, Math.floor(Date.now() / 1000)) : clock);
   const selectedRow = selected === null ? undefined : rows.find((r) => r.id === selected);
+
+  useEffect(() => {
+    if (!selectedRow && !settingsOpen && !newOpen && inboxRef.current) {
+      inboxRef.current.scrollTop = inboxScroll.current;
+    }
+  }, [selectedRow, settingsOpen, newOpen]);
 
   // 安全区自适应（agora-xu12）：主屏 PWA 全屏时 env(safe-area-inset-*) 要照加；但浏览器里
   // 或状态栏样式被改成非 translucent 时，系统已经把 chrome 让出去了，再加一遍就是凭空多出 62px。
@@ -348,14 +395,14 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
           key={selectedRow.id}
           row={selectedRow}
           api={api}
-          initialDraft={drafts.current[selectedRow.id] ?? ""}
-          onDraftChange={(text) => { drafts.current[selectedRow.id] = text; }}
+          composer={composers.current.get(selectedRow.id)}
           onNext={sections.attention.some((r) => r.id !== selectedRow.id) ? () => {
             const id = sections.attention.find((r) => r.id !== selectedRow.id)!.id;
             const url = new URL(window.location.href);
+            url.searchParams.delete("screen");
             url.searchParams.set("session", id);
             window.history.replaceState(window.history.state, "", url);
-            setSelected(id);
+            selectSession(id);
           } : undefined}
           now={nowSeconds}
           onBack={closeCard}
@@ -372,7 +419,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
         env={givenPushEnv}
         textSize={textSize}
         onTextSize={changeTextSize}
-        onClose={() => setSettingsOpen(false)}
+        onClose={closeCard}
         onRevoked={onRevoked ?? (() => {})}
       />
     );
@@ -386,13 +433,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
             className="mobile-back"
             data-testid="mobile-new-back"
             aria-label="返回收件箱"
-            onClick={() => {
-              // 不等了：会话已经在那台机器上起了（不管发没发出去，节点都会把它放进列表），只是
-              // 不再自动弹卡片；回收件箱点那一行就是。
-              setNewOpen(false);
-              setStarting(null);
-              setPendingNew(null);
-            }}
+            onClick={closeCard}
           >
             ←
           </button>
@@ -481,19 +522,21 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
               : <ul>{sections[key].filter(matches).map(renderRow)}</ul>}
           </section>
         ))}
-        {filter === "all" && sections.finished.length > 0 && (
+        {filter === "all" && clearable.length > 0 && (
           <section className="mobile-section" data-testid="mobile-section-finished" aria-label="已完成">
             <div className="mobile-finished-head">
               <button
                 type="button"
                 className="mobile-finished-toggle"
                 data-testid="mobile-finished-toggle"
-                aria-expanded={finishedOpen}
+                aria-expanded={finishedOpen || query.trim() !== ""}
+                disabled={query.trim() !== ""}
+                title={query.trim() !== "" ? "搜索时自动展开匹配的已完成会话" : undefined}
                 onClick={() => setFinishedOpen((v) => !v)}
               >
                 <span>已完成</span>
                 <span>
-                  {sections.finished.length} {finishedOpen ? "▾" : "▸"}
+                  {clearable.length} {finishedOpen || query.trim() !== "" ? "▾" : "▸"}
                 </span>
               </button>
               {/* 入口只在有「已完成」行时出现，与段一起；报的数 = 实际会删的行数（去掉 stale）。 */}
@@ -505,7 +548,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
                 title={
                   deletable.length === 0
                     ? "这些行都在离线的节点上，现在删不了（等节点上线再来）"
-                    : "删掉「已完成」里的记录，不 kill 进程"
+                    : "删掉当前搜索匹配的「已完成」记录，不结束进程"
                 }
                 onClick={() => setClearAsk(true)}
               >
@@ -519,12 +562,13 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
       <nav className="mobile-nav" aria-label="主导航">
         <button type="button" aria-current="page" onClick={() => { setFilter("all"); setQuery(""); }}><MobileIcon name="inbox"/><span>会话</span></button>
         <button type="button" data-testid="mobile-new-open" onClick={() => void openNew()}><MobileIcon name="plus"/><span>新建</span></button>
-        <button type="button" data-testid="mobile-settings-open" onClick={() => setSettingsOpen(true)}><MobileIcon name="settings"/><span>设置</span></button>
+        <button type="button" data-testid="mobile-settings-open" onClick={() => openScreen("settings")}><MobileIcon name="settings"/><span>设置</span></button>
       </nav>
       {clearAsk && (
         <ConfirmDialog
+          cancelLabel="取消"
           title="清理「已完成」里的行？"
-          body={`将删除「已完成」区里 ${deletable.length} 行的记录${ownClearable > 0 ? `（其中 ${ownClearable} 行是 agora 起的会话，它们已退出的运行时会话与输出会一并清掉）` : ""}。只删记录、不 kill；「需要我」里的行不动。不可撤销。`}
+          body={`将删除「已完成」区里 ${deletable.length} 行的记录${ownClearable > 0 ? `（其中 ${ownClearable} 行是 agora 起的会话，它们已退出的运行时会话与输出会一并清掉）` : ""}。只删记录、不结束进程；「需要我」里的行不动。不可撤销。`}
           confirmLabel={`删除 ${deletable.length} 行`}
           onConfirm={() => void clearFinished()}
           onCancel={() => setClearAsk(false)}

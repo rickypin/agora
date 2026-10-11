@@ -554,7 +554,7 @@ li.done > .row.selected .name, li.done > ul > li > .row.selected .name { color: 
 .mobile-bubble-body { min-width: 0; overflow-wrap: anywhere; max-width: 90%; padding: var(--m-2) var(--m-3); background: var(--panel); border: 1px solid var(--border); border-radius: var(--m-3); }
 .mobile-activity-text { margin: 0; }
 .mobile-sent-state { align-self: flex-end; color: var(--muted); font-size: var(--m-fs-mini); }
-.mobile-more-line { display: block; margin-top: var(--m-1); padding: 0; color: var(--accent); background: none; border-color: transparent; }
+.mobile-more-line { min-height: var(--m-tap); min-width: var(--m-tap); display: block; margin-top: var(--m-1); padding: 0; color: var(--accent); background: none; border-color: transparent; }
 .mobile-decision { display: flex; flex-direction: column; gap: var(--m-2); padding: var(--m-3); background: var(--panel); border: 1px solid var(--warn); border-radius: var(--m-3); }
 .mobile-command { margin: 0; padding: var(--m-1) var(--m-2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--m-1); font-family: var(--font-mono); white-space: pre-wrap; word-break: break-all; }
 .mobile-question { margin: 0; }

@@ -277,6 +277,7 @@ export function MobileSettings({ onClose, onRevoked, env, probe, probeWeb, textS
 
       {confirmRevoke && (
         <ConfirmDialog
+          cancelLabel="取消"
           title="吊销本设备？"
           body="这台设备上的凭据马上失效，页面会回到配对页；它登记的推送订阅也随之停发。"
           confirmLabel="吊销"

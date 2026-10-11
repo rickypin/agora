@@ -14,7 +14,7 @@
  * （agora-prdg.2）。composer 能附图（粘贴或选图，agora-lmz2）：图先传到节点、路径接进文字再发，
  * 规则见 [`./imageAttach`]。
  */
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { agentBadge } from "./agentBadge";
 import type { ApiErrorBody, SessionApi } from "./api";
 import { isHandleless, seenKey, seenRelevant, taskLabel } from "./attention";
@@ -26,9 +26,10 @@ import { composeWire, displayPrompt, imagesFromClipboard, MAX_IMAGES, prepareIma
 import type { SessionRow } from "./events";
 import { MarkdownView } from "./MarkdownView";
 import { MobileEarlier } from "./MobileEarlier";
+import { MobileComposer, type Attachment, type Sent } from "./mobileComposer";
 import { MobileIcon } from "./MobileIcon";
 import { nodeHue } from "./nodeColor";
-import { KILL_BODY, RESTART_BODY, restartNoteOf } from "./SessionSettings";
+import { restartNoteOf } from "./SessionSettings";
 import { identityName, rowName, statusSymbol, str } from "./SessionRow";
 
 /** 回复默认露出的行数（docs/spec/ux.md：手机端默认折 6 行）。 */
@@ -48,28 +49,11 @@ interface Props {
   seen?: boolean;
   /** 推送点击进来且这一行可发送（turn_done / idle）：把焦点放进底部 composer（agora-thc.7）。 */
   focusComposer?: boolean;
-  initialDraft?: string;
-  onDraftChange?: (text: string) => void;
+  composer?: MobileComposer;
   onNext?: () => void;
 }
 
 type Pending = { kind: "kill" | "restart" } | null;
-/**
- * 一次发送。`wire` 是真正交给 `input` 的那一串（带图时是文字 + 图的引用），回显比对与重试都用它；
- * `thumbs` 是气泡里的缩略图。`stage: "upload"` = 图没传上去，文字与图已放回 composer，气泡不给重试。
- */
-type Sent = {
-  text: string;
-  wire?: string;
-  thumbs?: string[];
-  phase: "sending" | "sent" | "failed";
-  queued?: boolean;
-  failure?: string;
-  stage?: "upload";
-};
-/** composer 里待发的一张图；`url` 是缩略图用的 object URL。 */
-type Attachment = { key: number; file: Blob; url: string };
-
 /**
  * 发送失败给手机看的一句话（agora-jidm）：按错误码分开说，不把内部话直接扔给用户。
  *
@@ -113,27 +97,18 @@ export function imageFailureText(error: ApiErrorBody, status?: number): string {
   }
 }
 
-export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusComposer, initialDraft = "", onDraftChange, onNext }: Props) {
+export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusComposer, composer, onNext }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [more, setMore] = useState(false);
   const [pending, setPending] = useState<Pending>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [draft, setDraft] = useState(initialDraft);
-  useEffect(() => { onDraftChange?.(draft); }, [draft, onDraftChange]);
-  const [sent, setSent] = useState<Sent | null>(null);
-  const [images, setImages] = useState<Attachment[]>([]);
-  const imageKey = useRef(0);
+  const memory = useMemo(() => composer ?? new MobileComposer(), [composer, row.id]);
+  const { draft, images, sent } = useSyncExternalStore(memory.subscribe, memory.snapshot, memory.snapshot);
+  const { setDraft, setImages, setSent } = memory;
   const fileRef = useRef<HTMLInputElement>(null);
-  // 建过的缩略图 URL：气泡里的缩略图与 composer 共用同一批，卸载时统一放掉。
-  const thumbUrls = useRef<string[]>([]);
-  useEffect(
-    () => () => {
-      for (const url of thumbUrls.current) URL.revokeObjectURL(url);
-    },
-    [],
-  );
+  useEffect(() => () => { if (!composer) memory.dispose(); }, [composer, memory]);
   // 「等它接手…」20 s 还没动静的兜底（agora-o975.2 审查修订，2026-10-08）：ack 回来了、
   // row.prompt 没回显、状态也没离开 turn_done/idle——再等下去没有新信息，补一句出口话，
   // 别让一句进度提示永远挂着。
@@ -170,16 +145,13 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   }, [row.id, row.detail]);
   // 换一行：清掉临时反馈，恢复这条会话的未发草稿。
   useEffect(() => {
-    setSent(null);
-    setDraft(initialDraft);
-    setImages([]);
     setError(null);
     setNote(null);
     setMore(false);
   }, [row.id]);
   // 服务端把这句话收进 prompt（首行相等）之后，乐观气泡让位给真实投影；失败的留着给重试。
   useEffect(() => {
-    if (!sent || sent.phase === "failed") return;
+    if (!sent || sent.phase !== "sent") return;
     const first = str(row.prompt).split("\n")[0]?.trim();
     if (first && first === (sent.wire ?? sent.text).split("\n")[0]?.trim()) setSent(null);
   }, [row.prompt, sent]);
@@ -307,13 +279,14 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
     setImages((cur) => (cur.length === 0 ? attached : cur));
   }
 
-  async function deliver(text: string, wire: string, thumbs: string[]) {
+  async function deliver(text: string, wire: string, thumbs: string[], retrying = false) {
     // 「排队 / 没排队」按**发出去的那一刻**这一行是否在跑：ack 回来时 hook 可能已经把它改成别的
     // 状态，标签要跟着这一次发送走，不回头看。
     const queued = hostText && running;
     setSent({ text, wire, thumbs, phase: "sending" });
     const r = await api.input(row.id, { kind: "text", data: `${wire}\n` });
     if (r.ok) {
+      if (retrying) setDraft((current) => current.trim() === text ? "" : current);
       setSent({ text, wire, thumbs, phase: "sent", queued });
       return;
     }
@@ -328,26 +301,21 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   function retry(failed: Sent) {
     if (row.stale) return;
     setError(null);
-    void deliver(failed.text, failed.wire ?? failed.text, failed.thumbs ?? []);
+    void deliver(failed.text, failed.wire ?? failed.text, failed.thumbs ?? [], true);
   }
 
   function addImages(files: Blob[]) {
     if (files.length === 0) return;
     const room = MAX_IMAGES - images.length;
     if (files.length > room) setNote(`一条最多带 ${MAX_IMAGES} 张图。`);
-    const added = files.slice(0, Math.max(0, room)).map((file) => {
-      const url = URL.createObjectURL(file);
-      thumbUrls.current.push(url);
-      return { key: imageKey.current++, file, url };
-    });
+    const added = files.slice(0, Math.max(0, room)).map((file) => memory.attach(file));
     if (added.length > 0) setImages([...images, ...added]);
   }
 
   function removeImage(key: number) {
     const gone = images.find((a) => a.key === key);
     if (gone) {
-      URL.revokeObjectURL(gone.url);
-      thumbUrls.current = thumbUrls.current.filter((u) => u !== gone.url);
+      memory.release(gone.url);
     }
     setImages(images.filter((a) => a.key !== key));
   }
@@ -672,9 +640,10 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
       )}
       {pending && (
         <ConfirmDialog
-          title={pending.kind === "kill" ? "Kill 这个会话？" : "Restart 这个会话？"}
-          body={pending.kind === "kill" ? KILL_BODY : RESTART_BODY}
-          confirmLabel={pending.kind === "kill" ? "Kill" : "Restart"}
+          cancelLabel="取消"
+          title={pending.kind === "kill" ? "结束这个会话？" : "重新启动这个会话？"}
+          body={pending.kind === "kill" ? "将结束正在运行的 agent 进程。输出会保留，直到你清理这个会话。" : "将结束当前进程，在同一个会话中重新启动并尝试恢复对话。"}
+          confirmLabel={pending.kind === "kill" ? "结束会话" : "重新启动"}
           onCancel={() => setPending(null)}
           onConfirm={() => void run(pending.kind, true)}
         />

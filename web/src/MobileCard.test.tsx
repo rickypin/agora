@@ -561,6 +561,23 @@ describe("send failures (agora-jidm)", () => {
     expect(requests[1].body).toBe(JSON.stringify({ kind: "text", data: "再试一句话\n" }));
   });
 
+  it.each([false, true])("successful retry clears only the original draft (new draft: %s)", async (edited) => {
+    let calls = 0;
+    let resolveRetry!: (response: Response) => void;
+    const api = sessionApi(async (url) => {
+      if (!url.endsWith("/input")) return new Response(null, { status: 404 });
+      if (++calls === 1) return new Response(JSON.stringify({error: "host_timeout", message: "稍后重试"}), {status: 504});
+      return new Promise<Response>((resolve) => { resolveRetry = resolve; });
+    });
+    render(<MobileCard row={hostRow()} api={api} now={1000} onBack={vi.fn()} />);
+    await typeAndSend("原来那句话");
+    fireEvent.click(screen.getByTestId("mobile-retry"));
+    if (edited) fireEvent.change(screen.getByTestId("mobile-next-input"), {target: {value: "下一句新草稿"}});
+    await act(async () => { resolveRetry(new Response("{}")); });
+    expect((screen.getByTestId("mobile-next-input") as HTMLTextAreaElement).value).toBe(edited ? "下一句新草稿" : "");
+    expect((screen.getByTestId("mobile-send") as HTMLButtonElement).disabled).toBe(!edited);
+  });
+
   it("502 host_rejected: the host's own words are shown without a wrapper", async () => {
     // 扩展 `.failed` 文件里的原话比任何转述都准：照抄，别加「发送失败：」这类壳。
     setupInputFailure(hostRow(), 502, {
@@ -645,7 +662,7 @@ describe("kill / restart", () => {
 
     const dialogs = screen.getAllByRole("dialog");
     expect(dialogs.length).toBe(1);
-    fireEvent.click(screen.getByText("Kill", { selector: ".dialog-actions button" }));
+    fireEvent.click(screen.getByText("结束会话", { selector: ".dialog-actions button" }));
     await act(async () => {});
     expect(requests[1].body).toBe(JSON.stringify({ confirmed: true }));
   });

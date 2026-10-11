@@ -486,6 +486,21 @@ describe("手机端「新建」（预设，agora-prdg.4；A52 回写）", () => 
     expect(document.activeElement).toBe(screen.getByTestId("mobile-next-input"));
   });
 
+  it("leaving New ignores a late creation response and permits a later visit", async () => {
+    let finish!: (response: Response) => void;
+    const t = setup([row("n:a")], async (url) => url === "/api/presets"
+      ? json({presets: [preset("review")]})
+      : new Promise<Response>((resolve) => { finish = resolve; }));
+    await online(t);
+    await openNewScreen();
+    fireEvent.click(screen.getByTestId("mobile-preset-review"));
+    await act(async () => { window.history.back(); await new Promise((r) => setTimeout(r, 30)); });
+    await act(async () => finish(json({id: "n:a"}, 201)));
+    expect(screen.queryByTestId("mobile-card-n:a")).toBeNull();
+    await openNewScreen();
+    expect((screen.getByTestId("mobile-preset-review") as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("空预设：显示 agora preset add 的 CLI 指引，仍然零打字", async () => {
     const t = setup([row("n:a")], presetFetch([], []));
     await online(t);
@@ -564,6 +579,20 @@ describe("手机端清理「已完成」（agora-off0）", () => {
     // 段默认收起：行不画但计数照数（与桌面同一条），入口与段一起出现。
     expect(screen.getByTestId("mobile-finished-toggle").textContent).toContain("1");
     expect(screen.getByTestId("mobile-clear-finished")).toBeTruthy();
+  });
+
+  it("search limits cleanup to matching finished rows and hides it for no matches", async () => {
+    const requests: { url: string; method: string }[] = [];
+    const t = setup([external("n:apple"), external("n:pear")], recordingFetch(requests));
+    await online(t);
+    fireEvent.change(screen.getByLabelText("搜索会话"), {target: {value: "no-match"}});
+    expect(screen.queryByTestId("mobile-clear-finished")).toBeNull();
+    fireEvent.change(screen.getByLabelText("搜索会话"), {target: {value: "apple"}});
+    expect(screen.getByTestId("mobile-finished-toggle").textContent).toContain("1");
+    fireEvent.click(screen.getByTestId("mobile-clear-finished"));
+    expect(screen.getByRole("button", {name: "取消"})).toBeTruthy();
+    await confirm("删除 1 行");
+    expect(deletes(requests)).toEqual(["/api/sessions/n%3Aapple"]);
   });
 
   it("②确认后对「已完成」段每一行逐行发 DELETE /api/sessions/:id（没有批量端点）", async () => {
@@ -795,6 +824,31 @@ describe("移动工作台的关注与切换（agora-d0r）", () => {
     expect((screen.getByLabelText("下一条指令") as HTMLInputElement).value).toBe("请继续检查布局");
   });
 
+  it("keeps image previews across navigation and releases them with the page", async () => {
+    const create = vi.spyOn(URL, "createObjectURL").mockImplementation(() => `blob:preview-${Math.random()}`);
+    const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const t = setup([row("n:a", {status: "idle"}), row("n:b", {status: "idle"})]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("mobile-row-n:a"));
+    fireEvent.change(screen.getByTestId("mobile-attach-input"), {target: {files: [new File(["image"], "test.png", {type: "image/png"})]}});
+    const first = screen.getByTestId("mobile-attachments").querySelector("img")!.src;
+    fireEvent.click(screen.getByTestId("mobile-back"));
+    expect(revoke).not.toHaveBeenCalledWith(first);
+    fireEvent.click(screen.getByTestId("mobile-row-n:b"));
+    expect(screen.queryByTestId("mobile-attachments")).toBeNull();
+    fireEvent.click(screen.getByTestId("mobile-back"));
+    fireEvent.click(screen.getByTestId("mobile-row-n:a"));
+    expect(screen.getByTestId("mobile-attachments").querySelectorAll("img")).toHaveLength(1);
+    expect(screen.getByTestId("mobile-attachments").querySelector("img")!.src).toBe(first);
+    fireEvent.click(screen.getByTestId("mobile-attachment-remove"));
+    fireEvent.click(screen.getByTestId("mobile-back"));
+    fireEvent.click(screen.getByTestId("mobile-row-n:a"));
+    expect(screen.queryByTestId("mobile-attachments")).toBeNull();
+    t.ui.unmount();
+    create.mockRestore();
+    revoke.mockRestore();
+  });
+
   it("moves straight to the next attention item and resets the card's local state", async () => {
     const t = setup([row("n:a", {status: "waiting"}), row("n:b", {status: "waiting"})]);
     await online(t);
@@ -839,5 +893,66 @@ describe("行头与会话页页头画项目身份（agora-rd5v）", () => {
     await online(t);
     fireEvent.click(screen.getByTestId("mobile-row-n:own"));
     expect(screen.getByTestId("mobile-card-identity").textContent).toBe("agora");
+  });
+});
+
+
+describe("mobile audit regression (agora-kvj1 / tqkb / ydzj / p5zc)", () => {
+  async function back() {
+    await act(async () => { window.history.back(); await new Promise((r) => setTimeout(r, 30)); });
+  }
+  it("retains an in-flight send and its late failure across card navigation", async () => {
+    let fail!: (response: Response) => void;
+    let writes = 0;
+    const t = setup([row("n:a", {status: "idle"})], async (url) => {
+      if (url.endsWith("/input")) {
+        writes++;
+        if (writes === 1) return new Promise<Response>((resolve) => { fail = resolve; });
+        return new Response(JSON.stringify({}), {status: 200});
+      }
+      return new Response(JSON.stringify({turns: []}), {status: 200});
+    });
+    await online(t);
+    fireEvent.click(screen.getByTestId("mobile-row-n:a"));
+    fireEvent.change(screen.getByLabelText("下一条指令"), {target: {value: "保留这条指令"}});
+    fireEvent.click(screen.getByTestId("mobile-send"));
+    await back();
+    fireEvent.click(screen.getByTestId("mobile-row-n:a"));
+    expect((screen.getByTestId("mobile-send") as HTMLButtonElement).disabled).toBe(true);
+    await back();
+    await act(async () => fail(new Response(JSON.stringify({error: "host_timeout", message: "测试延迟失败"}), {status: 504})));
+    fireEvent.click(screen.getByTestId("mobile-row-n:a"));
+    expect((screen.getByLabelText("下一条指令") as HTMLTextAreaElement).value).toBe("保留这条指令");
+    expect(screen.getByText("测试延迟失败")).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByTestId("mobile-retry")));
+    expect(writes).toBe(2);
+    expect((screen.getByLabelText("下一条指令") as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it.each(["settings", "new"])("restores scroll and browser back/forward for %s", async (page) => {
+    const t = setup([row("n:a")], async () => new Response(JSON.stringify({presets: []})));
+    await online(t);
+    const inbox = document.querySelector(".mobile-inbox")!;
+    inbox.scrollTop = 517;
+    await act(async () => fireEvent.click(screen.getByTestId(page === "settings" ? "mobile-settings-open" : "mobile-new-open")));
+    expect(new URLSearchParams(location.search).get("screen")).toBe(page);
+    await back();
+    expect(document.querySelector(".mobile-inbox")!.scrollTop).toBe(517);
+    await act(async () => { window.history.forward(); await new Promise((r) => setTimeout(r, 30)); });
+    expect(screen.getByTestId(page === "settings" ? "mobile-settings" : "mobile-preset-screen")).toBeTruthy();
+  });
+
+  it("exposes forced search expansion accurately and restores the manual choice after clearing", async () => {
+    const t = setup([row("n:done", {status: "finished", alive: false, origin: "external"})]);
+    await online(t);
+    const toggle = () => screen.getByTestId("mobile-finished-toggle") as HTMLButtonElement;
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    fireEvent.change(screen.getByLabelText("搜索会话"), {target: {value: "done"}});
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(toggle().disabled).toBe(true);
+    expect(screen.getByTestId("mobile-row-n:done")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("清除搜索"));
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(toggle().disabled).toBe(false);
   });
 });

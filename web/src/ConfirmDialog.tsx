@@ -3,12 +3,13 @@ interface Props {
   title: string;
   body: string;
   confirmLabel: string;
+  cancelLabel?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
 
 /** 危险操作确认框（docs/spec/ux.md）；只有节点说"会杀"时才出现（MISSION §8）。 */
-export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel }: Props) {
+export function ConfirmDialog({ title, body, confirmLabel, cancelLabel = "Cancel", onConfirm, onCancel }: Props) {
   const dialogRef = useDialogFocus(onCancel);
   return (
     <div className="overlay" role="presentation" onClick={onCancel}>
@@ -17,7 +18,7 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel }
         <p>{body}</p>
         <div className="dialog-actions">
           <button onClick={onCancel} autoFocus>
-            Cancel
+            {cancelLabel}
           </button>
           <button className="danger" onClick={onConfirm}>
             {confirmLabel}
