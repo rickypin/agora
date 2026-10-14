@@ -25,6 +25,7 @@
 | 手机端排版与自适应全面整改（epic）：17px 基准 + 字号档位 + 触控 44 + 视口/键盘/安全区 | `agora-x70t` | 手机端排版与自适应全面整改（epic）：17px 基准 + 字号档位 + 触控 44 + 视口/键盘/安全区 | — | 手机端在 iPhone 16 Pro 上：默认字号 17px 起（设置屏可选 小/标准/大/特大，刷新后保持）；点 composer 不再整页放大；任何长词/URL/命令都不画出卡片；返回/发送/Allow/Deny/设置等可点目标 >=44pt；横竖屏与刘海、键盘弹起时 composer 可见。人眼验收（用户手机）：/m 收件箱与任一会话卡在不同档位下读得清、按得准、不横向溢出。守卫：web/src/mobileCss.test.ts（CSS 不变式）、mobileText.test.ts、MobileSettings/MobileApp/MobileCard 的档位与聚焦用例；代检：agent-browser 在 320/375/402/430 四宽 × 0/-xl 两档量 docW==innerWidth、输入框 >=16px、触控 >=44px、长串零溢出。 | closed  |
 | 手机端闭环 v2：① 托管会话与 ② 自己终端里的 pi —— 回话可靠性、手感与误触防线（epic） | `agora-prdg` | 手机端闭环 v2：① 托管会话与 ② 自己终端里的 pi —— 回话可靠性、手感与误触防线（epic） | — | 机械：全部子任务关闭（bd 父子关系齐、ROADMAP 重生成）；本地门禁全绿（cargo test / cargo clippy / npm --prefix web test / scripts/doc-lint.sh；CI 停跑期间以本地门禁为准，MISSION §1.5 第 8 条）；相邻既有守卫点名不许红（MobileApp 的 A52 DOM 名单、attention 的新鲜度窗口、mobileCss / buttonFlex、Sidebar 的桌面清理）。epic 本身不新增守卫，故'先在旧代码上验证为红'不适用。代检：真机 iPhone 按剧本逐条走完并留证据（命令、观察到的输出、工具版本）；① 的回归冒烟成功；文档回写到位（ADR-002 D11 的三处句子：mukn 的边界句、shze 的 followUp 语义、r0e7 的三条限制）；结束时清场（kill + DELETE + 核对 /api/sessions 行数）。人眼：剧本里标 👁 的两步（② 排队文案的手感、① 的回归冒烟里的界面手感）——文案/手感类判断只能人看，代检读到的是 DOM 文本、判断不了读起来是否清楚。 | open 7/8 |
 | 移动端新建：预设一键（CLI 定义 → 手机点选，零打字） | `agora-hxva` | 移动端新建：预设一键（CLI 定义 → 手机点选，零打字） | — | 机械：全部子任务关闭（bd 父子关系齐、ROADMAP 重生成）；本地门禁全绿（cargo test / cargo clippy / npm --prefix web test / scripts/doc-lint.sh；CI 停跑期间以本地门禁为准，MISSION §1.5 第 8 条）；相邻既有守卫点名不许红（MobileApp 的 A52 DOM 名单、mobileCss、buttonFlex）。epic 本身不新增守卫，故'先在旧代码上验证为红'不适用。代检：真机 iPhone 按上方剧本 1–6 走完并留证据（命令、观察到的输出、工具版本）；结束时清场（kill + DELETE + 核对 /api/sessions 行数 + 删掉代检用的预设）。人眼：预设屏的字段/文案/排序与「新建」入口的位置——'零打字的入口好不好用'是主观手感，代检读得到 DOM 文本但判断不了。 | open 3/4 |
+| 让本机开发流程经通用通知入口提醒用户 | `agora-rd12` | 让本机开发流程经通用通知入口提醒用户 | — | MISSION §12 A54。输入 UTF-8/64KiB/200与4000字符限制、10秒总预算、0/1/2/4、通知开关、同uid和滑动60秒5条限流均有守卫；并发不超额；发布后丢应答为4；无订阅及推送故障仍为0；双向/环形peer不回流及三节点不多跳、旧peer不接系统通知；假HTTPS解密仅title/session:null；SW随机tag、点击回收件箱保留草稿；MISSION/ADR/spec同步；README全部适用门禁和关键守卫反证完成；真实iPhone/桌面通知留人眼验收。 | in_progress 1/2 |
 
 ## 演示剧本（epic 的 design 字段；agent 先代检，人只看 👁 步骤与代检报告后关闭 epic，MISSION §1.5）
 
@@ -228,3 +229,8 @@ V2-1 演示剧本（agent 先代检，人只看 👁 步骤与代检报告后关
 4. 点 `pktmask-claude` → 落在卡片 → 在卡片上发第一句 → 起来时确实带着 `--model opus`（终端或 `launch_args` 可见）。
 5. 空态：删光预设后「新建」显示 `agora preset add …` 指引。
 6. 边界：`GET /api/presets` 有、`POST /api/presets` 405；`preset + node` 400。
+
+### 让本机开发流程经通用通知入口提醒用户 `agora-rd12`
+
+场景：MISSION §0.2 第 4 步，离开桌面后仍能获知开发流程交人；第 1、5 步在桌面查看提醒。
+在隔离 daemon 上由 CLI 提交通知→WS收到id:null→直接peer桌面展示→承载PWA节点异步推送。先隔离机械和DOM验证，再获部署授权升级两节点并刷新PWA；人眼验关闭PWA收仅标题推送、点击回/m、Mac带正文及连续两条独立通知。最后由Trion真实send发送明确测试消息，不伪造业务事件。
