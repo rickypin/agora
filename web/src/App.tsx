@@ -33,21 +33,32 @@ export function App() {
       .then((ok) => !cancelled && setProbe(ok ? "ok" : "down"))
       .catch(() => !cancelled && setProbe("down"));
 
-    // 地址栏带 #pair=<token> → 兑换成 cookie，再清掉 fragment；否则看已有 session 是否有效。
-    // StrictMode 会让这个 effect 同步跑两遍、两遍读到同一个 token：redeemPairOnce 按 token 只 POST 一次
-    // （agora-3w8，反例见 pair.ts）；fragment 要等落定后再清，不能在这里提前清给第二遍看。
-    const token = extractPairToken(window.location.hash);
-    const settle = token
-      ? redeemPairOnce(token).then((device) => {
-          clearFragment();
-          return device ? "paired" : "pair_failed";
-        })
-      : isPaired().then((ok) => (ok ? "paired" : "unpaired"));
-    settle
-      .then((state) => !cancelled && setAuth(state as Auth))
-      .catch(() => !cancelled && setAuth("unpaired"));
+    // 2026-10-11：同标签页打开配对链接只触发 hashchange，不重挂 App（agora-auuw）。
+    // generation 让较早的凭据探测或兑换不能覆盖新链接；StrictMode 的重复兑换仍按 token 去重。
+    let generation = 0;
+    function checkAuth() {
+      const token = extractPairToken(window.location.hash);
+      const current = ++generation;
+      setAuth("checking");
+      const settle: Promise<Auth> = token
+        ? redeemPairOnce(token).then((device) => device ? "paired" : "pair_failed")
+        : isPaired().then((ok) => ok ? "paired" : "unpaired");
+      void settle.catch((): Auth => token ? "pair_failed" : "unpaired").then((state) => {
+        if (cancelled || current !== generation) return;
+        // 地址栏可能已改变，但对应事件尚未送达：不要清掉新 token 或应用旧结果。
+        if (token && extractPairToken(window.location.hash) !== token) return;
+        if (token) clearFragment();
+        setAuth(state);
+      });
+    }
+    function onHashChange() {
+      if (extractPairToken(window.location.hash)) checkAuth();
+    }
+    window.addEventListener("hashchange", onHashChange);
+    checkAuth();
     return () => {
       cancelled = true;
+      window.removeEventListener("hashchange", onHashChange);
     };
   }, []);
 

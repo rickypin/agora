@@ -24,6 +24,7 @@ const net = vi.hoisted(() => ({
   consumed: new Set<string>(),
   /** `GET /api/auth/devices` 该不该 200（有没有已有 session）。 */
   devicesOk: false,
+  delays: new Map<string, Promise<void>>(),
 }));
 
 vi.mock("./Workspace", () => ({
@@ -40,6 +41,7 @@ vi.mock("./net", () => ({
     if (path === "/api/auth/pair" && init.method === "POST") {
       const { token } = JSON.parse(String(init.body)) as { token: string };
       net.pairPosts.push(token);
+      if (net.delays.has(token)) await net.delays.get(token);
       if (net.consumed.has(token)) return json(401, { error: "unauthorized" });
       net.consumed.add(token);
       return json(200, { device: { id: "d1", name: "test" } });
@@ -75,6 +77,52 @@ describe("App pair gate under StrictMode", () => {
     expect(await screen.findByText("workspace-placeholder")).toBeTruthy();
     expect(net.pairPosts).toEqual(["abc"]);
     // 兑换落定后 token 从地址栏抹掉（单次使用，留着只会误导）。
+    expect(window.location.hash).toBe("");
+  });
+
+  it("redeems a same-tab fragment after the unpaired gate, without duplicate POSTs", async () => {
+    renderStrict("");
+    await screen.findByText("本设备未配对：在本机终端运行 agora open");
+    await act(async () => {
+      window.history.replaceState(null, "", "/#pair=same-tab");
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(await screen.findByText("workspace-placeholder")).toBeTruthy();
+    expect(net.pairPosts).toEqual(["same-tab"]);
+    expect(window.location.hash).toBe("");
+  });
+
+  it("shows a failed same-tab redemption and accepts a fresh fragment", async () => {
+    net.consumed.add("expired-fragment");
+    renderStrict("");
+    await screen.findByText("本设备未配对：在本机终端运行 agora open");
+    await act(async () => {
+      window.history.replaceState(null, "", "/#pair=expired-fragment");
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(await screen.findByText(/配对链接无效、已用或已过期/)).toBeTruthy();
+    await act(async () => {
+      window.history.replaceState(null, "", "/#pair=fresh-fragment");
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(await screen.findByText("workspace-placeholder")).toBeTruthy();
+    expect(net.pairPosts).toEqual(["expired-fragment", "fresh-fragment"]);
+  });
+
+  it("ignores an older redemption that settles after a newer link", async () => {
+    let release!: () => void;
+    net.delays.set("slow-expired", new Promise<void>((resolve) => { release = resolve; }));
+    net.consumed.add("slow-expired");
+    renderStrict("#pair=slow-expired");
+    await act(async () => {
+      window.history.replaceState(null, "", "/#pair=newer-link");
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(await screen.findByText("workspace-placeholder")).toBeTruthy();
+    await act(async () => { release(); });
+    expect(screen.getByText("workspace-placeholder")).toBeTruthy();
+    expect(net.pairPosts).toEqual(["slow-expired", "newer-link"]);
     expect(window.location.hash).toBe("");
   });
 
