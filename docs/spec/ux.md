@@ -67,7 +67,7 @@
 
 打开一个会话就该能直接打字，不用先点终端。TerminalView 在三处交焦点：① 挂载时 `term.focus()` 一次；② WS 收到 `status: attached` 再一次——新开的浏览器标签页里挂载那一次偶尔不生效（2026-09-03 目检：attach 成功、键入不进 pane、点一下终端才好），但用户这会儿已经在别处操作可交互控件（侧栏过滤、Rename、New Agent 表单、回答面板的 Allow 按钮）的话不抢（agora-y3h：WAITING 面板聚焦的是 `<button>`，旧实现只认文本输入，点通知落到未打开的 WAITING 行时 attached 把焦点抢回终端）；③ `.term-host` 上的 pointerdown 把焦点交回 xterm 的 helper textarea，点在 `.xterm` 之外的 padding 上也算——xterm 自己的 mousedown 只覆盖 `.xterm` 内部，padding 那一圈由 agora 取消浏览器缺省的 mousedown，不然焦点会被挪到 body。不在 pointerdown 上 `preventDefault`：那会连带取消后面的 mousedown / click，xterm 的选区靠它们。守卫 `web/src/TerminalView.test.tsx`。④ 点**已经激活**的侧栏行（agora-vcc，2026-09-05 代检）：视图状态不变，TerminalView 不重挂也不会再 focus，焦点留在刚点的按钮上——Workspace 在这种命中时显式调用挂着的终端的 `focus()`（TerminalView 经 `focusRef` 暴露），不在行按钮的 mousedown 上 `preventDefault`，侧栏的键盘可达性不变。守卫 `web/src/Workspace.focus.test.tsx`。人工复现步骤在 M1a 演示剧本第 4 步（新标签页打开会话 → 直接键入）。
 
-Command Palette 支持 fuzzy search sessions / projects / nodes / actions（`New Claude in agora @ zuan`）。目标是让管理 20–50 个 agent 时仍然高效。手机端没有键盘，快捷键与命令面板只在桌面生效（`isDesktop()`：视口窄于 700 px 就不装 window keydown，命令面板也开不出来）。
+Command Palette 支持 fuzzy search sessions / projects / nodes / actions（`New Claude in agora @ zuan`）。会话匹配页面上的任务标题，并显示任务、会话名、agent、节点、状态、工作区与会话 id，区分同项目的多条会话（agora-yy7e）。目标是让管理 20–50 个 agent 时仍然高效。手机端没有键盘，快捷键与命令面板只在桌面生效（`isDesktop()`：视口窄于 700 px 就不装 window keydown，命令面板也开不出来）。
 
 面板里选 `New <agent> in <project> @ <node>` 直接起会话，走的是和 New Agent 对话框同一个 `POST /api/sessions`，字段取默认值（项目名当 display_name、agent 的默认命令）——面板的意义就是不填表；要填 Task / Worktree 的走对话框（面板末尾那条 `New Agent…`）。本机一组之外，每个**在线**的 peer 各一组（A45，agora-fna）：项目与 agent 从那台机器取（`?node=`），条目带 `node`、节点一跳转发；离线的 peer 没有条目、也不去拉（`web/src/CommandPalette.test.tsx`）。侧栏过滤与面板共用 `web/src/fuzzy.ts` 的打分（连续命中、词首命中加分，同分保持原顺序），所以 Alt/Option+N 跳的第 N 条永远等于眼睛看到的第 N 条。
 
@@ -159,6 +159,8 @@ WORKING
 
 折叠按**源文本的行数**：最后一条回复默认只渲染前 **12 行**，超过时下面一个「展开全文（N 行）」按钮（`respond-last-more`），点开显示全文、按钮随之消失（不提供「收起」——回复是看结果的东西，看完就该给上面的输入框下一条指令）；12 行以内不出按钮。折叠态**不持久化**：换一行、同一行来了新回复、刷新页面都回到折叠。按行数截而不是 CSS 限高，是因为限高会随字号 / 表格 / 代码块飘，同一段回复在不同机器上折叠位置不一样。截断落在围栏中间时，未闭合的代码块一路渲染到结尾（不退回原文）；落在表头与分隔线之间时，表头行退回成一行普通文字。`.respond-last` 那条 40vh 限高与折叠是两件事：折叠管默认露多少，40vh 管展开之后最多占多高。守卫 `web/src/markdown.test.ts`、`web/src/RespondPanel.test.tsx`。
 
+桌面回应草稿在当前页面内按会话 id 保存；查看 / 关闭 diff、切换会话或关闭主区不会清空，发送成功才清空对应会话的草稿（agora-1qyq）。
+
 状态既不是 WAITING 也不是 TURN_DONE 时面板一格都不占；看 diff 时不画（那一格在看结果，不在回答；同时**留着**的看结果面板见下一段）。「打开终端」在主区里的意思是**把焦点交给下面的终端**（面板与终端本来就上下相邻，不再是切标签页）；external 会话没有终端可交（MISSION §5.5），这个按钮不画，经 hook 的 Allow / Deny 照旧。「下一条指令」输入框按 `textVia(row)` 分（MISSION §5.5、ADR-002 D11）：`runtime` 与 `host` 都画，`none`（旧扩展 / 老节点 / 本就只读的宿主）不画——70p2 当时拿掉输入是因为 external 一律 409 `no_runtime`，宿主自报输入通道后这条理由在 `host` 行上不成立了（agora-t5kf.3）；不画的那些只留 `↳` 看结果与 `respond-terminal-only` 说明。输入框里按 Escape：有终端的把焦点还给终端，宿主通道的行没有终端可还，就让它失焦。终端焦点规则（agora-p29 / agora-vcc）不变：点行仍然聚焦终端，面板只在 Alt/Option+R 与通知点击两条路径上拿焦点。守卫 `web/src/RespondPanel.test.tsx`、`web/src/Workspace.test.tsx`（crumb → 面板 → pane 的 DOM 顺序、diff 视图只藏这一个面板、通知点击与 Alt/Option+R 的落点）、`web/src/Sidebar.test.tsx`（侧栏一个 `respond-` testid 都没有）、`web/src/keys.test.ts`（Alt+R 认 code）。
 
 ```
@@ -242,6 +244,8 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 视觉使用墨绿背景、薄荷色主动作、琥珀色待批准与独立的危险色；颜色全部在 `:root` 定义共享令牌，桌面与手机共用。卡片留白与字号由 `--m-fs` 派生，主要触控目标至少 44px，输入至少 16px。手机横屏采用两列任务卡片与紧凑概览；桌面使用独立的工作台布局（见下文重设计节）。iOS 26.3 Simulator 的独立字体对照发现 `system-ui` 中文缺字，移动壳显式优先使用 `PingFang SC`（agora-5gy）。
 
 2026-10-11（agora-tqkb / agora-ydzj）：设置与新建使用 `/m?screen=settings` / `/m?screen=new` 历史条目，页面返回、浏览器后退和前进保持一致；返回收件箱恢复之前的滚动位置（内容或字号改变时受当前可滚动范围限制）。离开新建后，迟到的创建响应不再切走当前页面。
+
+手机详情与收件箱共享节点连接状态：断线显示「暂时连不上节点，当前显示上次收到的状态。」，恢复后移除提示，保留未发送草稿（agora-5ylu）。输入 / 结束操作要求可写的运行时；重启独立判断托管运行时与非空启动命令，已结束会话仍保留「更多 → 重新启动」，只读或无命令会话不提供重启（agora-8nn8）。
 
 兼容基线为 iPhone 16 Pro / iOS 18.5：构建目标显式固定 Safari 18，避免工具升级抬高最低引擎版本。2026-10-09 使用 WebKit 18.5（Playwright 1.53.2）验证 402×874、320×640 与 874×402 视口，筛选、搜索、草稿、多行发送、浏览器后退、大字号和预设启动通过，页面无错误、无横向溢出。
 
@@ -587,12 +591,14 @@ prompt 模板（`web/src/taskPrompt.ts` 的 `taskPrompt(id, title)`，原文以�
 
 点一下展开采纳表单：Name（默认 pane 标题 / 会话名）、Project（默认 pane 的当前目录）、Agent（默认 hint，可改；用户填的优先）；「采纳」发 `POST /api/sessions/adopt`，会话随 `session_created` 进列表并成为选中行、主区打开它的终端。
 
+桌面会话设置（agora-lnyj，2026-10-11）统一使用「会话设置 / 名称 / 改名 / 重新启动 / 结束会话 / 删除记录」。结束与重启确认框使用中文并保留目标会话身份；重启说明「将结束当前进程，在同一个会话中重新启动并尝试恢复对话」。只有节点返回 `needs_confirmation` 才弹框，取消不发送确认请求；删除记录不结束运行中的进程。
+
 Kill 确认框（MISSION §8：确认跟着"杀"走；Kill 只杀进程，运行时会话与输出保留到清理，§4.6）。从确认起到该行变成 FINISHED 之前，面板显示一行"正在结束…（先请进程退出，最多等 7 秒）"——Kill 是 TERM → 5 s → KILL 的宽限（ADR-001 D2），交互式 shell 会吃满，只把按钮变灰会让人以为没点上。节点只同步等 1 s，没退就立即返回仍 alive 的行并在后台把宽限走完（否则经 peer 转发的 Kill 会撞上 5 s 转发超时报"节点不可达"，agora-284；`docs/spec/api.md` POST /kill），所以这一行的依据是"请求还在飞"或"行上 `killed_at` 已写而 `alive` 仍为 true"，进程一退、行推成 FINISHED 就消失。采纳时没记下启动命令的会话（`command` 为 null）Restart 按钮禁用并在 title 里说明（API 侧是 409 `no_command`）：
 
 ```
-Kill sglog / Codex @ zuan?
-The running agent process will be killed. Its output stays until you clean it up.
-[Cancel] [Kill]
+结束会话 sglog / Codex @ zuan？
+将结束正在运行的 agent 进程。输出会保留，直到你清理这个会话。
+[取消] [结束会话]
 ```
 
 ## Header 节点状态（MISSION §10.3；agora-7ku.12）
