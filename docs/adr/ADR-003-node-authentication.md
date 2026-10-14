@@ -124,7 +124,7 @@ agora 本质上是 Remote Shell Access：`POST /api/sessions` 的 `command` 等�
 - `AGORA_HOME` 默认 `~/.agora`（与 `~/.claude` / `~/.codex` / `~/.grok` 同一习惯，两平台一致，路径短、无空格——unix socket 路径上限 104 字节），环境变量可改。内含 `config.yaml`、`agora.db`、`agora.sock`、`tls/`、`hooks/{inbox,done}/`、`tmux.conf`、`bin/agora`（指向当前二进制的稳定路径，安装与升级维护；hook 命令与 Codex 的内容哈希信任依赖它，ADR-002 D4）。ADR-001 / ADR-002 写的 `<state_dir>` 即此目录。
 - 权限：目录 0700、文件 0600；启动**自检**：目录不属于当前 uid、或 group / other 有任何位 → 拒绝启动并打印 `chmod` 命令（与 ssh 对 `~/.ssh` 相同）。
 - `agora.sock` 以 umask 077 创建（仅属主可访问）；此外每个连接取对端凭据（tokio `UnixStream::peer_cred()`：Linux `SO_PEERCRED`、macOS `getpeereid`，两平台都在 tokio 1.53 的支持列表里，2026-09-02 本机核对），uid ≠ 自己 → 立即关闭。文件权限挡正常情况，peer_cred 挡权限被改错的情况。
-- socket 上跑的：hook 的唤醒 / 挂起（ADR-002 D3）、配对链接铸造（D2）、CLI 查询。改配置、签 token、吊销设备的 CLI 直接操作 `config.yaml` / SQLite，不需要 daemon 在跑。
+- socket 上跑的：hook 的唤醒 / 挂起（ADR-002 D3）、配对链接铸造（D2）、CLI 查询，以及同 uid 开发流程的一次性系统提醒（MISSION §6.6、A54；2026-10-14，agora-rd12）。系统提醒依赖正在运行的 daemon，不增加 HTTP 提交端点或新凭据，不复用 hook 的持久投递箱：它没有重放与工作流语义。其它项目与本项目使用同一契约，见 `docs/spec/api.md`「本机系统通知」。改配置、签 token、吊销设备的 CLI 直接操作 `config.yaml` / SQLite，不需要 daemon 在跑。
 - 同一主机多个 OS 用户各跑各的实例：各自的 `AGORA_HOME`、socket、端口；端口被占报错退出，不自动换端口（否则 `agora open` 不知指向谁）。
 
 ### D7 浏览器侧加固（只剩与凭据强度无关的部分）

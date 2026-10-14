@@ -9,7 +9,7 @@
  * 权限命令 / 回复原文，锁屏不显示）。`tag = session`：同一个会话在通知中心只占一格（换一条新的
  * 覆盖旧的）。**每个 push 都必须 showNotification**：iOS 可能因为没展示通知而吊销订阅（未实测，
  * 2026-10-07 记为待 👁 的取舍）——"有可见客户端就不弹"的抑制策略等真机确认允许之后再上，现在
- * 一律显示 + tag 去重。
+ * 一律显示；会话按 tag 替换，系统提醒每次用随机 UUID 独立展示。
  *
  * notificationclick：优先聚焦已经开着的 /m 页面并把会话交给它（不重新加载——页面自己打开会话卡，
  * 可发送的行还会把焦点放进 composer）；没有就 openWindow `/m?session=…`。
@@ -37,7 +37,7 @@ self.addEventListener("push", (event) => {
   const title = typeof data.title === "string" && data.title ? data.title : "agora";
   event.waitUntil(
     self.registration.showNotification(title, {
-      tag: session || "agora",
+      tag: session || `agora#${crypto.randomUUID()}`,
       data: { session },
     }),
   );
@@ -51,8 +51,12 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil(
     (async () => {
       const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      const mine = all.filter((c) => c.url.startsWith(self.location.origin));
-      const open = mine.find((c) => c.url.includes("/m")) || mine[0];
+      const mine = all.filter((c) => new URL(c.url).origin === self.location.origin);
+      const mobile = mine.find((c) => {
+        const path = new URL(c.url).pathname;
+        return path === "/m" || path.startsWith("/m/");
+      });
+      const open = mobile || (session ? mine[0] : null);
       if (open) {
         await open.focus();
         open.postMessage({ type: "agora-open-session", session });

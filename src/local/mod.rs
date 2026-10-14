@@ -2,7 +2,7 @@
 //!
 //! 信任锚是 OS 用户身份：目录 0700、socket 仅属主可访问，再加每个连接的对端 uid 校验
 //! （文件权限挡正常情况，peer_cred 挡权限被改错的情况）。socket 上跑的是一行 JSON 请求、
-//! 一行 JSON 应答：配对链接铸造（`agora open` / `agora url`）；hook 唤醒与挂起（ADR-002 D3/D5）——
+//! 一行 JSON 应答：配对链接铸造（`agora open` / `agora url`）、一次性系统提醒（A54）、hook 唤醒与挂起（ADR-002 D3/D5）——
 //! 挂起的请求要等 daemon 有了决定才应答，所以 handler 是异步的，一个连接占一个任务。
 
 use std::future::Future;
@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 pub const SOCKET_FILE: &str = "agora.sock";
@@ -116,6 +116,10 @@ pub fn ensure_home(path: &Path) -> Result<(), HomeError> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
+    Notify {
+        title: String,
+        body: String,
+    },
     Ping,
     Pair {
         origin: Option<String>,
@@ -130,6 +134,10 @@ pub enum Request {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum Response {
+    Notified,
+    NotifyRejected {
+        reason: crate::notify::Rejection,
+    },
     Pong,
     Pair {
         url: String,
@@ -295,8 +303,23 @@ async fn handle(stream: UnixStream, handler: Handler, me: u32) -> std::io::Resul
         return Ok(());
     }
     let (rd, mut wr) = stream.into_split();
-    let mut lines = BufReader::new(rd).lines();
-    while let Some(line) = lines.next_line().await? {
+    let mut reader = BufReader::new(rd);
+    loop {
+        // 2026-10-14: notify carries text, so bound the JSON frame before decoding it.
+        // 512 KiB accommodates JSON escaping of a full 64 KiB input.
+        let mut line = String::new();
+        let n = (&mut reader)
+            .take(512 * 1024 + 1)
+            .read_line(&mut line)
+            .await?;
+        if n == 0 {
+            break;
+        }
+        if n > 512 * 1024 {
+            wr.write_all(b"{\"result\":\"notify_rejected\",\"reason\":\"too_large\"}\n")
+                .await?;
+            break;
+        }
         let resp = match serde_json::from_str::<Request>(&line) {
             Ok(req) => handler(req).await,
             Err(e) => Response::Error {

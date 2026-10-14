@@ -346,6 +346,62 @@ describe("mobile push entry (agora-thc.7)", () => {
     expect(screen.queryByTestId("mobile-next-input")).toBeNull();
   });
 
+  it("a system click returns to the inbox, clears the deep link and keeps the draft", async () => {
+    const fire = stubServiceWorker();
+    window.history.replaceState(null, "", "/m?session=n%3Aa");
+    const t = setup([row("n:a", { status: "idle" })]);
+    await online(t);
+    const input = await screen.findByLabelText("下一条指令");
+    fireEvent.change(input, { target: { value: "保留的草稿" } });
+    await act(async () => { fire({ type: "agora-open-session", session: null }); });
+    expect(await screen.findByTestId("mobile-inbox")).toBeTruthy();
+    expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+    expect(window.location.pathname + window.location.search).toBe("/m");
+    fireEvent.click(screen.getByTestId("mobile-row-n:a"));
+    expect((screen.getByLabelText("下一条指令") as HTMLInputElement).value).toBe("保留的草稿");
+  });
+
+  it.each(["mobile-settings-open", "mobile-new-open"])("a system click closes %s", async (entry) => {
+    const fire = stubServiceWorker();
+    const t = setup([row("n:a")]);
+    await online(t);
+    fireEvent.click(screen.getByTestId(entry));
+    await act(async () => { fire({ type: "agora-open-session", session: null }); });
+    expect(await screen.findByTestId("mobile-inbox")).toBeTruthy();
+    expect(screen.queryByTestId("mobile-settings")).toBeNull();
+    expect(screen.queryByTestId("mobile-preset-screen")).toBeNull();
+  });
+
+  it("a system click cancels a pending deep link before rows arrive", async () => {
+    const fire = stubServiceWorker();
+    window.history.replaceState(null, "", "/m?session=n%3Aa");
+    const t = setup([row("n:a", { status: "idle" })]);
+    await act(async () => { fire({ type: "agora-open-session", session: null }); });
+    await online(t);
+    expect(screen.getByTestId("mobile-inbox")).toBeTruthy();
+    expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+  });
+
+  it("a late preset creation cannot navigate away after a system click", async () => {
+    const fire = stubServiceWorker();
+    let finish!: (response: Response) => void;
+    const fetcher: FetchLike = async (_url, init) => init.method === "POST"
+      ? new Promise<Response>((resolve) => { finish = resolve; })
+      : new Response(JSON.stringify({ presets: [{ name: "build", agent_type: "shell", working_directory: "/tmp", updated_at: "now" }] }), { status: 200 });
+    const t = setup([row("n:a")], fetcher);
+    await online(t);
+    fireEvent.click(screen.getByTestId("mobile-new-open"));
+    fireEvent.click(await screen.findByTestId("mobile-preset-build"));
+    await act(async () => { fire({ type: "agora-open-session", session: null }); });
+    await act(async () => {
+      finish(new Response(JSON.stringify({ id: "n:new" }), { status: 201 }));
+      t.sock.onmessage?.({ data: JSON.stringify([{ type: "session_created", id: "n:new", session: row("n:new", { status: "idle" }) }]) });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+    expect(screen.getByTestId("mobile-inbox")).toBeTruthy();
+    expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+  });
+
   it("布局诊断：描边状态跟着存储走，且报告里带着收件箱快照（agora-xu12）", async () => {
     // 收件箱才是问题现场，而设置屏把它卸载掉——所以 (a) 描边开关存起来、切屏后还在，
     // (b) 进收件箱时抓一份布局快照，设置页里复制的报告同时带着收件箱与当前屏的盒子数字。

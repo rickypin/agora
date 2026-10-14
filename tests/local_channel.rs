@@ -53,7 +53,7 @@ async fn socket_answers_same_uid_one_line_per_request() {
         Request::Pair { origin } => Response::Pair {
             url: format!("{}/#pair=tok", origin.unwrap_or_else(|| "http://x".into())),
         },
-        Request::Hook { .. } => Response::Error {
+        Request::Hook { .. } | Request::Notify { .. } => Response::Error {
             message: "not here".into(),
         },
     });

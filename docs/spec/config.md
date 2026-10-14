@@ -162,7 +162,8 @@ agora preset rm <name>
 
 ## Web Push（V2-1；agora-thc.6）
 
-- 无独立配置项：`notifications.enabled`（见上）是总闸，关掉就不产生通知、也就没有推送。
+- 无独立配置项：`notifications.enabled`（见上）控制本机产生的通知；关闭时不产生会话转换通知，`agora notify` 明确拒绝，见 `api.md`「本机系统通知」。不改变直接 peer 通知的接收与本机投递。配置修改后须重启 daemon。
+- 本机系统通知的发布结果与推送能力独立：无订阅、VAPID 不可用、端点故障或退避不改变 CLI 的发布确认；`health.push` 仍只报告本节点的推送观测，不代表用户已看到。
 - VAPID 密钥在 daemon 启动时确保存在：没有 `<AGORA_HOME>/push/vapid.json` 就生成一对（目录 0700、文件 0600，`create_new` 防并发；加载时校验文件里的公钥与私钥推导值一致，坏文件报错而不静悄悄换钥）。公钥随 `GET /api/system` 的 `push.vapid_public_key` 下发（null = 密钥不可用）。换钥 = 删掉该文件重启：旧订阅绑着旧公钥、Apple 会拒，浏览器要重订（thc.7 的降级路径）。
 - 订阅存 SQLite（schema v7 的 `push_subscriptions`），绑定已配对设备；吊销设备即停发（ADR-003 附录 C）。
 - iPhone-only（Apple 端点）；Android 延期（agora-w9ki）。

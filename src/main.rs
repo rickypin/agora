@@ -45,7 +45,7 @@ use agora::tls::{self, Mode, TlsFiles};
 /// V1 唯一的运行时；配置里 `runtime.kind` 缺省就是它。
 const RUNTIME_KIND: &str = "tmux";
 
-const USAGE: &str = "用法: agora [serve | pair | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | peer token create <name> [--rotate]|list|revoke <name> | preset add <name> --agent <agent> --dir <path> [--args \"…\"] [--prompt \"…\"]|list|show|rm | tls fingerprint|rotate-key | upgrade --from <新二进制> [--no-restart] | upgrade --probe | fake-agent <script>|-e <inline>]";
+const USAGE: &str = "用法: agora [serve | notify [--home <dir>] | pair | url | open | auth devices | auth revoke <id>|--all | hook --host <h> --home <dir> [--record <file>] | hooks install|uninstall <agent> | peer token create <name> [--rotate]|list|revoke <name> | preset add <name> --agent <agent> --dir <path> [--args \"…\"] [--prompt \"…\"]|list|show|rm | tls fingerprint|rotate-key | upgrade --from <新二进制> [--no-restart] | upgrade --probe | fake-agent <script>|-e <inline>]";
 
 #[tokio::main]
 async fn main() {
@@ -53,6 +53,7 @@ async fn main() {
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let code = match argv.as_slice() {
         [] | ["serve"] => serve().await,
+        ["notify", rest @ ..] => agora::cli::notify::run(rest).await,
         ["pair"] => pair_qr().await,
         ["url"] => pair_link(false).await,
         ["open"] => pair_link(true).await,
@@ -307,31 +308,6 @@ async fn serve() -> i32 {
         setup.listener
     });
 
-    // unix socket：CLI 经它铸造配对链接；origin 是 daemon 自己的监听地址。
-    let origin = format!("http://{addr}");
-    let auth_for_socket = auth.clone();
-    let hooks_for_socket = hooks.clone();
-    let handler: local::Handler = Arc::new(move |req| {
-        let auth = auth_for_socket.clone();
-        let hooks = hooks_for_socket.clone();
-        let origin = origin.clone();
-        Box::pin(async move {
-            match req {
-                Request::Ping => Response::Pong,
-                Request::Pair { origin: o } => match auth.mint_pair_token(PairedVia::Socket) {
-                    Ok(token) => Response::Pair {
-                        url: Auth::pair_link(o.as_deref().unwrap_or(&origin), &token),
-                    },
-                    Err(err) => Response::Error {
-                        message: err.to_string(),
-                    },
-                },
-                Request::Hook { path } => hooks.wake(Path::new(&path)).await,
-            }
-        })
-    });
-    let socket_task = tokio::spawn(sock.serve(handler));
-
     let mut state = AppState::new(auth, sessions.clone(), &settings.node_id);
     state.agents = Arc::new(settings.raw.agents.clone());
     state.projects = Arc::new(
@@ -391,6 +367,40 @@ async fn serve() -> i32 {
             tracing::warn!(component = "push", %err, "VAPID 密钥不可用，本节点不发 Web Push")
         }
     }
+    // 本机通道：配对、hook 与通知。事件消费者订阅后才接受通知发布。
+    let origin = format!("http://{addr}");
+    let auth_for_socket = state.auth.clone();
+    let hooks_for_socket = hooks.clone();
+    let notifications = Arc::new(agora::notify::Receiver::new(
+        state.events.clone(),
+        settings.raw.notifications.enabled,
+    ));
+    let handler: local::Handler = Arc::new(move |req| {
+        let auth = auth_for_socket.clone();
+        let hooks = hooks_for_socket.clone();
+        let origin = origin.clone();
+        let notifications = notifications.clone();
+        Box::pin(async move {
+            match req {
+                Request::Notify { title, body } => match notifications.publish(&title, &body) {
+                    Ok(()) => Response::Notified,
+                    Err(reason) => Response::NotifyRejected { reason },
+                },
+                Request::Ping => Response::Pong,
+                Request::Pair { origin: o } => match auth.mint_pair_token(PairedVia::Socket) {
+                    Ok(token) => Response::Pair {
+                        url: Auth::pair_link(o.as_deref().unwrap_or(&origin), &token),
+                    },
+                    Err(err) => Response::Error {
+                        message: err.to_string(),
+                    },
+                },
+                Request::Hook { path } => hooks.wake(Path::new(&path)).await,
+            }
+        })
+    });
+    let socket_task = tokio::spawn(sock.serve(handler));
+
     // 2026-10-09: 82,933 offline deliveries blocked HTTP and peers for 18 minutes.
     // Keep local APIs gated while replaying; peers, pairing and health are independent.
     let recovery_control = hooks.clone();

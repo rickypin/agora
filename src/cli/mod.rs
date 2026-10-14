@@ -1,3 +1,4 @@
+pub mod notify;
 pub mod peer;
 pub mod preset;
 pub mod tls;
