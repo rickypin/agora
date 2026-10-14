@@ -12,7 +12,7 @@
 //!
 //! base 缺省链（docs/spec/api.md）：主 worktree 当前 checked-out 的分支 → detached 时
 //! `refs/remotes/origin/HEAD` 指向的远端分支（`origin/main` 那种，作为起点它一定存在）→ 再兜底
-//! `main`（连远端都没有的本地仓库；分支不存在时 git 失败 → 502 `git`）。
+//! 主 worktree 的 `HEAD`（连远端都没有的本地仓库，不假定有名为 main 的分支）。
 
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -197,7 +197,7 @@ fn branch_exists(repo: &Path, name: &str) -> Result<bool, ProjectError> {
     Ok(out.status.success())
 }
 
-/// base 缺省链：主 worktree 当前分支 → `origin/HEAD` 指向的远端分支 → `main`。
+/// base 缺省链：主 worktree 当前分支 → `origin/HEAD` 指向的远端分支 → 主 worktree 的 `HEAD`。
 fn default_base(main: &Worktree, main_path: &Path) -> Result<String, ProjectError> {
     if let Some(b) = &main.branch {
         return Ok(b.clone());
@@ -220,7 +220,8 @@ fn default_base(main: &Worktree, main_path: &Path) -> Result<String, ProjectErro
             return Ok(s);
         }
     }
-    Ok("main".to_owned())
+    // 2026-10-11：detached 本地仓库可能没有 main；git 在 main_path 执行，HEAD 属于主 worktree。
+    Ok("HEAD".to_owned())
 }
 
 #[cfg(test)]

@@ -293,6 +293,14 @@ pub async fn create(
     if body.working_directory.as_os_str().is_empty() {
         return Err(bad_request("working_directory 不能为空"));
     }
+    // 2026-10-11：底层运行时对失效 cwd 会静默落回 HOME（agora-sqak），必须在承载节点
+    // 启动之前拒绝；放在 route_node 后，避免用聚合节点的文件系统判断 peer 的目录。
+    if !body.working_directory.is_dir() {
+        return Err(bad_request(&format!(
+            "工作目录不存在或不是目录: {}",
+            body.working_directory.display()
+        )));
+    }
     // 缺省链：请求 > `agents.<type>.command` 覆盖 > Adapter 的 default_command >
     // agent_type 本身（`GET /api/agents` 走同一条链的前两段）。
     let command = body
@@ -642,6 +650,11 @@ pub async fn restart(
         }
     };
     let mut out = export(&state.node, &view);
+    // 2026-10-11：状态增量不含新代次的进程、输入能力与结束标记；peer 必须收到整行。
+    state.events.publish(Event::SessionUpdated {
+        id: global_id(&state.node, &view.record.id),
+        session: out.clone(),
+    });
     out["restart"] = resume;
     Ok(Json(out).into_response())
 }

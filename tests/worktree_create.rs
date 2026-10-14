@@ -180,6 +180,17 @@ async fn creates_branch_and_dir_under_worktree_root() {
 }
 
 #[tokio::test]
+async fn detached_repository_without_main_or_remote_creates_from_head() {
+    let Some(r) = Repo::new() else { return };
+    let head = r.head();
+    git(&r.repo, &["checkout", "-q", "--detach"]);
+    git(&r.repo, &["branch", "-D", "main"]);
+    let (status, body) = r.create(r.body("from-head")).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["head"], head);
+}
+
+#[tokio::test]
 async fn base_defaults_to_main_worktrees_checked_out_branch() {
     let Some(r) = Repo::new() else { return };
     let main_head = r.head();
@@ -203,13 +214,13 @@ async fn base_defaults_to_main_worktrees_checked_out_branch() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(body["head"], main_head, "{body}");
 
-    // detached 且没有远端：兜底 main（不是 detached 那个 HEAD）。
+    // detached 且没有远端：使用主 worktree 的当前提交。
     git(&r.repo, &["checkout", "-q", "--detach", "dev"]);
     let (status, body) = r.create(r.body("from-detached")).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(
-        body["head"], main_head,
-        "detached 且无 origin/HEAD → 兜底 main: {body}"
+        body["head"], dev_head,
+        "detached 且无 origin/HEAD → 当前提交: {body}"
     );
 
     // detached 但有 origin/HEAD：跟它走（链的中间一环）。远端跟踪引用手工造，不真 clone。

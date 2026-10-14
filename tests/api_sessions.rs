@@ -64,6 +64,34 @@ fn local(gid: &str) -> &str {
 }
 
 #[tokio::test]
+async fn creation_rejects_missing_or_non_directory_cwd_without_side_effects() {
+    let fx = Fx::new();
+    let cookie = fx.cookie();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("file");
+    std::fs::write(&file, "not a directory").unwrap();
+    for path in [dir.path().join("missing"), file] {
+        let (status, body) = call(
+            &fx,
+            &cookie,
+            Method::POST,
+            "/api/sessions",
+            Some(json!({
+                "display_name": "invalid cwd", "agent_type": "shell",
+                "working_directory": path, "command": "sleep 300"
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "bad_request");
+        assert!(body["message"].as_str().unwrap().contains("目录"), "{body}");
+    }
+    let (_, body) = call(&fx, &cookie, Method::GET, "/api/sessions", None).await;
+    assert_eq!(body["sessions"], json!([]));
+    assert_eq!(body["unregistered"], json!([]));
+}
+
+#[tokio::test]
 async fn ids_are_node_prefixed_and_list_includes_unregistered_runtime_sessions() {
     // A1：列表含全部运行时会话——已登记的与运行时里未登记的（Unknown Agent）。
     let fx = Fx::new();
@@ -225,9 +253,22 @@ async fn kill_and_restart_need_confirmation_only_when_they_would_kill() {
     assert_eq!(v["status"], "finished");
 
     // 已退出：不会杀，restart 不需要确认，epoch +1。
+    let mut restarted_events = fx.state.events.subscribe();
     let (status, v) = call(&fx, &cookie, Method::POST, &restart, None).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     assert_eq!(v["epoch"], 2);
+    let mut updated = None;
+    while let Ok(event) = restarted_events.try_recv() {
+        if let agora::events::Event::SessionUpdated { id, session } = event {
+            assert_eq!(id, gid);
+            updated = Some(session);
+        }
+    }
+    let updated = updated.expect("restart must broadcast the complete new generation");
+    assert_eq!(updated["epoch"], v["epoch"]);
+    assert_eq!(updated["process"], v["process"]);
+    assert_eq!(updated["text_via"], v["text_via"]);
+    assert_eq!(updated["killed_at"], serde_json::Value::Null);
     assert_eq!(v["alive"], true);
 
     // 跑起来后 restart 又需要确认。

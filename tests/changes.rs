@@ -247,7 +247,10 @@ async fn non_repo_yields_typed_reason() {
     }
 
     let missing = tmp.path().join("does-not-exist");
+    // 创建时目录必须存在；no_directory 描述的是会话启动后目录被移走。
+    std::fs::create_dir(&missing).unwrap();
     let gid = create_session(&fx, &cookie, &missing).await;
+    std::fs::rename(&missing, tmp.path().join("moved-away")).unwrap();
     let (status, body) = changes(&fx, &cookie, &gid).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
