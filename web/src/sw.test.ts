@@ -72,7 +72,41 @@ describe("service worker push", () => {
     reset();
     await fire("push", { data: { json: () => { throw new Error("not json"); } } });
     expect(shown[0].title).toBe("agora");
-    expect(shown[0].opts.tag).toBe("agora");
+    expect(shown[0].opts.tag).toMatch(/^agora#[\da-f-]{36}$/);
+  });
+
+  it("system notifications have distinct tags even after worker restart and no body", async () => {
+    reset();
+    const payload = { title: "Build complete", session: null, body: "private details" };
+    await fire("push", { data: { json: () => payload } });
+    vi.resetModules();
+    // @ts-expect-error 未声明 classic script
+    await import("../public/sw.js");
+    await fire("push", { data: { json: () => payload } });
+    expect(shown).toHaveLength(2);
+    expect(shown[0].opts.tag).not.toBe(shown[1].opts.tag);
+    expect(shown[0].opts).not.toHaveProperty("body");
+  });
+
+  it("a system click opens the inbox without hijacking desktop or a lookalike origin", async () => {
+    reset();
+    windowClients = ["https://zuan.example:7681/", "https://zuan.example:7681@evil.example/m"].map((url) => ({
+      url, focus: async () => { focused.push(url); }, postMessage: (m: unknown) => posted.push({ url, message: m }),
+    }));
+    await fire("notificationclick", { notification: { close: () => {}, data: { session: null } } });
+    expect(focused).toEqual([]);
+    expect(posted).toEqual([]);
+    expect(openWindowed).toEqual(["/m"]);
+  });
+
+  it("a system click asks an existing mobile card to return to the inbox", async () => {
+    reset();
+    const url = "https://zuan.example:7681/m?session=zuan%3Aold";
+    windowClients = [{ url, focus: async () => { focused.push(url); }, postMessage: (message) => posted.push({ url, message }) }];
+    await fire("notificationclick", { notification: { close: () => {}, data: { session: null } } });
+    expect(focused).toEqual([url]);
+    expect(posted).toEqual([{ url, message: { type: "agora-open-session", session: null } }]);
+    expect(openWindowed).toEqual([]);
   });
 
   it("notificationclick focuses an open /m client and posts the session", async () => {

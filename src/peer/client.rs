@@ -226,7 +226,11 @@ impl PeerClient {
             }
         }
         // ② 先流后快照：与浏览器一样，连上（含重连）先对齐全量。
-        let mut ws = match self.transport.connect_ws("/api/events").await {
+        let mut ws = match self
+            .transport
+            .connect_ws("/api/events?system_notifications=1")
+            .await
+        {
             Ok(ws) => ws,
             Err(err) => return Disconnect::Failed(self.classify(err)),
         };

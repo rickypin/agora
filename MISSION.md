@@ -91,6 +91,7 @@ agora **不是 IDE**。不实现：
 - AI Chat UI
 - Project Management（agora 只读 beads、只存会话 ↔ 任务的关联，不变量 12）
 - Agent Workflow Engine
+- 通用消息 / 告警平台。只接受同一 OS 用户的开发流程发起一次性提醒（§6.6、A54），不接入业务 webhook，不保存通知历史，不承担工作流与送达保证。
 - Remote Desktop（含端口转发、远程浏览器像素流）
 - 跨 host 搬迁 session——需要换机器时，在正确的节点用同一个 `task_ref` 重起；agent 经 hook 自报对话 id 的识别机制单独保留（§5.6），它是同机 Restart 正确 resume 的前提，与搬迁无关
 - 只读 viewer 的 URL 抓取路径——出站抓取换不来价值，只带来 SSRF 面（渲染 session 指名文件的 Artifact Viewer 留 §11）
@@ -457,6 +458,10 @@ Project 列表**不靠手写配置**：从 `project_roots`（§9.1）扫描 git 
 
 ### 6.6 Notifications
 
+同一 OS 用户的开发流程可经本机 CLI 提交与会话无关的系统提醒（A54）。标题与正文都是调用方提供的纯文本，不要求项目、任务系统或 agent 类型；agora 只负责接受并尽力发布。它不创建会话、不改变任务状态、不承载自动化编排。成功只表示 daemon 已发布；发布后丢失应答属于结果未知，调用方不得自动重试。没有应用层持久队列、重放、通知历史或内容去重；已有有界事件总线与 Web Push 服务的 TTL 不构成送达承诺。入口、输入预算、退出码与限流见 `docs/spec/api.md`「本机系统通知」。
+
+系统提醒与会话通知共用桌面浏览器通知与 Web Push：桌面可带正文，推送只带标题、会话标识为空。直接 peer 可接收，收到后不得再导出给 peer；手机点击回收件箱，保留会话草稿。手机不增加系统通知列表、正文视图或前台提示，无推送时不承诺手机可见。通知开关、订阅、端点健康与用户是否看见是不同事实。
+
 | 状态转换 | 通知 |
 |---|---|
 | RUNNING → WAITING | "Claude / frontend @ zuan needs input" |
@@ -466,7 +471,7 @@ Project 列表**不靠手写配置**：从 `project_roots`（§9.1）扫描 git 
 
 点击 notification 直接导航至对应会话——落到该行，并把焦点放进主区回答面板（TURN_DONE 是输入框、WAITING 是第一个按钮；A50），不是把人扔进终端。V1 桌面用浏览器通知（A18）。人自己干的不通知：Kill、以及 `external` 行在终端里自己结束的（SessionEnd / `/clear`，§4.6 证据 ②）；external 行只有进程消失（崩溃、关窗口）才弹 "finished"。
 
-手机阶段（§11，V2 首批为 iPhone）：通知要在浏览器关闭时也能到达，因此 PWA 需要 Web Push（iOS 必须已加到主屏）。**推送由承载 PWA 的那个节点发出**（它经 peer 链路看得见全部事件），推送订阅只注册在那一个节点、并绑定已配对设备（吊销设备即停发）；**载荷只带标题与全局会话 id，不带正文**——正文是权限命令 / 回复原文，锁屏不显示，点开面板再看（A19）；节点到不了推送端点时降级为"PWA 打开期间实时更新"，并在 health（§10.3）显示原因；不做经其它节点的推送中转。Android 见 §11（承接 agora-w9ki）。
+手机阶段（§11，V2 首批为 iPhone）：通知要在浏览器关闭时也能到达，因此 PWA 需要 Web Push（iOS 必须已加到主屏）。**推送由承载 PWA 的那个节点发出**（它经 peer 链路看得见全部事件），推送订阅只注册在那一个节点、并绑定已配对设备（吊销设备即停发）；**载荷只带标题与全局会话 id（系统提醒为 null），不带正文**——正文是权限命令 / 回复原文，锁屏不显示，点开面板再看（A19）；节点到不了推送端点时，会话视图仍在 PWA 打开期间实时更新（系统提醒没有此前台降级），并在 health（§10.3）显示原因；不做经其它节点的推送中转。Android 见 §11（承接 agora-w9ki）。
 
 ### 6.7 Terminal Preview
 
@@ -691,6 +696,8 @@ MVP 完成必须同时满足；验收按 beads epic 分阶段推进：**M1a 终�
 - [ ] **A49** 每行明示三件身份：agent 品牌（每个 adapter 一个可辨的徽标与颜色，shell / custom 与 agent 区分）、节点（本机也标，颜色按节点；反转 agora-7ku.5「本机不标」的决定）、仓库与分支（服务端会话行新增只读 `project` 字段：仓库根 / 名字 / worktree 路径 / 分支，异步补齐、TTL 重查，git 只读——`tests/arch_boundary.rs` 白名单守卫）；两种视图同源同字段（§6.1、§4.2；§1 第 1 步。2026-09-08 用户反馈：在哪个项目 / worktree、本机还是 zuan、哪家 agent 都看不清）（守卫：`tests/session_project.rs`「main_worktree_session_reports_repo_branch_and_main_true」「linked_worktree_session_points_repo_to_main_worktree_and_main_false」「detached_head_yields_branch_null」「project_is_not_stored_in_sqlite」、`tests/arch_boundary.rs`「git_subprocesses_are_read_only_or_worktree_add」、`web/src/agentBadge.test.ts`「known adapters get distinct glyphs and hues; shell and unknown are uncolored」、`web/src/nodeColor.test.ts`「hue is stable for a name and differs for mac vs zuan」、`web/src/SessionRow.test.tsx`「labels the node on every row, local ones uncolored」「shows a repo ⎇ branch line in attention mode, with worktree name when not main」「detached HEAD shows ⎇ detached」）
 - [ ] **A50** 就地 respond 搬进主区：主区结构是 crumb → 回答面板 → 终端；WAITING 的问题与 Allow / Deny / 打开终端、TURN_DONE 的最后一条回复（按 markdown 排版：标题 / 列表 / 代码块 / 表格，不渲染 HTML）与「下一条指令」输入框（在面板顶部、不用滚到底）、验收标准与改动列表都在这个面板里，可折叠、有高度上限；侧栏行不再展开，只剩行本身；手机阶段用它的交互子集（A52、§6.9），A50 只约束桌面（§6.2、§6.3；§1 第 2 步。agora-03k：窄列里塞几百行 markdown 读不了）（守卫：`web/src/Workspace.test.tsx`「clicking a turn_done row shows the respond panel in the main area between crumb and pane, and the sidebar row has no respond- testid (A50; agora-03k)」「a turn_done row with a task shows respond, acceptance and changes panels in that order above the terminal (A50)」、`web/src/RespondPanel.test.tsx`「the next-command input renders above the last reply (A50)」「a long reply is folded to 12 lines with an expand button; a short one has no button (A50)」、`web/src/Sidebar.test.tsx`「the sidebar DOM never contains respond-, acceptance- or changes- testids in either mode (A50)」）
 - [ ] **A51** 「需要我」视图的重排让人跟得上：指针在侧栏内或最近一次侧栏交互后的短暂窗口内不重排（新行仍插入、状态符号照变），窗口过后再按 attention 顺序落位，换了位置的行短暂高亮；Alt/Option+N 按冻结期间眼睛看到的顺序跳（§6.3、§6.5；§1 第 1 步）（守卫：`web/src/Workspace.test.tsx`「while the pointer is over the sidebar a status change does not reorder rows but updates the symbol (A51)」「after leaving the sidebar and 3 s (fake timers) the row moves and carries the moved class (A51)」「Alt/Option+2 during a freeze jumps to the second row as displayed (A51)」、`web/src/stableOrder.test.ts`「frozen freezes the section of every row and keeps the three sections contiguous (A51)」）
+
+- [ ] **A54** 同 uid 的任意开发流程可经通用本机通知入口提交纯文本标题 / 正文；输入预算、总超时、关闭通知、滑动窗口限流与并发均有守卫。发布确认与确定拒绝、结果未知可区分，CLI 不依赖推送健康、不自动重试。系统事件只跨直接 peer 一跳、环形与混合版本拓扑不回流；Web Push 不含正文、连续提醒不互相覆盖、点击回收件箱保留草稿。机械守卫与 👁 OS 通知 / 真机 PWA 收推送分别留证（§6.6）。
 
 编号全局唯一、不复用：A13 / A19 / A28 / A35 / A37 / A52 / A53 在 §11 手机条目。
 

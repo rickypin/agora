@@ -161,11 +161,9 @@ impl PushSender {
     pub async fn run(self: Arc<Self>, mut rx: tokio::sync::broadcast::Receiver<Event>) {
         loop {
             match rx.recv().await {
-                Ok(Event::Notification {
-                    id: Some(id),
-                    title,
-                    ..
-                }) => self.notify(&title, &id).await,
+                Ok(Event::Notification { id, title, .. }) => {
+                    self.notify(&title, id.as_deref()).await
+                }
                 Ok(_) => {}
                 Err(RecvError::Lagged(n)) => {
                     tracing::warn!(component = "push", lagged = n, "事件积压，跳过若干条推送");
@@ -176,7 +174,7 @@ impl PushSender {
     }
 
     /// 一条通知：给每个可用的订阅发。单条失败不影响其余订阅。
-    pub async fn notify(&self, title: &str, session_id: &str) {
+    pub async fn notify(&self, title: &str, session_id: Option<&str>) {
         let subs = match self.store.list_active() {
             Ok(subs) => subs,
             Err(err) => {

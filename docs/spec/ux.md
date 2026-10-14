@@ -502,11 +502,13 @@ WAITING 的变体：决策原文（等宽逐字、不过 markdown）作为一张
 
 ## 浏览器通知（MISSION §6.6；A18）
 
-`web/src/notify.ts`（agora-dvh.11）。该不该发是服务端的事（`notification` 事件只在 RUNNING 或 IDLE → WAITING / TURN_DONE / FINISHED / FAILED 上来，`docs/spec/api.md`）；前端只管权限、弹、点击：
+`web/src/notify.ts`（agora-dvh.11）。该不该发是服务端的事（会话转换与本机系统提醒，见 `docs/spec/api.md`）；前端只管权限、弹、点击：
 
 - 权限问一次：`Notification.permission` 还是 `default` 时主区顶部有一条"agent 需要你时弹浏览器通知？ [允许通知] [以后再说]"，答过（granted / denied）或点了"以后再说"就没了，之后不再弹权限框；denied 时通知静默丢掉。
 - 弹：同一会话在通知中心只占一格（弹新的先 close 旧的；tag 每条唯一——macOS 上同 tag 替换只静默更新不弹横幅，2026-09-04 人眼验收实测）。
 - 点击：窗口拉到前面，该行成为侧栏 active 行——主区 crumb 之下画出它的回答面板（Allow / Deny / 下一条指令），焦点直接落进面板（TURN_DONE 是输入框、WAITING 是第一个按钮；A50，agora-4yr.1），不是把人扔进终端。
+
+系统提醒（`id = null`）在桌面显示标题与正文，点击只聚焦窗口，不选择会话。Web Push 的 `session = null`，不携带正文，每次生成 `agora#<randomUUID>` tag，连续提醒及 SW 重启后不会因 tag 相同互相覆盖。点击优先聚焦同源 `/m` 页面并让它回收件箱：关闭会话卡、设置或新建屏、清掉深链参数，保留各会话草稿；迟到的新建请求不能把用户再导航走。没有手机页面就打开 `/m`，不占用已打开的桌面页。手机无系统通知列表、正文页或前台临时提示（MISSION §6.6）；会话推送仍按会话 tag 替换并深链到卡片。
 
 ## 运行时 degraded 横幅（MISSION §10.3；agora-bgr）
 

@@ -12,7 +12,7 @@ members = ["."]
 
 [dependencies]
 # 唯一的并发模型（ADR-001 D8 施工约束 1）。子进程、PTY 都在它的 blocking 线程里跑。
-tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "io-util"] }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "io-util", "io-std"] }
 axum = { version = "0.8", features = ["ws"] }
 tower = { version = "0.5", features = ["util"] }
 # peer 接缝（agora-7ku.11）：进程内 fake 把另一个实例的 Router 架在 tokio::io::duplex 上做真 WS

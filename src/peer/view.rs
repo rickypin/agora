@@ -367,6 +367,7 @@ impl PeerViews {
                     .cloned()
                     .and_then(|s| serde_json::from_value(s).ok());
                 Applied::Publish(Box::new(Event::Notification {
+                    from_peer: true,
                     id,
                     title: text("title"),
                     body: text("body"),

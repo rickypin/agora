@@ -204,6 +204,131 @@ fn names(rows: &[Value]) -> Vec<String> {
     v
 }
 
+/// System events carry provenance only in memory; peer export must enforce one hop.
+#[tokio::test]
+async fn system_notifications_do_not_loop_or_cross_a_second_hop() {
+    // Mutual pair, directed three-node ring, and a chain. Each observes only direct origins.
+    for edges in [
+        vec![(0, 1), (1, 0)],
+        vec![(0, 1), (1, 2), (2, 0)],
+        vec![(0, 1), (1, 2)],
+    ] {
+        let mut nodes = [Node::new("a"), Node::new("b"), Node::new("c")];
+        let mut links = Vec::new();
+        for &(from, to) in &edges {
+            let t = Arc::new(peer(&nodes[to], &nodes[from]));
+            let mut registry = PeerRegistry::new(nodes[from].name);
+            registry.insert(t.clone()).unwrap();
+            nodes[from].state.registry = Arc::new(registry);
+            links.push((from, to, t));
+        }
+        for (from, _, t) in &links {
+            nodes[*from].start_client(t.clone());
+        }
+        for (from, to, _) in &links {
+            wait_for("notification peer online", || {
+                nodes[*from]
+                    .state
+                    .peers
+                    .get(nodes[*to].name)
+                    .is_some_and(|p| p.online)
+            })
+            .await;
+        }
+        let mut receivers: Vec<_> = nodes.iter().map(|n| n.state.events.subscribe()).collect();
+        for node in &nodes {
+            agora::notify::Receiver::new(node.state.events.clone(), true)
+                .publish(node.name, "private")
+                .unwrap();
+        }
+        // Several batching rounds: a missing export guard produces repeated events or lag, not silence.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        for (i, rx) in receivers.iter_mut().enumerate() {
+            let mut actual = Vec::new();
+            loop {
+                match rx.try_recv() {
+                    Ok(Event::Notification {
+                        title, from_peer, ..
+                    }) => {
+                        assert_eq!(from_peer, title != nodes[i].name);
+                        actual.push(title);
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                    Err(e) => panic!("notification loop: {e}"),
+                }
+            }
+            let mut expected = vec![nodes[i].name.to_owned()];
+            expected.extend(
+                edges
+                    .iter()
+                    .filter(|(from, _)| *from == i)
+                    .map(|(_, to)| nodes[*to].name.to_owned()),
+            );
+            actual.sort();
+            expected.sort();
+            assert_eq!(actual, expected, "node {} edges {edges:?}", nodes[i].name);
+        }
+        for (_, _, t) in links {
+            t.set_offline(true);
+        }
+    }
+}
+
+#[tokio::test]
+async fn system_notification_export_requires_peer_capability_and_local_origin() {
+    use agora::peer::transport::WsMessage;
+    use futures_util::{SinkExt, StreamExt};
+    let a = Node::new("a");
+    let b = Node::new("b");
+    for (path, want_system) in [
+        ("/api/events", false),
+        ("/api/events?system_notifications=1", true),
+    ] {
+        let t = peer(&b, &a);
+        let mut ws = t.connect_ws(path).await.unwrap();
+        ws.send(WsMessage::Text(r#"{"type":"ping"}"#.into()))
+            .await
+            .unwrap();
+        assert_eq!(
+            ws.next().await.unwrap().unwrap().to_text().unwrap(),
+            r#"{"type":"pong"}"#
+        );
+        for (title, id, from_peer) in [
+            ("local", None, false),
+            ("imported", None, true),
+            ("session", Some("b:s".to_owned()), false),
+        ] {
+            b.state.events.publish(Event::Notification {
+                id,
+                title: title.into(),
+                body: "b".into(),
+                status: None,
+                from_peer,
+            });
+        }
+        let frame = tokio::time::timeout(WAIT, ws.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let events: Vec<Value> = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+        let titles: Vec<_> = events
+            .iter()
+            .map(|v| v["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            titles,
+            if want_system {
+                vec!["local", "session"]
+            } else {
+                vec!["session"]
+            }
+        );
+        assert!(events.iter().all(|v| v.get("from_peer").is_none()));
+    }
+}
+
 #[tokio::test]
 async fn peer_sessions_are_merged_with_node_label() {
     // MISSION §3.5：连上时拉全量，之后收事件流，把 peer 的会话并入自己的视图，每行标明节点；

@@ -367,6 +367,92 @@ async fn waiting_transition_reaches_the_subscriber_encrypted_without_the_detail(
     assert_eq!(health.snapshot()["apple"], true, "拿到 2xx 就是可达");
 }
 
+/// A54：系统提醒沿用 Web Push，但锁屏载荷没有正文。
+#[tokio::test]
+async fn system_notification_payload_is_exactly_title_and_null_session() {
+    let fake = fake::FakeEndpoint::start().await;
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let (device, _auth) = human_device(&db);
+    let (p256dh, ua_private, auth_b64, auth) = browser_keys();
+    PushStore::new(db.clone())
+        .upsert(&device, &fake.url, &p256dh, &auth_b64)
+        .unwrap();
+    let bus = agora::events::EventBus::default();
+    let (sender, _) = test_sender(&db, PushHealth::new(), fake::connector(&fake.ca));
+    let rx = bus.subscribe();
+    let task = tokio::spawn(Arc::new(sender).run(rx));
+    agora::notify::Receiver::new(bus, true)
+        .publish("build needs review", "private URL and commands")
+        .unwrap();
+    let hits = fake.wait_for_hits(1).await;
+    let payload = decrypt(&hits[0].body, &ua_private, &auth).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&payload).unwrap(),
+        serde_json::json!({"title":"build needs review", "session":null})
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn cli_acceptance_survives_push_rejection_and_backoff() {
+    let fake = fake::FakeEndpoint::start().await;
+    fake.status.store(503, std::sync::atomic::Ordering::SeqCst);
+    let db = Arc::new(Db::open_in_memory().unwrap());
+    let (device, _auth) = human_device(&db);
+    let (p256dh, _, auth_b64, _) = browser_keys();
+    PushStore::new(db.clone())
+        .upsert(&device, &fake.url, &p256dh, &auth_b64)
+        .unwrap();
+    let bus = agora::events::EventBus::default();
+    let (sender, _) = test_sender(&db, PushHealth::new(), fake::connector(&fake.ca));
+    let sending = tokio::spawn(Arc::new(sender).run(bus.subscribe()));
+    let receiver = agora::notify::Receiver::new(bus, true);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(agora::local::SOCKET_FILE);
+    let p = path.clone();
+    let serving = tokio::spawn(async move {
+        agora::local::serve(
+            &p,
+            agora::local::sync_handler(move |req| {
+                let agora::local::Request::Notify { title, body } = req else {
+                    panic!("notify")
+                };
+                receiver.publish(&title, &body).unwrap();
+                agora::local::Response::Notified
+            }),
+        )
+        .await
+    });
+    while !path.exists() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    agora::cli::notify::submit(
+        b"first\nbody".as_slice(),
+        dir.path(),
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+    fake.wait_for_hits(1).await;
+    // The sender has received a 503. A subsequent submission still succeeds without waiting for retry.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    agora::cli::notify::submit(
+        b"second\nbody".as_slice(),
+        dir.path(),
+        Duration::from_secs(2),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        fake.hits.lock().unwrap().len(),
+        0,
+        "backoff must not retry or queue the notification"
+    );
+    serving.abort();
+    sending.abort();
+}
+
 /// 410 Gone：端点已经作废，订阅删掉、不再重试。
 #[tokio::test]
 async fn a_gone_endpoint_is_deleted() {
@@ -382,7 +468,7 @@ async fn a_gone_endpoint_is_deleted() {
 
     let (sender, _vapid) = test_sender(&db, PushHealth::new(), fake::connector(&fake.ca));
     sender
-        .notify("Claude / x @ zuan needs input", "zuan:abc")
+        .notify("Claude / x @ zuan needs input", Some("zuan:abc"))
         .await;
     fake.wait_for_hits(1).await;
     assert!(
@@ -413,7 +499,7 @@ async fn an_unreachable_service_reports_health_false_with_a_reason() {
     let health = PushHealth::new();
     let (sender, _vapid) = test_sender(&db, health.clone(), fake::connector(&fake.ca));
     sender
-        .notify("Claude / x @ zuan needs input", "zuan:abc")
+        .notify("Claude / x @ zuan needs input", Some("zuan:abc"))
         .await;
     let snap = health.snapshot();
     assert_eq!(snap["apple"], false, "连不上必须报 false");

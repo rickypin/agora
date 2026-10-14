@@ -69,10 +69,12 @@ pub enum Event {
         tool_use_id: String,
         via: &'static str,
     },
-    /// 浏览器通知（MISSION §6.6；A18）：只在 RUNNING → WAITING / TURN_DONE / FINISHED / FAILED
-    /// 这四种转换上发一条；`status` 是转换后的状态，前端据此决定点击落到哪（WAITING →
-    /// 就地回答）。`id` 为 None 是不针对会话的系统通知（暂未使用，形态保留）。
+    /// 浏览器通知（MISSION §6.6；A18 / A54）：会话转换通知的 `status` 决定点击后的回答面板。
+    /// 系统提醒来自本机 notify 或直接 peer，`id` / `status` 为 None，不选择会话。
     Notification {
+        /// Internal provenance: imported system notifications must never be exported to peers.
+        #[serde(skip)]
+        from_peer: bool,
         id: Option<String>,
         title: String,
         body: String,
@@ -282,6 +284,7 @@ pub fn notification_for(t: Transition<'_>) -> Option<Event> {
         _ => return None,
     };
     Some(Event::Notification {
+        from_peer: false,
         id: Some(id.to_owned()),
         title: format!("{} / {name} @ {node} {verb}", agent_label(agent_type)),
         body: detail

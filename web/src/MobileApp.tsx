@@ -145,6 +145,19 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
       const data = ev.data as { type?: string; session?: string | null } | null;
       if (!data || data.type !== "agora-open-session") return;
       const session = typeof data.session === "string" ? data.session : null;
+      if (data.session === null) {
+        // 2026-10-14: a system notification returns to the inbox without discarding drafts.
+        screenVisit.current += 1;
+        deepLinked.current = true;
+        selectSession(null);
+        setSettingsOpen(false);
+        setNewOpen(false);
+        setPendingNew(null);
+        setStarting(null);
+        setFocusComposerFor(null);
+        window.history.replaceState(null, "", "/m");
+        return;
+      }
       if (!session) return;
       const at = session.indexOf(":");
       if (at <= 0) return;

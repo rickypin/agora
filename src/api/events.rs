@@ -10,7 +10,9 @@
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{Query, State};
+use serde::Deserialize;
+
 use axum::http::HeaderMap;
 use axum::response::Response;
 use tokio::sync::broadcast::error::RecvError;
@@ -21,11 +23,17 @@ use super::{ApiError, AppState};
 use crate::auth::{AuthError, Principal};
 use crate::events::{coalesce, Event};
 
+#[derive(Default, Deserialize)]
+pub struct EventOptions {
+    system_notifications: Option<String>,
+}
+
 /// 攒批窗口。前端还会再合并 ~300 ms（api.md 消费纪律），这里只挡住毫秒级的突发。
 pub const BATCH_WINDOW: Duration = Duration::from_millis(50);
 
 pub async fn upgrade(
     principal: Principal,
+    Query(options): Query<EventOptions>,
     State(state): State<AppState>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
@@ -39,12 +47,23 @@ pub async fn upgrade(
     let log_id = principal.log_id();
     Ok(ws.on_upgrade(move |socket| async move {
         tracing::info!(component = "api", principal = %log_id, "events 订阅开始");
-        run(socket, state, principal).await;
+        run(
+            socket,
+            state,
+            principal,
+            options.system_notifications.as_deref() == Some("1"),
+        )
+        .await;
         tracing::info!(component = "api", principal = %log_id, "events 订阅结束");
     }))
 }
 
-async fn run(mut socket: WebSocket, state: AppState, principal: Principal) {
+async fn run(
+    mut socket: WebSocket,
+    state: AppState,
+    principal: Principal,
+    system_notifications: bool,
+) {
     let mut rx = state.events.subscribe();
     // 凭据吊销 / 轮换后服务端主动关（agora-0jt）：订阅本身不再发请求，不复查就永远认不出来。
     let revoked = until_revoked(state.clone(), principal.clone());
@@ -78,6 +97,12 @@ async fn run(mut socket: WebSocket, state: AppState, principal: Principal) {
                         },
                     }
                 }
+                // 2026-10-14: old peers relay null ids without an ownership check.
+                // Only opted-in peers receive locally originated system notifications.
+                if matches!(principal, Principal::Peer { .. }) {
+                    batch.retain(|event| !matches!(event, Event::Notification { id: None, from_peer, .. } if *from_peer || !system_notifications));
+                }
+                if batch.is_empty() { continue; }
                 let batch = coalesce(batch);
                 let Ok(text) = serde_json::to_string(&batch) else { continue };
                 if socket.send(Message::Text(text.into())).await.is_err() {
