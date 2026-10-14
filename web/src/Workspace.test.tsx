@@ -483,11 +483,12 @@ describe("Workspace", () => {
     fireEvent.click(screen.getByTestId("kill"));
     await flush();
     expect(screen.getByRole("dialog").textContent).toContain(KILL_BODY);
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "取消" })).toBeTruthy();
     // 确认后节点要等 TERM → 5 s 宽限（ADR-001 D2），这几秒里要有字说明在结束（agora-9nv）。
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
     t.setKill(() => gate.then(() => ({ status: 200, body: {} })));
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Kill" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "结束会话" }));
     await flush();
     expect(screen.getByTestId("ending-note").textContent).toContain("正在结束");
     expect(screen.getByTestId("kill")).toHaveProperty("disabled", true);
@@ -514,7 +515,7 @@ describe("Workspace", () => {
     await flush();
     const killedRow = { ...row("n:a"), killed_at: "2026-09-07T10:00:00Z", alive: true };
     t.setKill(() => ({ status: 200, body: killedRow }));
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Kill" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "结束会话" }));
     await flush();
     // 请求已经回来了，但行还没变：没有 killed_at 就没有提示（旧行为），推来带 killed_at 的行才有。
     expect(screen.queryByTestId("ending-note")).toBeNull();
@@ -536,7 +537,7 @@ describe("Workspace", () => {
     await online(t);
     fireEvent.click(screen.getByTestId("row-n:a"));
     fireEvent.click(screen.getByText("会话设置"));
-    expect(screen.getByRole("button", { name: "Restart" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "重新启动" })).toHaveProperty("disabled", true);
     expect(screen.getByTestId("kill")).toHaveProperty("disabled", false);
   });
 
@@ -565,9 +566,9 @@ describe("Workspace", () => {
     await online(t);
     fireEvent.click(screen.getByTestId("row-n:a"));
     fireEvent.click(screen.getByText("会话设置"));
-    fireEvent.click(screen.getByText("Rename"));
+    fireEvent.click(screen.getByText("改名"));
     await flush();
-    fireEvent.click(screen.getByText("Delete metadata"));
+    fireEvent.click(screen.getByText("删除记录"));
     await flush();
     expect(t.requests.filter((r) => !r.url.endsWith("/changes")).map((r) => [r.method, r.url, r.body])).toEqual([
       ["PATCH", "/api/sessions/n%3Aa", JSON.stringify({ display_name: "a" })],
@@ -1312,4 +1313,27 @@ describe("Workspace · 看 diff（MISSION §6.3 看结果；A41，agora-h1k.5）
     expect(screen.queryByTestId("crumb-diff")).toBeNull();
     expect(screen.getByTestId("desktop-overview")).toBeTruthy();
   });
+});
+
+it("preserves isolated drafts through diff and switching sessions", async () => {
+  const t = setup([row("n:a", "turn_done"), row("n:b", "turn_done")]);
+  await online(t);
+  fireEvent.click(screen.getByTestId("row-n:a"));
+  fireEvent.change(screen.getByTestId("next-input"), { target: { value: "draft A" } });
+  await flush();
+  fireEvent.click(screen.getByTestId("diff-n:a"));
+  fireEvent.click(screen.getByTestId("close-diff"));
+  expect((screen.getByTestId("next-input") as HTMLInputElement).value).toBe("draft A");
+  fireEvent.click(screen.getByTestId("row-n:b"));
+  expect((screen.getByTestId("next-input") as HTMLInputElement).value).toBe("");
+  fireEvent.change(screen.getByTestId("next-input"), { target: { value: "draft B" } });
+  fireEvent.click(screen.getByTestId("row-n:a"));
+  expect((screen.getByTestId("next-input") as HTMLInputElement).value).toBe("draft A");
+  fireEvent.click(screen.getByTestId("next-send"));
+  await flush();
+  expect(t.requests.filter((r) => r.url.endsWith("/input"))).toEqual([
+    expect.objectContaining({ url: "/api/sessions/n%3Aa/input", body: JSON.stringify({ kind: "text", data: "draft A\n" }) }),
+  ]);
+  fireEvent.click(screen.getByTestId("row-n:b"));
+  expect((screen.getByTestId("next-input") as HTMLInputElement).value).toBe("draft B");
 });

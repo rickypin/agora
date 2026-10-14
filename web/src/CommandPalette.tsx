@@ -5,6 +5,9 @@ import type { SessionRow } from "./events";
 import { fuzzyFilter } from "./fuzzy";
 import type { NodeStatus } from "./Header";
 import { rowName } from "./Sidebar";
+import { taskLabel } from "./attention";
+import { projectLine } from "./RowIdentity";
+import { mobileStatusText } from "./mobileStatus";
 
 /**
  * Command Palette（MISSION §6.5；键位表 docs/spec/ux.md）：fuzzy 搜 sessions / projects /
@@ -92,7 +95,7 @@ export function CommandPalette({ rows, api, catalog, nodes, onOpen, onNewAgent, 
     const list: Entry[] = rows.map((r) => ({
       kind: "session",
       id: r.id,
-      label: `${rowName(r)} / ${String(r.agent_type ?? "")} @ ${r.node}`,
+      label: `${taskLabel(r)} · ${rowName(r)} / ${String(r.agent_type ?? "")} @ ${r.node} · ${mobileStatusText(r, false)} · ${projectLine(r)?.text ?? ""} · ${r.id}`,
     }));
     // node 在条目文字里，所以搜节点名也搜得到；本机一组，每个在线 peer 各一组（A45）。
     for (const project of projects) {
@@ -201,7 +204,7 @@ export function CommandPalette({ rows, api, catalog, nodes, onOpen, onNewAgent, 
         {shown.length === 0 && <p className="muted pad">没有匹配。</p>}
         <ul className="palette-list" role="listbox">
           {shown.map((e, i) => (
-            <li key={`${e.kind}:${e.label}`} role="option" aria-selected={i === cursor}>
+            <li key={e.kind === "session" ? `session:${e.id}` : `${e.kind}:${e.label}`} role="option" aria-selected={i === cursor}>
               <button
                 className={i === cursor ? "palette-hit on" : "palette-hit"}
                 onMouseEnter={() => setCursor(i)}

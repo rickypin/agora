@@ -113,6 +113,8 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
     };
   }, [store, onRevoked]);
   const [view, setView] = useState<View | null>(null);
+  // 2026-10-11：面板会因 diff / 切会话卸载，草稿必须留在页面并按会话隔离。
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   // 把焦点放进回答面板的请求（A50，agora-4yr.1）：值是"给哪一行的面板"，不是一个裸计数——
   // 通知点击是「选中这一行」+「聚焦它的面板」同一批 state 更新，面板在那一帧才第一次挂载，
   // 裸计数在挂载那一刻分不出"刚被请求"与"上一次请求留下的旧值"。面板聚焦完回调清空，只用一次。
@@ -564,8 +566,8 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
                 diff 视图只藏回答面板（那一格在看结果，不在回答），RowResult 照画——验收标准 /
                 改动列表与 diff 并排对照是 MISSION §6.3 要的，而且藏掉它「关闭 diff」会重拉一次
                 GET /changes（见上面 Sidebar active 那条注释与 RowResult.tsx 文件头）。
-                key 带会话 id：切行时面板重挂载，草稿 / busy / 错误 / 折叠状态不跨行残留（它们长在
-                侧栏行的 <li> 里时是随行天然重挂的，搬进主区后位置固定，不加 key 就会串行）。两个 key
+                key 带会话 id：切行时面板重挂载，busy / 错误 / 折叠状态不跨行残留（草稿由 Workspace 按 id 保存）。它们长在
+                侧栏行的 <li> 里时是随行天然重挂的，搬进主区后位置固定，不加 key 就会串行。两个 key
                 各带前缀而不是都用裸 id：同一父节点下的两个兄弟用同一个 key，React 只把其中一个放进
                 重排用的 key map，切 diff 时（回答面板那一格变成 false）另一个就可能被判成新节点重挂——
                 Changes 一重挂就是一次多余的 GET /changes，正是本任务要避免的那一幕。 */}
@@ -574,6 +576,8 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
                 <RespondPanel
                   key={`respond:${active.id}`}
                   row={active}
+                  draft={drafts[active.id] ?? ""}
+                  onDraftChange={(value) => setDrafts((old) => ({ ...old, [active.id]: typeof value === "function" ? value(old[active.id] ?? "") : value }))}
                   api={api}
                   onOpenTerminal={focusTerminal}
                   focusRequest={respondFocus === active.id}

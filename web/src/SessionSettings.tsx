@@ -13,16 +13,16 @@ interface Props {
 type Pending = { kind: "kill" | "restart" } | null;
 
 /** Kill 确认框文案是 docs/spec/ux.md 定的，改文案先改 spec。 */
-export const KILL_BODY = "The running agent process will be killed. Its output stays until you clean it up.";
+export const KILL_BODY = "将结束正在运行的 agent 进程。输出会保留，直到你清理这个会话。";
 export const RESTART_BODY =
-  "The running agent process will be killed and started again in the same session, resuming its conversation.";
+  "将结束当前进程，在同一个会话中重新启动并尝试恢复对话。";
 
 /** 节点对 Restart 的交代：resume 了哪个对话，或为什么退化为原命令（ADR-002 D7，绝不静默）。 */
 export function restartNoteOf(v: unknown): string {
   const r = (v as RestartResult | null | undefined)?.restart;
-  if (!r) return "已 Restart。";
-  if (r.resumed) return `已 Restart，resume 对话 ${r.agent_session_id ?? ""}。`;
-  return `已 Restart，但没有 resume：${r.reason ?? "未知原因"}。`;
+  if (!r) return "已重新启动。";
+  if (r.resumed) return `已重新启动，恢复对话 ${r.agent_session_id ?? ""}。`;
+  return `已重新启动，但未恢复对话：${r.reason ?? "未知原因"}。`;
 }
 
 /**
@@ -88,9 +88,9 @@ export function SessionSettings({ row, api, onClose }: Props) {
   const label = `${rowName(row)} / ${String(row.agent_type ?? "")} @ ${row.node}`;
   const conversation = typeof row.agent_session_id === "string" ? row.agent_session_id : null;
   return (
-    <section className="settings" aria-label="Session Settings">
+    <section className="settings" aria-label="会话设置">
       <div className="settings-head">
-        <h2>Session Settings</h2>
+        <h2>会话设置</h2>
         <button onClick={onClose} aria-label="关闭设置">
           ×
         </button>
@@ -102,31 +102,31 @@ export function SessionSettings({ row, api, onClose }: Props) {
           void rename();
         }}
       >
-        <label htmlFor="rename">Name</label>
+        <label htmlFor="rename">名称</label>
         <input id="rename" value={name} onChange={(e) => setName(e.target.value)} disabled={busy} />
         <button type="submit" disabled={busy || name.trim() === ""}>
-          Rename
+          改名
         </button>
       </form>
       <div className="settings-row actions">
         <button
           onClick={() => void run("restart", false)}
           disabled={busy || !canRestart}
-          title={canRestart ? undefined : "采纳的会话没记下启动命令，无法 Restart；请在终端里自己重启"}
+          title={canRestart ? undefined : "采纳的会话没记下启动命令，无法重新启动；请在终端里自己重启"}
         >
-          Restart
+          重新启动
         </button>
         <button className="danger" onClick={() => void run("kill", false)} disabled={busy} data-testid="kill">
-          Kill
+          结束会话
         </button>
         <button onClick={() => void deleteMetadata()} disabled={busy} title="只移除 agora 的记录，不杀运行时会话">
-          Delete metadata
+          删除记录
         </button>
       </div>
       <p className="muted">
-        Restart 在同一运行时会话内重建并 resume 原对话
-        {conversation ? <>（当前对话 <code>{conversation}</code>）</> : "（agent 还没自报对话 id，Restart 会用原命令）"}
-        ；Delete metadata 不杀进程。
+        重新启动会在同一运行时会话内重建并尝试恢复原对话
+        {conversation ? <>（当前对话 <code>{conversation}</code>）</> : "（agent 还没自报对话 id，重新启动会用原命令）"}
+        ；删除记录不会结束进程。
       </p>
       {restartNote && (
         <p className="muted restart-note" data-testid="restart-note" title={restartNote}>
@@ -141,9 +141,10 @@ export function SessionSettings({ row, api, onClose }: Props) {
       {error && <p className="error">{error}</p>}
       {pending && (
         <ConfirmDialog
-          title={pending.kind === "kill" ? `Kill ${label}?` : `Restart ${label}?`}
+          title={pending.kind === "kill" ? `结束会话 ${label}？` : `重新启动 ${label}？`}
           body={pending.kind === "kill" ? KILL_BODY : RESTART_BODY}
-          confirmLabel={pending.kind === "kill" ? "Kill" : "Restart"}
+          confirmLabel={pending.kind === "kill" ? "结束会话" : "重新启动"}
+          cancelLabel="取消"
           onCancel={() => setPending(null)}
           onConfirm={() => void run(pending.kind, true)}
         />

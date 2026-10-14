@@ -112,3 +112,20 @@ it("without nodes there is only the local group and the body carries no node", a
   await waitFor(() => expect(onCreated).toHaveBeenCalledWith("mac:new1"));
   expect(JSON.parse(requests.find((r) => r.method === "POST")!.body!)).not.toHaveProperty("node");
 });
+
+it("finds task titles and distinguishes sessions from the same project", async () => {
+  const f: FetchLike = async () => new Response(JSON.stringify({ projects: [], agents: [], node: "mac" }));
+  const onOpen = vi.fn();
+  render(<CommandPalette rows={["走查交互", "修复搜索"].map((title, i) => ({
+    id: `mac:${i}`, alive: true, node: "mac", status: "turn_done", display_name: "agora", agent_type: "codex",
+    task: { id: `task-${i}`, title, priority: 2 }, working_directory: `/p/work-${i}`,
+  }))} api={sessionApi(f)} catalog={catalogApi(f)} onOpen={onOpen} onNewAgent={vi.fn()} onCreated={vi.fn()} onClose={vi.fn()} />);
+  fireEvent.change(screen.getByTestId("palette-input"), { target: { value: "agora" } });
+  expect(new Set(labels()).size).toBe(2);
+  expect(labels().join(" ")).toContain("走查交互");
+  expect(labels().join(" ")).toContain("work-0");
+  fireEvent.change(screen.getByTestId("palette-input"), { target: { value: "走查" } });
+  expect(labels()).toHaveLength(1);
+  fireEvent.click(screen.getByTestId("palette-0"));
+  expect(onOpen).toHaveBeenCalledWith("mac:0");
+});

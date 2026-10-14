@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { SessionApi } from "./api";
 import { textVia } from "./events";
 import { isHandleless } from "./attention";
@@ -8,6 +8,8 @@ import { MarkdownView } from "./MarkdownView";
 interface Props {
   row: SessionRow;
   api: SessionApi;
+  draft?: string;
+  onDraftChange?: Dispatch<SetStateAction<string>>;
   /**
    * 「打开终端」与输入框里的 Escape：把焦点交给下面的终端。面板搬进主区之后（agora-4yr.1）终端
    * 一直就在面板下方，这个回调不再是"切到那个标签页"，而是"焦点归 pane"；参数仍是会话 id，
@@ -60,8 +62,10 @@ const SHORT_HOLD_SECS = 300;
  * 展开之后最多占多高、超了自己滚，面板不会把终端挤没。
  */
 const FOLD_LINES = 12;
-export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHandled }: Props) {
-  const [text, setText] = useState("");
+export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHandled, draft, onDraftChange }: Props) {
+  const [localText, setLocalText] = useState("");
+  const text = draft ?? localText;
+  const setText = onDraftChange ?? setLocalText;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
@@ -133,7 +137,7 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
     setError(null);
     const r = await api.input(row.id, { kind: "text", data: `${data}\n` });
     setBusy(false);
-    if (r.ok) setText("");
+    if (r.ok) setText((current) => current === text ? "" : current);
     else if (!r.needsConfirmation) setError(r.error.message);
   }
 
