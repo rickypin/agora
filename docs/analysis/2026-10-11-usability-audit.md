@@ -8,9 +8,11 @@
 
 对象是评估开始时含未提交改动的工作区。前端以生产模式构建到 `/tmp/agora-ii8v/dist`，隔离 HTTP fixture 在 4187，包含审批、完成、运行、离线和结束五种会话。fixture 不执行真实 agent；发送和审批只证明客户端操作与请求，不证明真实宿主收到。终端未连接是 fixture 限制，不列为产品问题。截图中会话名作为项目身份回退，也是测试数据特征。
 
-桌面：agent-browser 0.37.1 / Chromium 154。手机：完整 iOS 18.5、iPhone 16 Pro Simulator，原生 Safari，由 WebDriverAgent 控制。agent-browser iOS provider 在后续命令发生会话错误，故改用原生通道；[ios-home.png](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-audit/ios-home.png) 实为 Chromium 预览，明确排除，iOS 证据仅使用 `ios-safari-*`、`ios-detail*`、`ios-keyboard*` 等经原生截图取得的文件。
+桌面：agent-browser 0.37.1 / Chromium 154。手机：完整 iOS 18.5、iPhone 16 Pro Simulator，原生 Safari，由 WebDriverAgent 控制。agent-browser iOS provider 在后续命令发生会话错误，故改用原生通道；`ux-audit/ios-home.png` 实为 Chromium 预览，明确排除，iOS 证据仅使用 `ios-safari-*`、`ios-detail*`、`ios-keyboard*` 等经原生截图取得的文件。
 
 证据目录：`/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-audit/`。复现 fixture 与原生脚本：`/tmp/agora-ii8v/`。以下优先级是改进建议，不将主观设计判断冒称功能缺陷。
+
+证据访问范围（2026-10-14 补注，agora-8ahd）：下文 `ux-audit/` 与 `ux-after/` 文件名均相对于上述日期/会话目录，是原采集 Mac 上的外部证据路径，不是仓库附件。仓库与 Linux 检出不包含这些文件；此次 Mac SSH 不可用，未复核原件是否仍在，不据此补做或替换历史截图。需查看原件时应在该 Mac 按此目录定位；仅凭本仓库不能重新核验下文视觉观察。文档链接检查只证明仓库内引用有效，不证明这些外部证据可访问。
 
 ## 已确认的观察
 
@@ -18,7 +20,7 @@
 
 复现：Safari 竖屏打开 `/m`，保持初始字号、浏览器栏展开。原生控件坐标显示应用顶端约 y=62，第一张卡片从 y=403 开始；底部导航 y=687。第一屏仅完整容纳一张任务卡，第二张只有上部。首卡之前已有品牌、移动工作台标签、关注数量、总数、筛选、搜索、重复的「需要我」分组标题。
 
-证据：[ios-safari-home.png](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-audit/ios-safari-home.png)，静态，无需视频。320×640 Chromium 边界复核：[mobile-320.png](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-audit/mobile-320.png)。
+证据：`ux-audit/ios-safari-home.png`，静态，无需视频。320×640 Chromium 边界复核：`ux-audit/mobile-320.png`。
 
 推导：手机打开后的第一件事是识别待处理任务；重复宣告“这是工作台”“有几件事”没有提供等量的决策价值。建议把品牌/连接与关注数量合并成紧凑页头，删除装饰性副标题，保留必要筛选，将搜索折叠为可展开入口或压缩占位。不要缩小触控目标和正文来换空间。目标：402×874 Safari 首屏可辨认至少两条待处理任务及其状态。
 
@@ -26,7 +28,7 @@
 
 复现：桌面点「新建会话」。同时出现节点、项目、工作区、Agent、任务、名称、启动命令、首条指令八项。工作区默认是「—」；任务与首条指令的职责需用户自行理解。
 
-证据：[desktop-create.png](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-audit/desktop-create.png)，静态，无需视频。
+证据：`ux-audit/desktop-create.png`，静态，无需视频。
 
 推导：启动工作必需的是在哪里、用谁、做什么。建议以项目、Agent、首条指令为主路径；节点在多节点场景保留清楚默认值，名称和启动命令放“高级选项”；工作区空值改为能表达“使用所选项目目录”的文案，避免误写成仓库根目录。任务关联与首条指令保持各自契约，但说明二者关系。验收不以字段总数为唯一目标，而以默认场景无需理解启动命令也能正确创建为准。
 
@@ -34,7 +36,7 @@
 
 复现：1440×1000 首次打开 `/`。侧栏与主区都有新建，顶部与主区下方都有搜索与命令；同一待处理会话同时出现在侧栏和主区。状态摘要使用「运行中/等你回应/本轮完成」，行内使用「在跑/等你批准/待查看」。
 
-证据：[desktop-home.png](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-audit/desktop-home.png)，静态，无需视频。
+证据：`ux-audit/desktop-home.png`，静态，无需视频。
 
 推导：侧栏与主区的重复会话有合理分工（定位与处理），不应一律删掉。可以先删低价值的第二个搜索入口、合并统计与说明；保留一个视觉主导的新建入口，另一处降级。统一同层状态词，同时保留“等你批准”这种更精确的动作表达。目标是主区始终只有一个主任务层级，不增加新的首页模式。
 
@@ -42,19 +44,19 @@
 
 复现：fixture 中 mac 离线、会话状态待确认。侧栏同时显示「离线」和 `hooks_silent_no_handle · 选中它，打开它的终端看一眼`。这是已断开节点的上次观测状态，建议动作没有随当前可达性变化；机器原因码也直接进入用户扫描区。
 
-证据：[desktop-offline.png](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-audit/desktop-offline.png)。手机同一行使用「节点离线 · 保留上次状态」，表达更清楚。静态，无需视频。
+证据：`ux-audit/desktop-offline.png`。手机同一行使用「节点离线 · 保留上次状态」，表达更清楚。静态，无需视频。
 
 推导：下一步必须建立在当前能力上。建议两端统一首先说明“节点离线，显示上次状态；恢复连接后再处理”，原始原因码放详情诊断；保留时间与不确定性，不把它误报为失败或从列表删除。本结论针对该明确组合，不推断所有 unknown 行。
 
 ### ISSUE-005 · P3：设置把诊断工具与日常偏好放在同一层
 
-复现：手机「设置」默认展示推送、字号、显示边框、复制布局报告、构建信息、重新加载和吊销本设备。证据：[mobile-settings.png](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-audit/mobile-settings.png)，静态，无需视频。
+复现：手机「设置」默认展示推送、字号、显示边框、复制布局报告、构建信息、重新加载和吊销本设备。证据：`ux-audit/mobile-settings.png`，静态，无需视频。
 
 推导：日常设置的任务是控制提醒与可读性。建议保留推送和字号，诊断放可展开的二级区，把「吊销本设备」解释为“退出此设备（需要重新配对）”或补充结果说明。不能删除安全操作或让用户误以为只关闭页面。
 
 ### ISSUE-006 · P2：手机预设启动前缺少目标节点的明确身份
 
-复现：进入「新建」。页内显示预设名、Agent、项目和首句，只说“在节点上启动”，没有显示节点名；点预设即创建。证据：[ios-presets.png](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-audit/ios-presets.png)、[mobile-presets-xl.png](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-audit/mobile-presets-xl.png)，静态，无需视频。
+复现：进入「新建」。页内显示预设名、Agent、项目和首句，只说“在节点上启动”，没有显示节点名；点预设即创建。证据：`ux-audit/ios-presets.png`、`ux-audit/mobile-presets-xl.png`，静态，无需视频。
 
 推导：跨节点产品里，启动地点影响合盖后是否继续运行。用户不应回忆自己打开的是哪一个 URL。建议在页头直接写“在 zuan 上启动”，保留一触启动，不增加确认弹窗或手机自由表单。这是补足决策信息，虽多几个字，反而减少记忆负担。
 
@@ -62,7 +64,7 @@
 
 - 桌面首页优先显示审批与未读完成，侧栏搜索 `capmaster` 收敛到目标会话；命令面板同样能够找到并切换。审批命令和允许/拒绝分列清楚，任务标题优先于环境身份。
 - 手机详情两次点触可从列表进入审批并允许；fixture 收到 `kind=decision, decision=allow, request_id=qa-1`，随后变为运行中。审批原文应继续完整展示，不建议为了“简洁”把批准做成列表里的孤立按钮。
-- iOS 原生点击回复框后出现软键盘，多行中文输入和发送成功；fixture 收到两行原文与终止换行，界面出现“已发出，等它接手…”再随状态事件进入运行中。原生输入使用 WebDriverAgent 键入文本，未测拼音候选、听写或逐个软键输入。证据：[ios-keyboard.png](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-audit/ios-keyboard.png)、[ios-sent.png](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-audit/ios-sent.png)、请求日志。
+- iOS 原生点击回复框后出现软键盘，多行中文输入和发送成功；fixture 收到两行原文与终止换行，界面出现“已发出，等它接手…”再随状态事件进入运行中。原生输入使用 WebDriverAgent 键入文本，未测拼音候选、听写或逐个软键输入。证据：`ux-audit/ios-keyboard.png`、`ux-audit/ios-sent.png`、请求日志。
 - 手机预设一触提交 `{preset:"继续 agora 开发"}`，经过“正在起…”落到新会话回复框；这种零打字入口应保留。
 - 手机设置在 Safari 明确提示需要添加到主屏幕才能推送；此次没有测试主屏 PWA 安装、真实推送或实体 iPhone，不把模拟器等同真机。
 - 桌面 1440×1000、1024×768、700×700 均检查截图；700 和 1024 的页面 scrollWidth 等于视口宽度。手机 Chromium 320×640 特大字号 scrollWidth=320，预设仍可点选；iOS Safari 402×874 与 874×402 都实际截图，横屏输入栏留在底部、未见横向裁切。横屏内容区域较短，是继续压缩重复页头的理由，但尚未做横屏软键盘输入测试。
@@ -96,7 +98,7 @@
 - 离线未知行显示「节点离线 · 保留上次状态 · 恢复连接后再处理」，原始原因保留在 title；单测同时验证在线时终端出口恢复。
 - Chromium 320×640 特大字号 scrollWidth=320；原生 Safari 特大字号、横屏874×402及竖屏键盘复查。改进后的多行文本请求为 `改进后继续验证\n检查发送反馈\n`，界面出现「已发出，等它接手…」。仍是隔离fixture，不冒称真实宿主接收或真机推送。
 
-改进后截图：[iPhone 首屏](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-after/ios-home.png)、[窄桌面创建](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-after/desktop-create-700.png)、[预设节点](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-after/ios-presets.png)、[诊断展开](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-after/ios-diagnostics.png)、[键盘](/Users/ricky/.codex/visualizations/2026/10/11/01a129a6-acf5-7532-8507-9b0259189165/ux-after/ios-keyboard.png)。
+改进后截图：iPhone 首屏（`ux-after/ios-home.png`）、窄桌面创建（`ux-after/desktop-create-700.png`）、预设节点（`ux-after/ios-presets.png`）、诊断展开（`ux-after/ios-diagnostics.png`）、键盘（`ux-after/ios-keyboard.png`）。
 
 门禁：`npm --prefix web test` 52文件/569通过；`cargo test` 758通过/5忽略/0失败；`cargo clippy --all-targets -- -D warnings`、typecheck、build、doc-lint、diff检查通过。构建保留原有大chunk提示。新增行为断言覆盖stale/在线出口、普通创建默认折叠、custom自动展开、节点身份与退出确认；未改不变量、安全或认证守卫，拆守卫反证不适用。`scripts/roadmap-view.sh` 成功运行，生成内容无差异。源码既有未提交改动保留，本轮未提交、推送或部署；四项实施issue因未合入保持in_progress。
 
