@@ -10,7 +10,7 @@
  * 动作全部走与桌面相同的节点 API（allow/deny 带 pending_decision.request_id、text 经 PTY、
  * Kill / Restart 先不带 confirmed 发、节点说要杀才弹框——MISSION §8）。发送失败时草稿回填回
  * 输入框、原因按错误码说人话、重试留在失败气泡上（agora-jidm；文案表见 [`sendFailureText`]）。
- * 只读行（采纳 socket / 死 pane）不给 composer 与「更多」：可写性看 `writableRuntime`
+ * 只读行不给 composer / Kill；托管的已结束会话有命令时仍可 Restart：输入看 `writableRuntime`
  * （agora-prdg.2）。composer 能附图（粘贴或选图，agora-lmz2）：图先传到节点、路径接进文字再发，
  * 规则见 [`./imageAttach`]。
  */
@@ -51,6 +51,7 @@ interface Props {
   focusComposer?: boolean;
   composer?: MobileComposer;
   onNext?: () => void;
+  connectionWarning?: string | null;
 }
 
 type Pending = { kind: "kill" | "restart" } | null;
@@ -97,7 +98,7 @@ export function imageFailureText(error: ApiErrorBody, status?: number): string {
   }
 }
 
-export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusComposer, composer, onNext }: Props) {
+export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusComposer, composer, onNext, connectionWarning }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [more, setMore] = useState(false);
   const [pending, setPending] = useState<Pending>(null);
@@ -197,7 +198,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   useEffect(() => {
     if (focusComposer && canCompose) composerRef.current?.focus();
   }, [focusComposer, canCompose]);
-  const canRestart = writableRuntime && typeof row.command === "string" && row.command.trim() !== "";
+  const canRestart = !handleless && row.managed !== false && typeof row.command === "string" && row.command.trim() !== "";
   const detail = str(row.detail);
   const prompt = str(row.prompt).split("\n")[0] ?? "";
   const userText = sent?.text ?? displayPrompt(prompt);
@@ -387,6 +388,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
             <span className="mobile-status">{mobileStatusLine(row, seen, nowSeconds)}</span>
           </div>
         </div>
+        {connectionWarning && <p className="mobile-note warning mobile-connection-warning" role="status">{connectionWarning}</p>}
       </header>
       <div className="mobile-detail-intro"><span className="mobile-eyebrow">{waiting ? "需要你的决定" : running ? "工作进行中" : "最近一轮"}</span><p className="mobile-card-task">{taskLabel(row) || rowName(row)}</p></div>
 
@@ -533,7 +535,7 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
       {note && <p className="mobile-note" data-testid="mobile-card-note">{note}</p>}
       {error && <p className="mobile-error" data-testid="mobile-card-error">{error}</p>}
 
-      {writableRuntime && (
+      {(writableRuntime || canRestart) && (
         <div className="mobile-actions">
           <button className="mobile-more-toggle" data-testid="mobile-more" aria-expanded={more} onClick={() => setMore((v) => !v)}>
             更多 {more ? "▾" : "▸"}
@@ -545,9 +547,9 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
                   重新启动
                 </button>
               )}
-              <button data-testid="mobile-kill" className="danger" disabled={busy || row.stale === true} onClick={() => void run("kill", false)}>
+              {writableRuntime && <button data-testid="mobile-kill" className="danger" disabled={busy || row.stale === true} onClick={() => void run("kill", false)}>
                 结束会话
-              </button>
+              </button>}
             </div>
           )}
         </div>

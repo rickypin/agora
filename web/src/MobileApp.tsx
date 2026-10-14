@@ -115,14 +115,17 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   useEffect(() => {
     // onOpen 在连上时比一次 api_version（与桌面同一条纪律：升级必然断流一次）。
     store.onRevoked = onRevoked ?? null;
-    store.onOpen = () => void version.check();
+    store.onOpen = () => {
+      void version.check();
+      void health.refresh();
+    };
     store.start();
     return () => {
       store.onRevoked = null;
       store.onOpen = null;
       store.stop();
     };
-  }, [store, version, onRevoked]);
+  }, [store, version, health, onRevoked]);
   useEffect(() => {
     const timer = setInterval(() => setClock(Math.floor(Date.now() / 1000)), 30_000);
     return () => clearInterval(timer);
@@ -394,6 +397,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
         <MobileCard
           key={selectedRow.id}
           row={selectedRow}
+          connectionWarning={nodes.reachable === false ? "暂时连不上节点，当前显示上次收到的状态。" : nodeWarning}
           api={api}
           composer={composers.current.get(selectedRow.id)}
           onNext={sections.attention.some((r) => r.id !== selectedRow.id) ? () => {

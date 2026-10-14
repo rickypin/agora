@@ -71,7 +71,7 @@ function setup(rows: SessionRow[], fetchImpl?: FetchLike, now = 1000) {
   const ui = render(
     <MobileApp store={store} health={health} version={version} now={now} api={fetchImpl ? sessionApi(fetchImpl) : undefined} />,
   );
-  return { ui, store, sock };
+  return { ui, store, sock, health };
 }
 
 /** WS 连上：EventsClient 在 onopen 里拉全量，VersionWatcher 也在那一刻比版本。 */
@@ -956,4 +956,26 @@ describe("mobile audit regression (agora-kvj1 / tqkb / ydzj / p5zc)", () => {
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
     expect(toggle().disabled).toBe(false);
   });
+});
+
+it("shows connection loss inside a card and preserves its draft on recovery", async () => {
+  const t = setup([row("n:a", { status: "turn_done" })]);
+  await online(t);
+  fireEvent.click(screen.getByTestId("mobile-row-n:a"));
+  fireEvent.change(screen.getByTestId("mobile-next-input"), { target: { value: "keep this draft" } });
+  const offline = new HealthWatcher({ fetchHealth: async () => { throw new Error("offline"); } });
+  t.ui.rerender(<MobileApp store={t.store} health={offline} now={1000} />);
+  await act(async () => { await offline.refresh(); });
+  expect(screen.getByText("暂时连不上节点，当前显示上次收到的状态。")).toBeTruthy();
+  t.ui.rerender(<MobileApp store={t.store} health={t.health} now={1000} />);
+  await act(async () => { await t.health.refresh(); });
+  expect(screen.queryByText("暂时连不上节点，当前显示上次收到的状态。")).toBeNull();
+  expect((screen.getByTestId("mobile-next-input") as HTMLTextAreaElement).value).toBe("keep this draft");
+});
+
+it("refreshes connectivity as soon as the event stream reconnects", async () => {
+  const t = setup([row("n:a")]);
+  const refresh = vi.spyOn(t.health, "refresh");
+  await online(t);
+  expect(refresh).toHaveBeenCalled();
 });

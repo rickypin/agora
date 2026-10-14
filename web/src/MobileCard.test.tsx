@@ -499,8 +499,8 @@ describe("read-only rows (agora-prdg.2)", () => {
     expect(ui.container.querySelector(".mobile-actions")).toBeNull();
   });
 
-  it("a managed row with a dead pane also loses composer and 更多", () => {
-    // 死 pane 的句柄还在列表里（scrollback 保留），但没有可写的 PTY：与采纳行同一档。
+  it("a managed row with a dead pane keeps restart but loses composer and kill", () => {
+    // 死进程不能输入，但托管运行时仍能用原命令重启。
     setup(
       row("zuan:dead", {
         status: "finished",
@@ -512,7 +512,9 @@ describe("read-only rows (agora-prdg.2)", () => {
     );
     expect(screen.getByTestId("mobile-terminal-only")).toBeTruthy();
     expect(screen.queryByTestId("mobile-next-input")).toBeNull();
-    expect(screen.queryByTestId("mobile-more")).toBeNull();
+    fireEvent.click(screen.getByTestId("mobile-more"));
+    expect(screen.getByTestId("mobile-restart")).toBeTruthy();
+    expect(screen.queryByTestId("mobile-kill")).toBeNull();
   });
 
   it("an old peer still claiming runtime on an adopted row is vetoed by managed=false", () => {
@@ -1020,4 +1022,14 @@ describe("更早 N 轮（A53，agora-2mff）", () => {
       expect(ui.container.querySelectorAll(selector), selector).toHaveLength(0);
     }
   });
+});
+
+it("restarts a finished managed session without offering input or kill", async () => {
+  const t = setup(row("n:ended", { status: "finished", alive: false, text_via: "none", command: "sleep 900" }));
+  expect(screen.queryByTestId("mobile-next-input")).toBeNull();
+  fireEvent.click(screen.getByTestId("mobile-more"));
+  expect(screen.queryByTestId("mobile-kill")).toBeNull();
+  fireEvent.click(screen.getByTestId("mobile-restart"));
+  await act(async () => {});
+  expect(t.requests.some((r) => r.url.endsWith("/restart"))).toBe(true);
 });
