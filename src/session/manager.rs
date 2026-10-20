@@ -1323,7 +1323,7 @@ impl SessionManager {
         let spawn_age = rec.spawned_at.as_deref().and_then(age_secs);
         // 这一行的运行时"读不到"有两种来路，结论却是同一件事（agora-dkv3）：
         // - 整体降级：协议不匹配、超时、agora 自己的 server 应答不了（ADR-001 D7）；
-        // - 只坏了一个采纳 socket：`list()` 对它只 warn（不能拖垮整张列表），那个 socket 上的
+        // - 只坏了一个采纳 socket：`list()` 对它只记日志（不能拖垮整张列表），那个 socket 上的
         //   行"不在列表里"只是没扫到，不是会话没了。
         // 两者并成一个 `unreadable`：缺一条就落回 a17（UNKNOWN），绝不进 `gone`。
         // STARTING 窗口那条另算（下面 `starting`，agora-u5p）。

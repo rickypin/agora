@@ -8,13 +8,16 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::exec::{exec, ExecOptions, Output};
 use super::{
     AttachSpec, Exit, LaunchSpec, Runtime, RuntimeError, RuntimeRef, RuntimeScan, RuntimeSession,
     Size, SocketScanFailure, TAIL_BUFFER_MAX,
 };
+use scan_log::{AdoptScanFailureLog, ScanLogEvent};
+
+mod scan_log;
 
 const KIND: &str = "tmux";
 /// 字段分隔符。必须是可打印字符：tmux 3.2a 会把格式输出里的控制字符（`\x1f`、`\t`）
@@ -144,6 +147,10 @@ pub struct TmuxRuntime {
     /// 一个没少（tmux 收 SIGUSR1 会重建 socket）——只有「见过」才有资格这么说。从没见过（机器刚
     /// 起、tmux 还没起来）的文件缺失仍是「没有会话不是故障」（ADR-001 D4）。
     seen_live: Mutex<HashSet<String>>,
+    /// 采纳 socket 扫描失败的日志状态：per-socket + reason，首次 / 原因变化立即 WARN，
+    /// 持续期每 5 分钟最多一条 heartbeat，恢复 INFO（agora-abg8）。只影响日志，
+    /// [`RuntimeScan::unreadable`] 与读路径的 UNKNOWN 结论不受它影响。
+    scan_log: Mutex<AdoptScanFailureLog>,
 }
 
 /// 解析后的 ref；只在本模块存在。
@@ -174,6 +181,7 @@ impl TmuxRuntime {
             nudge_count: Mutex::new(HashMap::new()),
             last_nudge: Mutex::new(HashMap::new()),
             seen_live: Mutex::new(HashSet::new()),
+            scan_log: Mutex::new(AdoptScanFailureLog::default()),
         })
     }
 
@@ -524,7 +532,10 @@ impl Runtime for TmuxRuntime {
                 continue;
             }
             match self.list_socket(s) {
-                Ok(v) => sessions.extend(v),
+                Ok(v) => {
+                    self.note_adopt_scan_success(s);
+                    sessions.extend(v);
+                }
                 // 用户 socket 出问题不该拖垮 agora 自己的会话列表（ADR-001 D7：warn 一句继续走）。
                 // 但不能把它当成"扫过了、里面没有会话"：那个 socket 上的 adopted 行会被 reconcile
                 // 与 view 的 missing 分支读成"会话没了"并写 ended_at（agora-dkv3）。把失败随
@@ -532,10 +543,13 @@ impl Runtime for TmuxRuntime {
                 // 应答了但拒绝 / 超时 / 报错；以及 socket 文件被清理工具扫掉而 server 此前活着、
                 // 会话可能一个没少（agora-sk8h）。
                 Err(err) => {
-                    tracing::warn!(component = "runtime", socket = %s, %err, "扫描采纳 socket 失败");
+                    let reason = err.to_string();
+                    // 日志按 socket + reason 节流，扫描结论照旧（agora-abg8）：持续不可读时
+                    // 不再每 2 s 重复同一条 WARN。
+                    self.note_adopt_scan_failure(s, &reason);
                     unreadable.push(SocketScanFailure {
                         socket: s.clone(),
-                        reason: err.to_string(),
+                        reason,
                     });
                 }
             }
@@ -769,6 +783,89 @@ impl Runtime for TmuxRuntime {
 }
 
 impl TmuxRuntime {
+    /// 采纳 socket 这一次扫成了：若此前不可读，打一条恢复 INFO；否则完全安静。
+    fn note_adopt_scan_success(&self, socket: &str) {
+        let event = {
+            let mut log = lock(&self.scan_log);
+            // 时间在锁内取，避免并发 list() 把观察顺序倒过来。
+            log.success(socket, SystemTime::now())
+        };
+        if let Some(event) = event {
+            self.log_scan_event(event);
+        }
+    }
+
+    /// 采纳 socket 这一次没扫成：按 per-socket + reason 的状态决定 WARN / heartbeat / 安静。
+    fn note_adopt_scan_failure(&self, socket: &str, reason: &str) {
+        let event = {
+            let mut log = lock(&self.scan_log);
+            log.failure(socket, reason, SystemTime::now())
+        };
+        if let Some(event) = event {
+            self.log_scan_event(event);
+        }
+    }
+
+    /// 这里只做日志呈现；状态转换与计数在 [`AdoptScanFailureLog`] 里，单测不经过 subscriber。
+    fn log_scan_event(&self, event: ScanLogEvent) {
+        match event {
+            ScanLogEvent::BecameUnavailable {
+                socket,
+                reason,
+                since,
+            } => tracing::warn!(
+                component = "runtime",
+                socket = %socket,
+                reason = %reason,
+                first_seen = %utc_text(since),
+                "扫描采纳 socket 失败（持续期间每 5 分钟最多一条 heartbeat；如确认 tmux server 仍存活，可用 SIGUSR1 重建 socket）"
+            ),
+            ScanLogEvent::ReasonChanged {
+                socket,
+                previous_reason,
+                reason,
+                since,
+                reason_since,
+            } => tracing::warn!(
+                component = "runtime",
+                socket = %socket,
+                previous_reason = %previous_reason,
+                reason = %reason,
+                first_seen = %utc_text(since),
+                reason_since = %utc_text(reason_since),
+                "扫描采纳 socket 失败的原因变了，立即重新告警"
+            ),
+            ScanLogEvent::Heartbeat {
+                socket,
+                reason,
+                since,
+                last_seen,
+                suppressed,
+            } => tracing::warn!(
+                component = "runtime",
+                socket = %socket,
+                reason = %reason,
+                suppressed_count = suppressed,
+                first_seen = %utc_text(since),
+                last_seen = %utc_text(last_seen),
+                "采纳 socket 仍不可读（5 分钟 heartbeat）"
+            ),
+            ScanLogEvent::Recovered {
+                socket,
+                reason,
+                unavailable_for,
+                suppressed,
+            } => tracing::info!(
+                component = "runtime",
+                socket = %socket,
+                reason = %reason,
+                unavailable_for_secs = unavailable_for.as_secs(),
+                suppressed_count = suppressed,
+                "采纳 socket 恢复可读"
+            ),
+        }
+    }
+
     fn wait_dead(&self, r: &RuntimeRef, budget: Duration) -> bool {
         let deadline = Instant::now() + budget;
         loop {
@@ -791,6 +888,15 @@ fn signal_group(pid: u32, sig: libc::c_int) {
     unsafe {
         libc::kill(-(pid as libc::pid_t), sig);
     }
+}
+
+/// 日志里的时刻与库 / API 的 `YYYY-MM-DDTHH:MM:SSZ` 同形，人不必再换算。
+fn utc_text(t: SystemTime) -> String {
+    let secs = t
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    crate::clock::format_utc_secs(secs)
 }
 
 pub fn socket_path(socket: &str) -> PathBuf {

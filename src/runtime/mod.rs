@@ -248,7 +248,7 @@ pub trait Runtime: Send + Sync {
     fn create(&self, spec: &LaunchSpec) -> Result<RuntimeRef, RuntimeError>;
     /// 全部 socket 的全部会话，含非 agora 创建的。每 tick 每 socket一次子进程（D6）。
     ///
-    /// 交出的是 [`RuntimeScan`] 而不是一个 Vec：对采纳 socket 的失败只 warn、不拖垮整张列表
+    /// 交出的是 [`RuntimeScan`] 而不是一个 Vec：对采纳 socket 的失败只记日志、不拖垮整张列表
     /// （ADR-001 D7），但那个 socket 上要留一个"这次没扫过"的记录，否则它上面的行会被误判成
     /// "会话没了"（agora-dkv3）。整体扫不成（agora 自己的 socket 坏了）仍然返回 Err。
     fn list(&self) -> Result<RuntimeScan, RuntimeError>;
