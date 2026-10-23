@@ -30,12 +30,42 @@ pub use receiver::{
     PENDING_REPLAY_AGE,
 };
 
+/// 投递箱容量耗尽的四个互相独立的闸门（agora-84uq）：事后只读 marker 也能回答是哪一个。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapacityBranch {
+    /// 待处理文件数到上限（`MAX_PENDING_FILES`）。
+    Files,
+    /// 待处理总字节到上限（`MAX_PENDING_BYTES`）。
+    Bytes,
+    /// 单件序列化后超过上限（`MAX_DELIVERY_BYTES`）。
+    Delivery,
+    /// 跨进程 admission 锁等待超时。
+    Lock,
+}
+
+impl CapacityBranch {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CapacityBranch::Files => "files",
+            CapacityBranch::Bytes => "bytes",
+            CapacityBranch::Delivery => "delivery",
+            CapacityBranch::Lock => "lock",
+        }
+    }
+}
+
+impl std::fmt::Display for CapacityBranch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum HookError {
     #[error("hook recovery cancelled")]
     Cancelled,
-    #[error("hook inbox capacity exhausted; observations may be incomplete")]
-    Capacity,
+    #[error("hook inbox capacity exhausted ({branch}); observations may be incomplete")]
+    Capacity { branch: CapacityBranch },
     #[error("投递箱 {path}: {source}")]
     Io {
         path: String,

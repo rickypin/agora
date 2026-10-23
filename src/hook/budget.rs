@@ -7,7 +7,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use super::{Delivery, HookError, Inbox};
+use super::{CapacityBranch, Delivery, HookError, Inbox};
 
 pub const MAX_PENDING_FILES: usize = 8192;
 pub const MAX_PENDING_BYTES: u64 = 64 * 1024 * 1024;
@@ -23,7 +23,15 @@ impl Inbox {
     }
 
     /// Sticky until an operator acknowledges the lost observations. Never contains payloads.
+    /// 旧调用方 / 测试没有分支时记 `unknown`（agora-84uq）。
     pub fn note_gap(&self, reason: &str) {
+        self.note_gap_with(reason, "unknown");
+    }
+
+    /// 记一次缺口：`branch` 是结构化分支（`files|bytes|delivery|lock|write|unknown`）。
+    /// `first_at` 在多次调用间保留，`at` / `last_at` 是最近一次；旧 marker 读的时候补成
+    /// `branch=unknown`。只写时间与分支，不写 payload。
+    pub fn note_gap_with(&self, reason: &str, branch: &str) {
         let target = self.gap_path();
         let Some(parent) = target.parent() else {
             return;
@@ -32,8 +40,22 @@ impl Inbox {
             return;
         }
         let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        let now = super::inbox::now_unix_ms();
+        let previous = self.observation_gap();
+        let first = previous
+            .as_ref()
+            .and_then(|v| v.get("first_at").or_else(|| v.get("at")))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(now);
         let part = target.with_extension(format!("{}.part", std::process::id()));
-        let body = serde_json::json!({"reason": reason, "at": super::inbox::now_unix_ms()});
+        let body = serde_json::json!({
+            "reason": reason,
+            "branch": branch,
+            "first_at": first,
+            "last_at": now,
+            // 兼容旧读者：at 仍是最近一次缺口时刻。
+            "at": now,
+        });
         if let Ok(mut f) = OpenOptions::new()
             .write(true)
             .create(true)
@@ -48,17 +70,38 @@ impl Inbox {
             }
         }
         let _ = fs::remove_file(part);
+        tracing::warn!(
+            component = "hook",
+            reason,
+            branch,
+            first_at = first,
+            last_at = now,
+            "观测缺口已记录（队列清空不自动清除）"
+        );
     }
 
     pub fn observation_gap(&self) -> Option<serde_json::Value> {
-        match fs::read(self.gap_path()) {
-            Ok(bytes) => Some(
-                serde_json::from_slice(&bytes)
-                    .unwrap_or_else(|_| serde_json::json!({"reason": "unreadable_gap"})),
-            ),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-            Err(_) => Some(serde_json::json!({"reason": "unreadable_gap"})),
+        let mut value = match fs::read(self.gap_path()) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .unwrap_or_else(|_| serde_json::json!({"reason": "unreadable_gap"})),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+            Err(_) => serde_json::json!({"reason": "unreadable_gap"}),
+        };
+        // 旧 marker（agora-84uq 之前）只有 reason/at：分支按 unknown 读，不猜。
+        if value.get("branch").is_none() {
+            value["branch"] = serde_json::Value::String("unknown".into());
         }
+        if value.get("first_at").is_none() {
+            if let Some(at) = value.get("at").cloned() {
+                value["first_at"] = at;
+            }
+        }
+        if value.get("last_at").is_none() {
+            if let Some(at) = value.get("at").cloned() {
+                value["last_at"] = at;
+            }
+        }
+        Some(value)
     }
 
     /// All CLI writers share a short admission lock. The receiver only removes files, so
@@ -66,10 +109,11 @@ impl Inbox {
     pub fn write_bounded(&self, delivery: &Delivery) -> Result<PathBuf, HookError> {
         let result = self.write_with_limits(delivery, MAX_PENDING_FILES, MAX_PENDING_BYTES);
         if let Err(err) = &result {
-            self.note_gap(match err {
-                HookError::Capacity => "inbox_capacity",
-                _ => "inbox_write_failed",
-            });
+            let (reason, branch) = match err {
+                HookError::Capacity { branch } => ("inbox_capacity", branch.as_str()),
+                _ => ("inbox_write_failed", "write"),
+            };
+            self.note_gap_with(reason, branch);
         }
         result
     }
@@ -106,7 +150,11 @@ impl Inbox {
                 Err(std::fs::TryLockError::WouldBlock) if Instant::now() < until => {
                     std::thread::sleep(Duration::from_millis(2));
                 }
-                Err(std::fs::TryLockError::WouldBlock) => return Err(HookError::Capacity),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(HookError::Capacity {
+                        branch: CapacityBranch::Lock,
+                    })
+                }
                 Err(std::fs::TryLockError::Error(e)) => return Err(io(e)),
             }
         }
@@ -116,7 +164,9 @@ impl Inbox {
             .map_err(|e| io(io::Error::other(e)))?
             .len();
         if files_limit == 0 || bytes > MAX_DELIVERY_BYTES {
-            return Err(HookError::Capacity);
+            return Err(HookError::Capacity {
+                branch: CapacityBranch::Delivery,
+            });
         }
         let mut count = 0;
         let mut total = bytes as u64;
@@ -137,8 +187,15 @@ impl Inbox {
                         Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                         Err(e) => return Err(io(e)),
                     }
-                    if count >= files_limit || total > bytes_limit {
-                        return Err(HookError::Capacity);
+                    if count >= files_limit {
+                        return Err(HookError::Capacity {
+                            branch: CapacityBranch::Files,
+                        });
+                    }
+                    if total > bytes_limit {
+                        return Err(HookError::Capacity {
+                            branch: CapacityBranch::Bytes,
+                        });
                     }
                 }
                 // Admission lock excludes writers; receiver only moves files out.
@@ -148,7 +205,9 @@ impl Inbox {
             let _ = fs::remove_dir(host);
         }
         if total > bytes_limit {
-            return Err(HookError::Capacity);
+            return Err(HookError::Capacity {
+                branch: CapacityBranch::Bytes,
+            });
         }
         self.write(&compact)
     }

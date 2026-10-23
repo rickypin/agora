@@ -188,18 +188,89 @@ pub const INJECTED_PROMPT_TAGS: &[&str] = &[
     "ide_",
 ];
 
-/// 这条 prompt 是不是宿主注入的（首个非空白字符起是 `<` + 已知标签）；标签本身返回（不带尖括号
-/// 后面的内容），给脱敏与摘要用。人敲的 prompt 极少以这些标签开头。
-pub fn injected_prompt_tag(prompt: &str) -> Option<&'static str> {
-    let rest = prompt.trim_start().strip_prefix('<')?;
-    INJECTED_PROMPT_TAGS
+/// Codex / ChatGPT 宿主用 markdown 标题或固定开标签包住浏览器 / 文件上下文；Grok 用尾标记。
+/// 这些都是结构前缀 / 固定尾标记，不是语义文本匹配（agora-5gg.13）。
+const INJECTED_PROMPT_PREFIXES: &[&str] = &[
+    "# Chrome tabs:",
+    "# Files mentioned by the user:",
+    "## Referenced ChatGPT conversation:",
+    "<in-app-browser-context",
+];
+/// Grok 的固定尾标记，只去尾、不当整条注入。
+pub const INJECTED_PROMPT_TAIL: &str = "<|eos|>";
+
+/// 一条注入 prompt 的结构：保留给脱敏 / fixture 的固定前缀（可能为空）与固定尾标记。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InjectedPrompt {
+    /// 给摘要 / 日志看的短标签。
+    pub tag: &'static str,
+    /// 原始 prompt 开头要保留的固定前缀；Claude 的 `<tag>` 在这里。
+    pub prefix: Option<&'static str>,
+}
+
+/// 这条 prompt 是不是宿主注入的（首个非空白字符起是已知 `<tag>` 或 Codex 的固定标题前缀）。
+pub fn injected_prompt_shape(prompt: &str) -> Option<InjectedPrompt> {
+    let trimmed = prompt.trim_start();
+    if let Some(prefix) = INJECTED_PREFIX_LITERALS
         .iter()
         .copied()
-        .find(|tag| rest.starts_with(tag))
+        .find(|p| trimmed.starts_with(p))
+    {
+        let tag = INJECTED_PROMPT_TAGS
+            .iter()
+            .copied()
+            .find(|tag| prefix[1..].starts_with(tag))?;
+        return Some(InjectedPrompt {
+            tag,
+            prefix: Some(prefix),
+        });
+    }
+    let prefix = INJECTED_PROMPT_PREFIXES
+        .iter()
+        .copied()
+        .find(|p| trimmed.starts_with(p))?;
+    Some(InjectedPrompt {
+        tag: prefix,
+        prefix: Some(prefix),
+    })
+}
+
+/// Claude 的完整 `<tag>` 字面量表，和 [`INJECTED_PROMPT_TAGS`] 同序；给结构保留用。
+const INJECTED_PREFIX_LITERALS: &[&str] = &[
+    "<task-notification>",
+    "<system-reminder>",
+    "<command-name>",
+    "<command-message>",
+    "<command-args>",
+    "<local-command-",
+    "<bash-input>",
+    "<bash-stdout>",
+    "<bash-stderr>",
+    "<ide_",
+];
+
+/// 旧接口：只要标签。保留给已有调用方；新代码要保留结构时用 [`injected_prompt_shape`]。
+pub fn injected_prompt_tag(prompt: &str) -> Option<&'static str> {
+    injected_prompt_shape(prompt).map(|s| s.tag)
 }
 
 pub fn injected_prompt(prompt: &str) -> bool {
-    injected_prompt_tag(prompt).is_some()
+    injected_prompt_shape(prompt).is_some()
+}
+
+/// 去掉 Grok 的固定尾标记；只有尾标记不算整条注入，去尾后仍是一条人的 prompt（agora-5gg.13）。
+pub fn strip_injected_tail(prompt: &str) -> Option<&str> {
+    let end = prompt.trim_end();
+    let before = end.strip_suffix(INJECTED_PROMPT_TAIL)?;
+    Some(before.trim_end())
+}
+
+/// 这条 prompt 带固定尾标记时返回标记本身（给脱敏保留结构）。
+pub fn injected_prompt_tail(prompt: &str) -> Option<&'static str> {
+    prompt
+        .trim_end()
+        .ends_with(INJECTED_PROMPT_TAIL)
+        .then_some(INJECTED_PROMPT_TAIL)
 }
 
 /// 三家共用：UserPromptSubmit → 人的 prompt（`prompt.submitted`）或注入的 prompt
@@ -207,6 +278,8 @@ pub fn injected_prompt(prompt: &str) -> bool {
 pub(crate) fn prompt_event(prompt: &str) -> AgoraEvent {
     if injected_prompt(prompt) {
         AgoraEvent::PromptInjected
+    } else if let Some(stripped) = strip_injected_tail(prompt) {
+        AgoraEvent::PromptSubmitted(stripped.to_owned())
     } else {
         AgoraEvent::PromptSubmitted(prompt.to_owned())
     }
@@ -248,6 +321,31 @@ pub(crate) fn generic_release(payload: &Value) -> Release {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn codex_markdown_and_in_app_wrappers_are_structural_injections() {
+        for prompt in [
+            "# Chrome tabs:\n- example",
+            "# Files mentioned by the user:\n- a.txt",
+            "## Referenced ChatGPT conversation:\n...",
+            "<in-app-browser-context foo=\"bar\">\n...",
+        ] {
+            assert!(
+                matches!(prompt_event(prompt), AgoraEvent::PromptInjected),
+                "{prompt:?}"
+            );
+        }
+        // Grok 的固定尾标记只去尾，仍是人的 prompt。
+        assert_eq!(
+            prompt_event("看看这个 <|eos|>\n"),
+            AgoraEvent::PromptSubmitted("看看这个".into())
+        );
+        // 普通 prompt 不受影响。
+        assert_eq!(
+            prompt_event("fix the bug"),
+            AgoraEvent::PromptSubmitted("fix the bug".into())
+        );
+    }
 
     #[test]
     fn only_permission_requests_of_capable_hosts_hold() {

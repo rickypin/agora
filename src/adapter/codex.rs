@@ -309,6 +309,12 @@ mod tests {
     }
 
     #[test]
+    fn chrome_tabs_wrapper_is_prompt_injected_not_a_task_summary() {
+        let p = json!({"hook_event_name":"UserPromptSubmit","session_id":"s","prompt":"# Chrome tabs:\n- example"});
+        assert_eq!(CODEX.parse(&p), vec![AgoraEvent::PromptInjected]);
+    }
+
+    #[test]
     fn permission_request_holds_on_tool_name_and_interrupt_releases_everything() {
         let pr = json!({"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"touch x"},"turn_id":"t"});
         assert_eq!(CODEX.hold_key(&pr).as_deref(), Some("Bash"));

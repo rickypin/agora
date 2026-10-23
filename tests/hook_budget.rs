@@ -1,6 +1,6 @@
 use agora::hook::budget::*;
 use agora::hook::Envelope;
-use agora::hook::{Delivery, HookError, Inbox};
+use agora::hook::{CapacityBranch, Delivery, HookError, Inbox};
 use std::collections::BTreeMap;
 use std::fs;
 
@@ -30,7 +30,7 @@ fn admission_is_bounded_without_evicting_accepted_events() {
     inbox.write_with_limits(&delivery(2), 2, 32_000).unwrap();
     assert!(matches!(
         inbox.write_with_limits(&delivery(3), 2, 32_000),
-        Err(HookError::Capacity)
+        Err(HookError::Capacity { .. })
     ));
     assert!(first.exists());
     assert_eq!(inbox.pending().unwrap().len(), 2);
@@ -160,7 +160,7 @@ fn byte_budget_is_independent_of_file_count_and_empty_dirs_are_reclaimed() {
     let p = inbox.write_with_limits(&delivery(1), 100, 12_000).unwrap();
     assert!(matches!(
         inbox.write_with_limits(&delivery(2), 100, 12_000),
-        Err(HookError::Capacity)
+        Err(HookError::Capacity { .. })
     ));
     let old_dir = p.parent().unwrap().to_owned();
     inbox.done(&p).unwrap();
@@ -168,4 +168,93 @@ fn byte_budget_is_independent_of_file_count_and_empty_dirs_are_reclaimed() {
     next.envelope.agent_session_id = "another".into();
     inbox.write_with_limits(&next, 100, 12_000).unwrap();
     assert!(!old_dir.exists());
+}
+
+#[test]
+fn capacity_branches_are_distinguishable_and_first_gap_time_survives() {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    let home = tempfile::tempdir().unwrap();
+    let inbox = Inbox::new(home.path());
+
+    // delivery：单件 > 1 MiB。
+    let mut huge = delivery(1);
+    huge.payload["prompt"] = "p".repeat(MAX_DELIVERY_BYTES + 1).into();
+    assert!(matches!(
+        inbox.write_with_limits(&huge, 100, MAX_PENDING_BYTES),
+        Err(HookError::Capacity {
+            branch: CapacityBranch::Delivery
+        })
+    ));
+    // files：已有 1 件，上限 1。
+    inbox
+        .write_with_limits(&delivery(2), 1, MAX_PENDING_BYTES)
+        .unwrap();
+    assert!(matches!(
+        inbox.write_with_limits(&delivery(3), 1, MAX_PENDING_BYTES),
+        Err(HookError::Capacity {
+            branch: CapacityBranch::Files
+        })
+    ));
+    // bytes：总上限 1 字节。
+    let bytes_home = home.path().join("bytes");
+    let bytes_inbox = Inbox::new(&bytes_home);
+    assert!(matches!(
+        bytes_inbox.write_with_limits(&delivery(4), 100, 1),
+        Err(HookError::Capacity {
+            branch: CapacityBranch::Bytes
+        })
+    ));
+    // lock：另一个进程/线程持有 admission.lock 超过 250 ms。
+    let lock_dir = home.path().join("hooks");
+    fs::create_dir_all(&lock_dir).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(lock_dir.join("admission.lock"))
+        .unwrap();
+    // SAFETY: fd 归 lock 所有，测试期间保持打开。
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+    assert!(matches!(
+        inbox.write_with_limits(&delivery(5), 100, MAX_PENDING_BYTES),
+        Err(HookError::Capacity {
+            branch: CapacityBranch::Lock
+        })
+    ));
+    // SAFETY: 同一个 fd 解锁后马上 drop。
+    unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) };
+
+    // write_bounded 把分支写进 marker；第二次调用保留 first_at、推进 last_at。
+    inbox.write_bounded(&huge).unwrap_err();
+    let first = inbox.observation_gap().unwrap();
+    assert_eq!(first["reason"], "inbox_capacity");
+    assert_eq!(first["branch"], "delivery");
+    assert!(first["first_at"].as_u64().unwrap() <= first["last_at"].as_u64().unwrap());
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    inbox.note_gap_with("inbox_capacity", "files");
+    let second = inbox.observation_gap().unwrap();
+    assert_eq!(second["branch"], "files");
+    assert_eq!(second["first_at"], first["first_at"], "首次时间不得丢失");
+    assert!(second["last_at"].as_u64().unwrap() >= first["last_at"].as_u64().unwrap());
+}
+
+#[test]
+fn an_old_gap_marker_reads_as_unknown_branch_without_losing_at() {
+    let home = tempfile::tempdir().unwrap();
+    let inbox = Inbox::new(home.path());
+    fs::create_dir_all(home.path().join("hooks")).unwrap();
+    fs::write(
+        home.path().join("hooks/observation-gap.json"),
+        r#"{"reason":"inbox_capacity","at":123}"#,
+    )
+    .unwrap();
+    let gap = inbox.observation_gap().unwrap();
+    assert_eq!(gap["branch"], "unknown");
+    assert_eq!(gap["at"], 123);
+    assert_eq!(gap["first_at"], 123);
+    assert_eq!(gap["last_at"], 123);
 }

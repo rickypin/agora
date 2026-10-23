@@ -101,6 +101,9 @@ pub struct Receiver {
     /// 兜底重放已经 warn 过的读不动 / 应用不上的投递件：同一个坏文件每 5 s 撞一次，
     /// 不该刷 5 s 一条日志。只在内存里，文件消失就忘掉。
     pending_bad: Mutex<BTreeSet<PathBuf>>,
+    /// 第一次扫到某个 pending 文件的单调时刻（agora-go4e）：宽限期以它和墙钟 mtime 的较小者为准，
+    /// 机器时钟向前跳 >30 s 也不会把刚落盘、正在 socket 上等答复的文件判成"够老"。
+    pending_seen: Mutex<HashMap<PathBuf, Instant>>,
     /// 宿主文本通道的队列根（`<AGORA_HOME>/input`，agora-t5kf.1）：节流清理扫它。
     input_dir: PathBuf,
     /// 投递箱权限是否已经 warn 过：第一轮 warn，之后降到 debug，直到它被修好。
@@ -177,6 +180,7 @@ impl Receiver {
             last_prune: Mutex::new(None),
             pending_sweep_age: PENDING_REPLAY_AGE,
             pending_bad: Mutex::new(BTreeSet::new()),
+            pending_seen: Mutex::new(HashMap::new()),
             input_dir: crate::hook::input::home_dir(home),
             inbox_perm_warned: AtomicBool::new(false),
         }
@@ -357,6 +361,10 @@ impl Receiver {
             let mut bad = self.pending_bad.lock().unwrap_or_else(|p| p.into_inner());
             bad.retain(|p| p.exists());
         }
+        self.pending_seen
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|p, _| p.exists());
         if applied > 0 {
             tracing::info!(
                 component = "hook",
@@ -384,8 +392,17 @@ impl Receiver {
         if self.pending_sweep_age.is_zero() {
             return true; // 测试用：不设宽限期
         }
-        let now = now_unix_ms();
         let limit = self.pending_sweep_age.as_millis() as u64;
+        let now_instant = Instant::now();
+        // 单调钟这一半：文件第一次出现在本进程眼里时开始计时。墙钟只用来判断"它自己说落盘多久"，
+        // 两者取小——时钟前跳时墙钟年龄会突然变大，但单调年龄仍小，不能抢走刚落盘的文件
+        // （agora-go4e）。文件消失后 map 由 replay 尾部清掉。
+        let seen_age = {
+            let mut seen = self.pending_seen.lock().unwrap_or_else(|p| p.into_inner());
+            let first = *seen.entry(path.to_owned()).or_insert(now_instant);
+            now_instant.duration_since(first).as_millis() as u64
+        };
+        let now = now_unix_ms();
         let written = std::fs::metadata(path)
             .and_then(|m| m.modified())
             .ok()
@@ -396,9 +413,9 @@ impl Receiver {
                 delivery_time_secs(&name).map(|s| s.max(0) as u64 * 1000)
             });
         match written {
-            // 未来的时间戳（机器时钟往回拨过）也当够老：它不是刚写下等人拿的东西。
-            Some(ts) if ts <= now => now - ts >= limit,
-            _ => true,
+            // 未来的时间戳（机器时钟往回拨过）不能证明它老，退回单调年龄。
+            Some(ts) if ts <= now => (now - ts).min(seen_age) >= limit,
+            _ => seen_age >= limit,
         }
     }
 
@@ -1039,6 +1056,8 @@ impl Receiver {
         // 先补投递箱再处理挂起：兜底重放可能正把解除事件（PostToolUse / Stop / SessionEnd）补进来，
         // 后面那几段以"状态机里没这个键"放掉 hold，读到已经更新的挂起表才不会误放。
         self.replay_stale_pending();
+        // 读路径攒下的 ended_at 补写 / 撤回在这里落库（agora-0obk）：list/get 自己不再写 SQLite。
+        self.sessions.tick_ended_at();
         self.maybe_prune_done();
         let expired: Vec<((String, String), String)> = {
             let holds = self.holds.lock().unwrap_or_else(|p| p.into_inner());
@@ -1058,10 +1077,14 @@ impl Receiver {
             v.dedup();
             v
         };
-        for s in sessions {
-            // 外部会话（key 带宿主前缀）不在库里，get 报 NotFound：不当作退出。
-            if let Ok(view) = self.sessions.get(&s) {
-                if process_exited(&view) {
+        // 一轮只取一次运行时快照（agora-ngd5）：`get()` 内部会 `runtime.inspect`（运行时会话那条路起
+        // 子进程），N 个挂起会话就是 N 次。`list()` 一次 `runtime.list()`，外部会话（key 带宿主
+        // 前缀）不在库里，自然也不在 map 里。
+        if let Ok(views) = self.sessions.list() {
+            let by_id: HashMap<&str, &SessionView> =
+                views.iter().map(|v| (v.record.id.as_str(), v)).collect();
+            for s in sessions {
+                if by_id.get(s.as_str()).is_some_and(|v| process_exited(v)) {
                     self.resolve_session(&s, "exit");
                 }
             }

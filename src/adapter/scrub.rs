@@ -138,10 +138,22 @@ fn scrub_str(key: &str, value: &str, salt: &str) -> Value {
         path_placeholder(salt, value)
     } else if ENUM_KEYS.contains(&key) && is_token(value) {
         value.to_owned()
-    } else if let Some(tag) = super::hooks::injected_prompt_tag(value).filter(|_| key == "prompt") {
-        // 宿主注入的 prompt：留下开头的标签（它是宿主的枚举、不是人写的），正文照抹——fixture
-        // 要能证明"这条 UserPromptSubmit 不是人敲的"（agora-3s5）。
-        format!("<{tag}>\n<{key}>")
+    } else if key == "prompt" {
+        if let Some(shape) = super::hooks::injected_prompt_shape(value) {
+            // 宿主注入的 prompt：留下**原始结构**（Claude 的 <tag>、Codex 的 markdown 标题），
+            // 正文照抹；fixture 才能证明这条不是人敲的，也不会被录成假的 <# Chrome tabs:>
+            // （agora-3s5 / agora-5ct）。
+            let prefix = shape.prefix.unwrap_or_default();
+            match super::hooks::injected_prompt_tail(value) {
+                Some(tail) => format!("{prefix}\n<{key}>\n{tail}"),
+                None => format!("{prefix}\n<{key}>"),
+            }
+        } else if let Some(tail) = super::hooks::injected_prompt_tail(value) {
+            // Grok 的尾标记不是整条注入；保留尾巴，正文仍然抹掉。
+            format!("<{key}>\n{tail}")
+        } else {
+            format!("<{key}>")
+        }
     } else {
         format!("<{key}>")
     };
@@ -190,6 +202,21 @@ mod tests {
             "t0",
         );
         assert_eq!(o["last_assistant_message"], "<last_assistant_message>");
+    }
+
+    #[test]
+    fn codex_markdown_and_grok_tail_keep_their_real_structure() {
+        let codex = scrub(
+            &json!({"hook_event_name":"UserPromptSubmit","prompt":"# Chrome tabs:\n- secret"}),
+            "t0",
+        );
+        assert_eq!(codex["prompt"], "# Chrome tabs:\n<prompt>");
+        let grok = scrub(
+            &json!({"hook_event_name":"UserPromptSubmit","prompt":"secret body <|eos|>"}),
+            "t0",
+        );
+        assert_eq!(grok["prompt"], "<prompt>\n<|eos|>");
+        assert!(!grok.to_string().contains("secret"));
     }
 
     #[test]

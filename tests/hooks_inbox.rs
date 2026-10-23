@@ -355,6 +355,15 @@ fn freshly_written_deliveries_wait_out_the_grace_period() {
     assert_eq!(receiver.replay().unwrap(), 1);
 
     inbox.write(&delivery(&id, 1, "Stop", 20)).unwrap();
+    // agora-go4e：把 mtime 拨到很久以前，模拟墙钟向前跳了 >30 s；单调钟仍记得它刚被看见。
+    // 旧实现只看墙钟，会当场把它判成"够老"并抢走；新实现取墙钟与单调年龄的较小者。
+    let path = inbox.pending().unwrap().into_iter().next().unwrap();
+    let ok = std::process::Command::new("touch")
+        .args(["-t", "202001010000", &path.display().to_string()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(ok, "touch 拨 mtime 失败: {}", path.display());
     receiver.sweep();
     assert_eq!(
         inbox.pending().unwrap().len(),

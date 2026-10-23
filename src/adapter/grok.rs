@@ -319,6 +319,15 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn eos_tail_is_stripped_before_prompt_submitted() {
+        let p = json!({"hookEventName":"user_prompt_submit","hook_event_name":"UserPromptSubmit","session_id":"s","prompt":"hello <|eos|>"});
+        assert_eq!(
+            GROK.parse(&p),
+            vec![AgoraEvent::PromptSubmitted("hello".into())]
+        );
+    }
+
+    #[test]
     fn version_is_three_valued_and_table_bounded() {
         assert_eq!(
             GROK.version("grok 1.0.13 (5e9a58528b76)\n"),
