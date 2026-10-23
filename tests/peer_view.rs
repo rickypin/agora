@@ -841,3 +841,46 @@ async fn a_local_restart_does_not_reset_a_peer_rows_wait() {
         "换了状态就是新的等待，不继承旧状态的 8 天: {fresh}"
     );
 }
+
+/// 只发 200 头、body 永远不来的 `/api/sessions`：模拟半开 peer（agora-69ec）。
+async fn stall_snapshot_body(req: Request, next: Next) -> Response {
+    let snapshot = req.uri().path() == "/api/sessions";
+    let mut resp = next.run(req).await;
+    if snapshot {
+        let stream = futures_util::stream::once(async {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Ok::<_, std::convert::Infallible>(hyper::body::Bytes::from_static(b"{}"))
+        });
+        *resp.body_mut() = Body::from_stream(stream);
+    }
+    resp
+}
+
+#[tokio::test]
+async fn a_peer_that_stalls_the_snapshot_body_is_unreachable_not_hung() {
+    // `PeerTransport::request` 的超时只覆盖响应头；body 由 `PeerClient::get_json` 消费。
+    // 对端发完 200 头后挂起 body 时，没有 body deadline 的客户端会永远卡在 snapshot：
+    // 不标 stale、不退避。关掉 get_json 的 timeout（或只 timeout 请求头）→ 本测试 10 s 等待超时。
+    let a = Node::new("a");
+    let b = Node::new("b");
+    let slow = b.router().layer(middleware::from_fn(stall_snapshot_body));
+    let t = Arc::new(InProcessTransport::new(
+        "b",
+        "a",
+        slow,
+        Duration::from_millis(200),
+    ));
+    a.start_client(t);
+    wait_for("半开 body 应让 peer 进入 Unreachable", || {
+        a.state
+            .peers
+            .get("b")
+            .is_some_and(|p| p.last_error == Some(PeerError::Unreachable))
+    })
+    .await;
+    assert_eq!(
+        a.state.peer_views.is_stale("b"),
+        Some(true),
+        "失败后行要标 stale，不能保持在线"
+    );
+}

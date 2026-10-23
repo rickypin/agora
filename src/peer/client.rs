@@ -365,10 +365,18 @@ impl PeerClient {
             tracing::warn!(component = "peer", peer = %self.name, path, %status, "peer 返回非 2xx");
             return Err(PeerError::Unreachable.into());
         }
-        let bytes = axum::body::to_bytes(resp.into_body(), BODY_LIMIT)
-            .await
-            .map_err(|_| Failure::from(PeerError::Unreachable))?;
-        Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        // `PeerTransport::request` 的超时只覆盖到响应头（trait 文档与 `HttpsTransport` 的
+        // `attempt` 都是这个口径）；响应 body 是流，调用方不自己加 deadline 的话，对端只发
+        // 200 头再挂起就能让 `snapshot` 永远不返回——不退避、不标 stale，整条 peer 通道静默
+        // 卡死（agora-69ec）。body 与请求共用一次尝试的上限，且 `BODY_LIMIT` 仍然生效。
+        let body = tokio::time::timeout(
+            self.transport.timeout(),
+            axum::body::to_bytes(resp.into_body(), BODY_LIMIT),
+        )
+        .await
+        .map_err(|_| Failure::from(PeerError::Unreachable))?
+        .map_err(|_| Failure::from(PeerError::Unreachable))?;
+        Ok(serde_json::from_slice(&body).unwrap_or(Value::Null))
     }
 
     fn publish(&self, events: Vec<Event>) {
