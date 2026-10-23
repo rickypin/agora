@@ -728,6 +728,7 @@ mod tests {
             },
             name: "shell-01".into(),
             process,
+            agent_process: process,
             // 旧布尔永远是三值的投影（agora-5gg.18）：造行也不手写两个独立的事实。
             alive: process == ProcessState::Alive,
             exit: None,

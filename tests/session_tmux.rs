@@ -12,7 +12,7 @@ use agora::runtime::tmux::{socket_path, TmuxConfig, TmuxRuntime};
 use agora::runtime::{Runtime, Size};
 use agora::session::manager::KILL_GRACE;
 use agora::session::{Db, NewSession, SessionError, SessionManager};
-use agora::status::Status;
+use agora::status::{EndCause, RuntimeGone, Status};
 
 // 轮询 tmux 不能太密：每次 inspect/capture 都要新起一个 tmux client 进程。生产的
 // status.detector_interval 是 2 s。（曾以为密集轮询会和 server 抢 SIGCHLD 导致 pane"没有
@@ -313,10 +313,11 @@ fn kill_server_finishes_every_row_on_it() {
     let after = f.wait(&m, &v.record.id, |v| {
         v.assessment.status == Status::Finished
     });
-    let reason = after.assessment.reason.as_deref().unwrap_or_default();
-    assert!(
-        reason.contains("runtime session gone") && reason.contains("server gone"),
-        "整台 server 没了要说得上是 server 的事: {reason}"
+    assert_eq!(
+        after.assessment.end_cause,
+        Some(EndCause::RuntimeGone(RuntimeGone::Server)),
+        "整台 server 没了要说得上是 server 的事: {:?}",
+        after.assessment
     );
     assert_eq!(after.assessment.source, agora::status::Source::Process);
     assert!(!after.alive);

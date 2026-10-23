@@ -10,7 +10,7 @@ use std::time::Duration;
 use agora::runtime::{Exit, RuntimeRef, RuntimeSession, Size};
 use agora::status::{
     AgoraEvent, Assessment, DetectionResult, Liveness, Machine, MachineConfig, Observation, Source,
-    Status,
+    Status, UnknownCause,
 };
 
 fn cfg() -> MachineConfig {
@@ -114,10 +114,7 @@ fn pending_permission_is_released_when_the_prompt_leaves_the_screen() {
         (Status::Unknown, Source::Text),
         "{a:?}"
     );
-    assert!(
-        a.reason.as_deref().unwrap().contains("prompt gone"),
-        "{a:?}"
-    );
+    assert_eq!(a.unknown_cause, Some(UnknownCause::PromptGone), "{a:?}");
     assert!(a.confidence < 0.8);
     assert!(!m.has_pending());
     assert!(m.pending_keys().is_empty());
@@ -281,10 +278,7 @@ fn idle_notification_after_the_prompt_is_gone_lands_on_turn_done() {
         (Status::Unknown, Source::Text),
         "{a:?}"
     );
-    assert!(
-        a.reason.as_deref().unwrap().contains("prompt gone"),
-        "{a:?}"
-    );
+    assert_eq!(a.unknown_cause, Some(UnknownCause::PromptGone), "{a:?}");
     assert!(!m.has_pending());
     // 停在提示符约 60 s：idle_prompt 到。
     let at = 70;

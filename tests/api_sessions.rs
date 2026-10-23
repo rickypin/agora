@@ -619,6 +619,10 @@ async fn a_row_ended_by_its_host_reports_gone_on_the_wire_while_its_pid_is_still
         "探活拿到了活着的进程号: {before}"
     );
     assert_eq!(before["alive"], true, "{before}");
+    assert_eq!(
+        before["agent_process"], "alive",
+        "agent 进程事实（agora-phqq）与 Q4 的 process 分开: {before}"
+    );
 
     // 人在提示符上退出、宿主来得及发 SessionEnd：这一行的对话到此为止，而那个 pid 还在
     // （Claude 的 /clear 更典型——同一个进程紧接着跑新对话）。
@@ -646,6 +650,10 @@ async fn a_row_ended_by_its_host_reports_gone_on_the_wire_while_its_pid_is_still
     assert_eq!(
         after["alive"], false,
         "旧布尔是 process 的投影，不能拿探活结果冒充: {after}"
+    );
+    assert_eq!(
+        after["agent_process"], "alive",
+        "对话结束了但那个 pid 还在：agent_process 不得被 Q4 的 FINISHED→gone 覆盖: {after}"
     );
 }
 

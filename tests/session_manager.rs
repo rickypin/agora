@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agora::runtime::{Exit, Runtime, RuntimeRef, Size};
 use agora::session::{Db, NewSession, Origin, SessionError, SessionManager};
-use agora::status::{EndCause, ProcessState, RuntimeGone, Status};
+use agora::status::{EndCause, ProcessState, RuntimeGone, Status, UnknownCause};
 use common::FakeRuntime;
 
 fn mgr() -> (SessionManager, Arc<FakeRuntime>, Arc<Db>) {
@@ -104,12 +104,7 @@ fn killed_by_user_survives_daemon_restart() {
     assert_eq!(report.known_dead, vec![v.record.id.clone()]);
     let after = m2.get(&v.record.id).unwrap();
     assert_eq!(after.assessment.status, Status::Finished);
-    assert!(after
-        .assessment
-        .reason
-        .as_deref()
-        .unwrap()
-        .contains("killed by user"));
+    assert_eq!(after.assessment.end_cause, Some(EndCause::KilledByUser));
 
     let restarted = m2.restart(&v.record.id, &[]).unwrap();
     assert!(
@@ -164,12 +159,7 @@ fn kill_keeps_dead_pane_and_counts_as_finished_by_user() {
     assert!(!killed.alive);
     assert_eq!(killed.exit, Some(Exit::Signal("TERM".into())));
     assert_eq!(killed.assessment.status, Status::Finished);
-    assert!(killed
-        .assessment
-        .reason
-        .as_deref()
-        .unwrap()
-        .contains("killed by user"));
+    assert_eq!(killed.assessment.end_cause, Some(EndCause::KilledByUser));
     assert!(killed.record.ended_at.is_some());
     assert_eq!(
         rt.list().unwrap().sessions.len(),
@@ -313,13 +303,9 @@ fn cleanup_refuses_alive_and_removes_dead() {
         Status::Finished,
         "运行时会话没了、metadata 还在：这是一条结束的事实，不是永远看不懂的 UNKNOWN（agora-u5p）"
     );
-    assert!(
-        after
-            .assessment
-            .reason
-            .as_deref()
-            .unwrap_or_default()
-            .contains("runtime session gone"),
+    assert_eq!(
+        after.assessment.end_cause,
+        Some(EndCause::RuntimeGone(RuntimeGone::Session)),
         "{:?}",
         after.assessment
     );
@@ -448,10 +434,26 @@ fn missing_runtime_session_finishes_the_row_and_writes_ended_at_once() {
         "记的是当下的时刻: {ended}"
     );
 
+    // agora-0obk：读路径只观察、不写库；tick 才落盘，且用的是第一次观察到的时刻。
+    assert!(
+        m.record(&v.record.id).unwrap().ended_at.is_none(),
+        "get() 不得自己写 SQLite"
+    );
+    m.tick_ended_at();
+    assert_eq!(
+        m.record(&v.record.id).unwrap().ended_at.as_deref(),
+        Some(ended.as_str()),
+        "tick 写的是第一次观察到的时刻"
+    );
     // 幂等：再读一轮不得把 ended_at 刷成更晚的"今天"（否则一行的结束时刻会随轮询一路往前漂）。
     let again = m.get(&v.record.id).unwrap();
     assert_eq!(again.record.ended_at, after.record.ended_at);
     assert_eq!(again.assessment.reason, after.assessment.reason);
+    assert_eq!(
+        m.record(&v.record.id).unwrap().ended_at.as_deref(),
+        Some(ended.as_str()),
+        "第二次读不产生新的写入"
+    );
 }
 
 #[test]
@@ -682,10 +684,11 @@ fn server_gone_and_session_gone_are_told_apart_in_the_reason() {
             "{id}: {:?}",
             v.assessment
         );
-        let reason = v.assessment.reason.as_deref().unwrap_or_default();
-        assert!(
-            reason.contains("runtime session gone") && reason.contains("server gone"),
-            "一屋子的行一起没了，要说得上是 server 的事: {reason}"
+        assert_eq!(
+            v.assessment.end_cause,
+            Some(EndCause::RuntimeGone(RuntimeGone::Server)),
+            "一屋子的行一起没了，要说得上是 server 的事: {:?}",
+            v.assessment
         );
         assert!(v.record.ended_at.is_some(), "{id} 要补上结束时刻");
     }
@@ -696,22 +699,11 @@ fn server_gone_and_session_gone_are_told_apart_in_the_reason() {
     backdate_spawn(&db2, &c.record.id);
     rt2.kill_session(c.record.runtime_ref.as_deref().unwrap());
     let cv = m2.get(&c.record.id).unwrap();
-    assert!(
+    assert_eq!(
+        cv.assessment.end_cause,
+        Some(EndCause::RuntimeGone(RuntimeGone::Session)),
+        "server 在，不要把话说大: {:?}",
         cv.assessment
-            .reason
-            .as_deref()
-            .unwrap_or_default()
-            .contains("session gone; no exit status"),
-        "{:?}",
-        cv.assessment
-    );
-    assert!(
-        !cv.assessment
-            .reason
-            .as_deref()
-            .unwrap_or_default()
-            .contains("server gone"),
-        "server 在，不要把话说大"
     );
     assert!(
         matches!(
@@ -734,9 +726,10 @@ fn runtime_gone_of_a_killed_row_still_says_killed_by_user() {
     let after = m.get(&v.record.id).unwrap();
     let reason = after.assessment.reason.as_deref().unwrap_or_default();
     assert_eq!(after.assessment.status, Status::Finished);
+    assert_eq!(after.assessment.end_cause, Some(EndCause::KilledByUser));
     assert!(
         reason.starts_with("killed by user") && reason.contains("runtime session gone"),
-        "既要留下 Kill 的事实，也要说清运行时会话不在了: {reason}"
+        "Kill 的事实进枚举；runtime-gone 的细节仍留在 human reason（服务端折叠）: {reason}"
     );
 }
 
@@ -752,10 +745,11 @@ fn degraded_runtime_never_becomes_runtime_gone() {
     let views = m.list().unwrap();
     let got = views.iter().find(|x| x.record.id == v.record.id).unwrap();
     assert_eq!(got.assessment.status, Status::Unknown);
-    let reason = got.assessment.reason.as_deref().unwrap_or_default();
-    assert!(
-        reason.contains("runtime unavailable") && !reason.contains("runtime session gone"),
-        "{reason}"
+    assert_eq!(
+        got.assessment.unknown_cause,
+        Some(UnknownCause::RuntimeUnavailable),
+        "{:?}",
+        got.assessment
     );
     assert!(
         got.record.ended_at.is_none(),
@@ -809,9 +803,9 @@ fn runtime_gone_notifies_once_and_obeys_killed_by_user() {
             e,
             Event::StatusChanged {
                 status: Status::Finished,
-                ref reason,
+                end_cause: Some(EndCause::RuntimeGone(_)),
                 ..
-            } if reason.as_deref().unwrap_or_default().contains("runtime session gone")
+            }
         )),
         "{events:?}"
     );

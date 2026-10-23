@@ -20,7 +20,7 @@ use agora::events::{Differ, Event};
 use agora::hook::{Delivery, Envelope, Inbox, Receiver};
 use agora::runtime::{Exit, Runtime, Size};
 use agora::session::{Db, ExternalSession, NewSession, Origin, SessionManager};
-use agora::status::{AgoraEvent, MachineConfig, Source, Status};
+use agora::status::{AgoraEvent, MachineConfig, Source, Status, UnknownCause};
 use common::FakeRuntime;
 use serde_json::json;
 
@@ -115,6 +115,8 @@ fn expired_external_finished_rows_are_deleted_and_the_rest_stay() {
     // 三种结束各写各的 `ended_at`（agora-5gg.3：Mac 2026-09-18 实测库里 35 行 FINISHED 的
     // external 行 ended_at 全空，按结束时间的保留 / 折叠 / 淘汰没有依据）。过期扫描从这里开始
     // 拿它当时钟，所以这三行不写就等于这三行永不到期（只会每轮回退到 status_since）。
+    // process_gone 是读路径观察到的结束：agora-0obk 把它攒到 tick 才落库（get 不写库）。
+    m.tick_ended_at();
     for id in [&by_hook, &superseded, &process_gone] {
         let rec = m.record(id).unwrap();
         assert!(
@@ -501,8 +503,8 @@ fn silent_external(m: &SessionManager, agent_session: &str) -> String {
         v.assessment
     );
     assert_eq!(
-        v.assessment.reason.as_deref(),
-        Some("hooks silent; no process handle")
+        v.assessment.unknown_cause,
+        Some(UnknownCause::HooksSilentNoHandle)
     );
     id
 }

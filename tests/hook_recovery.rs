@@ -4,7 +4,7 @@ use agora::{
     hook::{Delivery, Envelope, Inbox, Receiver},
     runtime::{Exit, Size},
     session::{Db, ExternalSession, NewSession, Origin, SessionManager},
-    status::{AgoraEvent, MachineConfig, Source, Status},
+    status::{AgoraEvent, MachineConfig, Source, Status, UnknownCause},
 };
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -643,8 +643,8 @@ fn handleless_external_silence_is_not_cleared_by_replay_or_restart() {
         v.assessment
     );
     assert_eq!(
-        v.assessment.reason.as_deref(),
-        Some("hooks silent; no process handle")
+        v.assessment.unknown_cause,
+        Some(UnknownCause::HooksSilentNoHandle)
     );
     assert!(!v.alive, "无句柄行：不说活着也不说死了");
 
@@ -732,8 +732,8 @@ fn handleless_unknown_ttl_counts_from_the_first_unknown_not_the_restart() {
             v.assessment
         );
         assert_eq!(
-            v.assessment.reason.as_deref(),
-            Some("hooks silent; no process handle")
+            v.assessment.unknown_cause,
+            Some(UnknownCause::HooksSilentNoHandle)
         );
         // 归档清掉：重启后的结论只能来自检查点，不准从 done/ 重建。
         inbox.prune_done(Duration::ZERO);

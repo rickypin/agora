@@ -1251,6 +1251,16 @@ async fn process_gone_external_row_gets_an_approximate_ended_at() {
     let tick = clock::now_secs();
     let v = fx.sessions.get(&id).unwrap();
     assert_eq!(v.assessment.status, Status::Finished, "{:?}", v.assessment);
+    assert!(
+        fx.sessions.record(&id).unwrap().ended_at.is_none(),
+        "读路径只观察，不写库（agora-0obk）"
+    );
+    assert_eq!(
+        v.record.ended_at.as_deref(),
+        Some(clock::format_utc_secs(tick).as_str()),
+        "同一次读里已经能看到观察到的结束时刻"
+    );
+    fx.sessions.tick_ended_at();
     let rec = fx.sessions.record(&id).unwrap();
     let ended = clock::parse_utc_secs(
         rec.ended_at

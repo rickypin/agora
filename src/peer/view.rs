@@ -48,13 +48,13 @@ use crate::events::Event;
 /// 本节点的时钟（unix 秒）。生产是 `clock::now_secs`；测试注入固定值证明"不信 peer 报的时间"。
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
-/// peer 报的时长差的可信上限（秒）：超过就当它没报（[`reported_start`] 退回本节点此刻）。
+/// peer 报的时长差的可信上限（秒）：超过就按上限封顶，而不是退回本机此刻。
 ///
-/// 为什么是"当它没报"而不是"截断到 30 天"：`status_since` 只是 peer 状态机里的一个数，它坏了
-/// （0 / 1970）、或者 peer 的时钟在一次状态驻留期间跳过（VM 睡眠唤醒、NTP 大步校正），都会算出
-/// 几十年的"时长"。这种差不是下界，截断到 30 天照样是撒谎（把刚起的行画成"≥ 30 天"）；退回到
-/// 本节点第一次看见它的时刻才是安全的一侧（只会短、不会长）。尺度按现场取：2026-09-18 盘点里
-/// 驻留最久的行是 STARTING 8 天（zuan `ef0e50`），30 天是留出的余量。
+/// `status_since` 只是 peer 状态机里的一个数，它坏了（0 / 1970）、或者 peer 的时钟在一次状态
+/// 驻留期间跳过（VM 睡眠唤醒、NTP 大步校正），都会算出几十年的"时长"。退回此刻会把一条 40 天
+/// 前起、一直停在原状态的行画成"刚刚"（agora-3tpf）；封顶到 30 天并让 UI 写 `≥30d+` 是更诚实的
+/// 下界——不知道具体多久，但至少知道它不短。尺度按现场取：2026-09-18 盘点里驻留最久的行是
+/// STARTING 8 天（zuan `ef0e50`），30 天是留出的余量。
 const MAX_REPORTED_WAIT_SECS: i64 = 30 * 86400;
 
 /// `decision_resolved.via` 的取值表（`src/events.rs` 用 `&'static str`）：peer 报的值只有在这张
@@ -533,9 +533,10 @@ fn stamp(
 /// − 本机时钟，最近一次全量快照实测）。钟差是同一对表上两个读数之差（相对量），两台机器之间的
 /// 时钟偏差在里面自己抵消掉了——所以"不信 peer 报的绝对时刻"（ADR-004 危险句）守得住。
 ///
-/// 两个限制：折算出的起点不在过去（peer 的时钟在一次驻留里倒跳）/ 超过
-/// [`MAX_REPORTED_WAIT_SECS`]（`status_since` 坏成 0）一律当它没报，退回本节点此刻（一个更弱的
-/// 下界，只会短、不会长）；读不出（老节点不报 `now`）同样退回此刻。
+/// 两个限制：折算出的起点不在过去（peer 的时钟在一次驻留里倒跳）时当它没报，退回本节点此刻；
+/// 超过 [`MAX_REPORTED_WAIT_SECS`]（`status_since` 坏成 0，或真的驻留超过 30 天）时截到
+/// `now - MAX`——UI 对 peer 行画 `≥30d+`，不让一条老行伪装成刚刚（agora-3tpf）。读不出（老节点
+/// 不报 `now`）同样退回此刻。
 fn reported_start(peer_offset: Option<i64>, peer_since: Option<i64>, now: i64) -> i64 {
     let (Some(offset), Some(since)) = (peer_offset, peer_since) else {
         return now;
@@ -543,11 +544,10 @@ fn reported_start(peer_offset: Option<i64>, peer_since: Option<i64>, now: i64) -
     let Some(start) = since.checked_sub(offset) else {
         return now;
     };
-    if start <= now && now.saturating_sub(start) <= MAX_REPORTED_WAIT_SECS {
-        start
-    } else {
-        now
+    if start > now {
+        return now;
     }
+    start.max(now.saturating_sub(MAX_REPORTED_WAIT_SECS))
 }
 
 /// 规则 3 的两个键：`stale` 永远在；`last_seen` 只在 stale 且知道"上次见到"时在（UTC 文本，与
@@ -818,8 +818,8 @@ mod tests {
 
     #[test]
     fn an_untrusted_reported_wait_is_ignored_rather_than_guessed() {
-        // 三种不可信：老节点不报 `now`；差为负（peer 的时钟在一次驻留里倒跳）；差大得离谱
-        // （`status_since` 坏成 0）。全都退回本机第一次看见它的时刻——只会短、不会长。
+        // 两种不可信：老节点不报 `now`；差为负（peer 的时钟在一次驻留里倒跳）。退回本机第一次
+        // 看见它的时刻——只会短、不会长。
         for (label, reported) in [
             ("老节点不报 now", None),
             ("peer 的时钟倒跳", Some(PEER_T - 5)),
@@ -828,6 +828,8 @@ mod tests {
             v.replace("b", vec![row("b:1", "b", "waiting", PEER_T)], reported);
             assert_eq!(v.get("b:1").unwrap()["status_since"], T0, "{label}");
         }
+        // 差大得离谱（`status_since` 坏成 0）或真的超过 30 天：封顶成 30 天，不退回此刻
+        // （agora-3tpf；UI 据此画 ≥30d+）。
         let v = fixed(T0);
         v.replace(
             "b",
@@ -836,8 +838,8 @@ mod tests {
         );
         assert_eq!(
             v.get("b:1").unwrap()["status_since"],
-            T0,
-            "超过 {} 秒当它没报",
+            T0 - MAX_REPORTED_WAIT_SECS,
+            "超过 {} 秒封顶，而不是退回此刻",
             MAX_REPORTED_WAIT_SECS
         );
     }

@@ -164,6 +164,11 @@ pub struct SessionView {
     /// 有句柄的行按 pane 活性，external 行按检查点里的进程号探活，无可信进程号才是 `unknown`；
     /// 状态为 FINISHED / FAILED 时一律 `gone`。
     pub process: ProcessState,
+    /// agent 进程此刻在不在，**不被 Q4 的"对话结束即 gone"覆盖**（agora-phqq）：
+    /// `alive | gone | unknown`。`process` 说的是"这一行还值不值得谈进程"，FINISHED / FAILED
+    /// 一律 gone；这个字段回答"agent 进程本身"，所以结束的对话底下若还有进程，它仍可 alive。
+    /// unknown = 没有可信进程号 / 运行时读不到，不知道。
+    pub agent_process: ProcessState,
     /// **旧字段，只保留一版**（恒等于 `process == alive`）：给还没升级的 peer 与页面读。
     /// 读进程就用 [`SessionView::process`]：布尔表达不了「不知道」（盘点 B2）。真删它要跟着一次
     /// major bump（api.md「api_version 兼容规则」：删字段不算 minor）。
@@ -258,6 +263,13 @@ pub enum RecoveryStatus {
     Failed,
 }
 
+/// 读路径观察到的一次结束补写；真正写入由 [`SessionManager::tick_ended_at`] 做（agora-0obk）。
+#[derive(Debug, Clone)]
+struct PendingEnd {
+    at: String,
+    from_missing: bool,
+}
+
 pub struct SessionManager {
     recovery: std::sync::atomic::AtomicU8,
     db: Arc<Db>,
@@ -278,6 +290,10 @@ pub struct SessionManager {
     hook_installed_cache: Mutex<HashMap<String, (i64, crate::hook::install::HooksInstalled)>>,
     decisions: Mutex<HashMap<String, Vec<PendingDecision>>>,
     status_cfg: MachineConfig,
+    /// 读路径观察到的 "ended_at 该补/该撤"，等下一次 tick 再落库（agora-0obk）。读一次
+    /// /api/sessions 不再写 SQLite；同一进程里重复读用这里的首个观察时刻，status_since 不漂。
+    pending_ends: Mutex<HashMap<String, PendingEnd>>,
+    pending_clears: Mutex<HashSet<String>>,
     /// external 会话最近一次 hook 报来的 agent 进程：`kill(pid, 0)` 判存活（ADR-002 D4）。
     /// 内存态，但随 hook 检查点落盘、重启时从检查点回填（agora-tql）：2026-09-08 现场 11 行 external
     /// 僵尸——daemon 重启后这张表是空的，agent 早退了的行永远钉在 TURN_DONE。
@@ -317,6 +333,8 @@ impl SessionManager {
             hook_installed_cache: Mutex::new(HashMap::new()),
             decisions: Mutex::new(HashMap::new()),
             status_cfg: MachineConfig::default(),
+            pending_ends: Mutex::new(HashMap::new()),
+            pending_clears: Mutex::new(HashSet::new()),
             external_pids: Mutex::new(HashMap::new()),
             tasks: Arc::new(TaskIndex::default()),
             projects_index: Arc::new(ProjectIndex::default()),
@@ -1317,6 +1335,9 @@ impl SessionManager {
         scan: &RuntimeScan,
         degraded: Option<&str>,
     ) -> SessionView {
+        // 上一次读路径攒下的补写 / 撤回还没落库时，本次读要接着用同一个观察结果：DB 里还没有，
+        // 但用户在这一 tick 里看到的不能一会儿有一会儿没有（agora-0obk）。
+        self.apply_pending_ended_at(&mut rec);
         let live = scan.sessions.as_slice();
         // STARTING 只看本代进程的起始时刻。updated_at 不行：rename / kill / cleanup 都刷新它，
         // 改名后两秒内会把跑了一天的会话报成 STARTING（agora-xqa.15，2026-09-03）。
@@ -1361,12 +1382,15 @@ impl SessionManager {
         // 它的那个 tick 并标近似（MISSION §4.2；agora-5gg.3）。与上面那条互斥：external 行
         // `runtime_ref` 恒 NULL，`gone` 要求有句柄。跟 `gone` 一样先算成布尔量：下面的 match
         // 要拿 `rec` 不可变借用到函数末尾。
-        let external_gone = !gone
-            && rec.origin.is_handleless()
-            && lock(&self.external_pids)
-                .get(&rec.id)
-                .cloned()
-                .is_some_and(|p| !agent_process_alive(&p));
+        // 每个 external 行只取一次进程号、只探一次活（agora-vf9k）：`external_gone` 与下面的
+        // 状态/pid 分支共用这一份，别在两边各 clone 一次、各 `kill(pid, 0)` 一次。
+        let external_process = rec
+            .origin
+            .is_handleless()
+            .then(|| lock(&self.external_pids).get(&rec.id).cloned())
+            .flatten();
+        let external_alive = external_process.as_ref().map(agent_process_alive);
+        let external_gone = !gone && external_alive == Some(false);
         if external_gone {
             self.note_external_process_gone(&mut rec);
         }
@@ -1396,14 +1420,29 @@ impl SessionManager {
             .runtime_ref
             .as_deref()
             .and_then(|r| live.iter().find(|s| s.r#ref.0 == r));
+        let runtime_agent_process = match rt {
+            _ if unreadable.is_some() => ProcessState::Unknown,
+            Some(s) if s.alive => ProcessState::Alive,
+            Some(_) => ProcessState::Gone,
+            None => ProcessState::Unknown,
+        };
+        let agent_process = if rec.origin.is_handleless() {
+            match external_alive {
+                Some(true) => ProcessState::Alive,
+                Some(false) => ProcessState::Gone,
+                None => ProcessState::Unknown,
+            }
+        } else if rec.runtime_ref.is_some() {
+            runtime_agent_process
+        } else {
+            ProcessState::Unknown
+        };
         let killed = rec.killed_at.is_some();
         // 第三个值是 external 行的进程号（agora-5gg.5）：`pid` 以前只取运行时 pane 的号，
         // 无句柄的 external 行于是恒 null，而探活恰恰拿的是检查点里的这个号——排障时对着
-        // `ps` 对不上号。号就在下面 `(External, None)` 那一支探活正在看的 `AgentProcess` 里取，
-        // 不另开一次 `external_pids` 查询。2026-09-20 rebase 到 agora-5gg.3 之后注意：上面那个
-        // `external_gone` 自己又查了一遍并探了一次活，两个各自一次；并成一次是另一件事。
-        // （别顺手改成拿 `external_gone` 反推探活结论：那一支还要区分“没有可信进程号”与
-        // “有号但号没了”，`external_gone` 把两者压成了一个 bool。）
+        // `ps` 对不上号。号从上面 `external_process` 的同一份探活结果里取，不再查一次 map
+        // （agora-vf9k：以前 `external_gone` 与这一支各探一次，每 tick 每行两次 `kill(pid,0)`）。
+        // 别用 `external_gone` 反推探活结论：这一支还要区分“没有可信进程号”与“有号但号没了”。
         let (process, liveness, external_pid) = match (rec.origin, rt) {
             // 运行时此刻不可信（整体降级，或它所在的采纳 socket 这次没扫成）：不知道就报 UNKNOWN，
             // 不许拿"读不到"当"已经死了"（ADR-001 D7；agora-dkv3）。
@@ -1413,12 +1452,12 @@ impl SessionManager {
                 None,
             ),
             (origin, None) if origin.is_handleless() => {
-                match lock(&self.external_pids).get(&rec.id).cloned() {
+                match external_process {
                     // 没有退出码可拿：进程没了就只知道"结束了"，不分 FINISHED / FAILED。
                     // 号还在但不是当初那个了（启动时刻对不上，或比 daemon 本地见到它的时刻还新）：
                     // 号被别的进程复用了，原来那个也是没了（agora-tql / agora-91vy）。
                     // 这种号不报（第三个值 None）：它在 `ps` 里属于别人，写进行里就是又一次对不上号。
-                    Some(p) if !agent_process_alive(&p) => {
+                    Some(_) if external_alive == Some(false) => {
                         (status::external_process_gone(), Liveness::Dead, None)
                     }
                     Some(p) => (
@@ -1584,6 +1623,7 @@ impl SessionManager {
             pending_decision,
             name,
             process,
+            agent_process,
             // 旧字段：与 process 严格一致，未升级的 peer / 页面只读它（下一版删）。
             alive: process == ProcessState::Alive,
             exit: rt.and_then(|s| s.exit.clone()),
@@ -1761,6 +1801,8 @@ impl SessionManager {
                 updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?1",
             params![id, epoch],
         )?;
+        lock(&self.pending_ends).remove(id);
+        lock(&self.pending_clears).remove(id);
         self.get(id)
     }
 
@@ -1799,6 +1841,10 @@ impl SessionManager {
             .execute("DELETE FROM sessions WHERE id = ?1", [id])?;
         lock(&self.machines).remove(id);
         lock(&self.decisions).remove(id);
+        // external 行的内存进程号也属于这一行；行删了它不能留成无界孤儿（agora-i688）。
+        lock(&self.external_pids).remove(id);
+        lock(&self.pending_ends).remove(id);
+        lock(&self.pending_clears).remove(id);
         if let Some(dir) = lock(&self.hook_state_dir).as_ref() {
             if let Err(err) = super::hook_state::remove(dir, id) {
                 tracing::warn!(component = "hook", session = id, %err, "清理 hook 检查点失败");
@@ -1841,6 +1887,9 @@ impl SessionManager {
     /// 由调用方给，测试拨表不用真等 24 h。两个 ttl 全关着就直接回：不必为一次注定什么都不删的
     /// `list()`（会起运行时子进程）去问节流。
     pub fn sweep(&self, now: i64) -> Result<Vec<String>, SessionError> {
+        // 读路径攒下的 ended_at 在这里落库（agora-0obk）；先写再淘汰，否则本轮刚观察到的结束
+        // 会赶不上按 ended_at 计的到期判断。
+        self.tick_ended_at();
         if (self.external_finished_ttl.is_zero() && self.external_unknown_ttl.is_zero())
             || !self.external_expiry.due(now)
         {
@@ -2048,10 +2097,6 @@ impl SessionManager {
             .ok_or_else(|| SessionError::NoRuntime(rec.id.clone()))
     }
 
-    fn mark_ended(&self, id: &str) -> Result<(), SessionError> {
-        self.mark_ended_at(id, None, false)
-    }
-
     /// 同上，但这个结束时刻是"运行时列表里没有它"猜出来的：标上可撤回的记号（agora-psj0）。
     /// 只有两条路走这里——`view()` 每 tick 的 missing 分支与 `reconcile` 启动时的 missing 一格，
     /// 也正是那两条会把一次读不到读成"会话没了"的路。
@@ -2085,24 +2130,97 @@ impl SessionManager {
     ///
     /// `from_missing` 把两个调用方分开：结束时刻是"运行时列表里没有它"猜的那一档可以被下一轮
     /// 真扫到推翻（agora-psj0，见 [`SessionRecord::ended_at_from_missing`]）。
+    /// 把内存里尚未落库的观察结果套回本轮读出的记录（agora-0obk）。只补 DB 里没有的 ended_at，
+    /// 只撤带 `ended_at_from_missing` 的；准确值永远优先于 pending。
+    fn apply_pending_ended_at(&self, rec: &mut SessionRecord) {
+        if rec.ended_at.is_none() {
+            if let Some(end) = lock(&self.pending_ends).get(&rec.id) {
+                rec.ended_at = Some(end.at.clone());
+                rec.ended_at_approximate = true;
+                rec.ended_at_from_missing = end.from_missing;
+            }
+        }
+        if rec.ended_at_from_missing && lock(&self.pending_clears).contains(&rec.id) {
+            rec.ended_at = None;
+            rec.ended_at_approximate = false;
+            rec.ended_at_from_missing = false;
+        }
+    }
+
     fn note_end_at_tick(&self, rec: &mut SessionRecord, observed: &str, from_missing: bool) {
         if rec.ended_at.is_some() {
             return;
         }
-        let written = if from_missing {
-            self.mark_ended_from_missing(&rec.id)
-        } else {
-            self.mark_ended(&rec.id)
+        // 读路径只观察到"该补"，不写库（agora-0obk）：同一进程里重复 GET 用第一次的观察时刻，
+        // 等下一次 tick 再落盘。否则每条 /api/sessions 都可能写 SQLite，且 ended_at 随第一个
+        // 读者漂移。`tick_ended_at` 写成功后才会清掉这里的 pending。
+        let at = {
+            let mut pending = lock(&self.pending_ends);
+            let at = pending
+                .entry(rec.id.clone())
+                .or_insert_with(|| PendingEnd {
+                    at: clock::format_utc_secs(clock::now_secs()),
+                    from_missing,
+                })
+                .at
+                .clone();
+            at
         };
-        if let Err(e) = written {
-            tracing::warn!(component = "session", id = %rec.id, observed, %e, "补 ended_at 失败");
-            return;
-        }
-        // 库里的值由 SQLite 的 strftime('now') 生成，内存里这份取同一个秒的文本：为一次
-        // 跨秒的偏差回读一行不划算，下一轮读就是库里的准值。
-        rec.ended_at = Some(clock::format_utc_secs(clock::now_secs()));
+        lock(&self.pending_clears).remove(&rec.id);
+        rec.ended_at = Some(at);
         rec.ended_at_approximate = true;
         rec.ended_at_from_missing = from_missing;
+        tracing::debug!(component = "session", id = %rec.id, observed, from_missing, "观察到的 ended_at 等待 tick 落库");
+    }
+
+    /// 把读路径攒下的 ended_at 补写 / 撤回真正落库（agora-0obk）。由 daemon 的 sweep 周期调用，
+    /// 不挂在 list/get 上——这样读一次 /api/sessions 不会写 SQLite，写下的时刻固定为第一次观察。
+    pub fn tick_ended_at(&self) {
+        let ends: Vec<(String, PendingEnd)> = lock(&self.pending_ends).drain().collect();
+        let clears: Vec<String> = lock(&self.pending_clears).drain().collect();
+        for (id, end) in ends {
+            if let Err(e) = self.mark_ended_observed(&id, &end.at, end.from_missing) {
+                tracing::warn!(component = "session", id = %id, at = %end.at, %e, "tick 补 ended_at 失败");
+                // 放回去，下一轮再试；不要把一次 SQLite 忙变成永久缺口。
+                lock(&self.pending_ends).entry(id).or_insert(end);
+            }
+        }
+        for id in clears {
+            if let Err(e) = self.clear_ended_at_from_missing(&id) {
+                tracing::warn!(component = "session", id = %id, %e, "tick 撤回误判 ended_at 失败");
+                lock(&self.pending_clears).insert(id);
+            }
+        }
+    }
+
+    /// 只写"第一次观察到的" ended_at：库里已有准确值时不覆盖（与 [`Self::mark_ended_at`] 同一条
+    /// 优先规则）。`ended_at` 文本来自观察时刻，不用 SQL 的 now。
+    fn mark_ended_observed(
+        &self,
+        id: &str,
+        at: &str,
+        from_missing: bool,
+    ) -> Result<(), SessionError> {
+        self.db.conn().execute(
+            "UPDATE sessions SET ended_at = ?2, ended_at_approximate = TRUE,
+                ended_at_from_missing = ?3,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+             WHERE id = ?1 AND ended_at IS NULL",
+            params![id, at, from_missing],
+        )?;
+        Ok(())
+    }
+
+    /// 只撤回由"没在列表里"猜出来的 ended_at；期间若来了准确的退出时刻，不能动。
+    fn clear_ended_at_from_missing(&self, id: &str) -> Result<(), SessionError> {
+        self.db.conn().execute(
+            "UPDATE sessions SET ended_at = NULL, ended_at_approximate = FALSE,
+                ended_at_from_missing = FALSE,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+             WHERE id = ?1 AND ended_at_from_missing = TRUE",
+            [id],
+        )?;
+        Ok(())
     }
 
     /// 上一轮"没在列表里"猜出来的结束时刻被这一轮的事实推翻了：会话原样还在，而且活着
@@ -2114,10 +2232,9 @@ impl SessionManager {
     /// 写失败只 warn，同 [`SessionManager::note_end_at_tick`]：读路径不因一次 SQLite 忙而报错，
     /// 下一 tick 还会再来一次。
     fn clear_refuted_ended_at(&self, rec: &mut SessionRecord) {
-        if let Err(e) = self.clear_ended_at(&rec.id) {
-            tracing::warn!(component = "session", id = %rec.id, %e, "撤回误判的 ended_at 失败");
-            return;
-        }
+        // 读路径只记"该撤"，真正 SQL 由 `tick_ended_at` 做（agora-0obk）。
+        lock(&self.pending_ends).remove(&rec.id);
+        lock(&self.pending_clears).insert(rec.id.clone());
         tracing::info!(
             component = "session",
             id = %rec.id,
@@ -2140,6 +2257,8 @@ impl SessionManager {
              WHERE id = ?1",
             [id],
         )?;
+        lock(&self.pending_ends).remove(id);
+        lock(&self.pending_clears).remove(id);
         Ok(())
     }
 
@@ -2189,6 +2308,8 @@ impl SessionManager {
              WHERE id = ?1",
             params![id, secs, from_missing],
         )?;
+        lock(&self.pending_ends).remove(id);
+        lock(&self.pending_clears).remove(id);
         Ok(())
     }
 
@@ -2453,6 +2574,30 @@ mod tests {
         f();
         let bytes = buf.lock().unwrap().clone();
         String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn deleting_an_external_row_drops_its_in_memory_pid() {
+        // agora-i688：external_pids 是内存表；行删了不 remove 就留下无界孤儿。
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let m = SessionManager::new(db, Arc::new(NoRuntime));
+        let id = m
+            .register_external(&ExternalSession {
+                agent_type: "testagent".into(),
+                agent_session_id: "conversation-i688".into(),
+                runtime_ref: None,
+                working_directory: Some(PathBuf::from("/tmp")),
+                created_at: None,
+                origin: Origin::External,
+            })
+            .unwrap();
+        m.note_external_pid(&id, std::process::id(), clock::now_secs());
+        assert!(lock(&m.external_pids).contains_key(&id));
+        m.delete_metadata(&id).unwrap();
+        assert!(
+            !lock(&m.external_pids).contains_key(&id),
+            "删行后 external_pids 不得留着这个 id"
+        );
     }
 
     /// 旧 epoch 的 hook 事件必须让调用方看得出「被拒」，并在 daemon.log 留一行 info
