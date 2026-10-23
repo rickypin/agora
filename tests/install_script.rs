@@ -78,7 +78,14 @@ fn fake_launchctl(tmp: &Path) -> (String, PathBuf, PathBuf) {
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$LAUNCHCTL_LOG"
 case "$1" in
-  print) [ -f "$LAUNCHD_STATE" ] ;;
+  print)
+    [ "${FAKE_PRINT_RC:-0}" = 127 ] && exit 127
+    if [ -f "$LAUNCHD_STATE" ]; then
+      [ -z "${FAKE_PROGRAM:-}" ] || printf 'program = %s\n' "$FAKE_PROGRAM"
+      exit 0
+    else
+      exit 1
+    fi ;;
   bootstrap)
     rc=${FAKE_BOOTSTRAP_RC:-0}
     if [ "$rc" != 0 ]; then echo "Bootstrap failed: $rc: Input/output error" >&2; exit "$rc"; fi
@@ -205,6 +212,16 @@ fn install_writes_config_link_and_unit_idempotently() {
     assert_eq!(
         fs::metadata(&config).unwrap().permissions().mode() & 0o777,
         0o600
+    );
+    // config 的 umask 077 必须关在子 shell 里；同一次安装写的单元不是 secret，0644（agora-52rn）。
+    assert_eq!(
+        fs::metadata(units.join(unit_name()))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o644,
+        "单元文件被 config 的 umask 压成了 0600"
     );
     assert_eq!(
         fs::metadata(&home).unwrap().permissions().mode() & 0o777,
@@ -942,5 +959,97 @@ esac
         Config::load(&home, "tmux").unwrap().raw.tls.mode,
         "external",
         "拒绝时不能动配置"
+    );
+}
+
+#[test]
+fn macos_without_launchctl_does_not_blame_the_gui_domain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("agora");
+    let units = tmp.path().join("units");
+    let (path, log, state) = fake_launchctl(tmp.path());
+    let mut envs = launchd_env(&log, &state).to_vec();
+    envs.push(("FAKE_PRINT_RC", "127"));
+    let out = run_env(&install_args(&home, &units), Some(&path), &envs);
+    assert!(!out.status.success(), "127 应非零退出");
+    let err = stderr(&out);
+    assert!(err.contains("找不到 launchctl"), "{err}");
+    assert!(
+        !err.contains("gui 域只在"),
+        "不能把没有 launchctl 误报成 gui 域: {err}"
+    );
+    assert!(
+        !err.contains("launchctl asuser"),
+        "127 时不该给 asuser 提示: {err}"
+    );
+    assert!(
+        units.join("dev.agora.daemon.plist").exists(),
+        "单元文件照写"
+    );
+}
+
+#[test]
+fn macos_unit_program_mismatch_is_booted_out_and_reloaded() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("agora");
+    let units = tmp.path().join("units");
+    let (path, log, state) = fake_launchctl(tmp.path());
+    let args = install_args(&home, &units);
+    let envs = launchd_env(&log, &state);
+    let first = run_env(&args, Some(&path), &envs);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert!(state.exists(), "第一次 install 应 bootstrap");
+    fs::write(&log, "").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let mut mismatch = envs.to_vec();
+    mismatch.push(("FAKE_PROGRAM", "/tmp/other-home/bin/agora"));
+    let again = run_env(&args, Some(&path), &mismatch);
+    assert!(again.status.success(), "{}", stderr(&again));
+    let calls = launchctl_calls(&log);
+    assert_eq!(
+        calls.iter().filter(|c| c.starts_with("print ")).count(),
+        1,
+        "program 检查复用同一次 print: {calls:?}"
+    );
+    assert!(
+        calls.iter().any(|c| c.starts_with("bootout ")),
+        "program 不是本 home 时应 bootout: {calls:?}"
+    );
+    assert!(
+        calls.iter().any(|c| c.starts_with("bootstrap ")),
+        "bootout 后应重新 bootstrap: {calls:?}"
+    );
+}
+
+#[test]
+fn linux_warns_when_a_manual_daemon_holds_the_port() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("agora");
+    let units = tmp.path().join("units");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("agora.pid"), format!("{}\n", std::process::id())).unwrap();
+    let fake_bin = tmp.path().join("fakebin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    isolate::exec_script(
+        &fake_bin.join("systemctl"),
+        r#"#!/bin/sh
+case "$2" in
+  is-active) exit 1 ;;
+  *) exit 0 ;;
+esac
+"#,
+    );
+    let path = format!(
+        "{}:{}",
+        fake_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = run_env(&install_args(&home, &units), Some(&path), &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("不受监督的手工 daemon"), "{err}");
+    assert!(
+        err.contains(&format!("kill {}", std::process::id())),
+        "{err}"
     );
 }

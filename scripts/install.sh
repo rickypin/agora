@@ -347,18 +347,22 @@ else
         say "[dry-run] write $CONFIG"
     else
         tmp=$CONFIG.tmp
-        umask 077
-        {
-            printf '# 由 scripts/install.sh 生成；其余键留默认，全部键见 docs/spec/config.md\n'
-            printf 'server:\n'
-            printf '  listen: "%s"\n' "$LISTEN"
-            [ -z "$tls_line" ] || printf '%s\n' "$tls_line"
-            [ -z "$public_line" ] || printf '%s\n' "$public_line"
-            printf 'node:\n'
-            printf '  id: "%s"\n' "$NODE_ID"
-            [ -z "$external_block" ] || printf '%s\n' "$external_block"
-            [ -z "$runtime_block" ] || printf '%s\n' "$runtime_block"
-        } >"$tmp"
+        # umask 只在子 shell 里生效：config.yaml 必须是 0600，但不能把同一次安装随后写的
+        # unit / plist 也压成 0600（agora-52rn）。
+        (
+            umask 077
+            {
+                printf '# 由 scripts/install.sh 生成；其余键留默认，全部键见 docs/spec/config.md\n'
+                printf 'server:\n'
+                printf '  listen: "%s"\n' "$LISTEN"
+                [ -z "$tls_line" ] || printf '%s\n' "$tls_line"
+                [ -z "$public_line" ] || printf '%s\n' "$public_line"
+                printf 'node:\n'
+                printf '  id: "%s"\n' "$NODE_ID"
+                [ -z "$external_block" ] || printf '%s\n' "$external_block"
+                [ -z "$runtime_block" ] || printf '%s\n' "$runtime_block"
+            } >"$tmp"
+        )
         mv -f "$tmp" "$CONFIG"
     fi
 fi
@@ -438,6 +442,9 @@ write_if_changed() {
         mkdir -p "$(dirname "$_dst")"
         printf '%s\n' "$_content" >"$_dst.tmp"
         mv -f "$_dst.tmp" "$_dst"
+        # unit / plist 不是 secret：显式 0644，别让调用方遗留的 umask 077 把它们压成 0600
+        # （agora-52rn）。config.yaml 另走 0600 的子 shell。
+        chmod 0644 "$_dst"
     fi
 }
 
@@ -478,6 +485,33 @@ warn_unmanaged_daemon() {
     say "         先停掉旧的: kill ${_pid}，再确认: launchctl print gui/$(id -u)/$LAUNCHD_LABEL"
 }
 
+# Linux 对应物（agora-ndzl）：手工 nohup 的 daemon 占着端口，systemctl --user enable --now
+# 会再起一个并撞端口。只在单元未 active 时提示；已经 active 的由 systemd 管着，不打扰。
+warn_unmanaged_daemon_linux() {
+    _pidf=$HOME_DIR/agora.pid
+    [ -f "$_pidf" ] || return 0
+    _pid=$(cut -d' ' -f1 "$_pidf" 2>/dev/null | tr -d '[:space:]' || true)
+    case "$_pid" in
+        '' | *[!0-9]*) return 0 ;;
+    esac
+    kill -0 "$_pid" 2>/dev/null || return 0
+    if systemctl --user is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        return 0
+    fi
+    say "service: 注意，$_pidf 里的 pid ${_pid} 还活着，但 $SERVICE_NAME 未 active —— 这是一台不受监督的手工 daemon。"
+    say "         systemctl --user enable --now 会起第二个并撞端口；先停掉旧的: kill ${_pid}"
+    say "         再确认: systemctl --user status $SERVICE_NAME"
+}
+
+# launchctl print 的输出里认 program = 行，与 src/cli/upgrade.rs 的 launchd_serves 同一口径
+# （agora-tmcx）：print 成功只说明"有东西叫这个名字"，不说明它跑的是本 home 的 bin/agora。
+same_program_path() {
+    [ "$1" = "$2" ] && return 0
+    _a=$(CDPATH= cd -- "$(dirname "$1")" 2>/dev/null && pwd -P)/$(basename "$1")
+    _b=$(CDPATH= cd -- "$(dirname "$2")" 2>/dev/null && pwd -P)/$(basename "$2")
+    [ "$_a" = "$_b" ]
+}
+
 if [ "$OS" = Darwin ]; then
     [ -n "$UNIT_DIR" ] || UNIT_DIR=$HOME/Library/LaunchAgents
     PLIST=$UNIT_DIR/$LAUNCHD_LABEL.plist
@@ -491,13 +525,21 @@ if [ "$OS" = Darwin ]; then
         say "[dry-run] 先看 launchctl print gui/$(id -u)/${LAUNCHD_LABEL}：未加载就 bootstrap，已加载但单元内容变了就 bootout + bootstrap，两者都不成立则不动 daemon"
     else
         domain=gui/$(id -u)
-        if launchctl print "$domain/$LAUNCHD_LABEL" >/dev/null 2>&1; then
-            if [ "$UNIT_CHANGED" = 1 ]; then
+        # 127 是 launchctl 不存在（或假 launchctl 明确报 127），与"单元没装载"分开（agora-t57z）；
+        # 不能把前者误报成 gui 域不在，也不能继续 bootstrap。
+        set +e
+        print_out=$(launchctl print "$domain/$LAUNCHD_LABEL" 2>/dev/null)
+        print_rc=$?
+        set -e
+        if [ "$print_rc" = 0 ]; then
+            # 同一次 print 的输出里认 program = 行；不再调第二次 launchctl（agora-tmcx）。
+            program=$(printf '%s\n' "$print_out" | sed -n 's/^[[:space:]]*program = //p' | head -1)
+            if [ "$UNIT_CHANGED" = 1 ] || { [ -n "$program" ] && ! same_program_path "$program" "$HOME_DIR/bin/agora"; }; then
                 # kickstart -k 只把已加载的那份定义重启一遍，不重读磁盘上的 plist（launchctl 的
                 # 子命令语义；改单元内容的正规做法是 bootout 再 bootstrap）。拿 kickstart 当
                 # "让它读新单元"会让人以为新版已生效，而实际跑的还是旧定义（旧 PATH、旧 KeepAlive）。
                 # bootout 失败不阻断：接下来 bootstrap 成不成才是判据。
-                say "service: $LAUNCHD_LABEL 已加载且单元内容变了，bootout 后重新 bootstrap"
+                say "service: $LAUNCHD_LABEL 已加载但单元内容或 program 路径变了，bootout 后重新 bootstrap"
                 launchctl bootout "$domain/$LAUNCHD_LABEL" >&2 || true
                 launchd_bootstrap "$domain"
             else
@@ -505,6 +547,10 @@ if [ "$OS" = Darwin ]; then
                 # 重新算一轮（Linux 侧 enable --now 对已 active 的单元也是空操作）。
                 say "service: $LAUNCHD_LABEL 已加载且内容未变，不重启 daemon"
             fi
+        elif [ "$print_rc" = 127 ]; then
+            say "service: 找不到 launchctl（退出 127）——这不是 gui 域不在，也不尝试 bootstrap。"
+            say "         安装已完成，单元文件在 ${PLIST}；请在 macOS 上手动: launchctl bootstrap gui/$(id -u) ${PLIST}"
+            exit 1
         else
             warn_unmanaged_daemon
             launchd_bootstrap "$domain"
@@ -522,6 +568,7 @@ else
     elif [ "$DRY_RUN" = 1 ]; then
         say "[dry-run] systemctl --user daemon-reload && systemctl --user enable --now $SERVICE_NAME"
     else
+        warn_unmanaged_daemon_linux
         systemctl --user daemon-reload >&2
         systemctl --user enable --now "$SERVICE_NAME" >&2
         say "service: $SERVICE_NAME 已 enable --now"

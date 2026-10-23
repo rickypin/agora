@@ -24,6 +24,7 @@
 //! 配置来自 `AGORA_HOME/config.yaml`（docs/spec/config.md），缺文件全走默认；明文监听器
 //! 只接受 loopback（ADR-003 D5）。这里是组装根：选运行时、把它的配置子段交给它解析。
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -368,7 +369,9 @@ async fn serve() -> i32 {
         }
     }
     // 本机通道：配对、hook 与通知。事件消费者订阅后才接受通知发布。
-    let origin = format!("http://{addr}");
+    // 用 listener 的实际地址，不用配置里的 `:0`（agora-j4a9）：server.listen 绑 :0 时
+    // 端口由内核选，配置串永远拿不到真实端口。
+    let origin = pair_origin(http.local_addr().ok(), addr);
     let auth_for_socket = state.auth.clone();
     let hooks_for_socket = hooks.clone();
     let notifications = Arc::new(agora::notify::Receiver::new(
@@ -676,5 +679,27 @@ fn auth_revoke(target: &str) -> i32 {
             eprintln!("{err}");
             1
         }
+    }
+}
+
+/// 配对链接的 origin：listener 实际绑定的地址优先，配置串只在取不到时兜底
+/// （agora-j4a9：`server.listen: 127.0.0.1:0` 时配置串永远没有真实端口）。
+fn pair_origin(listener: Option<SocketAddr>, configured: SocketAddr) -> String {
+    format!("http://{}", listener.unwrap_or(configured))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pair_origin_uses_the_listener_port_when_bound_to_zero() {
+        let configured: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let listener: SocketAddr = "127.0.0.1:54321".parse().unwrap();
+        assert_eq!(
+            pair_origin(Some(listener), configured),
+            "http://127.0.0.1:54321"
+        );
+        assert_eq!(pair_origin(None, configured), "http://127.0.0.1:0");
     }
 }
