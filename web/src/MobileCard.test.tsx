@@ -632,7 +632,8 @@ describe("waiting", () => {
   it("decides via the hook with the pending request_id", async () => {
     const r = row("n:a", {
       status: "waiting",
-      reason: "permission",
+      // 措辞不是判据；pending_decision 才是可批准事实（MISSION §2.3 规则 10）。
+      reason: "permission prompt detected",
       respond_via: "hook",
       pending_decision: { request_id: "req-1", summary: "Bash: git push origin main", epoch: 1 },
     });

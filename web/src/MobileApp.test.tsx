@@ -209,7 +209,12 @@ describe("手机端状态词与段名（agora-o975.4）", () => {
     const t = setup(
       [
         row("n:wait", { status: "waiting", status_since: since(180) }),
-        row("n:perm", { status: "waiting", status_since: since(180), reason: "permission" }),
+        row("n:perm", {
+          status: "waiting",
+          status_since: since(180),
+          reason: "permission prompt detected",
+          pending_decision: { request_id: "r", summary: "npm test", epoch: 1 },
+        }),
         row("n:run", { status: "running", status_since: since(180) }),
         row("n:start", { status: "starting", status_since: since(180) }),
         row("n:idle", { status: "idle", status_since: since(180) }),

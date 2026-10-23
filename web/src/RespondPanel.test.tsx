@@ -22,7 +22,8 @@ function setup(row: Partial<SessionRow>, status = 200, body: unknown = {}) {
 it("permission via hook: allow goes to the input endpoint, no terminal involved", async () => {
   // A15：不打开终端回答 PermissionRequest。
   const { requests, onOpenTerminal } = setup({
-    reason: "permission",
+    // reason 只是人话：换个措辞不能把可批准事实（pending_decision）弄丢（MISSION §2.3 规则 10）。
+    reason: "permission prompt detected",
     respond_via: "hook",
     detail: "Bash",
   });
@@ -36,7 +37,8 @@ it("permission via hook: allow goes to the input endpoint, no terminal involved"
 
 it("a question or a host that cannot decide via hook only offers the terminal", () => {
   // ADR-002 D5：AskUserQuestion 的选项在 TUI 里；Grok 的 allow 不能替用户批准。
-  setup({ reason: "question", respond_via: "hook", detail: "which?" });
+  // 提问类 WAITING 没有 pending_decision；setup 的默认 pending 是给权限用例的。
+  setup({ reason: "question", respond_via: "hook", detail: "which?", pending_decision: null });
   expect(screen.getByText("which?")).toBeTruthy();
   expect(screen.queryByTestId("allow")).toBeNull();
   cleanup();

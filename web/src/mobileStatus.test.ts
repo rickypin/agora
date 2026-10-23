@@ -37,9 +37,16 @@ describe("手机端状态词（agora-o975.4）", () => {
     expect(mobileStatusText(row({ status: "unknown" }), false)).toBe("状态待确认");
   });
 
-  it("等你批准只给 reason=permission 的 waiting；别的 reason 还是「等你」", () => {
+  it("等你批准只给带 pending_decision 的 waiting；reason 只影响文案不判类型", () => {
     // 权限请求与提问都落 WAITING，但人的动作不一样：一个是照命令批准 / 拒绝，一个是回答问题。
-    expect(mobileStatusText(row({ status: "waiting", reason: "permission" }), false)).toBe("等你批准");
+    // pending_decision 是服务端的可批准事实；reason 是给人读的句子（MISSION §2.3 规则 10），
+    // 换个措辞不能把「等你批准」变成「等你」，也不能把没有挂起的提问说成可批准。
+    expect(mobileStatusText(row({
+      status: "waiting",
+      reason: "permission prompt detected",
+      pending_decision: { request_id: "r", summary: "npm test", epoch: 1 },
+    }), false)).toBe("等你批准");
+    expect(mobileStatusText(row({ status: "waiting", reason: "permission" }), false)).toBe("等你");
     expect(mobileStatusText(row({ status: "waiting", reason: "needs input" }), false)).toBe("等你");
   });
 

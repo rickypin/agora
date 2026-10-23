@@ -44,9 +44,10 @@ export function hasRespondPanel(row: SessionRow): boolean {
  * 2026-09-08 之前它长在侧栏选中行的 <li> 里（Respond.tsx），260 px 的窄列装几百行回复不可读；
  * 搬进主区只改布局，回答的语义一个字没动。
  *
- * 三种 WAITING：权限且 agent 的 hook 能替用户批准（`respond_via = hook`，reason `permission`）
- * → allow / deny 经挂起的 hook 返回，不注入键击；权限但 hook 不能批准（Grok）→ 只有"打开终端"；
- * 提问（AskUserQuestion 类，reason `question`）→ 选项渲染在 TUI 里，只显示问题文本与"打开终端"。
+ * 三种 WAITING：权限且 agent 的 hook 能替用户批准（`respond_via = hook`，且 `pending_decision`
+ * 非空）→ allow / deny 经挂起的 hook 返回，不注入键击；权限但 hook 不能批准（Grok）→ 只有
+ * "打开终端"；提问（AskUserQuestion 类，没有 `pending_decision`）→ 选项渲染在 TUI 里，只显示
+ * 问题文本与"打开终端"。
  * `respond_within_secs` 是宿主的挂起上限：Codex 挂起期间终端答不了、上限只有几十秒，超时提示
  * 交回终端——短于 5 分钟就把它写出来，免得人以为 Allow 按钮坏了。
  */
@@ -103,7 +104,8 @@ export function RespondPanel({ row, api, onOpenTerminal, focusRequest, onFocusHa
   const waiting = row.status === "waiting";
   const turnDone = row.status === "turn_done";
   if (!waiting && !turnDone) return null;
-  const canDecide = waiting && row.reason === "permission" && row.respond_via === "hook" && !!pending;
+  // 可批准看 pending_decision（挂起实例本身），不看 reason 那句人话（MISSION §2.3 规则 10）。
+  const canDecide = waiting && row.respond_via === "hook" && !!pending;
   const within = typeof row.respond_within_secs === "number" ? row.respond_within_secs : null;
   const shortHold = canDecide && within !== null && within < SHORT_HOLD_SECS;
   // external / headless 会话没有运行时句柄（MISSION §5.5）：主区那一格是"没有终端"的说明文字，

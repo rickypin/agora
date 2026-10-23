@@ -25,7 +25,9 @@ export const MOBILE_STATUS_TEXT: Record<string, string> = {
 
 /** 一行手机端的状态词；`seen` 只对 turn_done 有意义（「待查看 / 已读」）。 */
 export function mobileStatusText(row: SessionRow, seen: boolean): string {
-  if (row.status === "waiting" && row.reason === "permission") return "等你批准";
+  // 可批准的权限请求带 pending_decision；提问类 WAITING 没有它。reason 只给人读，不拿来做
+  // 功能判断（MISSION §2.3 规则 10）。
+  if (row.status === "waiting" && row.pending_decision) return "等你批准";
   if (row.status === "turn_done" && seen) return "已读";
   return MOBILE_STATUS_TEXT[row.status] ?? row.status;
 }

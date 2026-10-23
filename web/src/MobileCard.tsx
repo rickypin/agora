@@ -177,7 +177,9 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
   // 服务端把采纳行报成 runtime，而 wire 上的 managed 一直是对的；缺键（老节点 / 测试桩）不否决。
   const writableRuntime = !handleless && textVia(row) === "runtime" && row.managed !== false;
   const decision = row.pending_decision;
-  const canDecide = waiting && row.respond_via === "hook" && row.reason === "permission" && !!decision;
+  // pending_decision 是唯一的「可批准」事实：reason 只是给人看的一句话（MISSION §2.3
+  // 规则 10），不能拿它决定按钮。respond_via 决定这条挂起能不能经 hook 回答。
+  const canDecide = waiting && row.respond_via === "hook" && !!decision;
   const within = typeof row.respond_within_secs === "number" ? row.respond_within_secs : null;
   const idleOrDone = row.status === "turn_done" || row.status === "idle";
   // 排队门（agora-shze）：host 通道在跑也开放——扩展用 `pi.sendUserMessage(text, { deliverAs:
@@ -416,12 +418,14 @@ export function MobileCard({ row, api, now, onBack, onSeen, seen = false, focusC
               </>
             ) : (
               <>
-                {row.reason === "permission" ? (
+                {decision ? (
                   <p className="mobile-command" data-testid="mobile-decision-text">
                     {detail || "等待你"}
                   </p>
                 ) : (
-                  <MarkdownView className="mobile-question" text={detail || "等待你"} />
+                  <div data-testid="mobile-decision-text">
+                    <MarkdownView className="mobile-question" text={detail || "等待你"} />
+                  </div>
                 )}
                 {/* terminal-only（Grok 权限、AskUserQuestion）不注入键击、不提供打开终端（MISSION §1.2、A52）。 */}
                 <p className="mobile-note" data-testid="mobile-needs-desktop">
