@@ -475,6 +475,25 @@ impl SessionManager {
         let at = at_override
             .or_else(|| delivery.and_then(crate::hook::inbox::delivery_time_secs))
             .unwrap_or(now);
+        // 一条不含结束事件的 hook 是 agent 还在这行的直接观察。读路径可能在更早的 tick 已经按
+        // `kill(pid, 0)` 猜过 "external process gone"（`ended_at_approximate`）并把补写攒在
+        // pending 里；如果这条 hook 从同一个/新的进程到达，先把这份近似结束结论撤掉再让状态机
+        // 处理——否则 `apply_at` 的"进程事实压倒一切"会挡掉这条事件，pending 还会在下一次
+        // `tick_ended_at` 把旧结束时刻写进已经活过来的行（agora-i704）。准确的结束时刻
+        // （SessionEnd 写下的 `approximately = FALSE`）不在这里动，避免把真正的结束抹掉。
+        let hook_continues = !events.is_empty()
+            && events
+                .iter()
+                .all(|e| !matches!(e, AgoraEvent::SessionEnded(_) | AgoraEvent::Superseded));
+        // 只有信封里的进程号现在仍探得到，才拿这条 hook 推翻探活结论；否则一条停机期间
+        // 攒下的旧 prompt 重放也能把已经结束的行写回 alive（同样的"进程事实压倒一切"）。
+        let hook_process_alive = rec.runtime_ref.is_none()
+            && lock(&self.external_pids)
+                .get(id)
+                .is_some_and(agent_process_alive);
+        if hook_continues && hook_process_alive {
+            self.withdraw_probe_guessed_end(id, rec.ended_at_approximate)?;
+        }
         {
             let mut machines = lock(&self.machines);
             let stored = machines.entry(id.to_owned()).or_insert_with(|| {
@@ -569,12 +588,17 @@ impl SessionManager {
             // 行回 STARTING），行又活了就清掉 ended_at，别让一行 RUNNING 带着结束时刻。
             if rec.runtime_ref.is_none() {
                 let ended = matches!(m.current().status, Status::Finished | Status::Failed);
-                if ended {
+                // 这条 hook 不含结束事件，说明 agent 还在；但状态机可能仍被上一 tick 的
+                // "external process gone" 钉在 FINISHED（`apply_at` 的进程事实 early return），
+                // 此时不能拿这条 hook 的时刻再补一个结束时刻——那正好把刚撤掉的
+                // 近似 ended_at 又写回来（agora-i704）。进程事实仍说结束的行，等下一轮
+                // 探活/下一个结束事件再决定；行本身会由 `view()` 按活进程事实重算。
+                if ended && !hook_continues {
                     // 近似值让位给准确值（Kill 时补的近似等 reconcile 补正，同 A42 那条规则）。
                     if rec.ended_at.is_none() || rec.ended_at_approximate {
                         self.mark_ended_at(id, Some(unix_secs(at)), false)?;
                     }
-                } else if rec.ended_at.is_some() {
+                } else if !ended && rec.ended_at.is_some() {
                     self.clear_ended_at(id)?;
                 }
             }
@@ -2244,6 +2268,23 @@ impl SessionManager {
         rec.ended_at = None;
         rec.ended_at_approximate = false;
         rec.ended_at_from_missing = false;
+    }
+
+    /// 撤回读路径按探活猜出来的 external 结束时刻（agora-i704）。`approximate` 只认
+    /// `external_process_gone` 那一档；精确值（SessionEnd / 进程退出码）不在这里动。pending 里
+    /// 尚未落库的观察一并丢掉，否则下一次 tick 会把它写回来。
+    fn withdraw_probe_guessed_end(&self, id: &str, approximate: bool) -> Result<(), SessionError> {
+        lock(&self.pending_ends).remove(id);
+        lock(&self.pending_clears).remove(id);
+        if approximate {
+            self.clear_ended_at(id)?;
+            tracing::debug!(
+                component = "hook",
+                session = id,
+                "hook 证明 external 行仍活，撤回探活猜出的 ended_at"
+            );
+        }
+        Ok(())
     }
 
     /// 行又活了（hook 的 FINISHED 不是终态）：清掉结束时刻。与 `restart_with` 清空 ended_at

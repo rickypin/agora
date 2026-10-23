@@ -84,6 +84,63 @@ fn status_of(m: &SessionManager, id: &str) -> Status {
 }
 
 #[test]
+fn a_hook_from_a_live_agent_process_withdraws_a_probe_guessed_end() {
+    // agora-i704：读路径先按 `kill(pid, 0)` 猜了 external process gone，把近似 ended_at 攒在
+    // pending 里；同一条行随后又来了一条带活进程号的 hook。这条 hook 是「agent 还在」的直接
+    // 观察，必须撤掉 pending，否则下一次 tick 会把旧结束时刻写进活行（headless 还会被 TTL 删）。
+    let (m, _rt, _db) = mgr(Duration::ZERO);
+    let id = external(&m, "conv-revived");
+    m.note_external_pid(&id, gone_pid(), now_secs());
+    let first = m.get(&id).unwrap();
+    assert_eq!(first.assessment.status, Status::Finished);
+    assert!(first.record.ended_at.is_some(), "{first:?}");
+    assert!(
+        m.record(&id).unwrap().ended_at.is_none(),
+        "读路径只攒 pending"
+    );
+
+    // 先让 pending 真正落库，证明「已落库的近似值」也会被下一帧 hook 撤回。
+    m.tick_ended_at();
+    let persisted = m.record(&id).unwrap();
+    assert!(persisted.ended_at.is_some(), "{persisted:?}");
+    assert!(persisted.ended_at_approximate, "{persisted:?}");
+
+    m.note_external_pid(&id, std::process::id(), now_secs());
+    // 进程号只是断言的一部分；真正的「还活着」证据是这条 hook。它要在状态机被进程事实
+    // 挡住之前先撤掉 pending / 近似结束时刻。
+    m.apply_hook(&id, 1, &[AgoraEvent::PromptSubmitted("接着做".into())])
+        .unwrap();
+    let after_hook = m.record(&id).unwrap();
+    assert!(
+        after_hook.ended_at.is_none(),
+        "活进程的 hook 到了，猜出来的结束时刻要撤回: {after_hook:?}"
+    );
+    assert!(!after_hook.ended_at_approximate, "{after_hook:?}");
+
+    // 而且下一轮 tick 不得把已经被撤掉的 pending 再写回来。
+    m.tick_ended_at();
+    assert!(m.record(&id).unwrap().ended_at.is_none());
+
+    // 还未落库的 pending 同样要在 hook 到达时丢掉：不能等 tick 把旧观察写进活行。
+    let pending_only = external(&m, "conv-pending-only");
+    m.note_external_pid(&pending_only, gone_pid(), now_secs());
+    assert!(m.get(&pending_only).unwrap().record.ended_at.is_some());
+    assert!(m.record(&pending_only).unwrap().ended_at.is_none());
+    m.note_external_pid(&pending_only, std::process::id(), now_secs());
+    m.apply_hook(
+        &pending_only,
+        1,
+        &[AgoraEvent::PromptSubmitted("又活了".into())],
+    )
+    .unwrap();
+    m.tick_ended_at();
+    assert!(
+        m.record(&pending_only).unwrap().ended_at.is_none(),
+        "hook 到达时 pending 必须一起撤掉"
+    );
+}
+
+#[test]
 fn expired_external_finished_rows_are_deleted_and_the_rest_stay() {
     // 守卫：关掉 expire_external_finished 里的 origin 判断 → agora 行也被删；关掉 status 判断 →
     // TURN_DONE 行也被删；ttl 比较写反 → 同龄的行全删或全留。
