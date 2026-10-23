@@ -147,6 +147,9 @@ pub fn coalesce(events: Vec<Event>) -> Vec<Event> {
 /// 一轮快照里每个会话记什么，用来求差。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Seen {
+    /// 一行显示的名字（未锁定时是 pane title）。它不是状态，但标题变了浏览器行上的名字要跟着变；
+    /// 只改 name 时旧求差器什么都不发，行会一直停在第一次看到的标题（agora-8bgm）。
+    name: String,
     status: Status,
     source: Source,
     reason: Option<String>,
@@ -174,6 +177,7 @@ struct Seen {
 
 fn seen(v: &SessionView) -> Seen {
     Seen {
+        name: v.name.clone(),
         status: v.assessment.status,
         source: v.assessment.source,
         reason: v.assessment.reason.clone(),
@@ -327,7 +331,8 @@ impl Differ {
                 // task_ref 是 metadata，标签又是异步查回来的：整行重发最省事也最不会漏字段。
                 // project 同理（agora-uvd.1）。对话 id 也是（metadata 不是状态，/clear 后会换，dvh.13）。
                 Some(prev)
-                    if prev.task != s.task
+                    if prev.name != s.name
+                        || prev.task != s.task
                         || prev.project != s.project
                         || prev.agent_session_id != s.agent_session_id
                         || prev.pending_decision != s.pending_decision =>
@@ -847,6 +852,34 @@ mod tests {
         );
         let events = differ.step("n", &[some]);
         assert!(events.is_empty(), "project 没变不该再发: {events:?}");
+    }
+
+    #[test]
+    fn title_change_emits_session_updated() {
+        // agora-8bgm：pane title 只在 view 里生成，Seen 以前不含 name；标题独立变化
+        // （状态 / 任务都没变）时 Differ 什么都不发，浏览器行名停在旧标题。
+        use crate::status::{Machine, MachineConfig};
+        let m = Machine::new(MachineConfig::default(), false, 1, 0);
+        let original = shell_view(&m, ProcessState::Alive);
+        let mut differ = Differ::default();
+        assert!(
+            differ.step("n", std::slice::from_ref(&original)).is_empty(),
+            "第一轮只建基线"
+        );
+
+        let mut renamed = original.clone();
+        renamed.name = "new pane title".into();
+        let events = differ.step("n", std::slice::from_ref(&renamed));
+        match &events[..] {
+            [Event::SessionUpdated { session, .. }] => {
+                assert_eq!(session["name"], "new pane title", "整行重发要带新名字")
+            }
+            other => panic!("只改了 name，应发一条 SessionUpdated: {other:?}"),
+        }
+        assert!(
+            differ.step("n", std::slice::from_ref(&renamed)).is_empty(),
+            "名字没再变不该重复发"
+        );
     }
 
     #[test]
