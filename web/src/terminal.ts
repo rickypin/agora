@@ -6,6 +6,8 @@
  * 这里**没有**自动重连：重连由用户或页面刷新触发，绝不 restart / recreate。
  */
 
+import { rowEndCause } from "./events";
+
 export interface TerminalSocketLike {
   onopen: ((ev: unknown) => void) | null;
   onmessage: ((ev: { data: string }) => void) | null;
@@ -24,23 +26,32 @@ export type ServerFrame =
   | { type: "pong" };
 
 /**
- * 这一行的运行时会话没了（agora-u5p）：`status=finished` 且 `reason` 说 `runtime session gone`。
- * 判的是 agora 自己写进 reason 的那半句，两种「没了」都算（server gone / session gone），
- * `killed by user (runtime session gone…)` 也算——在 Dashboard 按过 Kill、后来连 pane 一起消失的
- * 行同样没有可连的东西（Mac 2026-09-18 现场 b226b5：库里 killed_at 在、状态说看不清）。
+ * 这一行的运行时会话没了（agora-u5p）：新节点看 `end_cause.kind === "runtime_gone"`（server /
+ * session 两种都算），不再匹配 reason 文本（MISSION §2.3 规则 10）。老节点（api < 1.8）不发枚举，
+ * 保留 `reason` 包含 `runtime session gone` 的回退——这是给未升级对端的兼容，不是新节点的判据；
+ * 新节点只要带了 end_cause 就绝不看 reason（即使 reason 里仍有那句话）。
  *
  * 为什么放在连接层而不是 `TerminalView.tsx`：这一条说的是「这一行还能不能 attach」。挂在组件文件
  * 里的话，`vi.mock("./TerminalView")` 的局部替身（Workspace.test.tsx、keyboard.test.tsx）会把它
  * 换成 undefined，Workspace 一渲染就抛——守卫抓到的是测试脚手架，不是行为。
  */
 export function runtimeSessionGone(
-  row: { status?: unknown; reason?: unknown } | null | undefined,
+  row: { status?: unknown; reason?: unknown; end_cause?: unknown } | null | undefined,
 ): boolean {
-  return (
-    row?.status === "finished" &&
-    typeof row.reason === "string" &&
-    row.reason.includes("runtime session gone")
-  );
+  if (row?.status !== "finished") return false;
+  const cause = rowEndCause(row);
+  if (cause) {
+    if (cause.kind === "runtime_gone") return true;
+    // 服务端把「Kill 后连 pane 一起消失」折成 killed_by_user（EndCause 的注释：哪个细节留在
+    // reason 里）。这个折叠丢了 runtime_gone 这一维，所以只在 killed_by_user 这一格读 reason
+    // 里由服务端写的那半句；普通 kill（pane 还在、可看 scrollback）不会被误判。
+    if (cause.kind === "killed_by_user") {
+      return typeof row.reason === "string" && row.reason.includes("runtime session gone");
+    }
+    return false;
+  }
+  // 老节点没有 end_cause：回退到旧文本。
+  return typeof row.reason === "string" && row.reason.includes("runtime session gone");
 }
 
 export interface TerminalClientOptions {

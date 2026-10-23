@@ -6,7 +6,7 @@
  */
 import { partitionByAttention, sortByAttention, type SeenSet } from "./attention";
 import type { SessionRow } from "./events";
-import { fuzzyFilter } from "./fuzzy";
+import { fuzzyFilter, fuzzyKeep } from "./fuzzy";
 import type { NodeStatus } from "./Header";
 import { rowHaystack } from "./SessionRow";
 import { treeOrder } from "./sidebarTreeModel";
@@ -21,11 +21,21 @@ export const MODE_STORAGE_KEY = "agora.sidebar-mode";
  * 顺序（`treeOrder`，agora-uvd.3：节点 → 仓库 → worktree → 行按创建序，不读状态）
  * 再过滤。过滤两种模式共用同一个输入框与 `rowHaystack`，只删不换序。
  */
-export function visibleOrder(mode: SidebarMode, rows: SessionRow[], filter: string, seen: SeenSet, nodes?: NodeStatus[], localNode?: string): SessionRow[] {
+export function visibleOrder(
+  mode: SidebarMode,
+  rows: SessionRow[],
+  filter: string,
+  seen: SeenSet,
+  nodes?: NodeStatus[],
+  localNode?: string,
+  now?: number,
+): SessionRow[] {
   if (mode === "tree") {
-    return fuzzyFilter(treeOrder(rows, nodes, localNode), filter, rowHaystack);
+    // 树的显示顺序由 DFS 决定；过滤只能删行，不能像 attention 那样按 fuzzy 分数重排
+    // （agora-c0rs：否则 Alt/Option+N 的 N 与眼睛看到的第 N 条不是同一行）。
+    return fuzzyKeep(treeOrder(rows, nodes, localNode), filter, rowHaystack);
   }
-  return partitionByAttention(fuzzyFilter(sortByAttention(rows), filter, rowHaystack), seen);
+  return partitionByAttention(fuzzyFilter(sortByAttention(rows), filter, rowHaystack), seen, now);
 }
 
 /**

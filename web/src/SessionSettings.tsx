@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { RestartResult, SessionApi } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { rowProcess, type SessionRow } from "./events";
+import { rowProcess, textVia, type SessionRow } from "./events";
 import { rowName } from "./Sidebar";
 
 interface Props {
@@ -41,7 +41,10 @@ export function SessionSettings({ row, api, onClose }: Props) {
    * 读 `process` 不读旧的 `alive`（agora-5gg.18）：那个字段只保留一版，下一版删。 */
   const [ending, setEnding] = useState<"kill" | "restart" | null>(null);
   const killing = ending ?? (row.killed_at && rowProcess(row) === "alive" ? "kill" : null);
-  const canRestart = typeof row.command === "string" && row.command.trim() !== "";
+  // 只有可写的、由 agora 管的运行时才接受 Kill / Restart。采纳行（managed=false）与死 pane
+  // （text_via=none）点下去只会 409 read_only；旧节点没有 text_via 时退回 runtime_ref（agora-q4kl）。
+  const canOperate = textVia(row) === "runtime" && row.managed !== false && rowProcess(row) === "alive";
+  const canRestart = canOperate && typeof row.command === "string" && row.command.trim() !== "";
 
   useEffect(() => {
     setName(String(row.display_name ?? rowName(row)));
@@ -116,9 +119,11 @@ export function SessionSettings({ row, api, onClose }: Props) {
         >
           重新启动
         </button>
-        <button className="danger" onClick={() => void run("kill", false)} disabled={busy} data-testid="kill">
-          结束会话
-        </button>
+        {canOperate && (
+          <button className="danger" onClick={() => void run("kill", false)} disabled={busy} data-testid="kill">
+            结束会话
+          </button>
+        )}
         <button onClick={() => void deleteMetadata()} disabled={busy} title="只移除 agora 的记录，不杀运行时会话">
           删除记录
         </button>

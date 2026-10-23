@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { catalogApi, sessionApi, type CatalogApi, type SessionApi } from "./api";
-import { isHandleless, isHeadless, loadSeen, sectionOf, seenKey, seenRelevant, storeSeen, type Section } from "./attention";
+import { anchoredNow, isHandleless, isHeadless, loadSeen, sectionOf, seenKey, seenRelevant, storeSeen, type Section } from "./attention";
 import { DesktopOverview } from "./DesktopOverview";
 import { SessionHeading } from "./SessionHeading";
 import { ChangesApiContext } from "./Changes";
@@ -15,7 +15,7 @@ import { hasRespondPanel, RespondPanel } from "./RespondPanel";
 import { RowResult } from "./RowResult";
 import { SessionSettings } from "./SessionSettings";
 import { loadMode, storeMode, visibleOrder, type SidebarMode } from "./sidebarMode";
-import { rowName, Sidebar } from "./Sidebar";
+import { rowName, Sidebar, useNowSeconds } from "./Sidebar";
 import { FREEZE_MS, stableOrder, stableSections } from "./stableOrder";
 import { SessionStore, useServerClock, useSessions, useUnreadableSockets, useUnregistered } from "./store";
 import { defaultDiffSocket, runtimeSessionGone, type TerminalClientOptions } from "./terminal";
@@ -64,6 +64,10 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   const rows = useSessions(store);
   // 行上时长以节点钟为基准（agora-au5）：快照顶层的 now 与收到它的页面钟配对，页面钟偏差不平移时长。
   const serverClock = useServerClock(store);
+  // 分段的新鲜度窗口也以节点钟为基准（agora-2dyb）：与行上时长同一个锚，页面钟偏 15 分钟时
+  // 12h 边界附近的行不会误判段位。`useNowSeconds` 仍提供每 30 s 的重渲染信号。
+  const pageNow = useNowSeconds();
+  const now = serverClock ? anchoredNow(serverClock, pageNow) : pageNow;
   const unregistered = useUnregistered(store);
   // 未登记列表可能因为某个采纳 socket 没扫成而短一块（agora-ebfa）：侧栏据此说明，不安静少列。
   const unreadableSockets = useUnreadableSockets(store);
@@ -395,13 +399,13 @@ export function Workspace({ store: given, api: givenApi, catalog: givenCatalog, 
   // 而且 prev 在树模式下一律清空——不然从树切回「需要我」时，冻着的是树的顺序。
   const prevOrder = useRef<{ ids: string[]; sections: Map<string, Section> } | null>(null);
   const { rows: visible, sections: visibleSections, moved } = useMemo(() => {
-    const next = visibleOrder(mode, rows, filter, seen, nodes, localNode ?? undefined);
+    const next = visibleOrder(mode, rows, filter, seen, nodes, localNode ?? undefined, now);
     if (mode !== "attention") return { rows: next, sections: undefined, moved: NO_MOVED };
     const prev = prevOrder.current;
     const stable = stableOrder(prev?.ids ?? null, next, frozen);
-    const placed = stableSections(prev?.sections ?? null, stable.order, (r) => sectionOf(r, seen), frozen);
+    const placed = stableSections(prev?.sections ?? null, stable.order, (r) => sectionOf(r, seen, now), frozen);
     return { rows: placed.order, sections: placed.sections, moved: stable.moved };
-  }, [mode, rows, filter, seen, nodes, localNode, frozen]);
+  }, [mode, rows, filter, seen, nodes, localNode, now, frozen]);
   // 上一次的显示顺序**只在 commit 阶段写**：render 阶段写 ref 是 React 明令禁止的（渲染被打断 / 丢弃时
   // ref 已经被改脏，而那一帧根本没提交），本仓库也已被 StrictMode 咬过两次（agora-3w8 的配对兑换、
   // TerminalView 的双挂载）。

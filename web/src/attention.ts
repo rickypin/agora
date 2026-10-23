@@ -56,6 +56,13 @@ export function attentionScore(status: string): number {
  */
 export const ATTENTION_WINDOW_SECS = 12 * 3600;
 
+/**
+ * peer 行等待时长的显示上限（与 `src/peer/view.rs` 的 `MAX_REPORTED_WAIT_SECS` 同一个尺度）。
+ * 服务端把超出 30 天的起点截到 `now - 30d`；UI 在这一档写 `≥30d+`，而不是把坏掉的 0 或
+ * 四十天前起的老行画成"刚刚"（agora-3tpf）。
+ */
+export const PEER_WAIT_CAP_SECS = 30 * 86400;
+
 /** 这一行"等你"的时刻（unix 秒）；不知道就是 null。 */
 function waitedSince(row: { status_since?: unknown; peer_status_since?: unknown }): number | null {
   if (typeof row.peer_status_since === "number") return row.peer_status_since;
@@ -383,6 +390,10 @@ export function anchoredNow(clock: ServerClock, pageNow: number): number {
 export function statusLine(row: SessionRow, nowSeconds: number): string {
   const text = STATUS_TEXT[row.status] ?? row.status;
   const s = row.status_since;
+  // peer 行撞到服务端 30 天上限：写封顶记号，不按截断后的精确差值继续画（agora-3tpf）。
+  if (isPeerRow(row) && typeof s === "number" && nowSeconds - s >= PEER_WAIT_CAP_SECS) {
+    return `${text} ≥30d+`;
+  }
   const ago = typeof s === "number" ? formatAgo(nowSeconds - s) : "";
   if (!ago) return text;
   // peer 行的时长是一个**下界**：起点由并入它的这台机器在「第一次看见这个状态」的那一刻打

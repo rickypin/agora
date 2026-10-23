@@ -8,7 +8,7 @@
  * 「已读」不是从行上读的：它是本设备的视图状态（MISSION §4.6 证据 ①），调用方把
  * `seen.has(seenKey(row))` 算成 boolean 传进来——记号跟着「这一次完成」走（agora-5gg.21）。
  */
-import { formatAgo, isPeerRow } from "./attention";
+import { formatAgo, isPeerRow, PEER_WAIT_CAP_SECS } from "./attention";
 import type { SessionRow } from "./events";
 
 /** 状态词：waiting 的权限特例见 [`mobileStatusText`]。 */
@@ -60,6 +60,9 @@ export function mobileStatusLine(
 ): string {
   const text = mobileStatusText(row, seen);
   const s = row.status_since;
+  if (isPeerRow(row) && typeof s === "number" && nowSeconds - s >= PEER_WAIT_CAP_SECS) {
+    return `${text} ≥30d+`;
+  }
   const ago =
     typeof s === "number" ? (precision === "minutes" ? formatAgo(nowSeconds - s) : mobileAgo(nowSeconds - s)) : "";
   if (!ago) return text;

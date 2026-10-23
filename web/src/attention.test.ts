@@ -394,6 +394,10 @@ describe("attention", () => {
     expect(statusLine(row("mac:1", "waiting", { status_since: 1000 }), 1000 + 3 * 60)).toBe("waiting 3m");
     // 不到一分钟本来就不画时长，也就没有 ≥。
     expect(statusLine(row("zuan:3", "running", { status_since: 1000, stale: false }), 1030)).toBe("working");
+    // agora-3tpf：撞 30 天上限时画 ≥30d+，不把老行画成刚刚。
+    expect(
+      statusLine(row("zuan:old", "waiting", { status_since: 1000, stale: false }), 1000 + 40 * 86400),
+    ).toBe("waiting ≥30d+");
     // 判据是 stale 键在不在，不是 node 等于谁（本机行也带 node）。
     expect(isPeerRow(row("mac:1", "waiting", { node: "mac" }))).toBe(false);
     expect(isPeerRow(row("zuan:1", "waiting", { node: "zuan", stale: false }))).toBe(true);
@@ -426,6 +430,19 @@ describe("需要我的新鲜度窗口（agora-82x7 的另一半，2026-10-08 用
     expect(needsAttention(stale, none, NOW)).toBe(false);
     expect(sectionOf(stale, none, NOW), "降段不消失：落到在跑段").toBe("working");
     expect(partitionByAttention([stale], none, NOW).map((r) => r.id), "行不丢").toEqual(["d"]);
+  });
+
+  it("分段用节点钟：页面慢 15 分钟时 11h55m 的完成仍在窗口内（agora-2dyb）", () => {
+    // 行是 11h55m 前完成的。页面钟慢 15 分钟（同一个节点时刻 NOW，页面读数是 NOW+15min）；
+    // 直接拿页面钟算会多出 15 分钟，错判成 12h10m 进折叠区。调用方要用 anchoredNow 折回节点钟。
+    const row1155 = row("f", "finished", { origin: "agora", status_since: NOW - (11 * 3600 + 55 * 60) });
+    const pageNow = NOW + 15 * 60;
+    const clock = { now: NOW, at: pageNow };
+    expect(sectionOf(row1155, new Set(), pageNow), "旧路径：页面钟直接当 now 会误判").toBe("finished");
+    expect(
+      sectionOf(row1155, new Set(), anchoredNow(clock, pageNow)),
+      "节点钟基准下仍在 12h 窗口内",
+    ).toBe("attention");
   });
 
   it("finished 超过窗口进折叠区（同时也是 Finished N 清理名单的口径）", () => {

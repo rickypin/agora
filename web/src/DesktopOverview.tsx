@@ -20,7 +20,7 @@ export function DesktopOverview({ rows, seen, serverClock, onOpen, onNewAgent }:
     return () => clearInterval(timer);
   }, []);
   const now = serverClock ? anchoredNow(serverClock, pageNow) : pageNow;
-  const ordered = visibleOrder("attention", rows, "", seen);
+  const ordered = visibleOrder("attention", rows, "", seen, undefined, undefined, now);
   const attention = ordered.filter((r) => sectionOf(r, seen, now) === "attention");
   const unclear = rows.filter((r) => sectionOf(r, seen, now) === "unclear").length;
   const running = rows.filter((r) => r.status === "running" || r.status === "starting").length;

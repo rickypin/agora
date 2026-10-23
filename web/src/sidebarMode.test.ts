@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { partitionByAttention, sortByAttention } from "./attention";
+import { partitionByAttention, sectionOf, sortByAttention } from "./attention";
 import type { SessionRow } from "./events";
 import { fuzzyFilter } from "./fuzzy";
 import { rowHaystack } from "./SessionRow";
@@ -73,5 +73,30 @@ describe("sidebarMode", () => {
     expect(visibleOrder("tree", rows, "", none).map((r) => r.id)).toEqual(["a", "b", "c", "d"]);
     // 过滤只删不换序：同秒 a/b 里 a 被滤掉，b 仍在 c 前。
     expect(visibleOrder("tree", rows, "keep", none).map((r) => r.id)).toEqual(["b", "c", "d"]);
+    // agora-c0rs：分数不同也不能换序。旧实现 fuzzyFilter(treeOrder(...)) 会把分数高的 b 排到 a 前。
+    const scored = [
+      row("a", "running", { created_at: "2026-09-08T12:00:01Z", display_name: "parser sglog" }),
+      row("b", "running", { created_at: "2026-09-08T12:00:02Z", display_name: "sglog" }),
+    ];
+    expect(visibleOrder("tree", scored, "sglog", none).map((r) => r.id)).toEqual(["a", "b"]);
+  });
+
+  it("passes the caller's node clock into attention partitioning (agora-2dyb)", () => {
+    const now = 1_900_000_000;
+    const fin = row("fin", "finished", { origin: "agora", status_since: now - (11 * 3600 + 55 * 60) });
+    const run = row("run", "running");
+    const none = new Set<string>();
+    expect(
+      visibleOrder("attention", [fin, run], "", none, undefined, undefined, now).map((r) => r.id),
+      "窗口内：finished 在 NEEDS ATTENTION，排在 working 前",
+    ).toEqual(["fin", "run"]);
+    // 页面钟慢 15 分钟：拿页面钟算会把它收进 finished 折叠区，排到 working 后（这里没有 finished 行，
+    // 仍会保留，但段位变化会把它移到后面）。
+    expect(
+      visibleOrder("attention", [fin, run], "", none, undefined, undefined, now + 15 * 60).map((r) => r.id),
+    ).toEqual(["run", "fin"]);
+    // 同一个输入下 `sectionOf` 会区分；visibleOrder 只有把 now 传下去才不会被页面钟带偏。
+    expect(sectionOf(fin, none, now + 15 * 60)).toBe("finished");
+    expect(sectionOf(fin, none, now)).toBe("attention");
   });
 });

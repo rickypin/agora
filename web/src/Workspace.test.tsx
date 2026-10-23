@@ -44,7 +44,19 @@ class FakeSocket implements SocketLike {
 }
 
 function row(id: string, status = "running"): SessionRow {
-  return { id, node: "n", status, alive: true, display_name: id.slice(2), agent_type: "claude", reason: null, respond_via: "hook" };
+  return {
+    id,
+    node: "n",
+    status,
+    alive: true,
+    process: "alive",
+    text_via: "runtime",
+    managed: true,
+    display_name: id.slice(2),
+    agent_type: "claude",
+    reason: null,
+    respond_via: "hook",
+  };
 }
 
 /** 假的 Notification API：记下弹了什么，点击靠测试自己触发 onclick。 */
@@ -533,12 +545,21 @@ describe("Workspace", () => {
   });
 
   it("Restart is disabled for adopted sessions that never recorded a command (agora-vto)", async () => {
-    const t = setup([{ ...row("n:a"), origin: "adopted", command: null }]);
+    const t = setup([{ ...row("n:a"), origin: "adopted", command: null, managed: false, text_via: "none" }]);
     await online(t);
     fireEvent.click(screen.getByTestId("row-n:a"));
     fireEvent.click(screen.getByText("会话设置"));
     expect(screen.getByRole("button", { name: "重新启动" })).toHaveProperty("disabled", true);
-    expect(screen.getByTestId("kill")).toHaveProperty("disabled", false);
+    expect(screen.queryByTestId("kill")).toBeNull();
+  });
+
+  it("Kill is hidden for a managed=false row even when its text path still says runtime (agora-q4kl)", async () => {
+    const t = setup([{ ...row("n:a"), origin: "adopted", managed: false, command: "claude" }]);
+    await online(t);
+    fireEvent.click(screen.getByTestId("row-n:a"));
+    fireEvent.click(screen.getByText("会话设置"));
+    expect(screen.queryByTestId("kill")).toBeNull();
+    expect(screen.getByRole("button", { name: "重新启动" })).toHaveProperty("disabled", true);
   });
 
   it("New Agent selects the created session only once it is in the list", async () => {

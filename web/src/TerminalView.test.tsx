@@ -271,9 +271,16 @@ describe("TerminalView when the runtime session is gone (agora-u5p)", () => {
     return { ui, connectSpy };
   }
 
-  it("recognizes the row by status + reason, not by a string match on the whole sentence", () => {
+  it("uses end_cause first and only falls back to reason for old nodes", () => {
+    // 新节点：枚举是判据；reason 里即使还有旧句子也不看。
+    expect(runtimeSessionGone({ status: "finished", end_cause: { kind: "runtime_gone", value: "session" } })).toBe(true);
+    expect(runtimeSessionGone({ status: "finished", end_cause: { kind: "runtime_gone", value: "server" } })).toBe(true);
+    expect(runtimeSessionGone({ status: "finished", end_cause: { kind: "exit_code", value: 1 }, reason: "runtime session gone (session gone)" })).toBe(false);
+    // 服务端把 Kill 后的 runtime-gone 折进 killed_by_user；只有这一格保留服务端写的细节句。
+    expect(runtimeSessionGone({ status: "finished", end_cause: { kind: "killed_by_user" }, reason: "killed by user (runtime session gone; session gone)" })).toBe(true);
+    expect(runtimeSessionGone({ status: "finished", end_cause: { kind: "killed_by_user" }, reason: "killed by user (signal KILL)" })).toBe(false);
+    // 老节点（没有 end_cause）：回退到旧文本。
     expect(runtimeSessionGone({ status: "finished", reason: "runtime session gone (server gone; no exit status)" })).toBe(true);
-    expect(runtimeSessionGone({ status: "finished", reason: "killed by user (runtime session gone; session gone)" })).toBe(true);
     // 对照：活着的行、别的结束原因、以及还没判出状态的一行都不算。
     expect(runtimeSessionGone({ status: "running", reason: null })).toBe(false);
     expect(runtimeSessionGone({ status: "finished", reason: "exit code 1" })).toBe(false);

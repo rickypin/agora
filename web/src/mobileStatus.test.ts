@@ -5,6 +5,7 @@
  * 用户看不懂「看过没看过、排队没排队」；「在跑」段名还会把「点开看过一次、其实没在跑」的行说成在跑。
  * 词表只在这里，桌面一个字不动（守卫：attention.test.ts 的既有用例照旧断言英文）。
  */
+import { PEER_WAIT_CAP_SECS } from "./attention";
 import { describe, expect, it } from "vitest";
 import type { SessionRow } from "./events";
 import { mobileAgo, mobileStatusLine, mobileStatusText } from "./mobileStatus";
@@ -102,4 +103,10 @@ describe("手机端时长（agora-o975.3）", () => {
     // peer 的下界语义在分钟粒度下也在。
     expect(mobileStatusLine(row({ status: "waiting", status_since: 820, stale: false }), false, 1000, "minutes")).toBe("等你 ≥3m");
   });
+});
+
+
+it("caps a peer row at 30d+ instead of showing a rounded day count (agora-3tpf)", () => {
+  const row = { id: "z:old", node: "z", status: "waiting", alive: true, stale: false, status_since: 1000 };
+  expect(mobileStatusLine(row, false, 1000 + PEER_WAIT_CAP_SECS + 10, "minutes")).toBe("等你 ≥30d+");
 });

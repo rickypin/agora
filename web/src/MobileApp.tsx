@@ -63,9 +63,13 @@ interface Props {
 }
 
 /** 四段分组：先按 attention 的排序排好，再按 sectionOf 落段（段内顺序 = 排序顺序）。 */
-export function groupSections(rows: SessionRow[], seen: SeenSet): Record<Section, SessionRow[]> {
+export function groupSections(
+  rows: SessionRow[],
+  seen: SeenSet,
+  now: number = Math.floor(Date.now() / 1000),
+): Record<Section, SessionRow[]> {
   const out: Record<Section, SessionRow[]> = { attention: [], unclear: [], working: [], finished: [] };
-  for (const row of sortByAttention(rows)) out[sectionOf(row, seen)].push(row);
+  for (const row of sortByAttention(rows)) out[sectionOf(row, seen, now)].push(row);
   return out;
 }
 
@@ -111,6 +115,11 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   const nodes = useSyncExternalStore(health.subscribeNodes, health.nodesSnapshot, health.nodesSnapshot);
   const nodeWarning = useSyncExternalStore(health.subscribe, health.snapshot, health.snapshot);
   const [clock, setClock] = useState(() => Math.floor(Date.now() / 1000));
+  // 锚定要拿当下的墙钟，不能拿 `clock`（每 30 s 才走一格）——否则锚定值最多落后 30 s
+  // （agora-o975.5）。分段（groupSections）与卡片时长共用这一个节点钟基准（agora-2dyb）。
+  const nowSeconds = now ?? (serverClock ? anchoredNow(serverClock, Math.floor(Date.now() / 1000)) : clock);
+  // 分段只随 30 s tick 走；锚定用 tick 的页面钟，仍然以节点钟为准（agora-2dyb）。
+  const sectionNow = serverClock ? anchoredNow(serverClock, clock) : clock;
 
   useEffect(() => {
     health.start();
@@ -183,7 +192,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
       return next;
     });
   }, []);
-  const sections = useMemo(() => groupSections(rows, seen), [rows, seen]);
+  const sections = useMemo(() => groupSections(rows, seen, sectionNow), [rows, seen, sectionNow]);
 
   // 深链（推送点击进来）：`/m?session=<node>:<id>`。行的全局 id 就是 `<node>:<id>`
   // （api/sessions.rs 的 export），所以先拼回全名精确匹配、再退回幂等写法（手输 / 旧载荷）。
@@ -383,10 +392,6 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     setFocusComposerFor(pendingNew);
     setPendingNew(null);
   }, [rows, pendingNew]);
-  // 锚定要拿**当下的墙钟**，不能拿 `clock`（它是每 30 s 走一格的渲染信号）——否则锚定值最多落后
-  // 30 s，卡片心跳从这个偏低的起点往上加，刚进在跑的行头几秒被夹成 `0s`（agora-o975.5，2026-10-08
-  // 真机实测：节点侧已过 5 s、页面还写 0s）。`clock` 仍留着当重渲染的信号。
-  const nowSeconds = now ?? (serverClock ? anchoredNow(serverClock, Math.floor(Date.now() / 1000)) : clock);
   const selectedRow = selected === null ? undefined : rows.find((r) => r.id === selected);
 
   useEffect(() => {

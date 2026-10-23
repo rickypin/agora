@@ -49,6 +49,11 @@ export function rowProcess(row: SessionRow): ProcessState {
   return isProcessState(row.process) ? row.process : row.alive ? "alive" : "gone";
 }
 
+/** agent 进程本身的三态；老节点没发 `agent_process` 时退回 `process`（只能少说一次未知）。 */
+export function rowAgentProcess(row: SessionRow): ProcessState {
+  return isProcessState(row.agent_process) ? row.agent_process : rowProcess(row);
+}
+
 /**
  * 一行**结束**的原因（封闭枚举，agora-5gg.6；`docs/spec/api.md`「会话形态」）。
  * `reason` 是给人看的一句话，措辞随版本改；程序按 `kind` 分支，不做字符串匹配（MISSION §2.3 规则 10）。
@@ -112,7 +117,7 @@ export function isUnknownCause(v: unknown): v is UnknownCause {
  * 判结束用 `status`，这一格只回答「为什么」。所以拿 null 分支的呈现层（历史折叠，agora-5gg.19）
  * 只能少折一行，不能把行藏掉。
  */
-export function rowEndCause(row: SessionRow): EndCause | null {
+export function rowEndCause(row: { end_cause?: unknown }): EndCause | null {
   return isEndCause(row.end_cause) ? row.end_cause : null;
 }
 
@@ -139,6 +144,11 @@ export interface SessionRow {
    * [`rowProcess`]，不要直接 `row.process === "gone"`。
    */
   process?: ProcessState;
+  /**
+   * agent 进程本身的三态（agora-phqq）：不被 Q4 的"对话结束即 gone"覆盖。新节点才发；
+   * 老节点 / 老 peer 没这个键时读 [`rowAgentProcess`]：它退回 `process`，只能少说一次未知。
+   */
+  agent_process?: ProcessState;
   /**
    * 结束的原因（封闭枚举，agora-5gg.6）：`status ∈ {finished, failed}` 时非 null 是新节点的承诺，
    * 老节点没有这个承诺。读它走 [`rowEndCause`]。

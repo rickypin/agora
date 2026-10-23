@@ -43,3 +43,8 @@ export function fuzzyFilter<T>(items: T[], query: string, text: (x: T) => string
     .sort((a, b) => b.score - a.score || a.i - b.i)
     .map((s) => s.item);
 }
+
+/** 只按匹配过滤、保留传入顺序；给「树」视图用——那里顺序由 DFS 决定，不能被分数重排（agora-c0rs）。 */
+export function fuzzyKeep<T>(items: T[], query: string, text: (x: T) => string): T[] {
+  return items.filter((item) => fuzzyScore(text(item), query) !== null);
+}

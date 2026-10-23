@@ -17,7 +17,7 @@ import { clearWidth, clamp, DEFAULT, loadWidth, storeWidth } from "./sidebarWidt
 export { rowHaystack, rowName, SidebarRow, statusSymbol } from "./SessionRow";
 
 /** 每 30 s 走一次的时钟，只为"waiting 3m"这种时长文案。 */
-function useNowSeconds(periodMs = 30_000): number {
+export function useNowSeconds(periodMs = 30_000): number {
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {
     const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), periodMs);
@@ -229,7 +229,7 @@ export function Sidebar({
   // （MISSION §4.6「不得在用户看到结果之前清理」）。没有批量端点也不加：逐行 DELETE /api/sessions/:id
   // （MISSION §11 不引入 Archive）；peer stale 的行跳过（一跳转发到不了）并在结果里说明。
   // 树视图下同样成立（agora-uvd.3）：清理对象是折叠区的定义，与视图无关——树里 FINISHED 行只是原位淡显。
-  const clearable = all.filter((r) => sectionOf(r, seen) === "finished");
+  const clearable = all.filter((r) => sectionOf(r, seen, now) === "finished");
   const [clearAsk, setClearAsk] = useState(false);
   const [clearNote, setClearNote] = useState<string | null>(null);
   useEffect(() => {
@@ -260,7 +260,7 @@ export function Sidebar({
   // 分支一个字不动。
   const showSections = mode !== "tree";
   // 冻结期间用 Workspace 冻下来的那份分段（A51，agora-4yr.4）；没给就照旧实时算。
-  const sections = givenSections ?? rows.map((r) => sectionOf(r, seen));
+  const sections = givenSections ?? rows.map((r) => sectionOf(r, seen, now));
   const firstUnclear = sections.indexOf("unclear");
   const firstWorking = sections.indexOf("working");
   const firstFinished = sections.indexOf("finished");
