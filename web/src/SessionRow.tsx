@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { isHandleless, isHeadless, promptRepeatsLabel, taskLabel, unclearStatus } from "./attention";
 import { rowProcess, type SessionRow } from "./events";
+import { displayPrompt } from "./imageAttach";
 import { projectName, RowIdentity, statusClass } from "./RowIdentity";
 
 export { staleSeen } from "./RowIdentity";
@@ -117,6 +118,7 @@ interface RowProps {
 /** memo：行对象引用没变就不重渲染（store.ts）。 */
 export const SidebarRow = memo(function SidebarRow({ row, active, seen = false, ordinal, onOpen, onRender, now, localNode, showProject, moved }: RowProps) {
   onRender?.(row.id);
+  // ❯ 行与手机气泡同一套说法：附图引用显示成［图片］（agora-eyfi）；搜索 haystack（rowHaystack）仍用原文。
   const prompt = str(row.prompt);
   const progress = str(row.progress);
   const preview = str(row.preview);
@@ -159,7 +161,7 @@ export const SidebarRow = memo(function SidebarRow({ row, active, seen = false, 
           {prompt && !promptRepeatsLabel(row) && (
             <span className="preview line-prompt" data-testid={`prompt-${row.id}`}>
               <span className="muted">❯ </span>
-              {prompt}
+              {displayPrompt(prompt)}
             </span>
           )}
           {progress && (

@@ -373,3 +373,16 @@ it("离线未知行先说明可达性，恢复在线后才提供终端出口", (
   mount(row({ status: "unknown", stale: false, reason: "hooks silent" }));
   expect(screen.getByTestId("unclear-n:a").textContent).toContain("打开它的终端");
 });
+
+it("renders an attached-image prompt as ［图片］ on the ❯ line (agora-eyfi)", () => {
+  const path = "/w/.agora-uploads/1700000000000-abcdef.png";
+  mount(row({ task_ref: "旧任务", prompt: `看这张图 [image: ${path}]` }));
+  const line = screen.getByTestId("prompt-n:a");
+  expect(line.textContent).toBe("❯ 看这张图 ［图片］");
+  expect(line.textContent).not.toContain(".agora-uploads");
+  cleanup();
+
+  // promptRepeatsLabel 仍比原文：任务标签就是这一句时，❯ 行继续隐藏，不会因为显示层改写而多画一行。
+  mount(row({ task_ref: `看这张图 [image: ${path}]`, prompt: `看这张图 [image: ${path}]` }));
+  expect(screen.queryByTestId("prompt-n:a")).toBeNull();
+});
