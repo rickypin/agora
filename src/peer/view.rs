@@ -304,6 +304,9 @@ impl PeerViews {
                         "status",
                         "source",
                         "reason",
+                        "end_cause",
+                        "unknown_cause",
+                        "process",
                         "alive",
                         "detail",
                         "prompt",
@@ -589,6 +592,56 @@ mod tests {
 
     fn row(id: &str, node: &str, status: &str, since: i64) -> Value {
         json!({ "id": id, "node": node, "status": status, "status_since": since, "alive": true })
+    }
+
+    #[test]
+    fn status_changed_carries_process_and_end_cause_and_clears_them() {
+        // agora-eokh：浏览器就地 patch 的字段集包含 process / end_cause / unknown_cause，聚合
+        // 节点以前只抄 status / alive，远程行会保留上一眼。这里直接把同一行的 finished -> running
+        // 走一遍：结束原因必须出现，又必须被下一次不带原因的 running 清掉。
+        let v = fixed(T0);
+        v.replace("b", vec![row("b:1", "b", "running", PEER_T)], None);
+        let applied = v.apply(
+            "b",
+            &json!({
+                "type": "status_changed",
+                "id": "b:1",
+                "status": "finished",
+                "source": "hook",
+                "reason": "replaced",
+                "alive": false,
+                "process": "gone",
+                "end_cause": { "kind": "superseded" },
+                "unknown_cause": null
+            }),
+        );
+        assert!(matches!(applied, Applied::Publish(_)), "{applied:?}");
+        let row = v.get("b:1").unwrap();
+        assert_eq!(row["process"], "gone", "{row}");
+        assert_eq!(row["end_cause"]["kind"], "superseded", "{row}");
+        assert!(row["unknown_cause"].is_null(), "{row}");
+
+        v.apply(
+            "b",
+            &json!({
+                "type": "status_changed",
+                "id": "b:1",
+                "status": "running",
+                "source": "hook",
+                "reason": "prompt submitted",
+                "alive": true,
+                "process": "alive",
+                "end_cause": null,
+                "unknown_cause": null
+            }),
+        );
+        let row = v.get("b:1").unwrap();
+        assert_eq!(row["process"], "alive", "{row}");
+        assert!(
+            row["end_cause"].is_null(),
+            "新状态不许继承旧 end_cause: {row}"
+        );
+        assert!(row["unknown_cause"].is_null(), "{row}");
     }
 
     #[test]
