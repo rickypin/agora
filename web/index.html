@@ -7,7 +7,7 @@
          iOS Safari 不认这条，那边靠字号 ≥16px 不自动放大 + composer 聚焦时 scrollIntoView 兜
          ——agora-x70t.ten0）。两条都不能省，理由各一半。 -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
-    <meta name="theme-color" content="#0e1116" />
+    <meta name="theme-color" content="#101716" />
     <title>agora</title>
     <!-- iPhone 加到主屏（agora-thc.4；A35 / A37 的可安装半边）：iOS 只认 apple-* 这套 meta
          与 apple-touch-icon；manifest 给 Chrome/桌面用，start_url=/m 也在那里。 -->
@@ -17,9 +17,50 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="agora" />
+    <!-- 首帧兜底（agora-vmt6）：外链 CSS 还在路上、或 entry 没加载时，页面至少是墨绿底 +
+         一句状态，不是浏览器默认的白。三个颜色与 index.css 的 --bg / --fg / --muted 一致
+         （tests/spa.rs 的 spa_shell_paints_before_js_and_has_a_watchdog 守卫）。 -->
+    <style>
+      html, body { margin: 0; background: #101716; color: #edf3ef; }
+      .boot {
+        min-height: 100vh; min-height: 100dvh;
+        display: grid; place-content: center; gap: 0.6rem;
+        padding: 24px; text-align: center;
+        font: 17px/1.6 "PingFang SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .boot p { margin: 0; }
+      .boot .hint { color: #a0b1a9; font-size: 14px; }
+      .boot a { color: inherit; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="boot" data-testid="boot">
+        <p>正在连接 agora…</p>
+        <p class="hint">连不上时先检查网络 / Tailscale。</p>
+      </div>
+    </div>
+    <noscript>
+      <div class="boot"><p>agora 需要 JavaScript：请在浏览器设置里允许后重新加载。</p></div>
+    </noscript>
+    <script>
+      // 启动看门狗（agora-vmt6）：entry 404 / 网络半开 / 旧 HTML 引用了已删除的 chunk 时，
+      // 不能只留一块空背景。React 第一次提交会替换 #root 里的占位；10 s 后还在就说明前端
+      // 没有跑起来，换成能照做的提示（不是诊断日志）。
+      (function () {
+        var boot = document.querySelector("#root .boot");
+        if (!boot) return;
+        window.setTimeout(function () {
+          if (!boot.isConnected) return;
+          boot.innerHTML = '<p>连不上节点，前端也没加载成功。</p><p class="hint">检查网络 / Tailscale 后 <a href="">重新加载</a>。</p>';
+          var link = boot.querySelector("a");
+          if (link) link.addEventListener("click", function (event) {
+            event.preventDefault();
+            location.reload();
+          });
+        }, 10000);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

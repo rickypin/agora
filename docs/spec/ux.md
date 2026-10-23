@@ -245,6 +245,9 @@ meta 之下还有一行「仓库 ⎇ 分支」（`.line-project`，`data-testid=
 
 2026-10-11（agora-tqkb / agora-ydzj）：设置与新建使用 `/m?screen=settings` / `/m?screen=new` 历史条目，页面返回、浏览器后退和前进保持一致；返回收件箱恢复之前的滚动位置（内容或字号改变时受当前可滚动范围限制）。离开新建后，迟到的创建响应不再切走当前页面。
 
+2026-10-24（agora-axz0 / bkbg / f0gv / up0p）：读会话有三种结论，收件箱不再把前两种画成「没有等你的事」——首帧显示「正在读会话…」；拉取失败（`apiFetch` 默认 20 s 期限）显示「拿不到会话列表：暂时连不上节点」+「重试」，已有行保留上次收到的状态。凭据探测失败单独一档「暂时无法确认」，且不清地址栏里的一次性配对 token（重试 / 刷新还能再兑换）。WS 握手有 10 s 期限，首连失败时先用 HTTP 拉一次全量。render / effect 异常由 `ErrorBoundary` 换成可复制的错误页（构建号 / UA / 错误栈 / 最近 5 条 window 错误），布局报告也带这些记录。`/m` 首包不再含 xterm（桌面工作台按需加载：entry 681 KB → 310 KB raw / 98 KB gzip）。缺失的前端资源回 404，不再被 SPA 回退成 `200 text/html`；PWA 的 `theme-color` 与 manifest 背景色跟 `:root` 的 `--bg` 一致。守卫：`net.test.ts`（期限 / 调用方 signal）、`events.test.ts`（握手期限、首连失败仍拉全量、快照 ok/failed）、`MobileApp.test.tsx`（loading / failed / 重试）、`App.test.tsx`（网络失败保留 token + 重试）、`ErrorBoundary.test.tsx` / `errors.test.ts`、`tests/spa.rs`（404、壳色值、entry 不含 xterm）。
+2026-10-24（agora-vmt6）：这一轮补的是「页面根本没跑起来」的壳，而不是再改状态文案。`index.html` 内联 `--bg` / `--fg` 底色与「正在连接 agora…」占位（`<noscript>` 与 10 s 启动看门狗；entry 404 / 半开网络时换成「连不上节点，前端也没加载成功」+ 重新加载），外链 CSS 失败也**不是白屏**。服务端对文本 / JS / CSS 做 gzip 并给静态资源 ETag（`/m` 的 3.5 KB HTML → 1.9 KB、310 KB entry → 97 KB；`no-cache` 下用 `If-None-Match` 回 304）。`sw.js` 新增离线壳：install 预缓存 `/m`、`/` 与它们引用的 `/assets/*`；导航**网络优先**（4 s 超时回壳，在线永远先问网络，升级不会停在旧 HTML——agora-8xwg 的守卫），assets 缓存优先；`/api/*` 一律直连、不缓存。实测（Chromium 131 + 自签 HTTPS 代理）：断网冷启动与暖启动都显示「daemon：不可达 / 凭据：暂时无法确认」并可重试，缓存里 `/api` 0 条；在线换 HTML 后重载拿到新壳、离线仍是新壳；首屏第一次有内容（FCP，内联占位）从 2.28 s / 7.79 s（1.6 Mbps / 400 kbps，4× CPU）降到 0.46 s / 0.85 s，React 门页约 1.0 s / 2.8 s。守卫：`tests/spa.rs`（内联兜底色值、ETag/304、gzip/q=0/Vary/两种表示的 ETag）、`web/src/swShell.test.ts`（fetch 分支、`/api` 直连、网络优先与超时）；真机 iOS 主屏 PWA 的断网冷启动仍待一次代检（无 iPhone/WebKit 驱动），但 SW 只用标准 API，同一套 HTTPS 代理已在 Chromium 验过。
+
 手机详情与收件箱共享节点连接状态：断线显示「暂时连不上节点，当前显示上次收到的状态。」，恢复后移除提示，保留未发送草稿（agora-5ylu）。输入 / 结束操作要求可写的运行时；重启独立判断托管运行时与非空启动命令，已结束会话仍保留「更多 → 重新启动」，只读或无命令会话不提供重启（agora-8nn8）。
 
 兼容基线为 iPhone 16 Pro / iOS 18.5：构建目标显式固定 Safari 18，避免工具升级抬高最低引擎版本。2026-10-09 使用 WebKit 18.5（Playwright 1.53.2）验证 402×874、320×640 与 874×402 视口，筛选、搜索、草稿、多行发送、浏览器后退、大字号和预设启动通过，页面无错误、无横向溢出。
@@ -469,6 +472,15 @@ PTY 没有队列，键击直接落进 TUI 的输入区，各家对「跑着的�
 用户天天去点刷新（`web/src/webVersion.ts` 的保守规则）。「重新加载」会先清 Cache Storage 再用带
 随机查询串的地址重新导航：同 scope 仍在 PWA 里，下次冷启回到 start_url。
 
+缺失的前端资源（`/assets/**`、`favicon.ico` 这类带扩展名的路径、裸 `api` / `assets`）现在回 404，
+不再被 SPA 回退成 `200 text/html`（agora-f0gv）：后者会被模块脚本 / 样式表的严格 MIME 校验拒绝，
+页面白屏且没有可见错误；无扩展名的 `/m` 深链仍回 index.html。
+
+2026-10-24（agora-vmt6）：静态资源同时带 ETag 与 `Cache-Control: no-cache`（带内容 hash 的 assets
+仍是 immutable）；手机重开时发 `If-None-Match`，没变就 304，不再重传 1.5–3.5 KB HTML。文本 / JS / CSS
+在客户端接受时走 gzip（`Vary: Accept-Encoding`，gzip 与 identity 用不同的强 ETag），服务端只在内存里
+压一次（`flate2`，纯 Rust，Mac 交叉编译不需要 cmake / OpenSSL）。
+
 顺带一条安全区规则（同一次排障的副产物）：页面不再直接写 `env(safe-area-inset-top/bottom)`，而是
 `--safe-top` / `--safe-bottom` 两个变量（`:root` 默认 `env()`）。独立模式优先保留系统安全区，
 浏览器模式才按视口与屏幕长短边判断。2026-10-09 完整 iOS 18.5 Simulator 反证了旧的高度推断：
@@ -485,7 +497,7 @@ WAITING 的变体：决策原文（等宽逐字、不过 markdown）作为一张
 - composer 与发送：固定在底部（拇指区）。**状态门**：turn_done / idle 开放文本；waiting 只给决定按钮；running / starting 上 `host` 通道**可排队**（见「运行中排队发送」），`runtime` 置灰并说明「它还在跑」。**能不能发看 `textVia(row)` 而不是有没有句柄**（agora-t5kf.3，ADR-002 D11）：`runtime`（有 PTY）与 `host`（无句柄但宿主收文本，目前是 pi 的扩展）都给 composer；`none`（Claude / Codex / Grok、旧扩展、老节点）没有 composer，并给一句说明（`mobile-terminal-only`：在跑时说“它还在跑；只能在桌面终端里回复”、其余说“没有可写的运行时”——agora-71p2，不能让它看着像输入框没画出来）。host 行在跑时 composer 仍在，其下是 `mobile-host-running-note`“它还在跑；发出去会排队，等它跑完这一轮就交进去”——排的是 pi 的 followUp，语义与实测见「运行中排队发送」。发送是**乐观的**：气泡先以「发送中」出现，`POST /api/sessions/:id/input` 成功之后按**发出去的那一刻这一行是否在跑**分两种标签：`host` 且在跑给「已排队」、其余给「已发出」
 （见下面「发送三段」）；失败时文本回填输入框（不覆盖在途时新打的字）、失败气泡上保留「重试」，失败原因贴着气泡按错误码说人话（agora-jidm）：`no_runtime` 与 `mobile-terminal-only` 同一句人话「回复要到桌面终端」、`runtime_session_not_found`（`text_via=runtime` 但 pane 没了）「这个会话的终端已经不在了；到桌面看它」、`read_only`（采纳行）「这一行只能看不能写」；`host_timeout`（504，宿主没来取件）与 `host_rejected`（502，扩展 `.failed` 的原话）把服务端 / 宿主那句话直接显示、不加壳——504 的队列里那件已被 daemon 删掉，重试不会跑两遍。
 - 排版与自适应（agora-x70t，2026-10-08 在 iPhone 16 Pro 上按计算样式与几何量测定的牙）：手机壳用**一套 `--m-fs` 令牌**（`web/src/index.css` 的 `.mobile` / `.gate-mobile`），字号、间距（`--m-1..--m-5`）、触控下限（`--m-tap`）都由它派生——换一档字，行距与留白跟着变，否则字号一大人就觉得挤。基准 **17px**（Apple HIG 的 body；桌面根基准仍为 13px、正文角色为 14px；共享字体与语义色，字号密度按设备适配），设置屏有四档 **小 15 / 标准 17 / 大 19 / 特大 22**，存 localStorage（键 `agora.mobile-text`，`data-text` 是与 CSS 的接口）；默认档就是 17px，因为"整体偏小"正是这一轮要修的。两条**平台下限是绝对的**、不跟档位缩：输入框 ≥16px（低于它 iOS 一聚焦就整页放大——"点输入框页面就放大"的根因）、可点目标 ≥44pt（Apple 触控下限）。长词与 URL 到处可折（`overflow-wrap: anywhere`；无空格长串以前会画出卡片外，量测 `.mobile-card-task` scrollWidth 2210 / clientWidth 384），收件箱行的单行省略号保留（那是设计）。**引擎差异要有硬夹断兜底**：WebKit（iOS 上唯一的引擎）对没有 `overflow`/`min-width: 0` 的 flex 项不给收缩——80 字符无空格的行名在那里盒子 1138px 直接顶出卡片框，而 Chromium 会换行、量不出来（2026-10-08，agora-c03z：Playwright WebKit 复现）；所以 `.mobile-row` 有 `overflow: hidden`、`.mobile-card` 有 `overflow-x: hidden`、行头子项有 `min-width: 0`，名字/状态再叠 `overflow-wrap: anywhere`。视口：`100dvh`（Safari 工具栏不把 composer 顶出屏幕）、四向 `env(safe-area-inset-*)`（横屏刘海）、`interactive-widget=resizes-content`（Chromium 系键盘缩内容）、`-webkit-text-size-adjust: 100%`（横屏不放大文字），composer 聚焦后 `scrollIntoView({block:"nearest"})` 兜住 iOS 键盘。守卫：`web/src/mobileCss.test.ts`（把 CSS 当数据钉上述不变式）、`mobileText.test.ts`、`MobileSettings.test.tsx` / `MobileApp.test.tsx`（档位读写与 `data-text`）、`MobileCard.test.tsx`（聚焦滚动、失败草稿回填与四类失败文案）。
-- 不做：终端（xterm 不加载）、New Agent 自由表单（「新建」= 预设一屏，见上）、diff / 验收 / 改动列表、命令面板与快捷键、多节点切换（只配一个承载节点）、消息流、翻页与完整对话历史（「更早 ≤3 轮」之外；Conversation indexing 见 §11，承接 `agora-ghl3`）。
+- 不做：终端（桌面工作台按需加载，xterm 的代码不在 `/m` 首包里；agora-up0p）、New Agent 自由表单（「新建」= 预设一屏，见上）、diff / 验收 / 改动列表、命令面板与快捷键、多节点切换（只配一个承载节点）、消息流、翻页与完整对话历史（「更早 ≤3 轮」之外；Conversation indexing 见 §11，承接 `agora-ghl3`）。
 - `respond_via = terminal`（Grok 权限、AskUserQuestion）显示「需要到桌面」，不提供「打开终端」；不注入键击（MISSION §1.2）。
 
 行为：推送点击进 `/m?session=<node>:<id>` 并定位该行（PWA 已开则聚焦；可发送的行把焦点放进 composer）；「看过」沿用每设备 localStorage（与桌面不共享，v1 接受）；承载节点离线时门页显示不可达与上次同步时间，不做离线动作队列。守卫：web/src/Mobile*.test.tsx（新建）与 A52 的 DOM 断言（不含终端 / 创建自由表单（只有预设按钮，整屏无 input / textarea）/ diff / 验收 / 改动列表的 testid）。

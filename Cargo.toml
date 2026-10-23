@@ -27,6 +27,9 @@ tokio-tungstenite = "0.29"
 futures-util = "0.3"
 rust-embed = { version = "8.12", features = ["include-exclude"] }
 mime_guess = "2.0"
+# SPA 静态资源的 gzip（agora-vmt6）：首包 310 KB JS 在 400 kbps 上要 7 s，压缩后约 2 s。
+# 默认后端是纯 Rust 的 miniz_oxide（无 cmake / openssl-sys），不破坏 Mac 交叉编译。
+flate2 = "1"
 serde = { version = "1.0", features = ["derive"] }
 # preserve_order：写回用户配置文件时不打乱他的键序（hooks install 的 diff 才只有加的行）。
 serde_json = { version = "1.0", features = ["preserve_order"] }
