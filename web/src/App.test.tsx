@@ -12,7 +12,7 @@
  * 前端唯一的 `fetch(` 在 net.ts（tests/arch_boundary.rs 守卫，测试文件也在扫描范围内），所以这里
  * mock 的是 `./net` 的 apiFetch，不碰全局 fetch。
  */
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -24,6 +24,8 @@ const net = vi.hoisted(() => ({
   consumed: new Set<string>(),
   /** `GET /api/auth/devices` 该不该 200（有没有已有 session）。 */
   devicesOk: false,
+  /** 整体断网：任何 apiFetch 都 reject（模拟半开连接 / 连不上节点）。 */
+  fail: false,
   delays: new Map<string, Promise<void>>(),
 }));
 
@@ -34,6 +36,7 @@ vi.mock("./Workspace", () => ({
 vi.mock("./net", () => ({
   API_PREFIX: "/api/",
   apiFetch: async (path: string, init: RequestInit = {}): Promise<Response> => {
+    if (net.fail) throw new Error("network down");
     const json = (status: number, body: unknown): Response =>
       ({ ok: status >= 200 && status < 300, status, json: async () => body }) as unknown as Response;
     if (path === "/api/health") return json(200, { status: "ok" });
@@ -168,6 +171,7 @@ describe("App pair gate paste box", () => {
     net.devicesOk = false;
   });
   afterEach(() => {
+    net.fail = false;
     cleanup();
     window.history.replaceState(null, "", "/");
   });
@@ -190,6 +194,27 @@ describe("App pair gate paste box", () => {
     expect(net.pairPosts).toEqual([pasted]);
   });
 
+  it("a network failure on paste keeps the link and retries without burning the token", async () => {
+    window.location.hash = "";
+    net.fail = true;
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    const input = await screen.findByTestId("pair-paste-input");
+    const pasted = "retry-token-" + "y".repeat(30);
+    fireEvent.change(input, { target: { value: `https://zuan.example:7681/#pair=${pasted}` } });
+    fireEvent.submit(input.closest("form")!);
+    expect(await screen.findByTestId("pair-paste-offline")).toBeTruthy();
+    expect(net.pairPosts).toEqual([]);
+
+    net.fail = false;
+    fireEvent.submit(input.closest("form")!);
+    expect(await screen.findByText("workspace-placeholder")).toBeTruthy();
+    expect(net.pairPosts).toEqual([pasted]);
+  });
+
   it("a bad paste reports and stays on the gate", async () => {
     window.location.hash = "";
     render(
@@ -203,5 +228,36 @@ describe("App pair gate paste box", () => {
     fireEvent.submit(input.closest("form")!);
     expect(await screen.findByTestId("pair-paste-error")).toBeTruthy();
     expect(net.pairPosts).toEqual([]);
+  });
+});
+
+/**
+ * 凭据探测的网络失败（agora-axz0）：既不能说「未配对」（它在撒谎），也不能把一次性 token
+ * 当成用掉了——重试 / 刷新要还能再兑换。
+ */
+describe("App pair gate network failure", () => {
+  beforeEach(() => {
+    net.fail = true;
+    net.pairPosts.length = 0;
+    net.devicesOk = false;
+  });
+  afterEach(() => {
+    net.fail = false;
+    cleanup();
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("keeps the token, says it cannot confirm, and retries into the workspace", async () => {
+    renderStrict("#pair=net-down");
+    expect(await screen.findByText(/暂时无法确认/)).toBeTruthy();
+    // 网络失败不是这个 token 的结论：地址栏里还留着，重试后再兑换（服务端只见过一次）。
+    expect(window.location.hash).toBe("#pair=net-down");
+    expect(net.pairPosts).toEqual([]);
+
+    net.fail = false;
+    fireEvent.click(screen.getByTestId("auth-retry"));
+    expect(await screen.findByText("workspace-placeholder")).toBeTruthy();
+    expect(net.pairPosts).toEqual(["net-down"]);
+    expect(window.location.hash).toBe("");
   });
 });

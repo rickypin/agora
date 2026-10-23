@@ -291,6 +291,8 @@ const PONG_TIMEOUT_MS = 5_000;
 const PONG_SILENCE_MS = 30_000;
 /** 回到前台的重拉限流窗：同一秒只拉一次（iOS 恢复时一串事件连发）。 */
 const RESYNC_THROTTLE_MS = 1_000;
+/** 握手期限：连 TCP/TLS 建了但 upgrade 响应不来也不能一直等（agora-50x9）。 */
+const CONNECT_TIMEOUT_MS = 10_000;
 
 export interface EventsClientOptions {
   /** 建 WS 连接；默认 `new WebSocket(<同源>/api/events)`。 */
@@ -302,6 +304,11 @@ export interface EventsClientOptions {
   /** 重连退避起点 / 上限，默认 1 s / 30 s。 */
   reconnectMinMs?: number;
   reconnectMaxMs?: number;
+  /**
+   * 握手期限（默认 10 s）：`onopen` 之前没有任何心跳，半开连接（切网 / NAT 重绑定）上
+   * `onopen` / `onclose` 可能都不来——没有这条就永远不重连（agora-50x9）。<= 0 关掉。
+   */
+  connectTimeoutMs?: number;
   /** 视图变了才回调；内容相等不重渲染由调用方比较。 */
   onChange: (sessions: Map<string, SessionRow>) => void;
   onNotification?: (n: { id: string | null; title: string; body: string; status?: string | null }) => void;
@@ -309,6 +316,11 @@ export interface EventsClientOptions {
   onDecisionResolved?: (e: { id: string; tool_use_id: string; via: string }) => void;
   /** 未登记会话只随全量快照来（事件流不推它们）；每次 resync 后回调。 */
   onUnregistered?: (rows: UnregisteredRow[], unreadable: UnreadableSocket[]) => void;
+  /**
+   * 最近一次全量快照的结果（agora-axz0）：`failed` 时收件箱画「拿不到列表 + 重试」而不是
+   * 「没有等你的事」。只在有结论时回调；调用方自己保存 `loading` 初值。
+   */
+  onSnapshotState?: (state: "ok" | "failed") => void;
   /**
    * 一个 peer 上线 / 掉线 / 换了错误类型（agora-c8h）：立刻回调，不进 300 ms 的合并批——Header 的点
    * 与侧栏行的变灰该是同一眼看到的。`peer` 原样给出，由 HealthWatcher 整形（web/src/health.ts）。
@@ -365,6 +377,8 @@ export class EventsClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoff: number;
   private stopped = false;
+  /** 握手期限（连上 / 断开 / 停止即清）。 */
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   /** 心跳定时器（连上才起，断开 / 停止即清）。 */
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   /** 当前这条 ping 的 pong 截止定时器（收到 pong 即清）。 */
@@ -394,6 +408,7 @@ export class EventsClient {
     this.detachDom?.();
     this.detachDom = null;
     this.clearHeartbeat();
+    this.clearConnectTimer();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.reconnectTimer = null;
@@ -404,8 +419,16 @@ export class EventsClient {
   private open(): void {
     const sock = (this.opts.connect ?? defaultSocket)();
     this.socket = sock;
+    const connectTimeout = this.opts.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
+    if (connectTimeout > 0) {
+      this.connectTimer = setTimeout(() => {
+        if (sock !== this.socket) return; // 已被换掉的旧连接
+        this.dropHalfDead();
+      }, connectTimeout);
+    }
     sock.onopen = () => {
       if (sock !== this.socket) return; // 已被看门狗 / stop 换掉的旧 socket
+      this.clearConnectTimer();
       this.backoff = this.opts.reconnectMinMs ?? 1000;
       this.lastPongAt = null;
       this.opts.onOpen?.();
@@ -432,11 +455,15 @@ export class EventsClient {
       if (sock !== this.socket) return;
       this.socket = null;
       this.clearHeartbeat();
+      this.clearConnectTimer();
       if ((ev as { code?: unknown } | null)?.code === REVOKED_CLOSE_CODE) {
         this.stop();
         this.opts.onRevoked?.();
         return;
       }
+      // 首连就失败（含握手超时）时事件流还没有过任何全量：用 HTTP 补一次，
+      // 别让「WS 连不上」把列表也一起判死（agora-axz0）。
+      this.resyncIfNeverLoaded();
       this.scheduleReconnect();
     };
     sock.onerror = () => {
@@ -502,6 +529,17 @@ export class EventsClient {
     this.pongTimer = null;
   }
 
+  private clearConnectTimer(): void {
+    if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.connectTimer = null;
+  }
+
+  /** 一次全量都没成功过就断线：补一次 HTTP 全量（只在 `snapshots === 0` 时，不轮询）。 */
+  private resyncIfNeverLoaded(): void {
+    if (this.snapshots > 0) return;
+    void this.resync();
+  }
+
   private clearHeartbeat(): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
@@ -517,6 +555,7 @@ export class EventsClient {
   private dropHalfDead(): void {
     if (this.stopped || !this.socket) return;
     this.clearHeartbeat();
+    this.clearConnectTimer();
     const sock = this.socket;
     this.socket = null;
     try {
@@ -524,6 +563,7 @@ export class EventsClient {
     } catch {
       /* 关不掉也当它断了 */
     }
+    this.resyncIfNeverLoaded();
     this.scheduleReconnect();
   }
 
@@ -657,7 +697,9 @@ export class EventsClient {
     try {
       snap = await (this.opts.fetchSnapshot ?? defaultSnapshot)();
     } catch {
-      return; // 下一次重连或 resync 再试；不轮询。
+      // 拉不到要有结论，别静默（收件箱据此说「拿不到列表」而不是「没有会话」，agora-axz0）。
+      this.opts.onSnapshotState?.("failed");
+      return; // 下一次重连 / 回到前台 / 手动重试再拉；不轮询。
     }
     this.sessions.clear();
     for (const s of snap.sessions) this.sessions.set(s.id, s);
@@ -665,5 +707,6 @@ export class EventsClient {
     this.unreadableSockets = snap.unregistered_unreadable ?? [];
     this.opts.onChange(this.sessions);
     this.opts.onUnregistered?.(this.unregistered, this.unreadableSockets);
+    this.opts.onSnapshotState?.("ok");
   }
 }

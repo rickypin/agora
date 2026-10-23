@@ -1,14 +1,21 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { installErrorCapture } from "./errors";
 import "./index.css";
 import { registerPwa } from "./pwa";
+
+// 先装采集再挂载（agora-bkbg）：装在 effect 里会漏掉首帧 render 阶段的异常。
+installErrorCapture(window);
 
 const root = document.getElementById("root");
 if (root) {
   createRoot(root).render(
     <StrictMode>
-      <App />
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
     </StrictMode>,
   );
 }

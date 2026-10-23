@@ -46,3 +46,24 @@ describe("SessionStore · 节点钟基准 (agora-au5)", () => {
     expect(store.clockSnapshot()?.now).toBe(200);
   });
 });
+
+describe("SessionStore · 快照结论 (agora-axz0)", () => {
+  it("loading → ok → failed → ok，收件箱据此区分「还没拉到 / 拉失败 / 真的没有」", async () => {
+    let fail = false;
+    const store = new SessionStore({
+      fetchSnapshot: async () => {
+        if (fail) throw new Error("down");
+        return snapshot();
+      },
+    });
+    expect(store.snapshotStateSnapshot()).toBe("loading");
+    await store.refresh();
+    expect(store.snapshotStateSnapshot()).toBe("ok");
+    fail = true;
+    await store.refresh();
+    expect(store.snapshotStateSnapshot()).toBe("failed");
+    fail = false;
+    await store.refresh();
+    expect(store.snapshotStateSnapshot()).toBe("ok");
+  });
+});

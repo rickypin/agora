@@ -14,6 +14,7 @@
  * 盒子数字、class 名与**行上已经显示出来的那点文字**（本来就是屏幕上可见的东西）。
  */
 import { webBuild } from "./build";
+import { capturedErrors } from "./errors";
 import { currentInsets } from "./mobileInsets";
 
 const OUTLINE_ATTR = "data-outline";
@@ -200,6 +201,8 @@ export function layoutReport(): string {
           tap: getComputedStyle(mobile).getPropertyValue("--m-tap").trim(),
         }
       : null,
+    // 崩溃现场（agora-bkbg）：手机上唯一能带走的 JS 错误记录（有界，5 条）。
+    errors: capturedErrors(),
     rows,
     card: card
       ? {

@@ -37,7 +37,7 @@ import { loadMobileTextSize, storeMobileTextSize, type MobileTextSize } from "./
 import { browserPushEnv, selfCheckPush, type PushEnv } from "./push";
 import { nodeHue } from "./nodeColor";
 import { identityName, rowName, statusSymbol, str } from "./SessionRow";
-import { SessionStore, useServerClock, useSessions } from "./store";
+import { SessionStore, useServerClock, useSessions, useSnapshotState } from "./store";
 
 /** 前三段固定顺序（与 attention.ts 的 partitionByAttention 同一顺序）；已完成是折叠的一段。
  *  段名回答的是「要不要我管」，不是「在不在跑」：working 段装的是**一切不需要你的行**——running /
@@ -98,6 +98,10 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
   const store = useMemo(() => given ?? new SessionStore(), [given]);
   const api = useMemo(() => givenApi ?? sessionApi(), [givenApi]);
   const rows = useSessions(store);
+  // 全量快照的结论（agora-axz0）：「还没拉到」「拉失败」「真的没有会话」是三件事，
+  // 收件箱不能把前两种画成「没有等你的事」。
+  const snapshotState = useSnapshotState(store);
+  const [retryingSnapshot, setRetryingSnapshot] = useState(false);
   // 行上时长以节点钟为基准（agora-au5）：手机与节点没校时是最常见的现场，用页面钟减 status_since
   // 会把钟差整体加在时长上；serverClock 缺省（老节点 / 还没拉到快照）时退回页面钟。
   const serverClock = useServerClock(store);
@@ -493,6 +497,21 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
     );
   }
 
+  /** attention 段的空态（agora-axz0）：只有「拉成功且真的没有行」才说「没有等你的事」。 */
+  const attentionEmpty = (key: Section) => {
+    if (key !== "attention" || query) return null;
+    if (snapshotState === "failed") return null;
+    if (snapshotState === "loading") {
+      return (
+        <div className="mobile-empty" data-testid="mobile-snapshot-loading">
+          <p>正在读会话…</p>
+          <span>连上节点后自动刷新。</span>
+        </div>
+      );
+    }
+    return <div className="mobile-empty"><MobileIcon name="check"/><p>没有等你的事</p><span>可以安心离开，有新进展再回来。</span></div>;
+  };
+
   const renderRow = (row: SessionRow) => (
     // 「已读」是本设备的 seen 集合算出来的（MISSION §4.6 证据 ①）：记号跟着「这一次完成」走。
     <MobileRow key={row.id} row={row} now={nowSeconds} localNode={localNode} seen={seen.has(seenKey(row))} onOpen={openRow} />
@@ -509,6 +528,23 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
       <div className="mobile-inbox mobile-home-inbox" ref={inboxRef}>
         {nodeWarning && <p className="mobile-note warning" role="status" data-testid="mobile-node-warning">{nodeWarning}</p>}
         {nodes.reachable === false && <p className="mobile-note warning" role="status">暂时连不上节点，当前显示上次收到的状态。</p>}
+        {snapshotState === "failed" && (
+          <p className="mobile-note warning" role="status" data-testid="mobile-snapshot-failed">
+            拿不到会话列表：暂时连不上节点。{rows.length > 0 ? "下面是上次收到的状态。" : ""}
+            <button
+              type="button"
+              className="link"
+              data-testid="mobile-snapshot-retry"
+              disabled={retryingSnapshot}
+              onClick={() => {
+                setRetryingSnapshot(true);
+                void store.refresh().finally(() => setRetryingSnapshot(false));
+              }}
+            >
+              {retryingSnapshot ? "重试中…" : "重试"}
+            </button>
+          </p>
+        )}
         <div className="mobile-filter" role="group" aria-label="筛选会话">
           <button type="button" aria-pressed={filter === "all"} onClick={() => setFilter("all")}>全部 <span>{rows.length}</span></button>
           <button type="button" aria-pressed={filter === "attention"} onClick={() => setFilter("attention")}>需要我 <span>{sections.attention.length}</span></button>
@@ -528,9 +564,7 @@ export function MobileApp({ store: given, api: givenApi, health: givenHealth, ve
               <span>{label}</span>
               <span>{sections[key].filter(matches).length}</span>
             </h2>
-            {sections[key].filter(matches).length === 0
-              ? key === "attention" && !query && <div className="mobile-empty"><MobileIcon name="check"/><p>没有等你的事</p><span>可以安心离开，有新进展再回来。</span></div>
-              : <ul>{sections[key].filter(matches).map(renderRow)}</ul>}
+            {sections[key].filter(matches).length === 0 ? attentionEmpty(key) : <ul>{sections[key].filter(matches).map(renderRow)}</ul>}
           </section>
         ))}
         {filter === "all" && clearable.length > 0 && (

@@ -58,7 +58,12 @@ const redeemed = new Map<string, Promise<PairedDevice | null>>();
 export function redeemPairOnce(token: string): Promise<PairedDevice | null> {
   let pending = redeemed.get(token);
   if (!pending) {
-    pending = redeemPair(token);
+    pending = redeemPair(token).catch((error: unknown) => {
+      // 网络失败不是这个 token 的结论：删掉缓存，重试 / 刷新还能再兑换（agora-axz0）。
+      // 服务端给出 401（返回 null）仍缓存——同一个 token 的答案不会变。
+      redeemed.delete(token);
+      throw error;
+    });
     redeemed.set(token, pending);
   }
   return pending;

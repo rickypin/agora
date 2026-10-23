@@ -1035,3 +1035,42 @@ it("refreshes connectivity as soon as the event stream reconnects", async () => 
   await online(t);
   expect(refresh).toHaveBeenCalled();
 });
+
+/**
+ * 收件箱的快照结论（agora-axz0）：还没拉到 ≠ 拉失败 ≠ 真的没有会话。
+ * 以前三种都画「没有等你的事 / 可以安心离开」，半开连接上是一句假话。
+ */
+describe("收件箱的快照结论（agora-axz0）", () => {
+  it("首帧还没拿到全量：说正在读，不说没有等你的事", () => {
+    setup([]);
+    expect(screen.getByTestId("mobile-snapshot-loading")).toBeTruthy();
+    expect(screen.queryByText("没有等你的事")).toBeNull();
+  });
+
+  it("拉失败：显示原因与重试，重试成功后画出行", async () => {
+    let fail = true;
+    const sock = new FakeSocket();
+    const store = new SessionStore({
+      connect: () => sock,
+      fetchSnapshot: async () => {
+        if (fail) throw new Error("down");
+        return { sessions: [row("n:a")], unregistered: [] };
+      },
+      coalesceMs: 0,
+    });
+    const health = new HealthWatcher({ fetchHealth: async () => ({ status: "ok" }) });
+    const version = new VersionWatcher({ fetchSystem: async () => ({ node: "zuan" }) });
+    render(<MobileApp store={store} health={health} version={version} now={1000} />);
+
+    await act(async () => {
+      await store.refresh();
+    });
+    expect(screen.getByTestId("mobile-snapshot-failed")).toBeTruthy();
+    expect(screen.queryByText("没有等你的事")).toBeNull();
+
+    fail = false;
+    fireEvent.click(screen.getByTestId("mobile-snapshot-retry"));
+    expect(await screen.findByTestId("mobile-row-n:a")).toBeTruthy();
+    expect(screen.queryByTestId("mobile-snapshot-failed")).toBeNull();
+  });
+});

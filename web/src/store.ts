@@ -25,6 +25,11 @@ export class SessionStore {
    * 老节点 / 测试桩不发 `now`，或还没拉到快照时是 null（调用方退回页面钟）。
    */
   private clock: ServerClock | null = null;
+  /**
+   * 全量快照的最近一次结论（agora-axz0）：`loading` 是页面打开后还没拉到过（不能画「没有
+   * 等你的事」）；`failed` 是最近一次拉取失败（连不上节点），收件箱据此显示原因与重试。
+   */
+  private snapshotState: SnapshotState = "loading";
   private listeners = new Set<() => void>();
   readonly client: EventsClient;
   /** onChange 次数（测试断言用）。 */
@@ -39,7 +44,10 @@ export class SessionStore {
   onPeerChanged: ((name: string, peer: unknown) => void) | null = null;
 
   constructor(
-    opts: Omit<EventsClientOptions, "onChange" | "onUnregistered" | "onNotification" | "onOpen" | "onRevoked" | "onPeerChanged"> = {},
+    opts: Omit<
+      EventsClientOptions,
+      "onChange" | "onUnregistered" | "onSnapshotState" | "onNotification" | "onOpen" | "onRevoked" | "onPeerChanged"
+    > = {},
   ) {
     this.client = new EventsClient({
       ...opts,
@@ -66,6 +74,11 @@ export class SessionStore {
         this.unreadableSockets = unreadable;
         for (const l of this.listeners) l();
       },
+      onSnapshotState: (state) => {
+        if (state === this.snapshotState) return;
+        this.snapshotState = state;
+        for (const l of this.listeners) l();
+      },
     });
   }
 
@@ -74,6 +87,10 @@ export class SessionStore {
   }
   stop(): void {
     this.client.stop();
+  }
+  /** 手动重拉一次全量（收件箱「重试」；与回到前台 / 重连走同一条 resync，不轮询）。 */
+  refresh(): Promise<void> {
+    return this.client.refresh();
   }
 
   subscribe = (l: () => void): (() => void) => {
@@ -85,7 +102,12 @@ export class SessionStore {
   unreadableSocketsSnapshot = (): UnreadableSocket[] => this.unreadableSockets;
   /** 最近一次快照的节点钟基准（agora-au5）；老节点 / 还没拉到快照时 null。 */
   clockSnapshot = (): ServerClock | null => this.clock;
+  /** 全量快照的最近一次结论：loading（还没拉到）/ ok / failed（agora-axz0）。 */
+  snapshotStateSnapshot = (): SnapshotState => this.snapshotState;
 }
+
+/** 全量快照的三种结论；`loading` 与「真的没有会话」必须分得开（agora-axz0）。 */
+export type SnapshotState = "loading" | "ok" | "failed";
 
 export function useUnregistered(store: SessionStore): UnregisteredRow[] {
   return useSyncExternalStore(store.subscribe, store.unregisteredSnapshot, store.unregisteredSnapshot);
@@ -98,6 +120,11 @@ export function useUnreadableSockets(store: SessionStore): UnreadableSocket[] {
 
 export function useSessions(store: SessionStore): SessionRow[] {
   return useSyncExternalStore(store.subscribe, store.snapshot, store.snapshot);
+}
+
+/** 收件箱区分「加载中 / 失败 / 成功」用（agora-axz0）。 */
+export function useSnapshotState(store: SessionStore): SnapshotState {
+  return useSyncExternalStore(store.subscribe, store.snapshotStateSnapshot, store.snapshotStateSnapshot);
 }
 
 /**

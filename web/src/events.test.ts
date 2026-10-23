@@ -514,3 +514,106 @@ describe("进程三态的类型守卫（Q4，agora-5gg.18）", () => {
     expect(rowProcess({ ...base, alive: true, process: "gone" })).toBe("gone");
   });
 });
+
+/**
+ * 半开连接与首连失败（agora-50x9 / agora-axz0）。
+ *
+ * 这两件事必须分开钉：握手阶段没有心跳，必须有独立的期限；首连还没拿到过任何全量时，
+ * 「WS 连不上」不该同时把列表判死——HTTP 仍然可用，先用它拉一次。
+ */
+describe("EventsClient · 握手期限与首连失败", () => {
+  const sockets: FakeSocket[] = [];
+  let client: EventsClient | null = null;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    sockets.length = 0;
+    client = null;
+  });
+  afterEach(() => {
+    client?.stop();
+    vi.useRealTimers();
+  });
+
+  function start(extra: Partial<EventsClientOptions> = {}): EventsClient {
+    client = new EventsClient({
+      connect: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      fetchSnapshot: async () => ({ sessions: [row("n:a")], unregistered: [] }),
+      coalesceMs: 0,
+      reconnectMinMs: 100,
+      onChange: () => {},
+      ...extra,
+    });
+    client.start();
+    return client;
+  }
+
+  it("握手一直不 onopen：默认 10 s 后放弃、重连，并先用 HTTP 拉一次全量", async () => {
+    const states: string[] = [];
+    const c = start({ onSnapshotState: (state) => states.push(state) });
+    expect(sockets).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.closed).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets[0]!.closed).toBe(true);
+    expect(c.snapshots).toBe(1);
+    expect([...c.sessions.keys()]).toEqual(["n:a"]);
+    expect(states).toEqual(["ok"]);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("按时 onopen 会清掉握手期限（20 s 内不额外重连）", async () => {
+    start();
+    sockets[0]!.serverOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.closed).toBe(false);
+  });
+
+  it("首连失败（从未 open）也走 HTTP 全量；已经有全量后断开不再额外拉", async () => {
+    const c = start();
+    expect(c.snapshots).toBe(0);
+
+    sockets[0]!.serverDrop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.snapshots).toBe(1);
+    expect([...c.sessions.keys()]).toEqual(["n:a"]);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sockets).toHaveLength(2);
+    sockets[1]!.serverDrop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.snapshots).toBe(1);
+  });
+
+  it("快照失败报 failed，成功报 ok（收件箱据此区分「拿不到」与「没有」）", async () => {
+    let fail = true;
+    const states: string[] = [];
+    const c = start({
+      fetchSnapshot: async () => {
+        if (fail) throw new Error("down");
+        return { sessions: [row("n:a")], unregistered: [] };
+      },
+      onSnapshotState: (state) => states.push(state),
+    });
+
+    sockets[0]!.serverDrop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states).toEqual(["failed"]);
+
+    fail = false;
+    await c.refresh();
+    expect(states).toEqual(["failed", "ok"]);
+    expect([...c.sessions.keys()]).toEqual(["n:a"]);
+  });
+});

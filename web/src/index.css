@@ -635,6 +635,22 @@ li.done > .row.selected .name, li.done > ul > li > .row.selected .name { color: 
 .mobile-diag-actions { display: flex; gap: var(--m-2); }
 .mobile-diag-actions button { flex: 1; padding: 0 var(--m-2); }
 .mobile-diag-report { width: 100%; box-sizing: border-box; margin-top: var(--m-2); font-family: var(--font-mono); font-size: var(--m-fs-note); }
+/* 崩溃页（agora-bkbg）：等宽、可选中复制的现场；手机上长按全选也能带走。 */
+.crash-detail {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  max-height: 50vh;
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2);
+  resize: vertical;
+}
 
 /* 手机门页（未配对 / 被吊销时的那一屏）：与 /m 同一套基准，别让"重新配对"这一屏回到 13px
    （agora-x70t.ten0；.gate-mobile 以前只有类名没有样式）。 */
