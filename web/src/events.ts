@@ -66,7 +66,8 @@ export type EndCauseKind =
   | "host_session_end"
   | "superseded"
   | "process_gone"
-  | "runtime_gone";
+  | "runtime_gone"
+  | "checkpoint_unrecorded";
 
 export interface EndCause {
   kind: EndCauseKind;
@@ -90,6 +91,7 @@ const END_CAUSE_KINDS: readonly string[] = [
   "superseded",
   "process_gone",
   "runtime_gone",
+  "checkpoint_unrecorded",
 ];
 
 const UNKNOWN_CAUSES: readonly string[] = [

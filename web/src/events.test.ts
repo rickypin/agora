@@ -260,6 +260,15 @@ describe("EventsClient", () => {
     expect(rowEndCause(r)).toBeNull();
   });
 
+  it("recognizes checkpoint_unrecorded as an end cause (agora-isht)", () => {
+    // 服务端 docs/spec/api.md 的封闭词表有这一档，旧 v3 检查点恢复出来的结束行会发它；
+    // 前端词表漏掉时 rowEndCause 读成 null，行上就变成「没说原因」。
+    expect(isEndCause({ kind: "checkpoint_unrecorded" })).toBe(true);
+    expect(rowEndCause({ end_cause: { kind: "checkpoint_unrecorded" } })).toEqual({
+      kind: "checkpoint_unrecorded",
+    });
+  });
+
   it("re-pulls the snapshot after a reconnect and on resync, never polling", async () => {
     sockets[0].serverOpen();
     await vi.advanceTimersByTimeAsync(0);
