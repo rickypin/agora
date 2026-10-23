@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::http::{header, Request};
+use axum::http::{header, Request, Uri};
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper_util::client::legacy::Client;
@@ -68,17 +68,29 @@ pub enum DeliveryError {
 /// 塞任意 https 地址，那是拿节点当 SSRF 跳板；Apple-only 也和"只做 Apple 端点"的裁决一致
 /// （agora-thc.9 / w9ki）。
 pub fn validate_endpoint(endpoint: &str) -> Result<(), String> {
-    let rest = endpoint
-        .strip_prefix("https://")
-        .ok_or_else(|| "端点必须是 https://".to_owned())?;
-    let host = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or("")
-        .rsplit_once(':')
-        .map(|(h, _)| h)
-        .unwrap_or_else(|| rest.split(['/', '?', '#']).next().unwrap_or(""));
-    if host == "push.apple.com" || host.ends_with(".push.apple.com") {
+    let uri: Uri = endpoint
+        .parse()
+        .map_err(|_| "端点不是合法的 URL".to_owned())?;
+    if uri.scheme_str() != Some("https") {
+        return Err("端点必须是 https://".to_owned());
+    }
+    let authority = uri.authority().ok_or_else(|| "端点缺少主机名".to_owned())?;
+    // RFC 3986 的 userinfo 不属于 HTTP 请求目标的一部分，但 `http::Uri` 会把它留在
+    // authority 里；实际拨号取 `uri.host()`（@ 之后那一段）。只看拆分字符串会把
+    // `https://web.push.apple.com:443@evil.example/push` 误认成 Apple 端点（SSRF，
+    // agora-sbsz）。这里明确拒绝，不依赖 URL 解析器替我们丢 userinfo。
+    if authority.as_str().contains('@') {
+        return Err("端点不能带 userinfo".to_owned());
+    }
+    if let Some(port) = uri.port_u16() {
+        if port != 443 {
+            return Err(format!("推送端点只支持 443，收到 {port}"));
+        }
+    }
+    let host = uri.host().unwrap_or("");
+    if host.eq_ignore_ascii_case("push.apple.com")
+        || host.to_ascii_lowercase().ends_with(".push.apple.com")
+    {
         Ok(())
     } else {
         Err(format!(
@@ -88,23 +100,32 @@ pub fn validate_endpoint(endpoint: &str) -> Result<(), String> {
 }
 
 /// 端点的 origin（VAPID 的 `aud`）：`https://host[:port]`。
+///
+/// 与 [`validate_endpoint`] 用同一个解析器取 host：origin 是 JWT 的受众，不能把 userinfo
+/// 或路径里的内容带进去，也不能让一个被篡改的订阅端点决定受众。
 fn origin_of(endpoint: &str) -> Option<String> {
-    let (scheme, rest) = endpoint.split_once("://")?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    (!authority.is_empty()).then(|| format!("{scheme}://{authority}"))
+    let uri: Uri = endpoint.parse().ok()?;
+    if uri.scheme_str() != Some("https") {
+        return None;
+    }
+    let authority = uri.authority()?;
+    if authority.as_str().contains('@') {
+        return None;
+    }
+    let host = uri.host()?;
+    Some(match uri.port_u16() {
+        Some(port) => format!("https://{host}:{port}"),
+        None => format!("https://{host}"),
+    })
 }
 
 /// 端点的主机名，只给日志用（不打印路径里的端点凭据）。
-pub fn host_of_endpoint(endpoint: &str) -> &str {
-    let rest = endpoint
-        .split_once("://")
-        .map(|(_, r)| r)
-        .unwrap_or(endpoint);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    authority
-        .rsplit_once(':')
-        .map(|(h, _)| h)
-        .unwrap_or(authority)
+pub fn host_of_endpoint(endpoint: &str) -> String {
+    endpoint
+        .parse::<Uri>()
+        .ok()
+        .and_then(|uri| uri.host().map(str::to_owned))
+        .unwrap_or_else(|| "<invalid>".to_owned())
 }
 
 pub struct PushSender {
@@ -356,10 +377,34 @@ mod tests {
     fn endpoint_validation_only_accepts_apple() {
         assert!(validate_endpoint("https://web.push.apple.com/abc").is_ok());
         assert!(validate_endpoint("https://push.apple.com/abc").is_ok());
+        assert!(validate_endpoint("https://web.push.apple.com:443/abc").is_ok());
         assert!(validate_endpoint("http://web.push.apple.com/abc").is_err());
         assert!(validate_endpoint("https://evil.example/abc").is_err());
         assert!(validate_endpoint("https://web.push.apple.com.evil.example/").is_err());
+        assert!(validate_endpoint("https://web.push.apple.com:8443/abc").is_err());
         assert!(validate_endpoint("not a url").is_err());
+    }
+
+    #[test]
+    fn endpoint_validation_rejects_userinfo_before_the_host() {
+        // agora-sbsz：`http::Uri` 解析 userinfo 时 host 是 @ 后面那一段，sender 按 host 拨号；
+        // 手工切字符串却会把它认成 @ 前面的 Apple 主机。
+        assert!(validate_endpoint("https://web.push.apple.com:443@evil.example/push").is_err());
+        assert!(validate_endpoint("https://web.push.apple.com@evil.example/push").is_err());
+        assert!(validate_endpoint("https://evil.example@web.push.apple.com/push").is_err());
+        let uri: Uri = "https://web.push.apple.com:443@evil.example/push"
+            .parse()
+            .unwrap();
+        assert_eq!(uri.host(), Some("evil.example"), "解析器实际拨号的主机");
+        assert_eq!(
+            host_of_endpoint("https://web.push.apple.com:443@evil.example/push"),
+            "evil.example"
+        );
+        assert_eq!(
+            origin_of("https://web.push.apple.com:443@evil.example/push"),
+            None,
+            "带 userinfo 的端点不能成为 VAPID audience"
+        );
     }
 
     #[test]
