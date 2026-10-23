@@ -190,11 +190,16 @@ pub const INJECTED_PROMPT_TAGS: &[&str] = &[
 
 /// Codex / ChatGPT 宿主用 markdown 标题或固定开标签包住浏览器 / 文件上下文；Grok 用尾标记。
 /// 这些都是结构前缀 / 固定尾标记，不是语义文本匹配（agora-5gg.13）。
+///
+/// `# Overview` 是 Codex Desktop 的 ambient suggestion 任务（2026-10-24 本机真投递，agora-tsgg）：
+/// 标题单独一行，后面是宿主给模型的长指令，不是人敲的。连换行一起匹配，避免把人在 prompt 里
+/// 写的 `# Overview of …` 当成注入（`# Chrome tabs:` 等有冒号，不需要这一层）。
 const INJECTED_PROMPT_PREFIXES: &[&str] = &[
     "# Chrome tabs:",
     "# Files mentioned by the user:",
     "## Referenced ChatGPT conversation:",
     "<in-app-browser-context",
+    "# Overview\n",
 ];
 /// Grok 的固定尾标记，只去尾、不当整条注入。
 pub const INJECTED_PROMPT_TAIL: &str = "<|eos|>";
@@ -329,12 +334,18 @@ mod tests {
             "# Files mentioned by the user:\n- a.txt",
             "## Referenced ChatGPT conversation:\n...",
             "<in-app-browser-context foo=\"bar\">\n...",
+            "# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this Projectless task",
         ] {
             assert!(
                 matches!(prompt_event(prompt), AgoraEvent::PromptInjected),
                 "{prompt:?}"
             );
         }
+        // 前缀带换行：人手写的 `# Overview of …` 仍是人的 prompt（agora-tsgg 的反例）。
+        assert_eq!(
+            prompt_event("# Overview of the release plan\n\n等我补"),
+            AgoraEvent::PromptSubmitted("# Overview of the release plan\n\n等我补".into())
+        );
         // Grok 的固定尾标记只去尾，仍是人的 prompt。
         assert_eq!(
             prompt_event("看看这个 <|eos|>\n"),

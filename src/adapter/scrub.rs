@@ -211,6 +211,11 @@ mod tests {
             "t0",
         );
         assert_eq!(codex["prompt"], "# Chrome tabs:\n<prompt>");
+        let overview = scrub(
+            &json!({"hook_event_name":"UserPromptSubmit","prompt":"# Overview\n\nGenerate 0 to 3 secret"}),
+            "t0",
+        );
+        assert_eq!(overview["prompt"], "# Overview\n\n<prompt>");
         let grok = scrub(
             &json!({"hook_event_name":"UserPromptSubmit","prompt":"secret body <|eos|>"}),
             "t0",

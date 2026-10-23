@@ -315,6 +315,15 @@ mod tests {
     }
 
     #[test]
+    fn codex_desktop_ambient_suggestion_is_prompt_injected_not_a_task_summary() {
+        // 2026-10-24 本机真投递（~/.agora/hooks/done/codex/01a1695c-…，model=gpt-6-luna；
+        // agora-tsgg）：Codex Desktop 的 ambient suggestion 任务以 `# Overview` 单独一行开头。
+        let p = json!({"hook_event_name":"UserPromptSubmit","session_id":"s","model":"gpt-6-luna",
+            "prompt":"# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this Projectless task\n\n\nGet an understanding of the user's intent and goals by deeply viewing their connected apps."});
+        assert_eq!(CODEX.parse(&p), vec![AgoraEvent::PromptInjected]);
+    }
+
+    #[test]
     fn permission_request_holds_on_tool_name_and_interrupt_releases_everything() {
         let pr = json!({"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"touch x"},"turn_id":"t"});
         assert_eq!(CODEX.hold_key(&pr).as_deref(), Some("Bash"));
